@@ -49,6 +49,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    _prefer_legacy_lowercase_cache,
     is_distributed,
     is_automatic_device_map,
     prepare_device_map,
@@ -176,7 +177,8 @@ def _revision_for_resolved_repo(
     mapper_moved_name = False,
 ):
     """Drop `revision` once the requested repo has been remapped to another one. A revision names a branch/tag/SHA on the repo the caller asked for, but from_pretrained may resolve model_name to a different repo (a pre-quantized mirror, an fp8 temp dir, a ModelScope snapshot, a -bnb-4bit strip), where that ref does not exist. Only the mapper substitution answers to use_exact_model_name, so only suggest it when it would help."""
-    if revision is None or model_name == old_model_name:
+    # Hub repo ids are case-insensitive, so a spelling-only change is still the same repo.
+    if revision is None or str(model_name).lower() == str(old_model_name).lower():
         return revision
     remedy = (
         " Pass `use_exact_model_name = True` to load your repo as-is." if mapper_moved_name else ""
@@ -197,10 +199,10 @@ def _revision_for_tokenizer_repo(
     is_peft = False,
 ):
     """Pick the revision for whichever repo the tokenizer is actually read from. It is not always the base model's: an adapter-hosted tokenizer is a separate repo with its own history, so it keeps the caller's ref even though the base model does not, while an unset tokenizer_name follows the resolved model_name. On a plain load the tokenizer belongs to the same model as the weights, so it follows model_revision even when the caller named its repo directly: a remap has already dropped the pin off the weights, and a pinned tokenizer beside a mirror's default-branch weights is the ref mismatch this gate exists to avoid."""
-    repo = tokenizer_name if tokenizer_name else model_name
-    if is_peft and repo == old_model_name:
+    repo = str(tokenizer_name if tokenizer_name else model_name).lower()
+    if is_peft and repo == str(old_model_name).lower():
         return revision
-    if repo == model_name:
+    if repo == str(model_name).lower():
         return model_revision
     return None
 
@@ -925,6 +927,9 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_fp8 = load_in_fp8,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = kwargs.get("local_files_only", False),
+                cache_dir = kwargs.get("cache_dir", None),
+                revision = revision,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -953,6 +958,10 @@ class FastLanguageModel(FastLlamaModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            # Stripping is a remap (revision dropped); the base may only be cached under its old lowercased id.
+            model_name = _prefer_legacy_lowercase_cache(
+                model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+            )
         # Report the loader decision before fetching this repo, including adapter bases.
         if on_model_resolved is not None:
             on_model_resolved(model_name)
@@ -1154,12 +1163,17 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_fp8 = load_in_fp8,
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    cache_dir = kwargs.get("cache_dir", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+                model_name = _prefer_legacy_lowercase_cache(
+                    model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+                )
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
@@ -1537,7 +1551,7 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel
+from .vision import FastBaseModel, _is_text_seq2seq_config
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from transformers import (
     AutoModelForCausalLM,
@@ -1755,7 +1769,12 @@ class FastModel(FastBaseModel):
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name = get_model_name(
-                model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
+                model_name,
+                load_in_4bit = load_in_4bit,
+                load_in_fp8 = load_in_fp8,
+                local_files_only = kwargs.get("local_files_only", False),
+                cache_dir = kwargs.get("cache_dir", None),
+                revision = revision,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1784,6 +1803,9 @@ class FastModel(FastBaseModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            model_name = _prefer_legacy_lowercase_cache(
+                model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+            )
         # Report the loader decision before fetching this repo, including adapter bases.
         if on_model_resolved is not None:
             on_model_resolved(model_name)
@@ -2116,6 +2138,13 @@ class FastModel(FastBaseModel):
                             + NIGHTLY
                         )
                     break
+        # transformers 4.x T5: the fullgraph-compiled layer inlines a compiler-disabled T5Attention (dynamo Unsupported).
+        if (
+            transformers_version < Version("5.0.0")
+            and getattr(model_config, "model_type", None) in ("t5", "mt5", "umt5")
+            and _is_text_seq2seq_config(model_config)
+        ):
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
 
         if auto_model is not None:
             # All other models need to disable static cache.
@@ -2135,12 +2164,20 @@ class FastModel(FastBaseModel):
         if is_peft:
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                model_name = get_model_name(model_name, load_in_4bit)
+                model_name = get_model_name(
+                    model_name,
+                    load_in_4bit,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    cache_dir = kwargs.get("cache_dir", None),
+                )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+                model_name = _prefer_legacy_lowercase_cache(
+                    model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+                )
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
@@ -2236,7 +2273,8 @@ class FastModel(FastBaseModel):
                 sdpa_gqa_replace = True,
                 sdpa_dynamic_compile = True,
                 compile_attention = True,
-                disable_causal_masks = True,
+                # Encoder-decoders on transformers 4.x build the decoder's causal mask in _update_causal_mask; stubbing it makes the decoder bidirectional under eager attention (T5).
+                disable_causal_masks = not _is_text_seq2seq_config(model_config),
                 compile_torch_modules = True,
                 compile_custom_modules = True,
                 compile_function_calls = True,
@@ -2268,6 +2306,8 @@ class FastModel(FastBaseModel):
         _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
             model_config, "vision_config"
         )
+        # T5 / BART end in ForConditionalGeneration too but ship a tokenizer, not a processor.
+        _ckpt_is_vlm = _ckpt_is_vlm and not _is_text_seq2seq_config(model_config)
         tokenizer_name = _resolve_checkpoint_tokenizer_name(
             old_model_name, kwargs, require_processor = _ckpt_is_vlm
         )
@@ -2416,6 +2456,22 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
+            elif _is_text_seq2seq_config(model_config):
+                if fast_inference:
+                    raise NotImplementedError(
+                        "Unsloth: fast_inference (vLLM) does not support encoder-decoder models "
+                        "such as T5 or BART. Please load with fast_inference = False."
+                    )
+                from transformers import AutoModelForSeq2SeqLM
+
+                auto_model = AutoModelForSeq2SeqLM
+                # The zoo's source probe says sdpa where transformers refuses it (T5 on 4.57).
+                if not getattr(
+                    resolve_model_class(auto_model, model_config, **_probe_hub_kwargs),
+                    "_supports_sdpa",
+                    True,
+                ):
+                    supports_sdpa = False
             elif is_vlm:
                 # Some repo-code VL models register only a generic auto class (Nemotron-VL uses AutoModelForCausalLM, DeepSeek-OCR AutoModel), so the VLM auto class raises "Unrecognized configuration class". Fall back to what the repo registered, matching the CONCRETE class name, since transformers resolves remote code by that exact name.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
