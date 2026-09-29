@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def run_download(tmp_path, component, env, exit_code):
-    source = (ROOT / "studio/setup.sh").read_text()
+    source = (ROOT / "studio/setup.sh").read_text(encoding = "utf-8")
     start = source.index(f'    _{component}_LOG="$(mktemp)"')
     end = source.index("    set -e", start) + len("    set -e")
     verbose = re.search(r"_is_verbose\(\) \{.*?\n\}", source, re.S).group()

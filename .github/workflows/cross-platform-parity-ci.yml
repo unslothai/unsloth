@@ -196,6 +196,7 @@ on:
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/python/test_windows_setup_download_progress.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
       - 'tests/python/test_installer_helper_declaration_order.py'
       - 'tests/python/test_installer_embedded_nvidia_probe.py'
