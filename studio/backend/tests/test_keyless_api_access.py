@@ -170,6 +170,24 @@ def test_resident_model_discovery_preserves_keyless_inference_access(token):
         subject_of(discovery_request())
 
 
+@pytest.mark.parametrize("token", [None, "not-needed"])
+def test_decisions_mcp_preserves_keyless_inference_access(token):
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+
+    def decisions_request():
+        if token is None:
+            return request_for(path = "/mcp/decisions/", method = "POST")
+        return bearer_request(token, path = "/mcp/decisions/", method = "POST")
+
+    assert subject_of(decisions_request()) == storage.DEFAULT_ADMIN_USERNAME
+    assert not scope_covers("inference", "GET", "/mcp/decisions/")
+
+    set_keyless_api_access("off")
+    with pytest.raises(HTTPException):
+        subject_of(decisions_request())
+
+
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
     import storage.studio_db as studio_db
 

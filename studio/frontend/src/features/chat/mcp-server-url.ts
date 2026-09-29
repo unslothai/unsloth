@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const STUDIO_DECISIONS_URL =
-  /^http:\/\/(\[[^\]]+\]|[^/:?#]+)(?::\d+)?\/mcp\/decisions\/?(?:[?#].*)?$/i;
+  /^[hH][tT][tT][pP]:\/\/(\[[^\]]+\]|[^/:?#]+)(?::\d+)?\/mcp\/decisions\/?(?:[?#].*)?$/;
 
 function isStudioLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
@@ -36,9 +36,9 @@ function isStudioLoopbackHost(host: string): boolean {
 // mcp_servers has no UNIQUE(url); normalize Studio's in-process Decisions endpoint so a preset
 // toggle reuses rows saved under older ports and every backend-accepted loopback spelling.
 export function normalizeMcpUrl(url: string): string {
-  const normalized = (url || "").trim().toLowerCase().replace(/\/+$/, "");
-  const match = STUDIO_DECISIONS_URL.exec(normalized);
+  const trimmed = (url || "").trim().replace(/\/+$/, "");
+  const match = STUDIO_DECISIONS_URL.exec(trimmed);
   return match && isStudioLoopbackHost(match[1])
     ? "studio:decisions"
-    : normalized;
+    : trimmed.toLowerCase();
 }

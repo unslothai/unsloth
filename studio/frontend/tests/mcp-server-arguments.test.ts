@@ -821,6 +821,7 @@ test("the Decisions preset matches a row saved under another port", () => {
     "http://[::1%25lo0]:8888/mcp/decisions",
     "http://[::ffff:127.0.0.1]:8888/mcp/decisions",
     "http://[::1]:8888/mcp/decisions/?scope=chat",
+    "HTTP://LOCALHOST:8888/mcp/decisions",
   ]) {
     assert.equal(normalizeMcpUrl(url), "studio:decisions", url);
   }
@@ -830,6 +831,7 @@ test("the Decisions preset matches a row saved under another port", () => {
     "http://128.0.0.1:8888/mcp/decisions",
     "http://127.0.0.01:8888/mcp/decisions",
     "http://[::2]:8888/mcp/decisions",
+    "http://127.0.0.1:8888/MCP/DECISIONS",
     "http://127.0.0.1:8888/mcp",
     "http://127.0.0.1:8888/mcp/decisions/extra",
   ]) {
