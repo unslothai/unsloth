@@ -5,6 +5,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const es = {
+  permissionModes: {
+    menuLabel: "¿Cómo se deben aprobar las llamadas a herramientas?",
+    triggerLabel: "Nivel de permisos para las llamadas a herramientas",
+    ask: {
+      label: "Preguntar siempre",
+      description: "Preguntar antes de cada llamada a herramientas",
+    },
+    auto: {
+      label: "Aprobar automáticamente",
+      description: "Ejecutar las llamadas habituales y preguntar antes de las arriesgadas, como acceder a credenciales, usar sudo, borrar archivos o enviar datos fuera",
+    },
+    off: {
+      label: "Acceso total en el sandbox",
+      description: "No preguntar nunca mientras Python y Terminal se ejecuten en el sandbox del sistema. Sin él, las llamadas arriesgadas siguen preguntando",
+      sandboxUnavailable: "Sandbox del sistema no disponible",
+    },
+    full: {
+      label: "Omitir permisos",
+      description: "Sin solicitudes de aprobación y sin sandbox",
+    },
+    bypassTitle: "¿Activar Omitir permisos?",
+    bypassWarning: "Omitir permisos permite que las llamadas a herramientas se ejecuten sin solicitudes de aprobación ni sandbox. Pueden modificar o borrar archivos, ejecutar comandos y hacer solicitudes de red. Actívalo solo si confías en la tarea actual.",
+    bypassConfirm: "Entiendo",
+    cancel: "Cancelar",
+  },
+  sandboxSetup: {
+    title: "Todavía no hay sandbox del sistema en este equipo",
+    description: "Acceso total en el sandbox nunca pregunta mientras Python y Terminal se ejecutan en el sandbox del sistema. Hasta que funcione uno aquí, las llamadas arriesgadas siguen preguntando.",
+    checking: "Comprobando el sandbox de este equipo…",
+    install: "Instalar sandbox",
+    windowsSetup: "Configurar el sandbox de Windows",
+    copyCommand: "Copiar comando",
+    copied: "Comando copiado",
+    copyFailed: "No se pudo copiar el comando",
+    commandHint: "O ejecuta esto en el equipo donde se ejecuta Unsloth y vuelve a elegir el modo:",
+    ownerOnly: "Solo el propietario puede instalarlo, desde el equipo donde se ejecuta Unsloth.",
+    useAnyway: "Usarlo de todos modos (las llamadas arriesgadas preguntarán)",
+    cancel: "Cancelar",
+    close: "Cerrar",
+    running: "Configurando. Aprueba la solicitud de contraseña o de administrador en el equipo donde se ejecuta Unsloth…",
+    succeeded: "El sandbox del sistema está listo. Acceso total en el sandbox está activado.",
+    stillUnavailable: "La configuración terminó, pero el sandbox del sistema todavía no supera su comprobación.",
+    declined: "Se rechazó la solicitud de contraseña o de administrador.",
+    failed: "La configuración falló.",
+    startError: "No se pudo iniciar la configuración del sandbox",
+  },
   composerSettings: {
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
@@ -729,6 +775,10 @@ export const es = {
       prepDeclined: "Se rechazó la solicitud de administrador.",
       prepFailed: "La preparación falló.",
       runtimeMissing: "El runtime de MXC no está instalado. Vuelve a ejecutar el instalador de Unsloth para añadirlo.",
+      setupLabel: "Configuración del sandbox del sistema",
+      setupCommandHint: "Ejecuta esto en el equipo donde se ejecuta Unsloth:",
+      macosBuiltIn: "Seatbelt viene integrado en macOS, así que no hay nada que instalar.",
+      installRuntime: "Instalar runtime",
     },
     debugging: {
       logSection: "Archivo de registro",
@@ -1252,7 +1302,7 @@ export const es = {
         sectionTitle: "Permisos",
         bypassLabel: "Permisos de herramientas",
         bypassDescription:
-          "Cómo aprueba Unsloth las llamadas a herramientas del chat (terminal, python, web, MCP) antes de ejecutarlas. El modo «Full access» desactiva las aprobaciones y el sandbox de código.",
+          "Cómo aprueba Unsloth las llamadas a herramientas del chat (terminal, python, web, MCP) antes de ejecutarlas. El modo «Omitir permisos» desactiva las aprobaciones y el sandbox de código.",
       },
     },
     profile: {

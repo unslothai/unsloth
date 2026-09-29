@@ -5,6 +5,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const de = {
+  permissionModes: {
+    menuLabel: "Wie sollen Tool-Aufrufe freigegeben werden?",
+    triggerLabel: "Berechtigungsstufe für Tool-Aufrufe",
+    ask: {
+      label: "Jedes Mal fragen",
+      description: "Vor jedem Tool-Aufruf fragen",
+    },
+    auto: {
+      label: "Automatisch freigeben",
+      description: "Routinemäßige Tool-Aufrufe ausführen, aber vor riskanten fragen, etwa Zugriff auf Zugangsdaten, sudo, Löschen von Dateien oder Senden von Daten nach außen",
+    },
+    off: {
+      label: "Vollzugriff in der Sandbox",
+      description: "Nie fragen, solange Python und Terminal in der OS-Sandbox laufen. Ohne Sandbox wird bei riskanten Aufrufen weiterhin gefragt",
+      sandboxUnavailable: "OS-Sandbox nicht verfügbar",
+    },
+    full: {
+      label: "Berechtigungen umgehen",
+      description: "Keine Freigabeabfragen und keine Sandbox",
+    },
+    bypassTitle: "Berechtigungen umgehen aktivieren?",
+    bypassWarning: "Mit „Berechtigungen umgehen“ laufen Tool-Aufrufe ohne Freigabeabfragen und ohne Sandbox. Sie können Dateien ändern oder löschen, Befehle ausführen und Netzwerkanfragen stellen. Aktiviere es nur, wenn du der aktuellen Aufgabe vertraust.",
+    bypassConfirm: "Ich verstehe",
+    cancel: "Abbrechen",
+  },
+  sandboxSetup: {
+    title: "Noch keine OS-Sandbox auf diesem Computer",
+    description: "Vollzugriff in der Sandbox fragt nie, solange Python und Terminal in der OS-Sandbox laufen. Bis hier eine funktioniert, wird bei riskanten Aufrufen weiterhin gefragt.",
+    checking: "Sandbox auf diesem Computer wird geprüft…",
+    install: "Sandbox installieren",
+    windowsSetup: "Windows-Sandbox einrichten",
+    copyCommand: "Befehl kopieren",
+    copied: "Befehl kopiert",
+    copyFailed: "Der Befehl konnte nicht kopiert werden",
+    commandHint: "Oder führe dies auf dem Computer aus, auf dem Unsloth läuft, und wähle den Modus dann erneut:",
+    ownerOnly: "Nur der Besitzer kann sie installieren, und zwar an dem Computer, auf dem Unsloth läuft.",
+    useAnyway: "Trotzdem verwenden (riskante Aufrufe fragen nach)",
+    cancel: "Abbrechen",
+    close: "Schließen",
+    running: "Wird eingerichtet. Bestätige die Passwort- oder Administratorabfrage auf dem Computer, auf dem Unsloth läuft…",
+    succeeded: "Die OS-Sandbox ist bereit. Vollzugriff in der Sandbox ist aktiv.",
+    stillUnavailable: "Die Einrichtung ist abgeschlossen, aber die OS-Sandbox besteht ihre Prüfung noch nicht.",
+    declined: "Die Passwort- oder Administratorabfrage wurde abgelehnt.",
+    failed: "Die Einrichtung ist fehlgeschlagen.",
+    startError: "Die Sandbox-Einrichtung konnte nicht gestartet werden",
+  },
   composerSettings: {
     title: "Nachrichteneingabe",
     plainText: "Eingabe als Klartext",
@@ -730,6 +776,10 @@ export const de = {
       prepDeclined: "Die Administratorabfrage wurde abgelehnt.",
       prepFailed: "Vorbereitung fehlgeschlagen.",
       runtimeMissing: "Die MXC-Laufzeit ist nicht installiert. Führe das Unsloth-Installationsprogramm erneut aus, um sie hinzuzufügen.",
+      setupLabel: "Einrichtung der OS-Sandbox",
+      setupCommandHint: "Führe dies auf dem Computer aus, auf dem Unsloth läuft:",
+      macosBuiltIn: "Seatbelt ist in macOS integriert, es muss nichts installiert werden.",
+      installRuntime: "Laufzeit installieren",
     },
     debugging: {
       logSection: "Protokolldatei",
@@ -1257,7 +1307,7 @@ export const de = {
         sectionTitle: "Berechtigungen",
         bypassLabel: "Tool-Berechtigungen",
         bypassDescription:
-          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Full access“ deaktiviert die Freigaben und die Code-Sandbox.",
+          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Berechtigungen umgehen“ deaktiviert die Freigaben und die Code-Sandbox.",
       },
     },
     profile: {

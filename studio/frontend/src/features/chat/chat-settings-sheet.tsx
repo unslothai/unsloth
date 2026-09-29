@@ -2009,15 +2009,15 @@ function ConfirmToolCallsToggle() {
           </span>
           <InfoHint>
             When on, every local Unsloth tool call pauses for your approval
-            before it runs (the "Ask for approval" level). When off, tool calls
-            run without prompts inside the sandbox (the "Run automatically"
-            level).
+            before it runs (the "Ask every time" level). When off, tool calls
+            run without prompts in the OS sandbox (the "Full access in
+            sandbox" level).
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
         {permissionMode === "full" ? (
           <span className="text-ui-11 text-muted-foreground">
-            Overridden by Full access
+            Overridden by Bypass permissions
           </span>
         ) : null}
       </div>
@@ -2041,8 +2041,8 @@ function BypassPermissionsToggle() {
           Tool permissions
         </span>
         <InfoHint>
-          Choose how Unsloth approves tool calls before they run. Full access
-          disables confirmations and the code sandbox.
+          Choose how Unsloth approves tool calls before they run. Bypass
+          permissions disables confirmations and the code sandbox.
         </InfoHint>
       </div>
       {/* Full width, styled like the panel selects/preset input. */}

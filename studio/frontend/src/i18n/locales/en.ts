@@ -2,6 +2,52 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  permissionModes: {
+    menuLabel: "How should tool calls be approved?",
+    triggerLabel: "Permission level for tool calls",
+    ask: {
+      label: "Ask every time",
+      description: "Ask before every tool call",
+    },
+    auto: {
+      label: "Auto-approve",
+      description: "Run routine tool calls, ask before risky ones like credential access, sudo, deleting files, or sending data out",
+    },
+    off: {
+      label: "Full access in sandbox",
+      description: "Never ask while Python and Terminal run in the OS sandbox. Without one, risky calls still ask",
+      sandboxUnavailable: "OS sandbox not available",
+    },
+    full: {
+      label: "Bypass permissions",
+      description: "No approval prompts and no sandbox",
+    },
+    bypassTitle: "Turn on Bypass permissions?",
+    bypassWarning: "Bypass permissions lets tool calls run without approval prompts or the sandbox. They can modify or delete files, run commands, and make network requests. Turn it on only when you trust the current task.",
+    bypassConfirm: "I understand",
+    cancel: "Cancel",
+  },
+  sandboxSetup: {
+    title: "No OS sandbox on this computer yet",
+    description: "Full access in sandbox never asks while Python and Terminal run in the OS sandbox. Until one works here, risky calls still ask.",
+    checking: "Checking the sandbox on this computer…",
+    install: "Install sandbox",
+    windowsSetup: "Set up Windows sandbox",
+    copyCommand: "Copy command",
+    copied: "Command copied",
+    copyFailed: "Could not copy the command",
+    commandHint: "Or run this on the computer running Unsloth, then pick the mode again:",
+    ownerOnly: "Only the owner can install it, from the computer running Unsloth.",
+    useAnyway: "Use it anyway (risky calls will ask)",
+    cancel: "Cancel",
+    close: "Close",
+    running: "Setting up. Approve the password or administrator prompt on the computer running Unsloth…",
+    succeeded: "The OS sandbox is ready. Full access in sandbox is on.",
+    stillUnavailable: "Setup finished, but the OS sandbox still does not pass its check.",
+    declined: "The password or administrator prompt was declined.",
+    failed: "Setup failed.",
+    startError: "Failed to start the sandbox setup",
+  },
   composerSettings: {
     title: "Composer",
     plainText: "Plain text composer",
@@ -733,6 +779,10 @@ export const en = {
       prepDeclined: "The administrator prompt was declined.",
       prepFailed: "Preparation failed.",
       runtimeMissing: "The MXC runtime is not installed. Rerun the Unsloth installer to add it.",
+      setupLabel: "OS sandbox setup",
+      setupCommandHint: "Run this on the computer running Unsloth:",
+      macosBuiltIn: "Seatbelt is built into macOS, so there is nothing to install.",
+      installRuntime: "Install runtime",
     },
     debugging: {
       logSection: "Log file",
@@ -1100,7 +1150,7 @@ export const en = {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",
         bypassDescription:
-          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Bypass permissions disables approvals and the code sandbox.",
       },
       notifications: {
         sectionTitle: "Notifications",

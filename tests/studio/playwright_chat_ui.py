@@ -228,6 +228,32 @@ def exercise_permission_mode_controls(page, shoot):
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
     expect(pill).to_be_visible()
 
+    # Picking "Full access in sandbox" asks the server whether the OS sandbox works on this host, and
+    # without one it offers the setup instead of switching. Answer for the host so the level checks
+    # below do not depend on the runner's user namespaces; the dialog is exercised on its own below.
+    sandbox_answer = {"ready": True}
+
+    def answer_sandbox_capability(route):
+        ready = sandbox_answer["ready"]
+        route.fulfill(
+            status = 200,
+            content_type = "application/json",
+            body = json.dumps(
+                {
+                    "python_os_isolated": ready,
+                    "terminal_os_isolated": ready,
+                    "backend": "bubblewrap",
+                    "platform": "linux",
+                    "reason": "" if ready else "bwrap: setting up uid map: Permission denied",
+                    "setup_action": None,
+                    "manual_command": "" if ready else "apt-get install -y bubblewrap",
+                    "can_run_setup": False,
+                }
+            ),
+        )
+
+    page.route("**/api/sandbox/capability*", answer_sandbox_capability)
+
     def expect_mode(label):
         expect(pill).to_have_attribute("data-pill-label", label)
         expect(pill).to_contain_text(label)
@@ -368,14 +394,14 @@ def exercise_permission_mode_controls(page, shoot):
     set_legacy_confirm(None)
     reload_and_wait_for_pill()
 
-    # Fresh profiles default to Approve for me.
-    expect_mode("Approve for me")
+    # Fresh profiles default to Auto-approve.
+    expect_mode("Auto-approve")
     menu = open_menu()
     for label in (
-        "Ask for approval",
-        "Approve for me",
-        "Run automatically",
-        "Full access",
+        "Ask every time",
+        "Auto-approve",
+        "Full access in sandbox",
+        "Bypass permissions",
     ):
         expect(menu.get_by_role("menuitem").filter(has_text = label).first).to_be_visible()
     if menu.get_by_text("Off", exact = True).count() != 0:
@@ -385,8 +411,8 @@ def exercise_permission_mode_controls(page, shoot):
     page.keyboard.press("Escape")
     expect(pill).to_be_focused()
 
-    choose("Approve for me")
-    expect_mode("Approve for me")
+    choose("Auto-approve")
+    expect_mode("Auto-approve")
     expect(page.get_by_role("alertdialog")).to_have_count(0)
 
     compact_width = 390
@@ -412,9 +438,9 @@ def exercise_permission_mode_controls(page, shoot):
     # stored level wins over the local derivation, so without it the second reload would assert against the level the
     # first one seeded and read as a migration bug.
     migration_cases = (
-        ("true", "Ask for approval"),
-        ("false", "Run automatically"),
-        (None, "Approve for me"),
+        ("true", "Ask every time"),
+        ("false", "Full access in sandbox"),
+        (None, "Auto-approve"),
     )
     try:
         for legacy_value, expected_label in migration_cases:
@@ -426,38 +452,38 @@ def exercise_permission_mode_controls(page, shoot):
 
     # The other half of that contract: with a level stored for the install, a browser holding only the legacy key gets
     # the installation's level back rather than its own derivation.
-    choose("Ask for approval")
-    expect_mode("Ask for approval")
+    choose("Ask every time")
+    expect_mode("Ask every time")
     expect_server_mode("ask")
     set_legacy_confirm("false")
     reload_and_wait_for_pill()
-    expect_mode("Ask for approval")
+    expect_mode("Ask every time")
     cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if cached != "ask":
         fail(f"hydration left the local cache at {cached!r}, expected 'ask'")
 
-    choose("Run automatically")
-    expect_mode("Run automatically")
+    choose("Full access in sandbox")
+    expect_mode("Full access in sandbox")
     expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
     expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
-        fail(f"Run automatically persisted {stored!r}, expected 'off'")
+        fail(f"Full access in sandbox persisted {stored!r}, expected 'off'")
 
-    # Full access requires explicit consent and never overwrites persistence.
-    choose("Full access")
+    # Bypass permissions requires explicit consent and never overwrites persistence.
+    choose("Bypass permissions")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
-    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
-    expect(dialog).to_contain_text("the code sandbox")
+    expect(dialog.get_by_role("heading", name = "Turn on Bypass permissions?")).to_be_visible()
+    expect(dialog).to_contain_text("the sandbox")
     dialog.get_by_role("button", name = "Cancel").click()
     expect(dialog).to_be_hidden()
-    expect_mode("Run automatically")
+    expect_mode("Full access in sandbox")
 
-    choose("Full access")
+    choose("Bypass permissions")
     expect(dialog).to_be_visible()
     dialog.get_by_role("button", name = "I understand").click()
-    expect_mode("Full access")
+    expect_mode("Bypass permissions")
     expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
@@ -465,17 +491,41 @@ def exercise_permission_mode_controls(page, shoot):
     wait_for_settled(active_icon)
     icon_opacity = float(active_icon.evaluate("el => getComputedStyle(el).opacity"))
     if icon_opacity < 0.5:
-        fail(f"Full access icon disappeared on hover (opacity={icon_opacity})")
+        fail(f"Bypass permissions icon disappeared on hover (opacity={icon_opacity})")
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
-        fail(f"Full access overwrote persisted mode with {stored!r}")
+        fail(f"Bypass permissions overwrote persisted mode with {stored!r}")
 
     reload_and_wait_for_pill()
-    expect_mode("Run automatically")
+    expect_mode("Full access in sandbox")
+
+    # Without a working OS sandbox the pick opens the setup dialog instead of switching: Cancel keeps
+    # the previous level, "Use it anyway" applies it. A reload drops the page's cached answer.
+    choose("Auto-approve")
+    expect_mode("Auto-approve")
+    sandbox_answer["ready"] = False
+    reload_and_wait_for_pill()
+    choose("Full access in sandbox")
+    setup = page.get_by_role("alertdialog")
+    expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
+    expect(setup).to_contain_text("apt-get install -y bubblewrap")
+    expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    if setup.get_by_role("button", name = "Install sandbox").count() != 0:
+        fail("setup dialog offered Install sandbox to a request the server did not allow")
+    setup.get_by_role("button", name = "Cancel").click()
+    expect(setup).to_be_hidden()
+    expect_mode("Auto-approve")
+    choose("Full access in sandbox")
+    expect(setup).to_be_visible()
+    setup.get_by_role("button", name = "Use it anyway (risky calls will ask)").click()
+    expect(setup).to_be_hidden()
+    expect_mode("Full access in sandbox")
+    sandbox_answer["ready"] = True
+    reload_and_wait_for_pill()
 
     # Leave the full chat smoke in the fresh-install default.
-    choose("Approve for me")
-    expect_mode("Approve for me")
+    choose("Auto-approve")
+    expect_mode("Auto-approve")
     shoot("04-permission-levels")
 
 

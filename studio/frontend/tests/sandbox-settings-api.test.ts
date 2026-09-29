@@ -101,6 +101,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       reason: "passed",
       limitations: ["mxc_preview_not_a_security_boundary"],
       protectionState: "preview",
+      remediation: "",
     },
     terminal: {
       backend: "mxc-processcontainer",
@@ -108,6 +109,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       reason: "bash failed",
       limitations: [],
       protectionState: null,
+      remediation: "",
     },
     terminalShell: "cmd_isolated",
     windows: {
@@ -121,8 +123,58 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       hostPrepMissing: ["prepare-null-device"],
       prepareRepeatsAfterRestart: true,
     },
+    setup: null,
     checkedAt: 12,
   });
+});
+
+test("the setup plan and per-tool remediation reach the tab", async () => {
+  const { api } = loadApi(() =>
+    json({
+      platform: "linux",
+      python: {
+        backend: "bubblewrap",
+        available: false,
+        reason: "bwrap is not installed",
+        limitations: [],
+        remediation: "apt-get install bubblewrap",
+      },
+      terminal: { backend: "bubblewrap", available: false, reason: "x" },
+      windows: null,
+      setup: {
+        action: "linux-install",
+        elevation: "pkexec",
+        manual_command: "apt-get install -y bubblewrap",
+        reason: "bubblewrap is missing",
+        can_run: true,
+      },
+    }),
+  );
+  const status = await api.loadSandboxStatus(false, "fallback");
+  assert.equal(
+    (status.python as { remediation: string }).remediation,
+    "apt-get install bubblewrap",
+  );
+  assert.deepEqual(status.setup, {
+    action: "linux-install",
+    elevation: "pkexec",
+    manualCommand: "apt-get install -y bubblewrap",
+    reason: "bubblewrap is missing",
+    canRun: true,
+  });
+});
+
+test("an unknown setup action or a refused request never offers the button", async () => {
+  for (const setup of [
+    { action: "rm-rf", manual_command: "x", can_run: true },
+    { action: "linux-install", manual_command: "x", can_run: false },
+  ]) {
+    const { api } = loadApi(() =>
+      json({ platform: "linux", python: {}, terminal: {}, setup }),
+    );
+    const status = await api.loadSandboxStatus(false, "fallback");
+    assert.equal((status.setup as { canRun: boolean }).canRun, false);
+  }
 });
 
 test("a non-Windows status has no Windows block and a plain load skips refresh", async () => {

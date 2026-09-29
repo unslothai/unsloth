@@ -91,7 +91,7 @@ export function measurePillCompact(
  * Keeps the composer's tool pills on one line with the dictate/send controls.
  *
  * The count rule (`forceCompact`) cannot see label widths, so four long labels
- * ("Run automatically" next to "Deep research") still overflowed and dropped
+ * ("Full access in sandbox" next to "Deep research") still overflowed and dropped
  * the mic and send button onto a second line. This measures the laid-out row
  * and collapses only as far as it takes to fit.
  *

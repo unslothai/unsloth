@@ -5,6 +5,7 @@ import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
+import { type TranslationKey, useT } from "@/i18n";
 
 import {
   AlertDialog,
@@ -30,61 +31,63 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  loadSandboxCapability,
+  sandboxReady,
+} from "./api/sandbox-capability";
+import {
+  SandboxSetupDialog,
+  useSandboxSetupDialogStore,
+} from "./sandbox-setup-dialog";
+import {
   type PermissionMode,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/** Permission levels for tool calls. Full access stays last because it disables both approval
- *  prompts and the code sandbox. */
+/** Permission levels for tool calls. The stored values never change; only what they are called.
+ *  Bypass permissions stays last because it disables both approval prompts and the sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
-  label: string;
-  description: string;
+  labelKey: TranslationKey;
+  descriptionKey: TranslationKey;
   icon: ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
   {
     value: "ask",
-    label: "Ask for approval",
-    description:
-      "Always ask before tool calls, editing files or using the internet",
+    labelKey: "permissionModes.ask.label",
+    descriptionKey: "permissionModes.ask.description",
     icon: Hand,
   },
   {
     value: "auto",
-    label: "Approve for me",
-    description:
-      "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
+    labelKey: "permissionModes.auto.label",
+    descriptionKey: "permissionModes.auto.description",
     icon: ShieldCheck,
   },
   {
     value: "off",
-    label: "Run automatically",
-    description: "Run tool calls without approval prompts inside the sandbox",
+    labelKey: "permissionModes.off.label",
+    descriptionKey: "permissionModes.off.description",
     icon: SparklesGlyph,
   },
   {
     value: "full",
-    label: "Full access",
-    description:
-      "Unrestricted: no approval prompts and the code sandbox is disabled",
+    labelKey: "permissionModes.full.label",
+    descriptionKey: "permissionModes.full.description",
     icon: CircleAlert,
   },
 ] as const;
 
-export const FULL_ACCESS_WARNING =
-  "Full access lets tool calls run without approval prompts or the code sandbox. They can modify or delete files, run commands, and make network requests. Enable it only when you trust the current task.";
-
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
-    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
+    // Unknown values fall back to the default ("Auto-approve"), not row 0 ("Ask every time").
     PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );
 }
 
 /** The option rows shared by every permission dropdown or submenu. Non-full levels apply
- *  directly; picking Full access must go through the caller's danger confirmation. */
+ *  directly; picking Bypass permissions must go through the caller's danger confirmation. */
 function useAccountPermissionMode() {
   const fullAccessAllowed = useFullAccessAllowed();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
@@ -98,13 +101,48 @@ function useAccountPermissionMode() {
   };
 }
 
+/** True when this computer's OS sandbox is known not to cover Python and Terminal. False while
+ *  unknown or when the server is too old to say, so the picker then behaves as it always did. */
+function useSandboxUnavailable(): boolean {
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void loadSandboxCapability().then((capability) => {
+      if (live) setUnavailable(capability !== null && !sandboxReady(capability));
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return unavailable;
+}
+
+/** "Full access in sandbox" only holds with a working OS sandbox, so picking it without one
+ *  offers the setup instead of applying it; nothing is installed until the owner asks. */
+export function pickSandboxedMode(
+  setPermissionMode: (mode: PermissionMode) => void,
+  onRequestSandboxSetup: () => void,
+): Promise<void> {
+  return loadSandboxCapability().then((capability) => {
+    if (capability !== null && !sandboxReady(capability)) {
+      onRequestSandboxSetup();
+    } else {
+      setPermissionMode("off");
+    }
+  });
+}
+
 export function PermissionModeMenuItems({
   onRequestFullAccess,
+  onRequestSandboxSetup,
 }: {
   onRequestFullAccess: () => void;
+  onRequestSandboxSetup: () => void;
 }) {
+  const t = useT();
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const sandboxUnavailable = useSandboxUnavailable();
 
   return (
     <>
@@ -117,6 +155,8 @@ export function PermissionModeMenuItems({
             }
             if (option.value === "full") {
               onRequestFullAccess();
+            } else if (option.value === "off") {
+              void pickSandboxedMode(setPermissionMode, onRequestSandboxSetup);
             } else {
               setPermissionMode(option.value);
             }
@@ -131,10 +171,15 @@ export function PermissionModeMenuItems({
         >
           <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-ui-13 leading-tight">{option.label}</span>
+            <span className="text-ui-13 leading-tight">{t(option.labelKey)}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">
-              {option.description}
+              {t(option.descriptionKey)}
             </span>
+            {option.value === "off" && sandboxUnavailable ? (
+              <span className="text-xs font-normal leading-snug text-bypass">
+                {t("permissionModes.off.sandboxUnavailable")}
+              </span>
+            ) : null}
           </span>
           {permissionMode === option.value ? (
             <HugeiconsIcon
@@ -149,7 +194,7 @@ export function PermissionModeMenuItems({
   );
 }
 
-/** Danger confirmation shown before Full access turns on. Self-contained so the dropdown works
+/** Danger confirmation shown before Bypass permissions turns on. Self-contained so the dropdown works
  *  outside the chat page (e.g. the Settings dialog). */
 export function FullAccessConfirmDialog({
   open,
@@ -158,6 +203,7 @@ export function FullAccessConfirmDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const t = useT();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const { fullAccessAllowed } = useAccountPermissionMode();
   if (!fullAccessAllowed) return null;
@@ -166,13 +212,13 @@ export function FullAccessConfirmDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
+          <AlertDialogTitle>{t("permissionModes.bypassTitle")}</AlertDialogTitle>
           <AlertDialogDescription>
-            {FULL_ACCESS_WARNING}
+            {t("permissionModes.bypassWarning")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("permissionModes.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
@@ -181,7 +227,7 @@ export function FullAccessConfirmDialog({
               onOpenChange(false);
             }}
           >
-            I understand
+            {t("permissionModes.bypassConfirm")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -200,8 +246,10 @@ export function PermissionModeDropdown({
   align?: "start" | "end";
   triggerClassName?: string;
 } = {}) {
-  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
+  const t = useT();
+  const { permissionMode } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sandboxSetupOpen, setSandboxSetupOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
 
@@ -219,11 +267,11 @@ export function PermissionModeDropdown({
               permissionMode === "full" &&
                 "text-bypass hover:text-bypass border-bypass/50",
             )}
-            aria-label="Permission level for tool calls"
+            aria-label={t("permissionModes.triggerLabel")}
           >
             <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
             <span className="min-w-0 flex-1 truncate text-left">
-              {active.label}
+              {t(active.labelKey)}
             </span>
             <ChevronDown className="size-3.5 shrink-0 opacity-60" />
           </Button>
@@ -234,14 +282,15 @@ export function PermissionModeDropdown({
           className="w-[calc(300px*var(--ui-space-scale,1))]"
           avoidCollisions={true}
         >
-          <DropdownMenuLabel>
-            How should tool calls be approved?
-          </DropdownMenuLabel>
+          <DropdownMenuLabel>{t("permissionModes.menuLabel")}</DropdownMenuLabel>
           <PermissionModeMenuItems
             // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
             // dropdown grabbing focus back.
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
+            }
+            onRequestSandboxSetup={() =>
+              setTimeout(() => setSandboxSetupOpen(true), 0)
             }
           />
         </DropdownMenuContent>
@@ -250,12 +299,16 @@ export function PermissionModeDropdown({
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
       />
+      <SandboxSetupDialog
+        open={sandboxSetupOpen}
+        onOpenChange={setSandboxSetupOpen}
+      />
     </>
   );
 }
 
 /** Composer pill showing the current permission level in the chat box; clicking opens the level
- *  dropdown. Danger-styled while Full access is on. The Full access pick routes through the
+ *  dropdown. Danger-styled while Bypass permissions is on. That pick routes through the
  *  store-driven confirm dialog mounted at the chat-page root, so the warning survives this
  *  menu unmounting. */
 export function PermissionModeComposerPill({
@@ -263,11 +316,14 @@ export function PermissionModeComposerPill({
 }: {
   side?: "top" | "bottom";
 } = {}) {
-  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
+  const t = useT();
+  const { permissionMode } = useAccountPermissionMode();
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
   const active = permissionModeOption(permissionMode);
+  const activeLabel = t(active.labelKey);
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
 
@@ -277,16 +333,16 @@ export function PermissionModeComposerPill({
         <button
           type="button"
           className="composer-pill-btn composer-pill-permissions"
-          data-pill-label={active.label}
+          data-pill-label={activeLabel}
           data-active={fullAccess ? "true" : "false"}
           data-variant={fullAccess ? "danger" : undefined}
-          aria-label="Permission level for tool calls"
-          title={`${active.label}: ${active.description}`}
+          aria-label={t("permissionModes.triggerLabel")}
+          title={`${activeLabel}: ${t(active.descriptionKey)}`}
         >
           <span className="composer-pill-glyph">
             <ActiveIcon className="size-[calc(15px*var(--ui-space-scale,1))]" strokeWidth={2} />
           </span>
-          <span>{active.label}</span>
+          <span>{activeLabel}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={1.5}
@@ -301,13 +357,14 @@ export function PermissionModeComposerPill({
         avoidCollisions={true}
         className="unsloth-plus-menu w-[calc(300px*var(--ui-space-scale,1))]"
       >
-        <DropdownMenuLabel>
-          How should tool calls be approved?
-        </DropdownMenuLabel>
+        <DropdownMenuLabel>{t("permissionModes.menuLabel")}</DropdownMenuLabel>
         <PermissionModeMenuItems
           // Defer past the menu-close focus restoration (see PermissionModeDropdown).
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
+          }
+          onRequestSandboxSetup={() =>
+            setTimeout(() => setSandboxSetupOpen(true), 0)
           }
         />
       </DropdownMenuContent>

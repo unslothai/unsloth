@@ -2,6 +2,52 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  permissionModes: {
+    menuLabel: "Come vanno approvate le chiamate agli strumenti?",
+    triggerLabel: "Livello di autorizzazione per le chiamate agli strumenti",
+    ask: {
+      label: "Chiedi ogni volta",
+      description: "Chiedi prima di ogni chiamata a uno strumento",
+    },
+    auto: {
+      label: "Approvazione automatica",
+      description: "Esegui le chiamate di routine, chiedi prima di quelle rischiose come accesso alle credenziali, sudo, eliminazione di file o invio di dati all'esterno",
+    },
+    off: {
+      label: "Accesso completo nella sandbox",
+      description: "Non chiedere mai finché Python e Terminale girano nella sandbox del sistema. Senza, le chiamate rischiose chiedono comunque",
+      sandboxUnavailable: "Sandbox del sistema non disponibile",
+    },
+    full: {
+      label: "Ignora autorizzazioni",
+      description: "Nessuna richiesta di approvazione e nessuna sandbox",
+    },
+    bypassTitle: "Attivare Ignora autorizzazioni?",
+    bypassWarning: "Ignora autorizzazioni fa eseguire le chiamate agli strumenti senza richieste di approvazione né sandbox. Possono modificare o eliminare file, eseguire comandi e fare richieste di rete. Attivalo solo se ti fidi dell'attività corrente.",
+    bypassConfirm: "Ho capito",
+    cancel: "Annulla",
+  },
+  sandboxSetup: {
+    title: "Nessuna sandbox del sistema su questo computer",
+    description: "Accesso completo nella sandbox non chiede mai finché Python e Terminale girano nella sandbox del sistema. Finché qui non ne funziona una, le chiamate rischiose chiedono comunque.",
+    checking: "Verifica della sandbox su questo computer…",
+    install: "Installa sandbox",
+    windowsSetup: "Configura la sandbox di Windows",
+    copyCommand: "Copia comando",
+    copied: "Comando copiato",
+    copyFailed: "Impossibile copiare il comando",
+    commandHint: "Oppure esegui questo sul computer su cui gira Unsloth, poi scegli di nuovo la modalità:",
+    ownerOnly: "Solo il proprietario può installarla, dal computer su cui gira Unsloth.",
+    useAnyway: "Usala comunque (le chiamate rischiose chiederanno)",
+    cancel: "Annulla",
+    close: "Chiudi",
+    running: "Configurazione in corso. Approva la richiesta di password o di amministratore sul computer su cui gira Unsloth…",
+    succeeded: "La sandbox del sistema è pronta. Accesso completo nella sandbox è attivo.",
+    stillUnavailable: "La configurazione è terminata, ma la sandbox del sistema non supera ancora la verifica.",
+    declined: "La richiesta di password o di amministratore è stata rifiutata.",
+    failed: "Configurazione non riuscita.",
+    startError: "Impossibile avviare la configurazione della sandbox",
+  },
   composerSettings: {
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
@@ -689,6 +735,10 @@ export const it = {
       prepDeclined: "La richiesta di amministratore è stata rifiutata.",
       prepFailed: "Preparazione non riuscita.",
       runtimeMissing: "Il runtime MXC non è installato. Esegui di nuovo il programma di installazione di Unsloth per aggiungerlo.",
+      setupLabel: "Configurazione della sandbox del sistema",
+      setupCommandHint: "Esegui questo sul computer su cui gira Unsloth:",
+      macosBuiltIn: "Seatbelt è integrato in macOS, quindi non c'è nulla da installare.",
+      installRuntime: "Installa runtime",
     },
     debugging: {
       logSection: "File di log",
@@ -1080,7 +1130,7 @@ export const it = {
         sectionTitle: "Autorizzazioni",
         bypassLabel: "Autorizzazioni degli strumenti",
         bypassDescription:
-          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Full access» disattiva le approvazioni e la sandbox del codice.",
+          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Ignora autorizzazioni» disattiva le approvazioni e la sandbox del codice.",
       },
       notifications: {
         sectionTitle: "Notifiche",
