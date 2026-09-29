@@ -231,6 +231,37 @@ def test_saved_checkpoint_reloads_with_plain_transformers(ckpt, merge, tmp_path,
     assert (got - want).abs().max() < 0.1 * want.abs().max()
 
 
+@pytest.mark.parametrize("init", ["pissa_niter_2", "olora"])
+def test_svd_style_lora_inits_see_the_dense_base(ckpt, init, monkeypatch):
+    # PiSSA / OLoRA rewrite base_layer.weight from its SVD / QR, so the packed base goes dense first.
+    from peft import LoraConfig, get_peft_model
+    from unsloth.models import loader_utils
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    path, kinds = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    name = next(n for n, k in kinds.items() if k == "nvfp4")
+    model = get_peft_model(
+        model, LoraConfig(r = 4, target_modules = [name.split(".")[-1]], init_lora_weights = init)
+    )
+    base = _module(model, "base_model.model." + name).get_base_layer()
+    assert type(base) is torch.nn.Linear and base.weight.dtype == torch.bfloat16
+    out = model(input_ids = torch.randint(0, 1000, (1, 8), device = "cuda")).logits
+    assert torch.isfinite(out).all()
+
+
+def test_decompressed_layers_join_a_missing_ignore_list(ckpt, monkeypatch):
+    from unsloth.models import loader_utils
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    path, _ = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    model.config.quantization_config.quantization_config.ignore = None
+    loader_utils._prepare_compressed_tensors_model(model)
+    assert "lm_head" in model.config.quantization_config.quantization_config.ignore
+
+
 def test_nvfp4_lm_head_is_decompressed(tmp_path, monkeypatch):
     # Decode and the fused CE loss read lm_head.weight directly, so it cannot stay packed.
     from unsloth.models import loader_utils

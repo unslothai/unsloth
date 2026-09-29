@@ -1680,11 +1680,14 @@ def _decompress_like_a_full_load(module):
         module.__dict__.pop(attr, None)
     for p in module.parameters(recurse = False):
         p.requires_grad_(False)
-    config = getattr(module, "_unsloth_ct_config", None)
-    ignore = getattr(getattr(config, "quantization_config", None), "ignore", None)
+    ct_config = getattr(getattr(module, "_unsloth_ct_config", None), "quantization_config", None)
     name = getattr(module, "_unsloth_ct_name", None)
-    if isinstance(ignore, list) and name is not None and name not in ignore:
-        ignore.append(name)
+    if ct_config is None or name is None:
+        return
+    if getattr(ct_config, "ignore", None) is None:
+        ct_config.ignore = []
+    if name not in ct_config.ignore:
+        ct_config.ignore.append(name)
 
 
 def _tag_compressed_tensors_modules(model):
@@ -1742,6 +1745,24 @@ def _patch_peft_for_routed_compressed_tensors():
 
         patched_merge._unsloth_routed = True
         lora_layer.Linear.merge = patched_merge
+    # PiSSA / OLoRA / CorDA / LoRA-GA rewrite or read the dense base weight while building the adapter.
+    for init in ("pissa_init", "olora_init", "corda_init", "lora_ga_init"):
+        original = getattr(lora_layer.LoraLayer, init, None)
+        if original is None or getattr(original, "_unsloth_routed", False):
+            continue
+
+        def patched_init(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            _dequantize_routed_linear_(self.get_base_layer())
+            return _original(self, *args, **kwargs)
+
+        patched_init = functools.wraps(original)(patched_init)
+        patched_init._unsloth_routed = True
+        setattr(lora_layer.LoraLayer, init, patched_init)
     try:
         from peft.tuners.lora import dora
     except Exception:
