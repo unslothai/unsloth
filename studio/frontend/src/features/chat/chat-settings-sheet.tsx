@@ -516,7 +516,6 @@ export function ChatSettingsPanel({
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
-  // Toasts and the corner rail read this to stay off the open panel.
   useEffect(() => {
     if (!open || isCompact) return;
     return watchChatSettingsInset(

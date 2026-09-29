@@ -6,7 +6,6 @@ const MOBILE_EDGE_OFFSET = 16;
 const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
-// Width of the open Run settings panel, published on <html> by ChatSettingsPanel.
 export const CHAT_SETTINGS_INSET_VAR = "--studio-chat-settings-inset";
 // Widest corner card scales with --ui-space-scale; the rail's 28px + 16px gutters do not.
 const CORNER_CARD_MAX_WIDTH = 448;
@@ -71,12 +70,14 @@ type InsetPanel = {
   offsetWidth: number;
   parentElement: { clientWidth: number } | null;
 };
-type InsetObserver = new (callback: () => void) => {
+type InsetObserver = new (
+  callback: () => void,
+) => {
   observe(target: object): void;
   disconnect(): void;
 };
 
-// Publishes the panel's live width: a drag paints the panel before it commits the stored width.
+// Live width, not the stored one: a drag paints the panel before it commits.
 export function watchChatSettingsInset(
   root: { style: Pick<CSSStyleDeclaration, "setProperty" | "removeProperty"> },
   panel: InsetPanel | null,
@@ -89,8 +90,7 @@ export function watchChatSettingsInset(
   let applied: string | null = null;
   const apply = () => {
     const width = panel?.offsetWidth || fallbackWidth;
-    const fits =
-      !row || row.clientWidth - width >= minColumn;
+    const fits = !row || row.clientWidth - width >= minColumn;
     const next = fits ? `${width}px` : null;
     if (next === applied) return;
     applied = next;

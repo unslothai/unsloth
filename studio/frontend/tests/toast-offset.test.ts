@@ -170,7 +170,6 @@ test("the inset follows the panel while it is dragged wider", () => {
   watchChatSettingsInset(dom.root, dom.panel, 320, 1, dom.Observer);
   assert.equal(dom.vars.get("--studio-chat-settings-inset"), "320px");
 
-  // A drag paints the panel wider before settingsWidth commits.
   dom.panel.offsetWidth = 520;
   dom.resize(dom.panel);
   assert.equal(dom.vars.get("--studio-chat-settings-inset"), "520px");
@@ -178,7 +177,13 @@ test("the inset follows the panel while it is dragged wider", () => {
 
 test("the inset is dropped when the chat column cannot hold a corner card", () => {
   const dom = fakeInsetDom(1400, 320);
-  const stop = watchChatSettingsInset(dom.root, dom.panel, 320, 1, dom.Observer);
+  const stop = watchChatSettingsInset(
+    dom.root,
+    dom.panel,
+    320,
+    1,
+    dom.Observer,
+  );
   dom.row.clientWidth = 700;
   dom.resize(dom.row);
   assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
