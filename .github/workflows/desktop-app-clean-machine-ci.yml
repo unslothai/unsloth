@@ -697,7 +697,7 @@ jobs:
         run: python3 scripts/lockfile_supply_chain_audit.py
 
       - name: Install pinned Tauri CLI
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+        run: npm ci --prefix studio --no-fund --no-audit
 
       - name: Install frontend dependencies
         working-directory: studio/frontend
