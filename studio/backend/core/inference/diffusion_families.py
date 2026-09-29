@@ -1376,14 +1376,13 @@ _LOCAL_PIPELINE_BASE_WEIGHT_INDEXES = (
     "diffusion_pytorch_model.bin.index.json",
     "pytorch_model.bin.index.json",
 )
-_LOCAL_PIPELINE_WEIGHT_RE = re.compile(
-    r"^(?:diffusion_pytorch_model|model|pytorch_model)(?:\.[A-Za-z0-9_-]+)?\.(?:safetensors|bin)$"
+# Default variant only: the pipeline loads at variant=None, which cannot open fp16/bf16-suffixed files.
+_LOCAL_PIPELINE_WEIGHT_NAMES = (
+    "diffusion_pytorch_model.safetensors",
+    "model.safetensors",
+    "diffusion_pytorch_model.bin",
+    "pytorch_model.bin",
 )
-_LOCAL_PIPELINE_WEIGHT_INDEX_RE = re.compile(
-    r"^(?:diffusion_pytorch_model|model|pytorch_model)\.(?:safetensors|bin)\.index"
-    r"(?:\.[A-Za-z0-9_-]+)?\.json$"
-)
-_LOCAL_PIPELINE_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
 _MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
 _LOCAL_PIPELINE_METADATA_CONFIGS = (
     (("tokenizer",), ("tokenizer_config.json",)),
@@ -1444,23 +1443,13 @@ def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
 
 
 def _local_model_component_is_complete(component: Path) -> bool:
-    indexes = [
-        child
-        for child in component.iterdir()
-        if _LOCAL_PIPELINE_WEIGHT_INDEX_RE.fullmatch(child.name)
-    ]
     for index_name in _LOCAL_PIPELINE_BASE_WEIGHT_INDEXES:
         index = component / index_name
         if index.exists():
             return _local_weight_index_is_complete(component, index)
-    if indexes:
-        return any(_local_weight_index_is_complete(component, index) for index in indexes)
     return any(
-        _LOCAL_PIPELINE_WEIGHT_RE.fullmatch(child.name)
-        and not _LOCAL_PIPELINE_SHARD_RE.search(child.name)
-        and child.is_file()
-        and child.stat().st_size > 0
-        for child in component.iterdir()
+        (weight := component / name).is_file() and weight.stat().st_size > 0
+        for name in _LOCAL_PIPELINE_WEIGHT_NAMES
     )
 
 

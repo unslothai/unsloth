@@ -623,7 +623,8 @@ def test_local_pipeline_completeness_checks_configs_and_every_indexed_shard(tmp_
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
 
 
-def test_local_pipeline_completeness_accepts_a_standard_weight_variant(tmp_path):
+def test_local_pipeline_completeness_rejects_variant_only_weights(tmp_path):
+    # The pipeline loads at variant=None, where diffusers / transformers raise on fp16-only folders.
     from core.inference.diffusion_families import local_pipeline_components_are_complete
 
     pipeline = tmp_path / "fp16-copy"
@@ -631,7 +632,18 @@ def test_local_pipeline_completeness_accepts_a_standard_weight_variant(tmp_path)
     component = pipeline / "transformer"
     (component / "diffusion_pytorch_model.safetensors").unlink()
     _touch(component / "diffusion_pytorch_model.fp16.safetensors")
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
 
+    (component / "diffusion_pytorch_model.fp16.safetensors").unlink()
+    _touch(component / "diffusion_pytorch_model.fp16-00001-of-00001.safetensors")
+    (component / "diffusion_pytorch_model.safetensors.index.fp16.json").write_text(
+        json.dumps(
+            {"weight_map": {"layer": "diffusion_pytorch_model.fp16-00001-of-00001.safetensors"}}
+        )
+    )
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+
+    _touch(component / "diffusion_pytorch_model.safetensors")
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
 
