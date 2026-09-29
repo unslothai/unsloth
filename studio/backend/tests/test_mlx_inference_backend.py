@@ -5947,6 +5947,15 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session.admit({"images": [object()]}, "old")
     assert not hasattr(added[3], "prompt_cache_state") and len(store) == 0
 
+    # A quantized load puts every row on the factory's cache, the store off or not.
+    backend._kv_quant = {"kv_bits": 4}
+    with pytest.raises(mlx_inference.RowRefused):
+        session.admit({}, "unquantized")
+    session._resumes_rows = True
+    backend._vlm_prompt_cache_store = lambda: None
+    session.admit({"images": [object()]}, "quantized")
+    assert added[4].prompt_cache_state._store is None
+
 
 def _batch_engine(monkeypatch):
     """The zoo batch engine, or a stand-in where the backend CI installs no unsloth-zoo."""
@@ -6021,6 +6030,53 @@ def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):
         backend._kv_quant, backend._kv_context_budget = quant, budget
         assert backend.resident_unavailable_reason({}) is not None
         assert backend.batch_unavailable_reason([{}, {}]) is not None
+
+
+def test_a_uniformly_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    engine = _batch_engine(monkeypatch)
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._model, backend._processor, backend._is_vlm = object(), object(), True
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": 4}, 4096
+    backend._turboquant = False
+    backend._vlm_batch_unavailable_reason = lambda requests: None
+    monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
+    capable = lambda: None
+    monkeypatch.setattr(
+        engine, "row_quantized_prompt_cache_unavailable_reason", capable, raising = False
+    )
+    assert backend.resident_unavailable_reason({}) is None
+    assert backend.batch_unavailable_reason([{}, {}]) is not None
+    backend._turboquant = True
+    assert backend.resident_unavailable_reason({}) is not None
+    backend._turboquant = False
+    monkeypatch.setattr(
+        engine, "row_quantized_prompt_cache_unavailable_reason", lambda: "old mlx-vlm"
+    )
+    assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
+
+
+def test_a_batched_vision_row_keeps_to_the_context_budget(monkeypatch):
+    from core.inference import context_refusal
+
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._kv_context_budget = 1024
+    plan = lambda: backend._plan_vlm_row(
+        [{"role": "user", "content": "hi"}],
+        None,
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 0,
+        min_p = 0.0,
+        max_new_tokens = 500,
+        repetition_penalty = 1.0,
+    )
+    backend._count_prompt_tokens = lambda *a, **k: 1000
+    assert plan().max_tokens == 24
+    backend._count_prompt_tokens = lambda *a, **k: 1024
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        plan()
 
 
 try:

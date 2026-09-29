@@ -3689,6 +3689,14 @@ def _row_prompt_cache_gap():
     return row_prompt_cache_unavailable_reason()
 
 
+def _row_quantized_cache_gap():
+    try:
+        from unsloth_zoo.mlx.generate import row_quantized_prompt_cache_unavailable_reason
+    except ImportError:
+        return "the installed unsloth-zoo cannot batch a quantized KV cache"
+    return row_quantized_prompt_cache_unavailable_reason()
+
+
 class _VisionBatchSession:
     def __init__(
         self,
@@ -3754,6 +3762,9 @@ class _VisionBatchSession:
             if self._resumes_rows
             else None
         )
+        if state is None and backend._kv_quant_bits() is not None:
+            # mlx-vlm's own batch cache would be float.
+            raise RowRefused("this row cannot carry the load's quantized KV cache")
         if state is None and plan.images:
             backend._release_vlm_snapshots()
         resume = {} if state is None else {"prompt_cache_state": state}
@@ -4047,10 +4058,12 @@ class MLXInferenceBackend:
         adapter_state,
         images = None,
     ):
-        """A batched row's ``prompt_cache_state``, or None while the store is off. Once it is on,
-        every row gets one, so all rows' caches share the factory's layout."""
+        """A batched row's ``prompt_cache_state``, or None while the store is off on an unquantized
+        load. Otherwise every row gets one, so all rows' caches share the factory's layout."""
         store = self._vlm_prompt_cache_store()
-        if store is None or self._vlm_is_diffusion_model(self._model):
+        if (store is None and self._kv_quant_bits() is None) or _vlm_generation_is_diffusion(
+            self._model
+        ):
             return None
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         try:
@@ -4058,7 +4071,9 @@ class MLXInferenceBackend:
         except Exception as exc:
             logger.info("MLX VLM prompt cache unavailable for a batched row (%s)", exc)
             return None
-        if images and (not media_ids or self._vlm_bidirectional_vision(self._model)):
+        if store is None:
+            pass
+        elif images and (not media_ids or self._vlm_bidirectional_vision(self._model)):
             # Unplaceable, or prefilled by the single path as a media block: nothing serves it.
             store.clear()
             store = None
@@ -5723,10 +5738,12 @@ class MLXInferenceBackend:
             sequences = _mlx_stop_sequences(stop),
             normalizer = normalizer,
         )
-        if max_new_tokens is None:
-            max_new_tokens = self._unset_generation_budget(prompt)
-            if images:
-                max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
+        max_new_tokens = self._generation_limit(
+            prompt,
+            max_new_tokens,
+            images = images,
+            cap = UNSET_GENERATION_BUDGET if images else None,
+        )
         vlm_kwargs = dict(
             max_tokens = max_new_tokens,
             temperature = temperature,
@@ -6108,10 +6125,13 @@ class MLXInferenceBackend:
         if stopped:
             self._mark_stopped()
 
-    def _kv_policy_batch_reason(self):
-        if self._kv_quant_bits() is not None or getattr(self, "_kv_context_budget", None):
-            return "the load quantizes or budgets its KV cache, which a batch does not carry"
-        return None
+    def _kv_policy_batch_reason(self, resident = False):
+        if self._kv_quant_bits() is None and not getattr(self, "_kv_context_budget", None):
+            return None
+        # Only resident vision rows carry their own cache, where a uniform quantization lives.
+        if resident and self._is_vlm and not getattr(self, "_turboquant", False):
+            return _row_quantized_cache_gap()
+        return "the load quantizes or budgets its KV cache, which a batch does not carry"
 
     def batch_unavailable_reason(self, requests):
         if self._model is None:
@@ -6140,7 +6160,7 @@ class MLXInferenceBackend:
         reason = _request_batch_gap(request)
         if reason is not None:
             return reason
-        reason = self._kv_policy_batch_reason()
+        reason = self._kv_policy_batch_reason(resident = True)
         if reason is not None:
             return reason
         if self._is_vlm:
