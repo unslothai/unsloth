@@ -396,6 +396,23 @@ def _index_is_multiarch(index_url: "str | None") -> bool:
     )
 
 
+def _multiarch_device_pack_missing(gfx_arch: "str | None") -> bool:
+    """A multi-arch torch is installed (some amd-torch-device-* pack) but not this arch's torch or
+    torchvision pack: the family read-back is None on this build, so a swapped card needs this."""
+    try:
+        from importlib import metadata
+        names = {
+            (d.metadata["Name"] or "").strip().lower().replace("_", "-")
+            for d in metadata.distributions()
+        }
+    except Exception:
+        return False
+    if not any(n.startswith("amd-torch-device-") for n in names):
+        return False
+    gfx = _bare_gfx(gfx_arch)
+    return not {f"amd-torch-device-{gfx}", f"amd-torchvision-device-{gfx}"} <= names
+
+
 def _windows_rocm_torch_pkg_specs_for(
     index_url: "str | None", gfx_arch: "str | None"
 ) -> tuple[str, str, str]:
@@ -5843,6 +5860,12 @@ def _ensure_rocm_torch() -> None:
                 _safe_print(
                     f"   installed ROCm torch is the {_have} build but {gfx_arch} needs "
                     f"{_want} -- reinstalling for this GPU"
+                )
+                _torch_already_rocm = False
+            elif _windows_routes_multiarch(gfx_arch) and _multiarch_device_pack_missing(gfx_arch):
+                _safe_print(
+                    f"   installed multi-arch ROCm torch has no device pack for {gfx_arch} "
+                    "-- reinstalling for this GPU"
                 )
                 _torch_already_rocm = False
         if not _torch_already_rocm:

@@ -998,7 +998,11 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @staticmethod
-    def _windows_repair(installed_family, gfx = "gfx1200"):
+    def _windows_repair(
+        installed_family,
+        gfx = "gfx1200",
+        dists = (),
+    ):
         """Run the Windows ROCm repair with an already-ROCm torch on disk. Returns the
         pip_install_try mock so callers can assert on the reinstall."""
         probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
@@ -1021,6 +1025,7 @@ class TestEnsureRocmTorch:
                 patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
                 patch.object(stack_mod, "pip_install_try", pip_try),
                 patch("subprocess.run", return_value = probe),
+                patch("importlib.metadata.distributions", return_value = list(dists)),
             ):
                 _ensure_rocm_torch()
         return pip_try
@@ -1042,6 +1047,22 @@ class TestEnsureRocmTorch:
         # Older wheels predate the split runtime, so the family is unreadable and
         # guessing would force a multi-GB reinstall on every update.
         assert self._windows_repair(None).call_count == 0
+
+    def test_swapped_card_on_a_multiarch_install_gets_its_device_pack(self):
+        # The multi-arch build names no family, so only the device packs say which card it serves.
+        dists = self._dists("amd-torch-device-gfx1151", "amd_torchvision_device_gfx1151")
+        pip_try = self._windows_repair(None, gfx = "gfx1200", dists = dists)
+        assert pip_try.call_count == 1
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "torchvision[device-gfx1200]" in str(pip_try.call_args)
+
+    def test_multiarch_install_with_this_cards_packs_is_left_alone(self):
+        dists = self._dists("amd-torch-device-gfx1200", "amd-torchvision-device-gfx1200")
+        assert self._windows_repair(None, gfx = "gfx1200", dists = dists).call_count == 0
+
+    def test_multiarch_install_without_the_torchvision_pack_is_repaired(self):
+        dists = self._dists("amd-torch-device-gfx1200")
+        assert self._windows_repair(None, gfx = "gfx1200", dists = dists).call_count == 1
 
     @staticmethod
     def _dists(*names):
