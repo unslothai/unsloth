@@ -30,11 +30,17 @@ type Parsed =
   | { kind: "sheet"; sheets: Sheet[] }
   | { kind: "slides"; deck: Deck };
 
-async function parse(file: Blob, kind: DocumentKind, name: string, contentType: string): Promise<Parsed> {
+async function parse(
+  file: Blob,
+  kind: DocumentKind,
+  name: string,
+  contentType: string,
+  thumbnail = false,
+): Promise<Parsed> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
-    const repacked = repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
+    const repacked = repackDocxPreviewArchive(name, bytes, thumbnail ? THUMBNAIL_DOCX_PARAGRAPHS : MAX_DOCX_PARAGRAPHS);
     let dropped = false;
     let pixelsLeft = MAX_DOCX_PIXELS;
     const convertImage = mammoth.images.imgElement(async (image) => {
@@ -47,10 +53,13 @@ async function parse(file: Blob, kind: DocumentKind, name: string, contentType: 
       return { src: "" };
     });
     const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage, idPrefix: "docx-" });
-    const { html, truncated } = sanitizeDocxHtml(value);
+    const { html, truncated } = sanitizeDocxHtml(value, thumbnail ? THUMBNAIL_DOCX_ELEMENTS : MAX_DOCX_ELEMENTS);
     return { kind, html, truncated: truncated || repacked.truncated || dropped };
   }
-  if (kind === "slides") return { kind, deck: readPptx(bytes) };
+  if (kind === "slides") {
+    if (!thumbnail) return { kind, deck: readPptx(bytes) };
+    return { kind, deck: { ...readPptx(bytes, { maxSlides: 1 }), truncated: false } };
+  }
   const delimiter = sheetDelimiter(name, contentType);
   if (delimiter) {
     const encoding =
@@ -73,13 +82,16 @@ const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan
 const MAX_DOCX_PARAGRAPHS = 20_000;
 const MAX_DOCX_ELEMENTS = 50_000;
 const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
+// A card shows only the opening of a document.
+const THUMBNAIL_DOCX_PARAGRAPHS = 60;
+const THUMBNAIL_DOCX_ELEMENTS = 2_000;
 
-function sanitizeDocxHtml(html: string): { html: string; truncated: boolean } {
+function sanitizeDocxHtml(html: string, maxElements: number): { html: string; truncated: boolean } {
   // Cut before parsing: mammoth escapes each < in text, so every one left is a tag.
   const opening = /<[a-z]/gi;
   let cut = -1;
   for (let count = 0; opening.exec(html); count++) {
-    if (count === MAX_DOCX_ELEMENTS) {
+    if (count === maxElements) {
       cut = opening.lastIndex - 2;
       break;
     }
@@ -526,7 +538,7 @@ export default function OfficeView({
   const [state, setState] = useState<{ file: Blob; parsed?: Parsed; error?: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    const run = () => parse(file, kind, name, contentType);
+    const run = () => parse(file, kind, name, contentType, thumbnail);
     (thumbnail ? queueParse(run, () => cancelled) : run()).then(
       (parsed) => !cancelled && parsed && setState({ file, parsed }),
       () => !cancelled && setState({ file, error: true }),
@@ -537,17 +549,11 @@ export default function OfficeView({
   }, [file, kind, name, contentType, thumbnail]);
   const current = state?.file === file ? state : null;
   const parsed = current?.parsed;
-  // A thumbnail shows one slide; the rest would still mount through the overscan.
-  const deck = useMemo(() => {
-    if (parsed?.kind !== "slides") return null;
-    if (!thumbnail) return parsed.deck;
-    return { ...parsed.deck, slides: parsed.deck.slides.slice(0, 1), truncated: false };
-  }, [parsed, thumbnail]);
   if (current?.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
   if (!parsed) return <Spinner className="m-auto size-6" />;
   if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
-  if (parsed.kind === "slides") return <SlidesView deck={deck ?? parsed.deck} scale={scale} />;
+  if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
   return <SheetView sheets={parsed.sheets} tabs={!sheetDelimiter(name, contentType)} scale={scale} />;
 }

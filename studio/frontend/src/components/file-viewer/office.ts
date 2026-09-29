@@ -1481,7 +1481,7 @@ function degrees(xfrm: Element | undefined): number {
   return Number(xfrm?.getAttribute("rot")) / 60000 || 0;
 }
 
-export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
+export function readPptx(bytes: Uint8Array, { images = true, maxSlides = MAX_SLIDES } = {}): Deck {
   const read = archive(bytes);
   const main = mainPart(read, "ppt/presentation.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
@@ -1503,7 +1503,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
   for (const [index, path] of slidePaths.entries()) {
     if (!path) continue;
     if ((read.size(path) ?? 0) > MAX_XML_PART_BYTES) {
-      if (slides.length === MAX_SLIDES) {
+      if (slides.length === maxSlides) {
         truncated = true;
         break;
       }
@@ -1513,7 +1513,7 @@ export function readPptx(bytes: Uint8Array, { images = true } = {}): Deck {
     const part = read([path, relsPath(path)], MAX_XML_PART_BYTES);
     const slideXml = part[path];
     if (!slideXml || HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384)))) continue;
-    if (slides.length === MAX_SLIDES) {
+    if (slides.length === maxSlides) {
       truncated = true;
       break;
     }

@@ -214,3 +214,24 @@ test("xlsx: out-of-range date values do not prevent reading the workbook", () =>
   ));
   assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["1700000000", "Mar-23", "42"]);
 });
+
+test("pptx: maxSlides stops reading after that many slides", () => {
+  const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const ids = [1, 2, 3].map((n) => `<p:sldId id="${255 + n}" r:id="rId${n}"/>`).join("");
+  const links = [1, 2, 3].map((n) => `<Relationship Id="rId${n}" Type="${REL}/slide" Target="slides/slide${n}.xml"/>`).join("");
+  const slide = (t: string) =>
+    strToU8(`<p:sld xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+  const zip = zipSync({
+    "ppt/presentation.xml": strToU8(`<p:presentation xmlns:p="${P}" xmlns:r="${REL}"><p:sldIdLst>${ids}</p:sldIdLst></p:presentation>`),
+    "ppt/_rels/presentation.xml.rels": rels(links),
+    "ppt/slides/slide1.xml": slide("one"),
+    "ppt/slides/slide2.xml": slide("two"),
+    "ppt/slides/slide3.xml": slide("three"),
+  });
+  assert.equal(readPptx(zip).slides.length, 3);
+  const first = readPptx(zip, { maxSlides: 1 });
+  assert.equal(first.slides.length, 1);
+  assert.equal(first.truncated, true);
+  assert.equal(first.slides[0]!.boxes[0]?.paragraphs?.[0]?.text, "one");
+});
