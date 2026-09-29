@@ -5,6 +5,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const zhCN = {
+  permissionModes: {
+    menuLabel: "工具调用应如何审批？",
+    triggerLabel: "工具调用的权限级别",
+    ask: {
+      label: "每次询问",
+      description: "每次调用工具前都询问",
+    },
+    auto: {
+      label: "自动批准",
+      description: "直接运行常规工具调用，在访问凭据、sudo、删除文件或向外发送数据等高风险操作前询问",
+    },
+    off: {
+      label: "沙箱内完全访问",
+      description: "Python 和终端在系统沙箱中运行时从不询问。没有沙箱时，高风险调用仍会询问",
+      sandboxUnavailable: "系统沙箱不可用",
+    },
+    full: {
+      label: "绕过权限",
+      description: "没有审批提示，也没有沙箱",
+    },
+    bypassTitle: "要开启绕过权限吗？",
+    bypassWarning: "绕过权限会让工具调用在没有审批提示和沙箱的情况下运行。它们可以修改或删除文件、运行命令并发起网络请求。仅在你信任当前任务时开启。",
+    bypassConfirm: "我明白",
+    cancel: "取消",
+  },
+  sandboxSetup: {
+    title: "这台电脑还没有系统沙箱",
+    description: "沙箱内完全访问在 Python 和终端于系统沙箱中运行时从不询问。在这里有可用的沙箱之前，高风险调用仍会询问。",
+    checking: "正在检查这台电脑上的沙箱…",
+    install: "安装沙箱",
+    windowsSetup: "设置 Windows 沙箱",
+    copyCommand: "复制命令",
+    copied: "已复制命令",
+    copyFailed: "无法复制命令",
+    commandHint: "或者在运行 Unsloth 的电脑上执行以下命令，然后重新选择该模式：",
+    ownerOnly: "只有所有者能在运行 Unsloth 的电脑上安装。",
+    useAnyway: "仍然使用（高风险调用会询问）",
+    cancel: "取消",
+    close: "关闭",
+    running: "正在设置。请在运行 Unsloth 的电脑上批准密码或管理员提示…",
+    succeeded: "系统沙箱已就绪。沙箱内完全访问已开启。",
+    stillUnavailable: "设置已完成，但系统沙箱仍未通过检查。",
+    declined: "密码或管理员提示被拒绝。",
+    failed: "设置失败。",
+    startError: "无法开始设置沙箱",
+  },
   composerSettings: {
     title: "消息输入",
     plainText: "纯文本输入",
@@ -724,6 +770,10 @@ export const zhCN = {
       prepDeclined: "管理员提示被拒绝。",
       prepFailed: "准备失败。",
       runtimeMissing: "未安装 MXC 运行时。请重新运行 Unsloth 安装程序以添加它。",
+      setupLabel: "系统沙箱设置",
+      setupCommandHint: "在运行 Unsloth 的电脑上执行以下命令：",
+      macosBuiltIn: "Seatbelt 内置于 macOS，无需安装。",
+      installRuntime: "安装运行时",
     },
     debugging: {
       logSection: "日志文件",
@@ -1209,7 +1259,7 @@ export const zhCN = {
         sectionTitle: "权限",
         bypassLabel: "工具权限",
         bypassDescription:
-          "设置 Unsloth 执行聊天中的工具调用（终端、python、网页、MCP）前的审批方式。“Full access”会关闭审批和代码沙箱。",
+          "设置 Unsloth 执行聊天中的工具调用（终端、python、网页、MCP）前的审批方式。“绕过权限”会关闭审批和代码沙箱。",
       },
     },
     profile: {

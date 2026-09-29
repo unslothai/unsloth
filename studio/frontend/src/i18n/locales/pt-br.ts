@@ -5,6 +5,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ptBR = {
+  permissionModes: {
+    menuLabel: "Como as chamadas de ferramentas devem ser aprovadas?",
+    triggerLabel: "Nível de permissão das chamadas de ferramentas",
+    ask: {
+      label: "Perguntar sempre",
+      description: "Perguntar antes de cada chamada de ferramenta",
+    },
+    auto: {
+      label: "Aprovar automaticamente",
+      description: "Executar chamadas rotineiras e perguntar antes das arriscadas, como acesso a credenciais, sudo, exclusão de arquivos ou envio de dados para fora",
+    },
+    off: {
+      label: "Acesso total no sandbox",
+      description: "Nunca perguntar enquanto Python e Terminal rodam no sandbox do sistema. Sem ele, chamadas arriscadas ainda perguntam",
+      sandboxUnavailable: "Sandbox do sistema indisponível",
+    },
+    full: {
+      label: "Ignorar permissões",
+      description: "Sem pedidos de aprovação e sem sandbox",
+    },
+    bypassTitle: "Ativar Ignorar permissões?",
+    bypassWarning: "Ignorar permissões deixa as chamadas de ferramentas rodarem sem pedidos de aprovação nem sandbox. Elas podem modificar ou excluir arquivos, executar comandos e fazer requisições de rede. Ative apenas se você confia na tarefa atual.",
+    bypassConfirm: "Entendi",
+    cancel: "Cancelar",
+  },
+  sandboxSetup: {
+    title: "Ainda não há sandbox do sistema neste computador",
+    description: "Acesso total no sandbox nunca pergunta enquanto Python e Terminal rodam no sandbox do sistema. Até que um funcione aqui, chamadas arriscadas ainda perguntam.",
+    checking: "Verificando o sandbox deste computador…",
+    install: "Instalar sandbox",
+    windowsSetup: "Configurar o sandbox do Windows",
+    copyCommand: "Copiar comando",
+    copied: "Comando copiado",
+    copyFailed: "Não foi possível copiar o comando",
+    commandHint: "Ou execute isto no computador onde o Unsloth roda e escolha o modo de novo:",
+    ownerOnly: "Somente o proprietário pode instalar, a partir do computador onde o Unsloth roda.",
+    useAnyway: "Usar mesmo assim (chamadas arriscadas vão perguntar)",
+    cancel: "Cancelar",
+    close: "Fechar",
+    running: "Configurando. Aprove o pedido de senha ou de administrador no computador onde o Unsloth roda…",
+    succeeded: "O sandbox do sistema está pronto. Acesso total no sandbox está ativado.",
+    stillUnavailable: "A configuração terminou, mas o sandbox do sistema ainda não passa na verificação.",
+    declined: "O pedido de senha ou de administrador foi recusado.",
+    failed: "A configuração falhou.",
+    startError: "Não foi possível iniciar a configuração do sandbox",
+  },
   composerSettings: {
     title: "Composição de mensagens",
     plainText: "Composição em texto simples",
@@ -728,6 +774,10 @@ export const ptBR = {
       prepDeclined: "O pedido de administrador foi recusado.",
       prepFailed: "A preparação falhou.",
       runtimeMissing: "O runtime do MXC não está instalado. Execute o instalador do Unsloth novamente para adicioná-lo.",
+      setupLabel: "Configuração do sandbox do sistema",
+      setupCommandHint: "Execute isto no computador onde o Unsloth roda:",
+      macosBuiltIn: "O Seatbelt já vem no macOS, então não há nada para instalar.",
+      installRuntime: "Instalar runtime",
     },
     debugging: {
       logSection: "Arquivo de log",
@@ -1244,7 +1294,7 @@ export const ptBR = {
         sectionTitle: "Permissões",
         bypassLabel: "Permissões de ferramentas",
         bypassDescription:
-          "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Full access” desativa as aprovações e o sandbox de código.",
+          "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Ignorar permissões” desativa as aprovações e o sandbox de código.",
       },
     },
     profile: {

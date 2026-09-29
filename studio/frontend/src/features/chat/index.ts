@@ -90,6 +90,13 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
+export {
+  type SandboxSetupAction,
+  type SandboxSetupJob,
+  forgetSandboxCapability,
+  loadSandboxSetup,
+  startSandboxSetup,
+} from "./api/sandbox-capability";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {

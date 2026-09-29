@@ -6,6 +6,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ja = {
+  permissionModes: {
+    menuLabel: "ツール呼び出しをどう承認しますか？",
+    triggerLabel: "ツール呼び出しの権限レベル",
+    ask: {
+      label: "毎回確認",
+      description: "ツール呼び出しのたびに確認します",
+    },
+    auto: {
+      label: "自動承認",
+      description: "通常のツール呼び出しは実行し、認証情報へのアクセス、sudo、ファイルの削除、外部へのデータ送信など危険な操作の前に確認します",
+    },
+    off: {
+      label: "サンドボックス内でフルアクセス",
+      description: "Python とターミナルが OS サンドボックスで動く間は確認しません。サンドボックスがない場合、危険な呼び出しは引き続き確認します",
+      sandboxUnavailable: "OS サンドボックスは利用できません",
+    },
+    full: {
+      label: "権限をバイパス",
+      description: "承認の確認もサンドボックスもありません",
+    },
+    bypassTitle: "権限のバイパスを有効にしますか？",
+    bypassWarning: "権限をバイパスすると、ツール呼び出しは承認の確認もサンドボックスもなしで実行されます。ファイルの変更や削除、コマンドの実行、ネットワークへのリクエストが可能になります。現在のタスクを信頼できる場合にのみ有効にしてください。",
+    bypassConfirm: "理解しました",
+    cancel: "キャンセル",
+  },
+  sandboxSetup: {
+    title: "このコンピューターにはまだ OS サンドボックスがありません",
+    description: "サンドボックス内でフルアクセスは、Python とターミナルが OS サンドボックスで動く間は確認しません。ここでサンドボックスが動作するまで、危険な呼び出しは引き続き確認します。",
+    checking: "このコンピューターのサンドボックスを確認しています…",
+    install: "サンドボックスをインストール",
+    windowsSetup: "Windows サンドボックスを設定",
+    copyCommand: "コマンドをコピー",
+    copied: "コマンドをコピーしました",
+    copyFailed: "コマンドをコピーできませんでした",
+    commandHint: "または、Unsloth を実行しているコンピューターでこれを実行してから、もう一度モードを選んでください:",
+    ownerOnly: "インストールできるのは、Unsloth を実行しているコンピューター上の所有者だけです。",
+    useAnyway: "このまま使う (危険な呼び出しは確認します)",
+    cancel: "キャンセル",
+    close: "閉じる",
+    running: "設定中です。Unsloth を実行しているコンピューターでパスワードまたは管理者の確認を承認してください…",
+    succeeded: "OS サンドボックスの準備ができました。サンドボックス内でフルアクセスが有効です。",
+    stillUnavailable: "設定は完了しましたが、OS サンドボックスはまだチェックに合格していません。",
+    declined: "パスワードまたは管理者の確認が拒否されました。",
+    failed: "設定に失敗しました。",
+    startError: "サンドボックスの設定を開始できませんでした",
+  },
   composerSettings: {
     title: "入力欄",
     plainText: "プレーンテキスト入力",
@@ -728,6 +774,10 @@ export const ja = {
       prepDeclined: "管理者の確認が拒否されました。",
       prepFailed: "準備に失敗しました。",
       runtimeMissing: "MXC ランタイムがインストールされていません。追加するには Unsloth インストーラーを再実行してください。",
+      setupLabel: "OS サンドボックスの設定",
+      setupCommandHint: "Unsloth を実行しているコンピューターでこれを実行してください:",
+      macosBuiltIn: "Seatbelt は macOS に組み込まれているため、インストールは不要です。",
+      installRuntime: "ランタイムをインストール",
     },
     debugging: {
       logSection: "ログファイル",
@@ -1215,7 +1265,7 @@ export const ja = {
         sectionTitle: "権限",
         bypassLabel: "ツールの権限",
         bypassDescription:
-          "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「Full access」にすると承認とコードサンドボックスが無効になります。",
+          "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「権限をバイパス」にすると承認とコードサンドボックスが無効になります。",
       },
     },
     profile: {

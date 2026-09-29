@@ -5,10 +5,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+  type SandboxSetupAction,
+  type SandboxSetupJob,
+  forgetSandboxCapability,
+  loadSandboxSetup,
+  startSandboxSetup,
+} from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   type HostPrepJob,
   type SandboxSettingsUpdate,
@@ -25,8 +34,10 @@ import { SettingsSection } from "../components/settings-section";
 import {
   HOST_PREP_POLL_MS,
   type HostPrepStatus,
+  canInstallWindowsRuntime,
   jobOutputLines,
   jobResult,
+  setupRowView,
   shouldPollJob,
   toolRowView,
   windowsView,
@@ -55,11 +66,19 @@ function ToolRow({
 }) {
   const t = useT();
   const view = toolRowView(tool, shell ?? null);
-  const description = view.isolated
-    ? view.runsInCmd
-      ? t("settings.sandbox.runsInCmd")
-      : undefined
-    : view.reason || t("settings.sandbox.noReason");
+  const reason = view.reason || t("settings.sandbox.noReason");
+  const description = view.isolated ? (
+    view.runsInCmd ? (
+      t("settings.sandbox.runsInCmd")
+    ) : undefined
+  ) : view.remediation ? (
+    <>
+      <span className="block">{reason}</span>
+      <span className="mt-1 block">{view.remediation}</span>
+    </>
+  ) : (
+    reason
+  );
   return (
     <SettingsRow label={label} description={description}>
       <Badge variant={view.isolated ? "secondary" : "outline"}>
@@ -83,6 +102,9 @@ export function SandboxTab() {
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
+  // The Linux install and the Windows runtime install; the Windows prepare step keeps `job`.
+  const [setupJob, setSetupJob] = useState<SandboxSetupJob | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
   const mounted = useRef(true);
   // Bumped by every read and save: an older status read must not overwrite a newer answer.
   const statusGeneration = useRef(0);
@@ -134,7 +156,39 @@ export function SandboxTab() {
         if (mounted.current && current.state !== "idle") setJob(current);
       })
       .catch(() => undefined);
+    // Older servers have no setup route; nothing to show then.
+    void loadSandboxSetup(t("sandboxSetup.startError"))
+      .then((current) => {
+        if (mounted.current && current.state !== "idle") setSetupJob(current);
+      })
+      .catch(() => undefined);
   }, [refresh, t]);
+
+  useEffect(() => {
+    if (!shouldPollJob(setupJob)) return;
+    const timer = window.setTimeout(() => {
+      void loadSandboxSetup(t("sandboxSetup.startError"))
+        .then((next) => {
+          if (!mounted.current) return;
+          setSetupJob(next);
+          if (!shouldPollJob(next)) {
+            forgetSandboxCapability();
+            setLoading(true);
+            void refresh(true);
+          }
+        })
+        .catch((pollError) => {
+          if (!mounted.current) return;
+          setSetupError(
+            pollError instanceof Error
+              ? pollError.message
+              : t("sandboxSetup.startError"),
+          );
+          setSetupJob(null);
+        });
+    }, HOST_PREP_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [setupJob, refresh, t]);
 
   // Poll while the elevated helper runs; the status is re-read once it finishes.
   useEffect(() => {
@@ -210,11 +264,56 @@ export function SandboxTab() {
     }
   };
 
+  const runSetup = async (
+    operation: SandboxSetupAction,
+    consentDaclFallback: boolean,
+  ) => {
+    setSetupError(null);
+    try {
+      const started = await startSandboxSetup(
+        operation,
+        { consentDaclFallback },
+        t("sandboxSetup.startError"),
+      );
+      if (!mounted.current) return;
+      setSetupJob(started);
+      if (!shouldPollJob(started)) {
+        forgetSandboxCapability();
+        setLoading(true);
+        void refresh(true);
+      }
+    } catch (startError) {
+      if (!mounted.current) return;
+      setSetupError(
+        startError instanceof Error
+          ? startError.message
+          : t("sandboxSetup.startError"),
+      );
+    }
+  };
+
+  const copyCommand = async (command: string) => {
+    if (await copyToClipboard(command)) {
+      toast.success(t("sandboxSetup.copied"));
+    } else {
+      toast.error(t("sandboxSetup.copyFailed"));
+    }
+  };
+
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
   const result = jobResult(job);
   const outputLines = jobOutputLines(job);
   const prepKey = view ? PREP_STATUS_KEYS[view.prep] : null;
+  const setupRow = status
+    ? setupRowView(status, setupJob, setupJob?.manualCommand ?? "")
+    : null;
+  const setupResult = jobResult(setupJob);
+  const setupOutput = jobOutputLines(setupJob);
+  const setupRunning = setupJob?.state === "running";
+  const windowsRuntimeInstallable = status
+    ? canInstallWindowsRuntime(status)
+    : false;
 
   return (
     <div className="settings-page">
@@ -251,6 +350,91 @@ export function SandboxTab() {
                   tool={status.terminal}
                   shell={status.terminalShell}
                 />
+                {setupRow?.show ? (
+                  <SettingsRow
+                    label={t("settings.sandbox.setupLabel")}
+                    description={
+                      setupRow.builtIn ? (
+                        <>
+                          <span className="block">
+                            {t("settings.sandbox.macosBuiltIn")}
+                          </span>
+                          {setupRow.reason ? (
+                            <span className="mt-1 block">
+                              {setupRow.reason}
+                            </span>
+                          ) : null}
+                        </>
+                      ) : (
+                        setupRow.reason || undefined
+                      )
+                    }
+                    alignTop={setupRow.command !== "" || setupOutput.length > 0}
+                  >
+                    <div className="flex flex-col items-end gap-1">
+                      {setupRow.showInstall ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={setupRow.installDisabled}
+                          onClick={() => void runSetup("linux-install", false)}
+                        >
+                          {setupRunning ? <Spinner /> : null}
+                          {t("sandboxSetup.install")}
+                        </Button>
+                      ) : null}
+                      {setupRunning ? (
+                        <span className={`${NOTE_CLASS} text-muted-foreground`}>
+                          {t("sandboxSetup.running")}
+                        </span>
+                      ) : null}
+                      {setupResult === "succeeded" ? (
+                        <span className={`${NOTE_CLASS} text-muted-foreground`}>
+                          {t("settings.sandbox.prepSucceeded")}
+                        </span>
+                      ) : null}
+                      {setupResult === "declined" ? (
+                        <span className={`${NOTE_CLASS} text-destructive`}>
+                          {t("sandboxSetup.declined")}
+                        </span>
+                      ) : null}
+                      {setupResult === "failed" ? (
+                        <span className={`${NOTE_CLASS} text-destructive`}>
+                          {t("sandboxSetup.failed")}
+                        </span>
+                      ) : null}
+                      {setupOutput.length > 0 ? (
+                        <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-[11px] text-muted-foreground">
+                          {setupOutput.join("\n")}
+                        </pre>
+                      ) : null}
+                      {setupRow.command ? (
+                        <>
+                          <span
+                            className={`${NOTE_CLASS} text-muted-foreground`}
+                          >
+                            {t("settings.sandbox.setupCommandHint")}
+                          </span>
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-[11px]">
+                            {setupRow.command}
+                          </pre>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void copyCommand(setupRow.command)}
+                          >
+                            {t("sandboxSetup.copyCommand")}
+                          </Button>
+                        </>
+                      ) : null}
+                      {setupError ? (
+                        <span className={`${NOTE_CLASS} text-destructive`}>
+                          {setupError}
+                        </span>
+                      ) : null}
+                    </div>
+                  </SettingsRow>
+                ) : null}
               </>
             ) : null}
             <div className="flex items-center justify-end gap-2 py-2">
@@ -284,9 +468,45 @@ export function SandboxTab() {
               description={t("settings.sandbox.windowsDescription")}
             >
               {view.runtimeMissing ? (
-                <p className="py-3 text-sm text-muted-foreground">
-                  {t("settings.sandbox.runtimeMissing")}
-                </p>
+                <div className="flex flex-col gap-2 py-3">
+                  <p className="text-sm text-muted-foreground">
+                    {t("settings.sandbox.runtimeMissing")}
+                  </p>
+                  {windowsRuntimeInstallable || setupRunning ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={setupRunning}
+                        // Installs the runtime only; the opt-in below stays as it is.
+                        onClick={() => void runSetup("windows-setup", false)}
+                      >
+                        {setupRunning ? <Spinner /> : null}
+                        {t("settings.sandbox.installRuntime")}
+                      </Button>
+                      {setupRunning ? (
+                        <span className="text-xs text-muted-foreground">
+                          {t("sandboxSetup.running")}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {setupResult === "declined" || setupResult === "failed" ? (
+                    <p className="text-xs text-destructive">
+                      {setupResult === "declined"
+                        ? t("sandboxSetup.declined")
+                        : t("sandboxSetup.failed")}
+                    </p>
+                  ) : null}
+                  {setupOutput.length > 0 ? (
+                    <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+                      {setupOutput.join("\n")}
+                    </pre>
+                  ) : null}
+                  {setupError ? (
+                    <p className="text-xs text-destructive">{setupError}</p>
+                  ) : null}
+                </div>
               ) : (
                 <>
                   <SettingsRow

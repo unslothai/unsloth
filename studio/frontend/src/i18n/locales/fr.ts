@@ -5,6 +5,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const fr = {
+  permissionModes: {
+    menuLabel: "Comment approuver les appels d'outils ?",
+    triggerLabel: "Niveau d'autorisation des appels d'outils",
+    ask: {
+      label: "Toujours demander",
+      description: "Demander avant chaque appel d'outil",
+    },
+    auto: {
+      label: "Approbation automatique",
+      description: "Exécuter les appels courants, demander avant les appels risqués comme l'accès aux identifiants, sudo, la suppression de fichiers ou l'envoi de données vers l'extérieur",
+    },
+    off: {
+      label: "Accès complet dans le bac à sable",
+      description: "Ne jamais demander tant que Python et le terminal s'exécutent dans le bac à sable du système. Sans lui, les appels risqués demandent toujours",
+      sandboxUnavailable: "Bac à sable du système indisponible",
+    },
+    full: {
+      label: "Contourner les autorisations",
+      description: "Aucune demande d'approbation et aucun bac à sable",
+    },
+    bypassTitle: "Activer Contourner les autorisations ?",
+    bypassWarning: "Contourner les autorisations permet aux appels d'outils de s'exécuter sans demande d'approbation ni bac à sable. Ils peuvent modifier ou supprimer des fichiers, exécuter des commandes et effectuer des requêtes réseau. Activez-le uniquement si vous faites confiance à la tâche en cours.",
+    bypassConfirm: "Je comprends",
+    cancel: "Annuler",
+  },
+  sandboxSetup: {
+    title: "Pas encore de bac à sable système sur cet ordinateur",
+    description: "Accès complet dans le bac à sable ne demande jamais rien tant que Python et le terminal s'exécutent dans le bac à sable du système. Tant qu'aucun ne fonctionne ici, les appels risqués demandent toujours.",
+    checking: "Vérification du bac à sable de cet ordinateur…",
+    install: "Installer le bac à sable",
+    windowsSetup: "Configurer le bac à sable Windows",
+    copyCommand: "Copier la commande",
+    copied: "Commande copiée",
+    copyFailed: "Impossible de copier la commande",
+    commandHint: "Ou exécutez ceci sur l'ordinateur qui fait tourner Unsloth, puis choisissez à nouveau le mode :",
+    ownerOnly: "Seul le propriétaire peut l'installer, depuis l'ordinateur qui fait tourner Unsloth.",
+    useAnyway: "L'utiliser quand même (les appels risqués demanderont)",
+    cancel: "Annuler",
+    close: "Fermer",
+    running: "Configuration en cours. Approuvez la demande de mot de passe ou d'administrateur sur l'ordinateur qui fait tourner Unsloth…",
+    succeeded: "Le bac à sable du système est prêt. Accès complet dans le bac à sable est activé.",
+    stillUnavailable: "La configuration est terminée, mais le bac à sable du système ne réussit toujours pas sa vérification.",
+    declined: "La demande de mot de passe ou d'administrateur a été refusée.",
+    failed: "La configuration a échoué.",
+    startError: "Impossible de lancer la configuration du bac à sable",
+  },
   composerSettings: {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
@@ -730,6 +776,10 @@ export const fr = {
       prepDeclined: "La demande administrateur a été refusée.",
       prepFailed: "La préparation a échoué.",
       runtimeMissing: "Le runtime MXC n'est pas installé. Relancez le programme d'installation d'Unsloth pour l'ajouter.",
+      setupLabel: "Configuration du bac à sable système",
+      setupCommandHint: "Exécutez ceci sur l'ordinateur qui fait tourner Unsloth :",
+      macosBuiltIn: "Seatbelt est intégré à macOS, il n'y a rien à installer.",
+      installRuntime: "Installer le runtime",
     },
     debugging: {
       logSection: "Fichier journal",
@@ -1255,7 +1305,7 @@ export const fr = {
         sectionTitle: "Autorisations",
         bypassLabel: "Autorisations des outils",
         bypassDescription:
-          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Contourner les autorisations » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
       },
     },
     profile: {

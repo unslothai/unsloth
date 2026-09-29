@@ -5,6 +5,52 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ko = {
+  permissionModes: {
+    menuLabel: "도구 호출을 어떻게 승인할까요?",
+    triggerLabel: "도구 호출 권한 수준",
+    ask: {
+      label: "매번 묻기",
+      description: "도구를 호출할 때마다 묻습니다",
+    },
+    auto: {
+      label: "자동 승인",
+      description: "일상적인 도구 호출은 실행하고, 자격 증명 접근, sudo, 파일 삭제, 외부로 데이터 전송처럼 위험한 호출 전에는 묻습니다",
+    },
+    off: {
+      label: "샌드박스 안에서 전체 액세스",
+      description: "Python과 터미널이 OS 샌드박스에서 실행되는 동안에는 묻지 않습니다. 샌드박스가 없으면 위험한 호출은 계속 묻습니다",
+      sandboxUnavailable: "OS 샌드박스를 사용할 수 없음",
+    },
+    full: {
+      label: "권한 우회",
+      description: "승인 요청도 샌드박스도 없습니다",
+    },
+    bypassTitle: "권한 우회를 켤까요?",
+    bypassWarning: "권한 우회를 켜면 도구 호출이 승인 요청이나 샌드박스 없이 실행됩니다. 파일을 수정하거나 삭제하고, 명령을 실행하고, 네트워크 요청을 보낼 수 있습니다. 현재 작업을 신뢰할 때만 켜세요.",
+    bypassConfirm: "이해했습니다",
+    cancel: "취소",
+  },
+  sandboxSetup: {
+    title: "이 컴퓨터에는 아직 OS 샌드박스가 없습니다",
+    description: "샌드박스 안에서 전체 액세스는 Python과 터미널이 OS 샌드박스에서 실행되는 동안 묻지 않습니다. 여기서 샌드박스가 작동할 때까지 위험한 호출은 계속 묻습니다.",
+    checking: "이 컴퓨터의 샌드박스를 확인하는 중…",
+    install: "샌드박스 설치",
+    windowsSetup: "Windows 샌드박스 설정",
+    copyCommand: "명령 복사",
+    copied: "명령을 복사했습니다",
+    copyFailed: "명령을 복사하지 못했습니다",
+    commandHint: "또는 Unsloth가 실행 중인 컴퓨터에서 이 명령을 실행한 뒤 모드를 다시 선택하세요:",
+    ownerOnly: "Unsloth가 실행 중인 컴퓨터에서 소유자만 설치할 수 있습니다.",
+    useAnyway: "그대로 사용 (위험한 호출은 묻습니다)",
+    cancel: "취소",
+    close: "닫기",
+    running: "설정 중입니다. Unsloth가 실행 중인 컴퓨터에서 암호 또는 관리자 확인을 승인하세요…",
+    succeeded: "OS 샌드박스가 준비되었습니다. 샌드박스 안에서 전체 액세스가 켜졌습니다.",
+    stillUnavailable: "설정은 끝났지만 OS 샌드박스가 아직 검사를 통과하지 못했습니다.",
+    declined: "암호 또는 관리자 확인이 거부되었습니다.",
+    failed: "설정하지 못했습니다.",
+    startError: "샌드박스 설정을 시작하지 못했습니다",
+  },
   composerSettings: {
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
@@ -726,6 +772,10 @@ export const ko = {
       prepDeclined: "관리자 확인이 거부되었습니다.",
       prepFailed: "준비에 실패했습니다.",
       runtimeMissing: "MXC 런타임이 설치되어 있지 않습니다. 추가하려면 Unsloth 설치 프로그램을 다시 실행하세요.",
+      setupLabel: "OS 샌드박스 설정",
+      setupCommandHint: "Unsloth가 실행 중인 컴퓨터에서 이 명령을 실행하세요:",
+      macosBuiltIn: "Seatbelt는 macOS에 내장되어 있어 설치할 것이 없습니다.",
+      installRuntime: "런타임 설치",
     },
     debugging: {
       logSection: "로그 파일",
@@ -1227,7 +1277,7 @@ export const ko = {
         sectionTitle: "권한",
         bypassLabel: "도구 권한",
         bypassDescription:
-          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “Full access”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
+          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “권한 우회”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
       },
     },
     profile: {

@@ -20,10 +20,9 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import {
-  FULL_ACCESS_WARNING,
-  PermissionModeMenuItems,
-} from "./permission-mode-select";
+import { useT } from "@/i18n";
+import { PermissionModeMenuItems } from "./permission-mode-select";
+import { useSandboxSetupDialogStore } from "./sandbox-setup-dialog";
 
 // Dictation-only "+" menu fallback: the composer pill is the normal control, but it is hidden
 // while recording, so this is the sole way to reach permission mode then.
@@ -32,6 +31,7 @@ export function BypassPermissionsMenuItem() {
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
 
   return (
     <DropdownMenuSub>
@@ -50,6 +50,9 @@ export function BypassPermissionsMenuItem() {
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
           }
+          onRequestSandboxSetup={() =>
+            setTimeout(() => setSandboxSetupOpen(true), 0)
+          }
         />
       </DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -60,6 +63,7 @@ export function BypassPermissionsMenuItem() {
 // menu, and driven by global store state, so it works for both the main and shared composers,
 // never duplicates in Compare mode, and never leaves the composer popovers frozen open.
 export function BypassPermissionsConfirmDialog() {
+  const t = useT();
   const open = useChatRuntimeStore((s) => s.bypassConfirmOpen);
   const setOpen = useChatRuntimeStore((s) => s.setBypassConfirmOpen);
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
@@ -68,13 +72,13 @@ export function BypassPermissionsConfirmDialog() {
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
+          <AlertDialogTitle>{t("permissionModes.bypassTitle")}</AlertDialogTitle>
           <AlertDialogDescription>
-            {FULL_ACCESS_WARNING}
+            {t("permissionModes.bypassWarning")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("permissionModes.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
@@ -83,7 +87,7 @@ export function BypassPermissionsConfirmDialog() {
               setOpen(false);
             }}
           >
-            I understand
+            {t("permissionModes.bypassConfirm")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
