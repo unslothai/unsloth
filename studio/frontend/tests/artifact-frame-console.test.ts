@@ -242,6 +242,8 @@ test("opening straight to the source view does not run the page", () => {
     /const previewing =\s*!isLoadingArtifact && viewMode === "preview" && requestedView === "preview";/,
   );
   assert.match(surface, /const frameMounted = previewing \|\| previewedId === artifact\.id;/);
+  // Cleared on a switch to another artifact, so A -> B -> A's Code button does not remount A.
+  assert.match(surface, /: previewedId === artifact\.id\s*\? previewedId\s*: null;/);
   // The badge only counts reports tagged with the artifact on screen.
   assert.match(surface, /outputCounts\.id === artifact\.id \? outputCounts\.errors : 0/);
 });

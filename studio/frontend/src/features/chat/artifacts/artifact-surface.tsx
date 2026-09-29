@@ -164,9 +164,13 @@ export function ArtifactSurface({
   // requestedView too: viewMode only catches up with a Code open in an effect, a render late.
   const previewing =
     !isLoadingArtifact && viewMode === "preview" && requestedView === "preview";
-  if (previewing && previewedId !== artifact.id) {
-    setPreviewedId(artifact.id);
-  }
+  // Held only for the artifact on screen, so switching away and back via Code does not rerun it.
+  const nextPreviewedId = previewing
+    ? artifact.id
+    : previewedId === artifact.id
+      ? previewedId
+      : null;
+  if (nextPreviewedId !== previewedId) setPreviewedId(nextPreviewedId);
   const frameMounted = previewing || previewedId === artifact.id;
 
   useEffect(() => {
