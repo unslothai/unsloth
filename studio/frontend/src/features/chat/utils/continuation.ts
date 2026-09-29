@@ -1030,6 +1030,26 @@ export function createAutoContinueLeaseKeeper({
   };
 }
 
+/** Assistant messages whose run this page started. Only these auto-continue: `spent` resets on
+ *  reload, so a saved cut would otherwise re-run every time its chat is opened. */
+const startedThisSession = new Set<string>();
+
+/** Called by the chat adapter as each run starts, continuations included. */
+export function noteRunStartedThisSession(
+  messageId: string | null | undefined,
+): void {
+  if (messageId) {
+    startedThisSession.add(messageId);
+  }
+}
+
+/** Whether this page started the run that produced `messageId`. */
+export function runStartedThisSession(
+  messageId: string | null | undefined,
+): boolean {
+  return Boolean(messageId) && startedThisSession.has(messageId as string);
+}
+
 /** Whether THIS message is the one to continue automatically. `shouldAutoContinue` answers about
  *  the turn and keeps saying yes after a message has been claimed, since the budget is per
  *  turn while the claim is per message, so rendering off the turn's answer alone showed a
@@ -1040,7 +1060,7 @@ export function shouldAutoContinueMessage(
   key: string | null | undefined,
   options: Parameters<typeof shouldAutoContinue>[2] = {},
 ): boolean {
-  if (wasAutoContinued(messageId)) {
+  if (!runStartedThisSession(messageId) || wasAutoContinued(messageId)) {
     return false;
   }
   return shouldAutoContinue(reason, key, options);
@@ -1052,6 +1072,7 @@ export function shouldAutoContinueMessage(
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
+    startedThisSession.clear();
     tab.reset();
   } else {
     spent.delete(key);

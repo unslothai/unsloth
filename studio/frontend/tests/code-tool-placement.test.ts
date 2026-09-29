@@ -23,10 +23,17 @@ import {
   codeToolCanRun,
   selectCodeToolNames,
 } from "../src/features/chat/api/code-tool-placement.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
-import { readSrc } from "./helpers/kit.ts";
+registerBundlerResolver();
+const {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} = await import("../src/features/chat/provider-capabilities.ts");
 
 const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
+const COMPOSER_SOURCE = readSrc("features/chat/shared-composer.tsx");
+const CHAT_PAGE_SOURCE = readSrc("features/chat/chat-page.tsx");
 
 // ── the rule itself ────────────────────────────────────────────────
 
@@ -53,6 +60,19 @@ test("a provider with a sandbox its MODEL cannot use runs nothing, not local cod
     }),
     { local: [], hosted: [] },
   );
+});
+
+test("unsupported models on managed custom Responses never fall back to local code", () => {
+  const baseUrl = "https://api.openai.com/v1";
+  const hosted = providerSupportsBuiltinCodeExecution("custom", "gpt-4.1", baseUrl, "responses");
+  const providerHosted = providerHostsCodeExecution("custom", baseUrl, "responses");
+  assert.equal(codeToolCanRun({ hostedCodeExecutionForThisTurn: hosted,
+    providerHostsCodeExecution: providerHosted, supportsStudioTools: true }), false);
+  assert.deepEqual(selectCodeToolNames({ codeToolsEnabled: true,
+    hostedCodeExecutionForThisTurn: hosted, providerHostsCodeExecution: providerHosted }),
+  { local: [], hosted: [] });
+  assert.match(COMPOSER_SOURCE, /providerHostsCodeExecution\(\s*selectedExternalProvider\?\.providerType,\s*selectedExternalProvider\?\.baseUrl,\s*selectedExternalProvider\?\.apiType,/);
+  assert.match(CHAT_PAGE_SOURCE, /providerHostsCodeExecution\(\s*provider\?\.providerType,\s*provider\?\.baseUrl,\s*provider\?\.apiType,/);
 });
 
 test("a provider with no sandbox uses Unsloth's own tools", () => {
