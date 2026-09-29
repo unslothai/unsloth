@@ -464,7 +464,7 @@ def test_argv_owns_network_and_memory_settings(engine):
     argv = launch_arguments(engine, "/env/bin/python", "org/model", 45678, "private", 4096)
     assert argv[0:2] == ["/env/bin/python", "-I"]
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
-    assert argv[argv.index("--api-key") + 1] == "private"
+    assert "private" not in argv  # the key travels in the environment (key_environment)
     assert "4096" in argv
     assert "--trust-remote-code" not in argv
 
@@ -997,7 +997,8 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
-        command = command, progress = lambda _: None, environment = lambda _: {}
+        command = command, progress = lambda _: None, environment = lambda _: {},
+        key_environment = lambda _: {}
     )
     errors = []
 
@@ -1117,7 +1118,8 @@ def test_shutdown_during_adoption_reaps_child(isolated, monkeypatch, kind):
                 monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
                 engine = ManagedEngine("vllm")
                 engine.adapter = SimpleNamespace(
-                    command = lambda *args: command, environment = lambda _: {}
+                    command = lambda *args: command, environment = lambda _: {},
+        key_environment = lambda _: {}
                 )
                 engine.start("model", 2048, [0], dict(os.environ))
         assert len(children) == 1
@@ -1810,7 +1812,8 @@ def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
-        command = command, progress = lambda _: None, environment = lambda _: {}
+        command = command, progress = lambda _: None, environment = lambda _: {},
+        key_environment = lambda _: {}
     )
     try:
         if chatty:

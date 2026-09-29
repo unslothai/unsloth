@@ -7,7 +7,9 @@ Executed by the isolated engine Python, including multiprocessing children.
 No engine packages are imported into Studio's environment.
 """
 
+import os
 import runpy
+import sys
 
 from sglang.srt.layers import torchao_utils
 
@@ -52,4 +54,9 @@ def _apply_torchao_config(
 torchao_utils.apply_torchao_config_to_model = _apply_torchao_config
 
 if __name__ == "__main__":
+    # The key arrives in the environment so it never shows in the process list; this argv is
+    # the interpreter's own copy, not /proc/<pid>/cmdline.
+    key = os.environ.pop("UNSLOTH_ENGINE_API_KEY", None)
+    if key:
+        sys.argv += ["--api-key", key]
     runpy.run_module("sglang.launch_server", run_name = "__main__")

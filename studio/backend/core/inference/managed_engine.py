@@ -308,8 +308,7 @@ class ManagedEngine:
 
                 # Compiler caches are keyed per launch config: reuse across dtype/GPU changes breaks.
                 policy = Path(__file__).with_name("engine_adapters.py").read_bytes()
-                if self.engine == "sglang":
-                    policy += Path(__file__).with_name("sglang_server.py").read_bytes()
+                policy += Path(__file__).with_name(f"{self.engine}_server.py").read_bytes()
                 cache_key = hashlib.sha256(
                     policy
                     + json.dumps(
@@ -331,6 +330,7 @@ class ManagedEngine:
                     gpu_ids or [0], memory_reserve_mib(self.engine, options)
                 )
                 child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                child_env.update(self.adapter.key_environment(self.key))
                 if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
                     child_env["VLLM_USE_DEEP_GEMM"] = "0"
                 self.process = spawn_on_lifetime_thread(

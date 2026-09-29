@@ -42,6 +42,10 @@ class EngineAdapter:
     extra_args: tuple[str, ...] = ()
     exact_token_count: bool = False
 
+    def key_environment(self, key):
+        """The API key travels in the environment, never argv, which any local user can read."""
+        return {"VLLM_API_KEY" if self.name == "vllm" else "UNSLOTH_ENGINE_API_KEY": key}
+
     def environment(self, gpu_count):
         if self.name == "vllm" and gpu_count > 1:
             return {"VLLM_HOST_IP": "127.0.0.1"}
@@ -155,10 +159,13 @@ class EngineAdapter:
                 self.model_option,
                 model,
             ]
-        elif mode == "data":
-            entrypoint = ["-m", "vllm.entrypoints.cli.main", "serve", model]
         else:
-            entrypoint = ["-m", self.module, self.model_option, model]
+            launcher = str(Path(__file__).with_name("vllm_server.py"))
+            entrypoint = (
+                [launcher, "vllm.entrypoints.cli.main", "serve", model]
+                if mode == "data"
+                else [launcher, self.module, self.model_option, model]
+            )
         return [
             python,
             "-I",
@@ -176,8 +183,6 @@ class EngineAdapter:
             "127.0.0.1",
             "--port",
             str(port),
-            "--api-key",
-            key,
             "--served-model-name",
             served_model_name or model,
             "--load-format",
