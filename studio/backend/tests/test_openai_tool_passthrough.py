@@ -5042,6 +5042,29 @@ class TestGgufVisionToolRouting:
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
+    def test_a_tool_heartbeat_is_not_sent_as_a_stall_keepalive(self, monkeypatch):
+        # Durable runs renew their lease on the tool heartbeat, never on `: keep-alive`.
+        import routes.inference as inf_mod
+
+        def _tools(**_kwargs):
+            yield {"type": "heartbeat"}
+            yield {"type": "content", "text": "done"}
+            yield _stop_metadata()
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "run something"}],
+            },
+            request = self._Request(ui_events = True),
+        )
+        assert inf_mod._OPENAI_TOOL_HEARTBEAT_SSE in result.chunks
+        assert inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE not in result.chunks
+
     def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
         # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
         # tool here, so the selection is empty and the loop is skipped. Refusing on intent
@@ -6357,6 +6380,79 @@ class TestGgufVisionToolRouting:
             assert monitor.active_count() == 0
 
         asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        "payload_kwargs",
+        [
+            pytest.param({}, id = "plain"),
+            pytest.param({"n": 3}, id = "plain-n"),
+            pytest.param({"enable_tools": True}, id = "tools"),
+        ],
+    )
+    def test_non_streaming_gguf_disconnect_stops_generation(self, monkeypatch, payload_kwargs):
+        import routes.inference as inf_mod
+
+        total = 200
+        emitted = []
+        generations = []
+        started = threading.Event()
+
+        class _LeavingRequest(self._Request):
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _emit(kwargs, event):
+            generations.append("plain" if event is None else "tools")
+            cancel_event = kwargs["cancel_event"]
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield event
+
+        def _generate(**kwargs):
+            text = ""
+            for _ in _emit(kwargs, None):
+                text += "x"
+                yield text
+
+        def _tools(**kwargs):
+            yield from _emit(kwargs, {"type": "content", "text": "x"})
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.disconnect.test",
+            effective_parallel_slots = 1,
+            generate_chat_completion = _generate,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            **payload_kwargs,
+        )
+        response = self._drive(
+            openai_chat_completions(payload, request = _LeavingRequest(), current_subject = "test")
+        )
+
+        assert response.status_code == 200
+        assert len(emitted) < total, "generation ran to completion after the client left"
+        assert generations == ["tools" if payload_kwargs.get("enable_tools") else "plain"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+        assert get_llama_admission_queue("http://llama.disconnect.test").snapshot().active == 0
 
     def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
@@ -10655,6 +10751,30 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _response_format_for_llama_server as for_llama
+
+    schema = {"type": "integer"}
+    wrapped = {"type": "json_schema", "json_schema": {"schema": schema}}
+    lenient = {"type": "json_schema", "schema": schema}
+    assert for_llama(lenient) == wrapped
+    assert for_llama({"type": "json_schema", "json_schema": None, "schema": schema}) == wrapped
+    for already in (
+        {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}},
+        {"type": "json_schema", "json_schema": {"schema": schema}, "schema": {}},
+        {"type": "json_object", "schema": schema},
+        {"type": "json_object"},
+        {"type": "text"},
+        None,
+    ):
+        assert for_llama(already) is already
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
+    )
+    assert _build_openai_passthrough_body(request)["response_format"] == wrapped
 
 
 class TestPassthroughImageNormalization:

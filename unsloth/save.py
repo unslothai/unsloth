@@ -69,6 +69,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import _convert_torchao_model
+from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
@@ -89,6 +90,8 @@ __all__ = [
     "save_to_gguf",
     "patch_saving_functions",
     "create_huggingface_repo",
+    "unsloth_save_pretrained_openvino",
+    "unsloth_push_to_hub_openvino",
 ]
 
 # llama.cpp specific targets: all takes 90s, the below 60s.
@@ -736,6 +739,38 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+def _preserve_repaired_tokenizer_class(
+    tokenizer,
+    save_directory,
+    filename_prefix = None,
+):
+    """A tokenizer rebuilt from tokenizer.json still saves as LlamaTokenizer, which transformers v5 reloads with Metaspace and loses every space. Save it as PreTrainedTokenizerFast, which v4 and v5 load from tokenizer.json as-is. Never fails the save."""
+    if tokenizer is None or save_directory is None:
+        return
+    source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if not getattr(source_tokenizer, "_unsloth_tokenizer_json_repaired", False):
+        return
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config):
+        return
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        if config.get("tokenizer_class") == "PreTrainedTokenizerFast":
+            return
+        config["tokenizer_class"] = "PreTrainedTokenizerFast"
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not set tokenizer_class in {tokenizer_config}: {error}"
+        )
+
+
 def _strip_absent_mtp_declaration(config_dict, tensor_names):
     """Drop `mtp_num_hidden_layers` from a config dict when the tensors carry no MTP weights. Never raises. "Has a head" comes from the zoo's `mtp_head_is_present`, so this and `reconcile_mtp_config` cannot disagree."""
     # Unknown is not empty: editing a declaration blind is never justified.
@@ -963,6 +998,7 @@ def unsloth_save_model(
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
+    raise_if_merging_mistral_format_view(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -1376,6 +1412,11 @@ def unsloth_save_model(
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
         )
+        _preserve_repaired_tokenizer_class(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
 
         _tokenizer.padding_side = old_padding_side
 
@@ -1557,6 +1598,35 @@ def _compressed_quantize_pythonpath():
     return pp or None
 
 
+def _llm_compressor_imports_in_subprocess():
+    """True only if a fresh interpreter, launched like the export's quantize runner, imports an llm-compressor inside _LLM_COMPRESSOR_SPEC."""
+    # sys.path[0] as `python _compressed_quantize.py` sets it; the caller's cwd is kept so relative PYTHONPATH entries resolve the same way.
+    probe = (
+        f"import sys; sys.path[0] = {os.path.dirname(os.path.abspath(__file__))!r}\n"
+        "import llmcompressor\n"
+        "from llmcompressor import oneshot\n"
+        "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
+        "print(llmcompressor.__version__)\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            timeout = 600,
+        )
+        if completed.returncode != 0:
+            return False
+        from packaging.requirements import Requirement
+
+        version = completed.stdout.strip().splitlines()[-1].strip()
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True)
+    except Exception:
+        return False
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing a version-pinned copy on first use for FP8/FP4 export and pinning the current torch + transformers so pip does not upgrade them. UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the auto-install. Returns (oneshot, QuantizationModifier)."""
     try:
@@ -1565,6 +1635,10 @@ def install_llm_compressor():
         return oneshot, QuantizationModifier
     except Exception:
         pass
+
+    # The in-process import can fail under Unsloth's transformers patches while the unpatched quantize subprocess imports fine. Reinstalling cannot fix that, and pip's pinned re-resolve backtracks destructively (numpy<2 from source), so skip it. The caller discards the return value.
+    if _llm_compressor_imports_in_subprocess():
+        return None, None
 
     # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
@@ -1642,6 +1716,8 @@ def install_llm_compressor():
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
     except Exception as e:
+        if _llm_compressor_imports_in_subprocess():
+            return None, None
         raise RuntimeError(
             "Unsloth: llm-compressor was installed but could not be imported. "
             "Please restart your Python session and try again.\n"
@@ -3770,6 +3846,26 @@ def _model_basename(name_or_path, default = "model") -> str:
     return base
 
 
+def _assert_export_target_is_not_base_with_lora_layers(self):
+    """`peft.PeftModel.from_pretrained` forwards to the base's bound export method, which would silently write the un-merged base (unsloth#11698)."""
+    if isinstance(self, PeftModel):
+        return
+
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer
+    except ImportError:
+        return
+
+    modules = getattr(self, "modules", None)
+    if callable(modules) and any(isinstance(m, BaseTunerLayer) for m in modules()):
+        raise RuntimeError(
+            "Unsloth: This model has LoRA layers, but the save method was called on the "
+            "base model. This happens when the adapter is attached with "
+            "`peft.PeftModel.from_pretrained`. Load the adapter folder with "
+            "`FastModel.from_pretrained(<adapter folder>)` instead."
+        )
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -3835,6 +3931,9 @@ def unsloth_save_pretrained_gguf(
     "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
     """
+    raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
+    _assert_export_target_is_not_base_with_lora_layers(self)
+
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -4444,6 +4543,8 @@ def unsloth_push_to_hub_gguf(
 
     `quantization_method` may be an alias -- "not_quantized" (fast conversion, big files), "fast_quantized" (fast conversion, OK size), "quantized" (slow conversion, small files) -- or a llama.cpp ftype: f32, f16, q8_0, q4_0, q4_1, q5_0, q5_1, or a k-quant q2_k / q3_k_s / q3_k_m / q3_k_l / q4_k_s / q4_k_m / q5_k_s / q5_k_m / q6_k. The _m and _l k-quants keep the attention and feed_forward.w2 tensors a level or two above the nominal width; q2_k_l is the Unsloth preset adding --output-tensor-type q8_0 --token-embedding-type q8_0.
     """
+    raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if not is_main_process:
@@ -4528,7 +4629,8 @@ def unsloth_push_to_hub_gguf(
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
     try:
-        from huggingface_hub import HfApi
+        from huggingface_hub import CommitOperationAdd, HfApi
+        from huggingface_hub.errors import HfHubHTTPError
 
         api = HfApi(token = token)
 
@@ -4544,7 +4646,16 @@ def unsloth_push_to_hub_gguf(
             private = private,
             exist_ok = True,
         )
+        if revision is not None and not revision.startswith("refs/pr/"):
+            try:
+                api.create_branch(
+                    repo_id = full_repo_id, repo_type = "model", branch = revision, exist_ok = True
+                )
+            except HfHubHTTPError as error:
+                if not create_pr or error.response.status_code != 403:
+                    raise
 
+        operations = []
         for file_location in all_file_locations:
             original_name = os.path.basename(file_location)
             if cleanup_temp and "unsloth_gguf_" in original_name:
@@ -4554,52 +4665,34 @@ def unsloth_push_to_hub_gguf(
                 proper_name = f"{model_name}.{quant_suffix}"
             else:
                 proper_name = original_name.replace(os.path.basename(save_directory), model_name)
-
-            print(f"Uploading {proper_name}...")
-
-            api.upload_file(
-                path_or_fileobj = file_location,
-                path_in_repo = proper_name,
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = commit_message,
-                commit_description = commit_description,
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = proper_name, path_or_fileobj = file_location)
             )
 
         config_path = os.path.join(actual_save_directory, "config.json")
         if os.path.exists(config_path):
-            print("Uploading config.json...")
-            api.upload_file(
-                path_or_fileobj = config_path,
-                path_in_repo = "config.json",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - config",
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = "config.json", path_or_fileobj = config_path)
             )
 
         if modelfile_location and os.path.exists(modelfile_location):
-            print("Uploading Ollama Modelfile...")
-            api.upload_file(
-                path_or_fileobj = modelfile_location,
-                path_in_repo = "Modelfile",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - Ollama Modelfile",
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = "Modelfile", path_or_fileobj = modelfile_location)
             )
 
+        if isinstance(datasets, str):
+            datasets = [datasets]
+        # In the README so it lands in the same commit, not a second one on main.
+        datasets_yaml = "".join(f"- {json.dumps(d)}\n" for d in datasets or [])
+        if datasets_yaml:
+            datasets_yaml = "datasets:\n" + datasets_yaml
         readme_content = f"""---
 tags:
 - gguf
 - llama.cpp
 - unsloth
 {"- vision-language-model" if is_vlm else ""}
----
+{datasets_yaml}---
 
 # {repo_id.split("/")[-1]} : GGUF
 
@@ -4611,16 +4704,8 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
 ## Available Model files:
 """
-        for file in all_file_locations:
-            original_name = os.path.basename(file)
-            if cleanup_temp and "unsloth_gguf_" in original_name:
-                quant_suffix = (
-                    original_name.split(".", 1)[1] if "." in original_name else original_name
-                )
-                proper_name = f"{model_name}.{quant_suffix}"
-            else:
-                proper_name = original_name.replace(os.path.basename(save_directory), model_name)
-            readme_content += f"- `{proper_name}`\n"
+        for operation in operations[: len(all_file_locations)]:
+            readme_content += f"- `{operation.path_in_repo}`\n"
 
         if is_vlm and modelfile_location:
             readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
@@ -4649,17 +4734,33 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         with open(readme_path, "w", encoding = "utf-8") as f:
             f.write(readme_content)
 
-        api.upload_file(
-            path_or_fileobj = readme_path,
-            path_in_repo = "README.md",
+        operations.append(CommitOperationAdd(path_in_repo = "README.md", path_or_fileobj = readme_path))
+
+        commit = api.create_commit(
             repo_id = full_repo_id,
             repo_type = "model",
-            commit_message = "Add README",
+            operations = operations,
+            commit_message = (
+                commit_message if commit_message is not None else "Trained with Unsloth"
+            ),
+            commit_description = commit_description,
             create_pr = create_pr,
             revision = revision,
         )
 
-        print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            from urllib.parse import quote
+            destination = f"https://huggingface.co/{full_repo_id}"
+            if create_pr:
+                destination += "/discussions"
+            elif revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{quote(revision, safe = '')}"
+                )
+        print(f"Unsloth: Successfully uploaded GGUF to {destination}")
 
         if tags is None:
             tags = []
@@ -4675,15 +4776,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             )
         except:
             pass
-
-        if datasets:
-            try:
-                from huggingface_hub import metadata_update
-                metadata_update(full_repo_id, {"datasets": datasets}, overwrite = True, token = token)
-            except Exception as e:
-                logger.warning_once(
-                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
-                )
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
@@ -5421,6 +5513,31 @@ def _push_merged_to_hub_revision(save_kwargs):
         return commit
 
 
+def _refuse_unsaveable_text_core(model, save_method):
+    """A helper, not inline: unsloth_generic_save forwards its own locals() as keywords."""
+    get_base_model = (
+        getattr(model, "get_base_model", None) if isinstance(model, PeftModel) else None
+    )
+    core = get_base_model() if callable(get_base_model) else model
+    # A str set by _text_trainable_core; mocks answer any attribute with a truthy stand-in.
+    parent = getattr(core, "_unsloth_composed_parent", None)
+    if isinstance(parent, str) and not _is_adapter_save_method(save_method):
+        if isinstance(model, PeftModel):
+            # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{parent}` (loaded with text_only = True), "
+                f"so `{save_method}` would write the wrapper's weights under the text core's config. "
+                'Save the adapter with `save_method = "lora"` and reload it with `text_only = True` instead.'
+            )
+        if "transformers_modules" in (type(core).__module__ or ""):
+            # A full finetune writes its own weights, but a remote child class gets no auto_map or code copy.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{parent}` (loaded with text_only = True) "
+                f"and its class `{type(core).__name__}` exists only in the repo's remote code, so a "
+                f"`{save_method}` checkpoint of it could not be reloaded. Load without text_only to save the full model."
+            )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5455,6 +5572,7 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    _refuse_unsaveable_text_core(model, save_method)
 
     # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
     # this function's own keywords.
@@ -5572,8 +5690,10 @@ def unsloth_generic_save(
             datasets = datasets,
         )
     else:
+        raise_if_merging_mistral_format_view(model, save_method)
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
+
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
@@ -5645,6 +5765,7 @@ def unsloth_generic_save_pretrained_merged(
     roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
     asks for a pickle.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -5776,6 +5897,7 @@ def unsloth_generic_push_to_hub_merged(
     roughly 10x slower there, while `None` pins safetensors through that fallback. `False`
     asks for a pickle.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -6597,7 +6719,11 @@ def _unsloth_save_torchao(
         quant_type = Float8WeightOnlyConfig()
         safe_serialization = True
     elif kind == "int8":
-        quant_type = Int8WeightOnlyConfig()
+        # version 2 (Int8Tensor) is what transformers serializes; torchao 0.16 / 0.17 default to 1.
+        _int8_fields = getattr(Int8WeightOnlyConfig, "__dataclass_fields__", {})
+        quant_type = (
+            Int8WeightOnlyConfig(version = 2) if "version" in _int8_fields else Int8WeightOnlyConfig()
+        )
         safe_serialization = False  # torchao only supports safetensors for float8 configs
     else:
         raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
@@ -6778,6 +6904,7 @@ def unsloth_save_pretrained_torchao(
     `save_directory`: local folder, or a hub id when `push_to_hub` is True.
     `torchao_config` (TorchAOBaseConfig): required for PTQ, None for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
@@ -6816,6 +6943,326 @@ def unsloth_save_pretrained_torchao(
 
     for _ in range(3):
         gc.collect()
+
+
+# quantization_type -> `optimum-cli export openvino` options. None and "fp16" still name a weight format: with none, optimum-intel int8-compresses every model over 1B parameters.
+_OPENVINO_QUANTIZATION_PRESETS = {
+    "fp16": {"weight_format": "fp16"},
+    "int8": {"weight_format": "int8", "sym": True},
+    "int4": {"weight_format": "int4", "sym": True, "group_size": 128},
+}
+_OPENVINO_QUANTIZATION_ALIASES = {
+    "none": "fp16",
+    "fp16": "fp16",
+    "f16": "fp16",
+    "int8": "int8",
+    "8bit": "int8",
+    "8": "int8",
+    "int4": "int4",
+    "4bit": "int4",
+    "4": "int4",
+}
+
+
+def _openvino_cli_parser():
+    """optimum-intel's own `export openvino` argument parser, or ImportError when OpenVINO export is not installed. Only argparse definitions are imported; torch and openvino stay out of this process."""
+    import argparse
+    import importlib.util
+
+    try:
+        from optimum.commands.export.openvino import parse_args_openvino
+    except ImportError:
+        parse_args_openvino = None
+    if parse_args_openvino is None or importlib.util.find_spec("openvino") is None:
+        raise ImportError(
+            "Unsloth: Exporting to OpenVINO requires `optimum-intel` and `openvino`.\n"
+            "Please install them via: pip install 'optimum[openvino]'"
+        )
+    parser = argparse.ArgumentParser(prog = "optimum-cli export openvino")
+    parse_args_openvino(parser)
+    return parser
+
+
+def _openvino_export_args(quantization_type, export_kwargs):
+    """The `optimum-cli export openvino` options for this export: the quantization_type preset, overridden by any option passed as a keyword (group_size = 64 -> --group-size 64, True -> bare flag, False or None -> omitted). Checked with optimum-intel's parser so a bad option fails before the merge."""
+    import contextlib
+    import io
+
+    key = "none" if quantization_type is None else str(quantization_type).strip().lower()
+    if key not in _OPENVINO_QUANTIZATION_ALIASES:
+        raise ValueError(
+            f"Unsloth: Unknown OpenVINO quantization_type '{quantization_type}'. "
+            "Expected 'int4', 'int8', 'fp16', or None."
+        )
+    if "output" in export_kwargs:
+        raise ValueError(
+            "Unsloth: `output` is set by save_pretrained_openvino itself and cannot be passed "
+            "as an OpenVINO export option."
+        )
+    options = dict(_OPENVINO_QUANTIZATION_PRESETS[_OPENVINO_QUANTIZATION_ALIASES[key]])
+    options.update(export_kwargs)
+    args = []
+    for name, value in options.items():
+        if value is None or value is False:
+            continue
+        flag = "--" + name.replace("_", "-")
+        args += [flag] if value is True else [flag, str(value)]
+
+    parser = _openvino_cli_parser()
+    errors = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(errors):
+            parser.parse_args(["output", "--model", "model", *args])
+    except SystemExit:
+        message = errors.getvalue().strip().splitlines()
+        raise ValueError(
+            "Unsloth: Invalid OpenVINO export option: "
+            + (message[-1] if message else " ".join(args))
+        )
+    return args
+
+
+# Prints the [min, max] transformers bounds optimum-intel's OpenVINO exporter declares for one architecture and task.
+_OPENVINO_BOUNDS_PROBE = """
+import json, sys
+import optimum.exporters.openvino.model_configs
+from optimum.exporters.tasks import TasksManager
+c = TasksManager.get_exporter_config_constructor(
+    exporter = "openvino", model_type = sys.argv[1], task = sys.argv[2], library_name = "transformers"
+)
+c = getattr(c, "func", c)
+bounds = (getattr(c, "MIN_TRANSFORMERS_VERSION", None), getattr(c, "MAX_TRANSFORMERS_VERSION", None))
+print(json.dumps([None if v is None else str(getattr(v, "base_version", v)) for v in bounds]))
+"""
+
+
+def _openvino_transformers_mismatch(model_type, task):
+    """Why optimum-intel will refuse to export this architecture under the installed transformers, or None. It checks its per-architecture bounds only inside the export, after the 16bit merge is written (qwen2_vl, qwen3_vl and gemma3_text stop at transformers 5.0 in optimum-intel 2.2), so ask first, as the compressed export does for llm-compressor's ceiling. The probe runs in a child process because optimum's export registry loads the OpenVINO runtime; any failure defers to the export."""
+    import transformers
+
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _OPENVINO_BOUNDS_PROBE, model_type, task],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 300,
+        )
+        low, high = json.loads(probe.stdout.strip().splitlines()[-1])
+        installed = Version(transformers.__version__)
+        too_old = low is not None and installed < Version(low)
+        too_new = high is not None and installed > Version(high)
+    except Exception:
+        return None
+    if not (too_old or too_new):
+        return None
+    needed = f"transformers >= {low}" if too_old else f"transformers <= {high.replace('99', '*')}"
+    return (
+        f"Unsloth: optimum-intel cannot export {model_type} under transformers "
+        f"{transformers.__version__}; it needs {needed}. Install a supported transformers, or an "
+        "optimum-intel that supports this one, before exporting."
+    )
+
+
+def _unsloth_save_openvino(
+    model,
+    save_directory: Union[str, os.PathLike],
+    tokenizer = None,
+    quantization_type: Optional[str] = None,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    private: Optional[bool] = None,
+    commit_message: Optional[str] = "Export model to OpenVINO IR with Unsloth",
+    commit_description: Optional[str] = None,
+    create_pr: bool = False,
+    revision: Optional[str] = None,
+    **export_kwargs,
+):
+    """Merge to 16bit in a staging directory, then convert it with `optimum-cli export openvino` in a separate process. Exporting in this process cannot work: optimum-intel traces the reloaded checkpoint through transformers classes whose forwards Unsloth has already patched (Llama's reads `self.max_seq_length`, which only Unsloth-loaded instances carry), so every trace fails. The CLI also converts the tokenizer to openvino_tokenizer.xml, which openvino_genai pipelines need."""
+    import tempfile
+
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+    token = _clean_save_token(token)
+    if token is None or token is True:
+        token = get_token()
+
+    if not is_main_process:
+        return None
+
+    # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. optimum-cli takes one --trust-remote-code for the model and tokenizer loads together, so it follows the model's approved load decision, as the GGUF-LoRA converter does: a custom tokenizer alone must not let the reload run a built-in-loaded model's unvetted auto_map code.
+    export_kwargs = dict(export_kwargs)
+    if _loaded_via_remote_code(model):
+        export_kwargs.setdefault("trust_remote_code", True)
+    elif _loaded_via_remote_code(tokenizer) and "trust_remote_code" not in export_kwargs:
+        logger.warning_once(
+            "Unsloth: the tokenizer was loaded through remote code but the model was not, so the "
+            "OpenVINO export runs without trust_remote_code and may skip converting the tokenizer."
+        )
+    export_kwargs.setdefault("library", "transformers")
+    # optimum-cli cannot infer the task from a local directory. Same VLM test as the torchao and compressed exports: a bare *ForConditionalGeneration also matches text seq2seq.
+    config = getattr(model, "config", None)
+    archs = getattr(config, "architectures", None) or []
+    is_vlm = hasattr(config, "vision_config") or any(
+        x.endswith("ForVisionText2Text") for x in archs
+    )
+    # T5/BART export as text2text-generation, Whisper as speech recognition: no default fits them all.
+    if not is_vlm and getattr(config, "is_encoder_decoder", False) and "task" not in export_kwargs:
+        raise ValueError(
+            f"Unsloth: {getattr(config, 'model_type', 'this model')} is an encoder-decoder model, so "
+            "its OpenVINO export task must be given, e.g. task = 'text2text-generation-with-past'."
+        )
+    export_kwargs.setdefault(
+        "task", "image-text-to-text" if is_vlm else "text-generation-with-past"
+    )
+    cli_args = _openvino_export_args(quantization_type, export_kwargs)
+    model_type = getattr(config, "model_type", None)
+    if isinstance(model_type, str):
+        mismatch = _openvino_transformers_mismatch(model_type, export_kwargs["task"])
+        if mismatch:
+            raise RuntimeError(mismatch)
+
+    if push_to_hub:
+        repo_id = os.fspath(save_directory)
+        work_tmp = tempfile.mkdtemp(prefix = "unsloth-openvino-")
+        final_dir = os.path.join(work_tmp, "openvino")
+    else:
+        repo_id = None
+        final_dir = os.path.abspath(os.fspath(save_directory))
+        # Stage beside the destination, not in TMPDIR: /tmp is often a RAM-backed tmpfs, and the staging merge holds 2 bytes per parameter.
+        os.makedirs(os.path.dirname(final_dir), exist_ok = True)
+        work_tmp = tempfile.mkdtemp(prefix = ".unsloth-openvino-", dir = os.path.dirname(final_dir))
+    staging = os.path.join(work_tmp, "merged_16bit")
+
+    try:
+        # Validate Hub access before the merge; create_repo is idempotent.
+        api = None
+        if push_to_hub:
+            api = HfApi(token = token)
+            api.create_repo(repo_id = repo_id, repo_type = "model", private = private, exist_ok = True)
+
+        print("Unsloth: Merging to 16bit before OpenVINO export...")
+        unsloth_generic_save(
+            model = model,
+            tokenizer = tokenizer,
+            save_directory = staging,
+            save_method = "merged_16bit",
+            push_to_hub = False,
+            token = token,
+            is_main_process = is_main_process,
+        )
+
+        # Run the CLI module under this interpreter; it never imports Unsloth, so the trace sees stock transformers. It only reads the local staging checkpoint, so it gets no Hub credential.
+        cmd = [
+            sys.executable,
+            "-m",
+            "optimum.commands.optimum_cli",
+            "export",
+            "openvino",
+            "--model",
+            staging,
+            *cli_args,
+            final_dir,
+        ]
+        env = os.environ.copy()
+        _apply_token_to_child_env(env, False, explicit = True)
+        print("Unsloth: Exporting to OpenVINO IR in a separate process...")
+        try:
+            subprocess.check_call(cmd, env = env)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Unsloth: OpenVINO export failed (optimum-cli exit {e.returncode}). "
+                "See the output above for details."
+            )
+        exported = os.listdir(final_dir) if os.path.isdir(final_dir) else []
+        if not any(f.startswith("openvino_") and f.endswith("model.xml") for f in exported):
+            raise RuntimeError(f"Unsloth: OpenVINO export wrote no model to '{final_dir}'.")
+        # A LoRA merge copies the base tokenizer even when none is passed, so check the output.
+        if "openvino_tokenizer.xml" not in exported:
+            logger.warning_once(
+                "Unsloth: The OpenVINO export has no openvino_tokenizer.xml, so openvino_genai "
+                "cannot load it. Pass `tokenizer = tokenizer` and install openvino-tokenizers."
+            )
+
+        if push_to_hub:
+            print(f"Unsloth: Uploading OpenVINO model to '{repo_id}' ...")
+            api.upload_folder(
+                folder_path = final_dir,
+                repo_id = repo_id,
+                repo_type = "model",
+                commit_message = commit_message,
+                commit_description = commit_description,
+                create_pr = create_pr,
+                revision = revision,
+            )
+            print(f"Unsloth: Saved OpenVINO model to https://huggingface.co/{repo_id}")
+            return repo_id
+        print(f"Unsloth: Saved OpenVINO model to '{final_dir}'.")
+        return os.fspath(save_directory)
+    finally:
+        shutil.rmtree(work_tmp, ignore_errors = True)
+        for _ in range(3):
+            gc.collect()
+
+
+def unsloth_save_pretrained_openvino(
+    self,
+    save_directory: Union[str, os.PathLike],
+    tokenizer = None,
+    quantization_type: Optional[str] = None,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    private: Optional[bool] = None,
+    **kwargs,
+):
+    """Save the model in OpenVINO IR format for OpenVINO Runtime, optimum-intel and openvino_genai on Intel CPUs, GPUs and NPUs. LoRA adapters are merged into a 16bit copy first, which `optimum-cli export openvino` converts in a separate process. Needs `pip install 'optimum[openvino]'`.
+
+    Parameters:
+    - save_directory: Local output directory, or a Hugging Face Hub repo id when push_to_hub=True.
+    - tokenizer: Tokenizer or processor to export alongside the model; openvino_genai needs it.
+    - quantization_type: "int4" (symmetric, group size 128), "int8" (symmetric), or None / "fp16" for unquantized 16bit weights (a bfloat16 merge stays bfloat16).
+    - push_to_hub, token, private: Upload the export to the Hub instead of keeping it locally. commit_message, commit_description, create_pr and revision are also accepted.
+    - is_main_process: Only the main process exports under multi-GPU / DDP.
+    - **kwargs: Other `optimum-cli export openvino` options, with underscores for dashes, e.g. group_size = 64, ratio = 0.8, sym = False, awq = True, dataset = "wikitext2". They override the quantization_type preset.
+    """
+    return _unsloth_save_openvino(
+        model = self,
+        save_directory = save_directory,
+        tokenizer = tokenizer,
+        quantization_type = quantization_type,
+        push_to_hub = push_to_hub,
+        token = token,
+        is_main_process = is_main_process,
+        private = private,
+        **kwargs,
+    )
+
+
+def unsloth_push_to_hub_openvino(
+    self,
+    repo_id: str,
+    tokenizer = None,
+    quantization_type: Optional[str] = None,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    private: Optional[bool] = None,
+    **kwargs,
+):
+    """Export the model to OpenVINO IR format and push it to the Hugging Face Hub. Takes the same options as save_pretrained_openvino."""
+    return _unsloth_save_openvino(
+        model = self,
+        save_directory = repo_id,
+        tokenizer = tokenizer,
+        quantization_type = quantization_type,
+        push_to_hub = True,
+        token = token,
+        is_main_process = is_main_process,
+        private = private,
+        **kwargs,
+    )
 
 
 def not_implemented_save(*args, **kwargs):
@@ -6922,6 +7369,11 @@ def patch_saving_functions(model, vision = False):
             save_directory,
             filename_prefix = filename_prefix,
         )
+        _preserve_repaired_tokenizer_class(
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
+        )
         if push_to_hub:
             push_kwargs = dict(kwargs)
             repo_id = push_kwargs.pop("repo_id", save_directory)
@@ -7011,6 +7463,10 @@ def patch_saving_functions(model, vision = False):
             model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
             model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
             model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
+            model.save_pretrained_openvino = types.MethodType(
+                unsloth_save_pretrained_openvino, model
+            )
+            model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
             model.push_to_hub_ggml = types.MethodType(
                 unsloth_convert_lora_to_ggml_and_push_to_hub, model
             )
@@ -7025,6 +7481,8 @@ def patch_saving_functions(model, vision = False):
         model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
         model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
         model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
+        model.save_pretrained_openvino = types.MethodType(unsloth_save_pretrained_openvino, model)
+        model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
     return model
 
 

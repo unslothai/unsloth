@@ -258,6 +258,7 @@ export function PromptQueueList({
                                 keyCode: event.nativeEvent.keyCode,
                               },
                               sendShortcut,
+                              event.currentTarget.value,
                             )
                           ) {
                             event.preventDefault();

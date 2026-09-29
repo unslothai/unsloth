@@ -16,11 +16,11 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 HELPER=$(awk '
-    /^_setup_uv_signal_target\(\) \{/ { grab = 1 }
-    /^_setup_uv_probe_terminate\(\) \{/ { grab = 1 }
-    /^_setup_uv_probe_restore_trap\(\) \{/ { grab = 1 }
-    /^_setup_uv_probe_on_signal\(\) \{/ { grab = 1 }
-    /^_setup_uv_probe_exec\(\) \{/ { grab = 1 }
+    /^_setup_probe_signal_target\(\) \{/ { grab = 1 }
+    /^_setup_probe_terminate\(\) \{/ { grab = 1 }
+    /^_setup_probe_restore_trap\(\) \{/ { grab = 1 }
+    /^_setup_probe_on_signal\(\) \{/ { grab = 1 }
+    /^_setup_probe_version\(\) \{/ { grab = 1 }
     /^_setup_uv_version_at_least\(\) \{/ { grab = 1 }
     /^_setup_find_installed_uv\(\) \{/ { grab = 1 }
     grab { print }
@@ -29,7 +29,7 @@ HELPER=$(awk '
 # The floor the finder compares against lives beside the function, not inside it.
 HELPER="$(grep '^_SETUP_UV_MIN_VERSION=' "$SETUP_SH")
 $HELPER"
-for _fn in _setup_uv_signal_target _setup_uv_probe_terminate _setup_uv_probe_restore_trap _setup_uv_probe_on_signal _setup_uv_probe_exec \
+for _fn in _setup_probe_signal_target _setup_probe_terminate _setup_probe_restore_trap _setup_probe_on_signal _setup_probe_version \
            _setup_uv_version_at_least _setup_find_installed_uv; do
     printf '%s\n' "$HELPER" | grep -q "^$_fn() {" || {
         echo "FATAL: could not extract $_fn from setup.sh" >&2; exit 1; }
@@ -174,7 +174,7 @@ BODY
         chmod +x "$HANG/uv"
         HANG_PROBE="$WORK/$shell hang probe.sh"
         # The 20 s ceiling is the helper's; the test only needs it finite.
-        { echo '_SETUP_UV_PROBE_SECONDS=2'; cat "$PROBE"; } > "$HANG_PROBE"
+        { echo '_SETUP_PROBE_SECONDS=2'; cat "$PROBE"; } > "$HANG_PROBE"
         _hang_started=$(date +%s)
         assert_eq "$shell: a uv that never answers is not reused" \
             "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$HANG" "$shell" "$HANG_PROBE")"
@@ -205,9 +205,9 @@ BODY
         CANCEL="$WORK/$shell cancel probe.sh"
         {
             printf '%s\n' "$HELPER"
-            printf '_setup_uv_probe_exec "%s/uv"\n' "$HANG"
+            printf '_setup_probe_version "%s/uv"\n' "$HANG"
         } > "$CANCEL"
-        env -i PATH="$NOTO" HOME="$HOME_DIR" _SETUP_UV_PROBE_SECONDS=30 \
+        env -i PATH="$NOTO" HOME="$HOME_DIR" _SETUP_PROBE_SECONDS=30 \
             "$shell" "$CANCEL" >/dev/null 2>&1 &
         _cancel_sup=$!
         sleep 3
@@ -255,7 +255,7 @@ while [ ! -f "$_t_ready" ] && [ "$_t_waited" -lt 10 ]; do
     _t_waited=$((_t_waited + 1))
 done
 [ -f "$_t_ready" ] || { printf 'never armed'; exit 0; }
-_setup_uv_probe_terminate "$_t_pid" "$_t_pid" 1
+_setup_probe_terminate "$_t_pid" "$_t_pid" 1
 # How it ended, not whether it is still listed: a killed child sits as a zombie until it is
 # waited for, and `kill -0` answers yes for one of those.
 wait "$_t_pid" 2>/dev/null
@@ -281,7 +281,7 @@ done
 # Source contract: the reuse sits between the PATH probe and the download, in both shells.
 _probe_at=$(grep -n '^if command -v uv &>/dev/null; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
 _reuse_at=$(grep -n '^elif _setup_find_installed_uv; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
-_install_at=$(grep -n 'if _setup_install_uv_pinned; then' "$SETUP_SH" | head -1 | cut -d: -f1)
+_install_at=$(grep -n 'if _setup_install_uv_pinned[ ;]' "$SETUP_SH" | head -1 | cut -d: -f1)
 if [ -n "$_probe_at" ] && [ -n "$_reuse_at" ] && [ -n "$_install_at" ] \
    && [ "$_probe_at" -lt "$_reuse_at" ] && [ "$_reuse_at" -lt "$_install_at" ]; then
     ok "setup.sh reuses an installed uv before it downloads one"
@@ -320,7 +320,7 @@ else
 fi
 
 # Only a uv that answered counts on both sides: the bounded probe here, an "ok" verdict in setup.ps1.
-if printf '%s\n' "$HELPER" | grep -q '_setup_uv_probe_exec "\$_sfu_dir/uv"'; then
+if printf '%s\n' "$HELPER" | grep -q '_setup_probe_version "\$_sfu_dir/uv"'; then
     ok "setup.sh probes the candidate through the bounded helper"
 else
     bad "setup.sh probes the candidate through the bounded helper"

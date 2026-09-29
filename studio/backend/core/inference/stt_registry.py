@@ -16,6 +16,7 @@ import threading
 from typing import Any, Optional, Sequence
 
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 logger = get_logger(__name__)
 
@@ -40,6 +41,7 @@ def sidecar_for(engine: str) -> Any:
     return get_stt_sidecar()
 
 
+@_invalidates_gpu_memory("stt load")
 def load(
     model: Optional[str],
     engine: str,
@@ -99,6 +101,7 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         return False
 
 
+@_invalidates_gpu_memory("stt unload")
 def unload(
     engines: Optional[Sequence[str]] = None,
     *,
