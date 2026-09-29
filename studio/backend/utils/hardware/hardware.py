@@ -5936,6 +5936,8 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
 
     # The mask llama.cpp's own nvidia-smi probe applies: hidden cards are not llama-server's.
     allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+    if allowed is None and os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        return []  # a UUID / MIG mask names cards nvidia-smi rows cannot be matched to
     rows = [
         row
         for row in (nvidia.get_physical_gpu_inventory().get("devices") or [])
@@ -5961,9 +5963,28 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
 
 
 def _amd_inference_devices() -> list[Dict[str, Any]]:
+    from core.inference.llama_cpp import LlamaCppBackend
+
     from . import amd
 
     vram_mib, gpu_ids = amd.get_gpu_vram_report()
+    masks = [
+        name
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        if os.environ.get(name) is not None
+    ]
+    if masks:
+        # HIP masks name HIP ids, not amd-smi's; ROCR renumbers what a stacked HIP mask sees.
+        allowed = LlamaCppBackend._visible_devices_mask(masks[0])
+        hip_ids = amd.get_hip_id_by_gpu_index()
+        if (
+            len(masks) > 1
+            or masks[0] == "ROCR_VISIBLE_DEVICES"
+            or allowed is None
+            or hip_ids is None
+        ):
+            return []
+        gpu_ids = [gpu_id for gpu_id in gpu_ids if hip_ids.get(gpu_id) in allowed]
     devices = []
     for ordinal, gpu_id in enumerate(gpu_ids):
         free_total = vram_mib.get(gpu_id)

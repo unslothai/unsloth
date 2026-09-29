@@ -438,7 +438,8 @@ def _mixed_host(monkeypatch, *, torch_rocm, llama_backend):
         LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda binary = None: False)
     )
     monkeypatch.setattr(main, "_system_gpu_cache", None)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
 
 
 def test_rocm_torch_with_a_cuda_llama_cpp_reports_the_nvidia_card(monkeypatch):
@@ -607,4 +608,48 @@ def test_capacity_less_nvidia_rows_fall_back_to_the_training_inventory(monkeypat
 
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
+    assert inference_gpu is gpu
+
+
+def test_an_unresolvable_cuda_mask_declines_the_nvidia_inventory(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    _two_nvidia_cards(monkeypatch, [("RTX 3080", 10.0), ("RTX 4090", 24.0)])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-8a1b2c3d")
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert inference_gpu is gpu
+
+
+def _two_amd_cards(monkeypatch, hip_ids):
+    import utils.hardware.amd as amd
+    monkeypatch.setattr(
+        amd, "get_gpu_vram_report", lambda: ({0: (26000, 32000), 1: (10000, 16000)}, [0, 1])
+    )
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: hip_ids)
+
+
+def test_cross_vendor_amd_cards_follow_hip_visible_devices(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
+    # amd-smi and HIP enumerate in different orders on this host.
+    _two_amd_cards(monkeypatch, {0: 1, 1: 0})
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+
+    _, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert [d["index"] for d in inference_gpu["devices"]] == [1]
+
+
+def test_stacked_or_unmappable_amd_masks_decline_the_inventory(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
+    _two_amd_cards(monkeypatch, None)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+    assert inference_gpu is gpu
+
+    _two_amd_cards(monkeypatch, {0: 0, 1: 1})
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
     assert inference_gpu is gpu
