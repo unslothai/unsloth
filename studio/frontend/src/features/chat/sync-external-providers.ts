@@ -338,8 +338,7 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      // A llama.cpp settings snapshot cannot safely compare then backfill across tabs without
-      // backend CAS support. Leave its catalog writes to queued manual and live-refresh paths.
+      // No backend CAS: an auto-reloading llama.cpp catalog is written only by the queued save paths.
       const settingsMayBackfill = uiProviderType !== "llama_cpp";
       if ((needsModelBackfill || needsAvailableBackfill) && settingsMayBackfill) {
         backfillTasks.push(() =>

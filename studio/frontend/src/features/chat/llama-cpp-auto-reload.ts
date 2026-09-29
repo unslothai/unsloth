@@ -85,13 +85,12 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         const availableModels = [
           ...new Set(listed.map((model) => model.id.trim()).filter(Boolean)),
         ];
-        // an empty catalog during server startup must not erase the last working selection.
+        // An empty catalog during server startup must not erase the last working selection.
         if (availableModels.length === 0) return;
         const hasSavedCatalog =
           (saved.models?.length ?? 0) > 0 ||
           (saved.available_models?.length ?? 0) > 0;
-        // Older configs can have no durable catalog yet. In that case the recovered local
-        // selection remains authoritative until this first queued live refresh persists it.
+        // Older configs have no durable catalog yet: the local selection wins until this refresh persists it.
         const savedModels = hasSavedCatalog
           ? (saved.models ?? latest.models)
           : latest.models;
@@ -141,7 +140,7 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         connection.connected = true;
       });
     } catch {
-      // retry on the next probe, retaining the last successful catalog through outages.
+      // Keep the last good catalog; the next probe retries.
       connection.connected = false;
     } finally {
       connection.busy = false;
