@@ -628,7 +628,8 @@ def test_multi_card_budget_leaves_room_for_a_whole_layer_per_card(zoo, sizes):
 
 
 @pytest.mark.parametrize(
-    "key", ["lm_head", "model.embed_tokens", "model.layers.3.self_attn", "model.layers.3.mlp.experts", ""]
+    "key",
+    ["lm_head", "model.embed_tokens", "model.layers.3.self_attn", "model.layers.3.mlp.experts", ""],
 )
 def test_any_offload_in_an_explicit_map_unpacks_like_the_zoo_guard(zoo, sizes, key):
     # zoo's _get_device_map guard flags any cpu / disk entry, then every expert is dequantized.
