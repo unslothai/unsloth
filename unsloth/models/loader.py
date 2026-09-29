@@ -2422,7 +2422,13 @@ class FastModel(FastBaseModel):
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
             elif _is_text_seq2seq_config(model_config):
+                if fast_inference:
+                    raise NotImplementedError(
+                        "Unsloth: fast_inference (vLLM) does not support encoder-decoder models "
+                        "such as T5 or BART. Please load with fast_inference = False."
+                    )
                 from transformers import AutoModelForSeq2SeqLM
+
                 auto_model = AutoModelForSeq2SeqLM
                 # The zoo's source probe says sdpa where transformers refuses it (T5 on 4.57).
                 if not getattr(
