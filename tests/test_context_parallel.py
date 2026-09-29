@@ -53,6 +53,13 @@ def test_left_padded_or_holed_masks_are_refused(mask):
     _manager()._prepare_inputs(right)
 
 
+def test_inputs_embeds_batches_are_refused():
+    with pytest.raises(ValueError, match = "input_ids"):
+        _manager()._prepare_inputs(
+            {"inputs_embeds": torch.zeros(1, 4, 8), "labels": torch.ones(1, 4)}
+        )
+
+
 def test_active_manager_resets_when_the_step_raises(monkeypatch):
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
     manager = _manager()

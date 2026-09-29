@@ -83,8 +83,10 @@ class ContextParallelManager:
 
     def _prepare_inputs(self, inputs: dict) -> None:
         input_ids = inputs.get("input_ids")
-        if input_ids is None:
-            return
+        if not isinstance(input_ids, torch.Tensor) or "inputs_embeds" in inputs:
+            raise ValueError(
+                "Unsloth: context parallelism needs input_ids batches (not inputs_embeds)."
+            )
         bsz, seq_len = input_ids.shape
         if "position_ids" not in inputs:
             inputs["position_ids"] = (
