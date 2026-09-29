@@ -118,12 +118,13 @@ def _run(job: HostPrepJob, proc: subprocess.Popen) -> None:
 
 def start() -> HostPrepJob:
     global _current
-    from . import mxc_probe, sandbox_setup_job
+    from . import mxc_probe, sandbox_setup_job, sandbox_setup_plan
 
     with HOST_CHANGE_LOCK:
         setup = sandbox_setup_job.current()
         if setup is not None and setup.state == "running":
-            return setup
+            # Only the chained setup ends in this preparation; a runtime-only install never does.
+            return sandbox_setup_job._joined(setup, sandbox_setup_plan.WINDOWS_SETUP)
         with _lock:
             if _current is not None and _current.state == "running":
                 return _current

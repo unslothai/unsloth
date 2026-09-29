@@ -880,7 +880,11 @@ ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
 _tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
+# Every check takes a number when it starts; a reset raises the floor. An answer from a check that
+# started before the reset, or before the one already recorded for that tool, is dropped.
 _tool_isolation_generation = 0
+_tool_isolation_floor = 0
+_tool_isolation_noted: dict[str, int] = {}
 
 
 # Set to 1: no startup or background probes; only real launches update the answer.
@@ -911,31 +915,38 @@ def note_tool_isolation(
     reason: str = "",
     generation: int | None = None,
 ) -> None:
+    global _tool_isolation_generation
     if tool not in ISOLATED_TOOLS:
         return
     with _tool_isolation_lock:
-        if generation is not None and generation != _tool_isolation_generation:
+        if generation is None:
+            _tool_isolation_generation += 1
+            generation = _tool_isolation_generation
+        elif generation < _tool_isolation_floor or generation < _tool_isolation_noted.get(tool, 0):
             return
+        _tool_isolation_noted[tool] = generation
         _tool_isolation[tool] = (time.monotonic(), bool(available), backend, reason)
 
 
 def tool_isolation_generation() -> int:
-    """Pass to note_tool_isolation(generation=...) so a check that started before a reset stays out."""
+    """Take before a check and pass to note_tool_isolation(generation=...): an older check stays out."""
+    global _tool_isolation_generation
     with _tool_isolation_lock:
+        _tool_isolation_generation += 1
         return _tool_isolation_generation
 
 
 def forget_tool_isolation() -> None:
-    global _tool_isolation_generation
+    global _tool_isolation_floor
     with _tool_isolation_lock:
         _tool_isolation.clear()
-        _tool_isolation_generation += 1
+        _tool_isolation_noted.clear()
+        _tool_isolation_floor = _tool_isolation_generation + 1
 
 
 def refresh_tool_isolation(tool: str, *, force: bool = False) -> bool:
     """Blocking: the capability for one tool, remembered for cached_tool_isolation."""
-    with _tool_isolation_lock:
-        generation = _tool_isolation_generation
+    generation = tool_isolation_generation()
     try:
         capability = capability_snapshot(
             force = force,

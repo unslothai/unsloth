@@ -264,11 +264,22 @@ def test_a_real_launch_updates_the_cached_answer():
 
 
 def test_forget_discards_a_refresh_that_started_before_it(monkeypatch):
-    with os_sandbox._tool_isolation_lock:
-        generation = os_sandbox._tool_isolation_generation
+    generation = os_sandbox.tool_isolation_generation()
     os_sandbox.forget_tool_isolation()
     os_sandbox.note_tool_isolation("python", True, generation = generation)
     assert os_sandbox.cached_tool_capability("python") is None
+
+
+def test_an_older_check_that_finishes_last_never_overwrites_a_newer_one():
+    stale = os_sandbox.tool_isolation_generation()  # background refresh of an expired answer
+    forced = os_sandbox.tool_isolation_generation()  # a forced refresh started after it
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap", generation = forced)
+    os_sandbox.note_tool_isolation("python", False, backend = "none", generation = stale)
+    assert os_sandbox.cached_tool_capability("python")[:2] == (True, "bubblewrap")
+    os_sandbox.note_tool_isolation("python", False, backend = "none")  # a real launch, just now
+    assert os_sandbox.cached_tool_capability("python")[:2] == (False, "none")
+    os_sandbox.note_tool_isolation("terminal", True, generation = stale)  # other tools are separate
+    assert os_sandbox.cached_tool_capability("terminal")[0] is True
 
 
 def test_probe_cache_reset_forgets_the_cached_answer():

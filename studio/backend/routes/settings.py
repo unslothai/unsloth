@@ -4725,7 +4725,7 @@ async def start_sandbox_prepare(
     """Run MXC's elevated host preparation; Windows shows its administrator prompt on this computer."""
     import sys
 
-    from core.inference import mxc_host_prep_job, mxc_runtime
+    from core.inference import mxc_host_prep_job, mxc_runtime, sandbox_setup_job
     from utils.client_ip import is_direct_local_request
 
     # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
@@ -4746,7 +4746,10 @@ async def start_sandbox_prepare(
             status_code = 409, detail = "The MXC runtime is not installed; rerun Studio setup."
         ) from exc
     mxc_host_prep_job.add_finish_hook(_forget_sandbox_status)
-    job = await asyncio.to_thread(mxc_host_prep_job.start)
+    try:
+        job = await asyncio.to_thread(mxc_host_prep_job.start)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     logger.info("settings.sandbox_prepare_started subject=%s job=%s", current_subject, job.id)
     return _sandbox_job_response(job)
 

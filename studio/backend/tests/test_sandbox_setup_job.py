@@ -193,7 +193,8 @@ def test_one_setup_at_a_time_across_both_jobs(monkeypatch, env, tmp_path):
     first = job_mod.start(plan_mod.LINUX_INSTALL)
     try:
         assert job_mod.start(plan_mod.LINUX_INSTALL) is first
-        assert mxc_host_prep_job.start() is first
+        with pytest.raises(job_mod.SetupUnavailable):
+            mxc_host_prep_job.start()  # a different run never stands in for the preparation
     finally:
         gate.write_text("")
     _settle(first)
@@ -217,6 +218,15 @@ def test_a_running_setup_never_stands_in_for_a_different_operation(monkeypatch, 
         gate.write_text("")
     _settle(first)
     assert len(env["recorded"]()) == 1
+
+
+def test_host_preparation_joins_only_the_chained_windows_setup(monkeypatch, env):
+    running = job_mod.SetupJob(id = "chain", operation = plan_mod.WINDOWS_SETUP)
+    monkeypatch.setattr(job_mod, "_current", running)
+    assert mxc_host_prep_job.start() is running
+    running.operation = plan_mod.WINDOWS_RUNTIME
+    with pytest.raises(job_mod.SetupUnavailable, match = "windows-runtime"):
+        mxc_host_prep_job.start()
 
 
 def test_windows_setup_installs_then_prepares_in_order(monkeypatch, env):
@@ -370,7 +380,10 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
 
     def prepare():
         barrier.wait()
-        results["prepare"] = mxc_host_prep_job.start()
+        try:
+            results["prepare"] = mxc_host_prep_job.start()
+        except job_mod.SetupUnavailable as exc:
+            results["prepare"] = exc  # the install won; host preparation is refused
 
     threads = [threading.Thread(target = setup), threading.Thread(target = prepare)]
     for thread in threads:
@@ -384,7 +397,7 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
         if started_prep:
             assert isinstance(results["setup"], job_mod.SetupUnavailable)
         else:
-            assert results["setup"].id == results["prepare"].id
+            assert isinstance(results["prepare"], job_mod.SetupUnavailable)
     finally:
         gate.write_text("")
         if job_mod.current() is not None:
