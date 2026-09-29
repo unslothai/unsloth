@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import os
 import sys
 import threading
@@ -8,7 +9,7 @@ import weakref
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
@@ -396,6 +397,45 @@ def test_invalid_settings_are_refused_without_evicting_the_model(client, payload
     assert client.get("/api/settings/systemone").json()["loaded_model"] == "laya-multilingual"
 
 
+def test_settings_update_refuses_a_stale_consent_snapshot(client):
+    response = client.put(
+        "/api/settings/systemone",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": False,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Decision API settings changed. Try again."
+    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+
+
+def test_settings_validation_checks_the_snapshot_without_saving(client):
+    response = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": True,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert response.status_code == 204
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["enabled"] is True
+    assert settings["model"] == "laya-multilingual"
+    updated = client.put(
+        "/api/settings/systemone",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": True,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["model"] == "laya-english"
+
+
 def test_env_model_is_locked(client, monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", "laya-english")
     settings = client.get("/api/settings/systemone").json()
@@ -404,6 +444,21 @@ def test_env_model_is_locked(client, monkeypatch, tmp_path):
         client.put("/api/settings/systemone", json = {"model": "laya-multilingual"}).status_code
         == 400
     )
+
+
+def test_stale_check_uses_the_display_name_for_a_local_env_model(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["model"] == "laya-local"
+    response = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "enabled": True,
+            "expected_enabled": True,
+            "expected_model": "laya-local",
+        },
+    )
+    assert response.status_code == 204
 
 
 def test_settings_change_waits_for_a_running_load(client, monkeypatch):
@@ -416,6 +471,17 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
     assert _post(client).status_code == 503
+    assert (
+        client.post(
+            "/api/settings/systemone/validate",
+            json = {
+                "model": "laya-english",
+                "expected_enabled": True,
+                "expected_model": "laya-multilingual",
+            },
+        ).status_code
+        == 409
+    )
     assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 409
     assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
     release.set()
@@ -496,6 +562,31 @@ def test_download_plan_lists_exact_subfolder_files(client, monkeypatch):
         "cached": False,
         "error": None,
     }
+
+
+def test_download_plan_can_preview_a_model_without_changing_the_setting(client, monkeypatch):
+    import huggingface_hub
+
+    seen = []
+
+    def list_tree(self, repo, **kwargs):
+        seen.append((repo, kwargs))
+        return []
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: False)
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_tree", list_tree)
+    plan = client.get("/api/settings/systemone/resolve?model=laya-english")
+    assert plan.status_code == 200
+    assert plan.json()["repo"] == catalog.LAYA_REPO
+    assert plan.json()["size_bytes"] == catalog.CHECKPOINTS["laya-english"].download_bytes
+    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+    assert seen == [(catalog.LAYA_REPO, {"recursive": True})]
+
+
+def test_download_plan_refuses_an_unknown_preview_model(client):
+    response = client.get("/api/settings/systemone/resolve?model=not-a-model")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown Decision API model."
 
 
 def test_download_plan_for_a_cached_model_skips_the_hub(client, monkeypatch):
@@ -781,6 +872,17 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     monkeypatch.setattr(studio_db, "upsert_app_settings", settings.update)
     reason = "The Decision API needs PyTorch, which this Studio install does not include."
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: reason)
+    preview = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "enabled": True,
+            "expected_enabled": False,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert preview.status_code == 400
+    assert preview.json()["detail"] == reason
+    assert settings == {}
     response = client.put("/api/settings/systemone", json = {"enabled": True})
     assert response.status_code == 400
     assert response.json()["detail"] == reason
@@ -1365,6 +1467,152 @@ def test_high_special_token_ids_still_skip_the_embedding_init(tmp_path):
         assert torch.equal(fast(*args)[0], reference(*args)[0])
 
 
+def _tiny_decision_batch(
+    torch,
+    rows = 4,
+    tokens = 40,
+):
+    generator = torch.Generator().manual_seed(0)
+    lengths = [tokens, 23, 9, 31][:rows]
+    ids = torch.randint(5, 300, (rows, tokens), generator = generator)
+    mask = torch.zeros(rows, tokens, dtype = torch.long)
+    for row, length in enumerate(lengths):
+        mask[row, :length] = 1
+        ids[row, length:] = 297
+    counts = [2, 5, 1, 3][:rows]
+    positions = torch.zeros(rows, 5, dtype = torch.long)
+    markers = torch.zeros(rows, 5, dtype = torch.bool)
+    for row, count in enumerate(counts):
+        positions[row, :count] = torch.randperm(lengths[row], generator = generator)[:count]
+        markers[row, :count] = True
+    return ids, mask, positions, markers, torch.tensor([0, 1, 2, 1][:rows])
+
+
+@pytest.mark.parametrize("head_layers", [1, 2, 3])
+def test_marker_head_matches_laya_forward(tmp_path, head_layers):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model(
+        {**cfg, "head_layers": head_layers}, encoder_dir = encoder_dir
+    ).eval()
+    assert laya_runtime._marker_head(model)
+    args = _tiny_decision_batch(torch)
+    with torch.inference_mode():
+        want = model(*args)[0]
+        got = laya_runtime._decision_logits(model, *args)
+        assert got.dtype == want.dtype == torch.float32
+        torch.testing.assert_close(got, want, atol = 1e-5, rtol = 1e-4)
+        # Without padding the mask is dropped altogether.
+        unpadded = [arg[:1] for arg in args]
+        torch.testing.assert_close(
+            laya_runtime._decision_logits(model, *unpadded, padded = False),
+            model(*unpadded)[0],
+            atol = 1e-5,
+            rtol = 1e-4,
+        )
+
+
+def test_models_without_laya_head_keep_their_own_forward(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    assert not laya_runtime._marker_head(
+        laya.common.build_model({**cfg, "head_layers": 0}, encoder_dir = encoder_dir)
+    )
+    model = laya.common.build_model(cfg, encoder_dir = encoder_dir)
+    model.scorer[2].approximate = "tanh"
+    assert not laya_runtime._marker_head(model)
+    model = laya.common.build_model(cfg, encoder_dir = encoder_dir)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FAST", "0")
+    assert not laya_runtime._marker_head(model)
+
+
+def test_collate_matches_laya():
+    torch = pytest.importorskip("torch")
+    collate_items = laya_runtime._laya().common.collate_items
+    items = [
+        {"ids": [2, 7, 9, 1], "markers": [1, 2], "qtype": 1},
+        {"ids": [2, 8, 1], "markers": [1], "qtype": 0},
+        {"ids": [2, 5, 6, 7, 8, 9, 1], "markers": [1, 3, 5, 6], "qtype": 2},
+    ]
+    want = collate_items([items], 297)
+    got = laya_runtime._collate(items, 297)
+    for name in laya_runtime._INPUTS:
+        assert got[name].dtype == want[name].dtype and torch.equal(got[name], want[name]), name
+
+
+def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA GPU")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model({**cfg, "head_layers": 2}, encoder_dir = encoder_dir).eval()
+    agent = SimpleNamespace(model = model, device = torch.device("cpu"), dtype = torch.float32)
+    monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
+    laya_runtime._place(agent, torch.device("cuda"), False)
+    ids, mask, positions, markers, qtype = _tiny_decision_batch(torch, rows = 3, tokens = 40)
+    batch = dict(zip(laya_runtime._INPUTS, (ids, mask, positions, markers, qtype)))
+    graphed = laya_runtime._run_model(agent, batch).clone()
+    graphs = agent.__dict__["_unsloth_graphs"]
+    if graphs.broken:
+        # transformers 4.x: ModernBERT cannot be captured, so the model runs eagerly with the same logits.
+        import transformers
+
+        assert int(transformers.__version__.split(".")[0]) < 5
+        with torch.inference_mode():
+            reference = model(*(value.cuda() for value in batch.values()))[0]
+        torch.testing.assert_close(graphed, reference, atol = 1e-4, rtol = 1e-4)
+        return
+    assert list(graphs.graphs) == [(4, 64, 8)]
+    # The same padded bucket run eagerly: rows 3 -> 4 repeat row 0, tokens 40 -> 64 and options 5 -> 8 are masked.
+    padded = {
+        "input_ids": torch.zeros(4, 64, dtype = torch.long),
+        "attention_mask": torch.zeros(4, 64, dtype = torch.long),
+        "marker_pos": torch.zeros(4, 8, dtype = torch.long),
+        "marker_mask": torch.zeros(4, 8, dtype = torch.bool),
+        "qtype": torch.zeros(4, dtype = torch.long),
+    }
+    for name, value in batch.items():
+        if value.dim() == 1:
+            padded[name][:3] = value
+        else:
+            padded[name][:3, : value.shape[1]] = value
+        padded[name][3:] = padded[name][:1]
+    with torch.inference_mode():
+        eager = laya_runtime._decision_logits(
+            model, *(padded[name].cuda() for name in laya_runtime._INPUTS)
+        )
+    assert torch.equal(graphed, eager[:3, :5])
+    with torch.inference_mode():
+        reference = model(*(value.cuda() for value in batch.values()))[0]
+    torch.testing.assert_close(graphed, reference, atol = 1e-4, rtol = 1e-4)
+    # A second request with other contents replays the same graph.
+    batch["input_ids"] = torch.randint(5, 300, ids.shape)
+    with torch.inference_mode():
+        reference = model(*(value.cuda() for value in batch.values()))[0]
+    torch.testing.assert_close(
+        laya_runtime._run_model(agent, batch), reference, atol = 1e-4, rtol = 1e-4
+    )
+    assert len(graphs.graphs) == 1
+    # Moving or recasting the model drops the graphs that point at its old weights.
+    laya_runtime._place(agent, torch.device("cuda"), False)
+    assert "_unsloth_graphs" not in agent.__dict__
+    # Batches too large to be worth padding into a bucket run eagerly.
+    assert (
+        laya_runtime._CUDAGraphs(agent).run(
+            {"input_ids": torch.zeros(16, 1024), "marker_pos": torch.zeros(16, 2)}
+        )
+        is None
+    )
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "0")
+    laya_runtime._run_model(agent, batch)
+    assert "_unsloth_graphs" not in agent.__dict__
+
+
 def test_encoders_that_keep_the_padding_id_match_laya(tmp_path):
     torch = pytest.importorskip("torch")
     from transformers import RobertaConfig
@@ -1399,3 +1647,213 @@ def test_encoders_that_keep_the_padding_id_match_laya(tmp_path):
     )
     with torch.inference_mode():
         assert torch.equal(fast(*args)[0], reference(*args)[0])
+
+
+def _cuda_tiny_agent(
+    tmp_path,
+    monkeypatch,
+    torch,
+    capture = True,
+):
+    if not torch.cuda.is_available() or torch.version.hip:
+        pytest.skip("needs a CUDA GPU")
+    import transformers
+
+    if capture and int(transformers.__version__.split(".")[0]) < 5:
+        pytest.skip("transformers 4.x ModernBERT cannot be captured")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model({**cfg, "head_layers": 2}, encoder_dir = encoder_dir).eval()
+    agent = SimpleNamespace(model = model, device = torch.device("cpu"), dtype = torch.float32)
+    monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
+    laya_runtime._place(agent, torch.device("cuda"), False)
+    return agent
+
+
+def _padded_eager(model, batch, key, torch):
+    rows = batch["input_ids"].shape[0]
+    shapes = {
+        "input_ids": key[:2],
+        "attention_mask": key[:2],
+        "marker_pos": (key[0], key[2]),
+        "marker_mask": (key[0], key[2]),
+        "qtype": key[:1],
+    }
+    padded = {name: torch.zeros(shape, dtype = batch[name].dtype) for name, shape in shapes.items()}
+    for name, value in batch.items():
+        if value.dim() == 1:
+            padded[name][:rows] = value
+        else:
+            padded[name][:rows, : value.shape[1]] = value
+        padded[name][rows:] = padded[name][:1]
+    with torch.inference_mode():
+        return laya_runtime._decision_logits(
+            model, *(padded[name].cuda() for name in laya_runtime._INPUTS)
+        )
+
+
+def test_cuda_graphs_sharing_a_pool_replay_in_any_order(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
+    generator = torch.Generator().manual_seed(1)
+    shapes = [(1, 20, 2), (3, 40, 5), (2, 100, 3), (6, 200, 9)]
+
+    def request(rows, tokens, options):
+        ids = torch.randint(5, 300, (rows, tokens), generator = generator)
+        mask = torch.ones(rows, tokens, dtype = torch.long)
+        mask[1:, tokens // 2 :] = 0
+        positions = torch.randint(0, tokens // 2, (rows, options), generator = generator)
+        markers = torch.ones(rows, options, dtype = torch.bool)
+        markers[1:, options - 1] = False
+        return dict(
+            zip(
+                laya_runtime._INPUTS,
+                (ids, mask, positions, markers, torch.randint(0, 3, (rows,), generator = generator)),
+            )
+        )
+
+    graphs = None
+    # Capture order A B C D, then replay out of order, interleaving buckets.
+    for index in [0, 1, 2, 3, 0, 2, 1, 3, 3, 0, 1, 0, 2]:
+        batch = request(*shapes[index])
+        got = laya_runtime._run_model(agent, batch).clone()
+        graphs = agent.__dict__["_unsloth_graphs"]
+        key = graphs.graphs and next(
+            k
+            for k in graphs.graphs
+            if k[0] >= shapes[index][0] and k[1] >= shapes[index][1] and k[2] >= shapes[index][2]
+        )
+        want = _padded_eager(agent.model, batch, key, torch)
+        assert torch.equal(got, want[: shapes[index][0], : shapes[index][2]]), (index, key)
+    assert len(graphs.graphs) == 4 and not graphs.broken
+
+
+def test_cuda_graphs_over_the_memory_budget_run_eagerly(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
+    batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
+    graphs = agent.__dict__["_unsloth_graphs"] = laya_runtime._CUDAGraphs(agent)
+    # The first capture alone takes more than the budget.
+    graphs.max_pool_bytes = 1 << 20
+    reserved = iter([0, 2 << 20])
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: next(reserved))
+    logits = laya_runtime._run_model(agent, batch)
+    assert graphs.broken and not graphs.graphs
+    with torch.inference_mode():
+        reference = agent.model(*(value.cuda() for value in batch.values()))[0]
+    torch.testing.assert_close(logits, reference, atol = 1e-4, rtol = 1e-4)
+
+
+def test_rocm_never_builds_cuda_graphs(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch, capture = False)
+    # transformers 4.x would torch.compile ModernBERT, which a faked ROCm version sends looking for HIP.
+    agent.model.encoder.config.reference_compile = False
+    monkeypatch.setattr(torch.version, "hip", "6.2")
+    monkeypatch.setattr(laya_runtime, "_CUDAGraphs", None)
+    batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
+    laya_runtime._run_model(agent, batch)
+    assert "_unsloth_graphs" not in agent.__dict__
+
+
+def _mcp_decide(arguments):
+    from fastmcp import Client
+    async def call():
+        async with Client(systemone.decisions_mcp) as mcp:
+            return await mcp.call_tool("decide", arguments, raise_on_error = False)
+
+    return asyncio.run(call())
+
+
+def test_decisions_mcp_answers_like_the_route(client):
+    route = _post(client).json()
+    result = _mcp_decide(
+        {"state": "Everything is down and we have a demo at noon.", "questions": QUESTIONS}
+    )
+    assert not result.is_error
+    assert result.structured_content == route
+
+
+def test_decisions_mcp_reports_the_route_errors(monkeypatch, runtime):
+    result = _mcp_decide({"state": "x", "questions": {}})
+    assert result.is_error and "At least one question" in result.content[0].text
+    long_state = "x" * (systemone.MAX_STATE_CHARS + 1)
+    result = _mcp_decide({"state": long_state, "questions": QUESTIONS})
+    assert result.is_error and "State is longer than" in result.content[0].text
+    monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+    result = _mcp_decide({"state": "x", "questions": QUESTIONS})
+    assert result.is_error and "Settings > API" in result.content[0].text
+    assert runtime == []
+
+
+def test_chat_calls_studio_decisions_without_a_server_or_key(client):
+    import json
+
+    from core.inference.mcp_client import call_tool_sync, close_mcp_sessions, list_tools_async
+
+    url = client.get("/api/settings/systemone").json()["mcp_url"]
+    assert url == f"http://127.0.0.1:80{systemone.MCP_PATH}/"
+    tools = asyncio.run(list_tools_async(url, timeout = 10))
+    assert [tool["name"] for tool in tools] == ["decide"]
+    text = call_tool_sync(url, None, "decide", {"state": "x", "questions": QUESTIONS}, scope = "chat")
+    close_mcp_sessions(url, None)
+    assert json.loads(text)["answers"]["urgent"] == {"type": "noul", "noul": 0.9}
+
+
+def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
+    from main import app
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "decide", "arguments": {"state": "x", "questions": QUESTIONS}},
+    }
+    listing = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    headers = {"Accept": "application/json, text/event-stream"}
+    assert (
+        TestClient(app).post(f"{systemone.MCP_PATH}/", json = call, headers = headers).status_code
+        == 401
+    )
+
+    async def signed_in(credentials):
+        return "tester"
+
+    monkeypatch.setattr(systemone, "get_current_subject", signed_in)
+    mcp_app = systemone.decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+    served = Starlette(
+        routes = [Mount(systemone.MCP_PATH, systemone.RequireStudioAuth(mcp_app))],
+        lifespan = mcp_app.lifespan,
+    )
+    with TestClient(served) as http:
+        listed = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+        answered = http.post(
+            f"{systemone.MCP_PATH}/", json = call, headers = {**headers, "Authorization": "Bearer t"}
+        )
+        monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+        hidden = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["result"]["structuredContent"]["answers"]["urgent"]["noul"] == 0.9
+    assert [tool["name"] for tool in listed.json()["result"]["tools"]] == ["decide"]
+    assert hidden.json()["result"]["tools"] == []
+
+
+def test_managed_accounts_can_add_studio_decisions_but_not_other_loopback():
+    from core.inference.mcp_client import validate_mcp_address
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("alice-id", "alice")
+    run_as(alice, validate_mcp_address, f"http://127.0.0.1:8888{systemone.MCP_PATH}/")
+    with pytest.raises(HTTPException):
+        run_as(alice, validate_mcp_address, "http://127.0.0.1:8888/mcp")

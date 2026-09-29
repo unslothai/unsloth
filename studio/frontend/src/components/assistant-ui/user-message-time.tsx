@@ -3,32 +3,51 @@
 
 import { useLocale, useT } from "@/i18n";
 import { formatMessageDate } from "@/lib/format-message-date";
+import { messageTimestamp } from "@/lib/message-timestamp";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** When a prompt was sent, left of its action bar. That bar mounts only while hovered, so no timer. */
+/** Mounted only while the prompt's actions are revealed, with no clock subscription. */
 export const UserMessageTime: FC = () => {
   const t = useT();
   const locale = useLocale();
-  const createdAt = useAuiState(({ message }) => message.createdAt?.getTime());
-  if (createdAt === undefined || !Number.isFinite(createdAt)) {
+  const createdAt = useAuiState(({ message }) => messageTimestamp(message));
+  if (createdAt === undefined) {
     return null;
   }
   const date = new Date(createdAt);
+  const fullDate = date.toLocaleString(locale, {
+    dateStyle: "full",
+    timeStyle: "short",
+  });
   return (
-    <time
-      dateTime={date.toISOString()}
-      title={date.toLocaleString(locale, {
-        dateStyle: "full",
-        timeStyle: "short",
-      })}
-      className="aui-user-message-time mr-1 self-center whitespace-nowrap select-none text-ui-13 text-muted-foreground tabular-nums"
-    >
-      {formatMessageDate(createdAt, Date.now(), locale, {
-        // Today reads as just the time.
-        today: (time) => time,
-        yesterday: (time) => t("common.yesterdayAt", { time }),
-      })}
-    </time>
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={fullDate}
+          className="aui-user-message-time-trigger mr-2 h-8 min-w-8 flex-1 cursor-pointer self-center rounded-sm text-right text-ui-13 text-muted-foreground tabular-nums"
+        >
+          <time
+            dateTime={date.toISOString()}
+            className="aui-user-message-time block truncate select-none"
+          >
+            {formatMessageDate(createdAt, Date.now(), locale, {
+              // Today reads as just the time.
+              today: (time) => time,
+              yesterday: (time) => t("common.yesterdayAt", { time }),
+            })}
+          </time>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="end">
+        {fullDate}
+      </TooltipContent>
+    </Tooltip>
   );
 };
