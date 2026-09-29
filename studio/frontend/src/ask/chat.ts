@@ -3,20 +3,22 @@
 
 // Leaf imports: the feature barrels pull the full app into this small window.
 // eslint-disable-next-line no-restricted-imports
-import { authFetch } from "@/features/auth/api";
+import { refreshSession } from "@/features/auth/api";
+// eslint-disable-next-line no-restricted-imports
+import { getAuthToken } from "@/features/auth/session";
 // eslint-disable-next-line no-restricted-imports
 import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
 // eslint-disable-next-line no-restricted-imports
 import { isSpeechOnlyStatus } from "@/features/chat/lib/speech-only-status";
 import { invoke } from "@tauri-apps/api/core";
-import { setApiBase } from "@/lib/api-base";
+import { apiUrl, setApiBase } from "@/lib/api-base";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 export class AskError extends Error {
-  readonly kind: "noModel" | "failed";
+  readonly kind: "noModel" | "signedOut" | "failed";
 
-  constructor(kind: "noModel" | "failed") {
+  constructor(kind: "noModel" | "signedOut" | "failed") {
     super(kind);
     this.kind = kind;
   }
@@ -30,8 +32,22 @@ export async function adoptBackendPort(): Promise<boolean> {
   return true;
 }
 
+// Not authFetch: its sign-in recovery navigates the window to /login, replacing the panel.
+async function askFetch(path: string, init: RequestInit): Promise<Response> {
+  const send = () => {
+    const headers = new Headers(init.headers);
+    const token = getAuthToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(apiUrl(path), { ...init, headers });
+  };
+  let response = await send();
+  if (response.status === 401 && (await refreshSession())) response = await send();
+  if (response.status === 401) throw new AskError("signedOut");
+  return response;
+}
+
 async function getJson<T>(path: string, signal: AbortSignal): Promise<T> {
-  const response = await authFetch(path, { signal });
+  const response = await askFetch(path, { signal });
   if (!response.ok) throw new Error(`${path} failed (${response.status})`);
   return (await response.json()) as T;
 }
@@ -64,7 +80,7 @@ export async function resolveModel(
   );
   if (!last.id) throw new AskError("noModel");
   onLoading(last.id);
-  const response = await authFetch("/api/inference/load", {
+  const response = await askFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model_path: last.id, gguf_variant: last.gguf_variant ?? undefined }),
@@ -85,7 +101,7 @@ export async function* streamAnswer(
   messages: ChatMessage[],
   signal: AbortSignal,
 ): AsyncGenerator<string> {
-  const response = await authFetch("/v1/chat/completions", {
+  const response = await askFetch("/v1/chat/completions", {
     method: "POST",
     // Refuse a spoken reply even if a speech model is swapped in after the model was picked.
     headers: { "Content-Type": "application/json", "X-Unsloth-Require-Text": "1" },

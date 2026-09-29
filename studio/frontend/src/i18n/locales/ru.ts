@@ -3037,6 +3037,7 @@ export const ru = {
     followUp: "Уточнить...",
     loading: "Загрузка {model}...",
     noModel: "Модель не загружена. Сначала загрузите её в Unsloth.",
+    signedOut: "Войдите в Unsloth и спросите ещё раз.",
     failed: "Что-то пошло не так. Бэкенд запущен?",
     autoModel: "Активная модель",
     copy: "Копировать",

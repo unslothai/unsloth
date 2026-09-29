@@ -3010,6 +3010,7 @@ export const ar = {
     followUp: "متابعة السؤال...",
     loading: "جار تحميل {model}...",
     noModel: "لا يوجد نموذج محمل. حمّل نموذجا في Unsloth أولا.",
+    signedOut: "سجّل الدخول إلى Unsloth، ثم اسأل مرة أخرى.",
     failed: "حدث خطأ ما. هل الخادم الخلفي قيد التشغيل؟",
     autoModel: "النموذج النشط",
     copy: "نسخ",

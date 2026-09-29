@@ -211,7 +211,13 @@ export function AskApp(): ReactElement {
           ))}
           {phase === "error" && (
             <span className="text-muted-foreground">
-              {t(error === "noModel" ? "askBar.noModel" : "askBar.failed")}
+              {t(
+                error === "noModel"
+                  ? "askBar.noModel"
+                  : error === "signedOut"
+                    ? "askBar.signedOut"
+                    : "askBar.failed",
+              )}
             </span>
           )}
         </div>

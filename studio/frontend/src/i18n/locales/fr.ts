@@ -3090,6 +3090,7 @@ export const fr = {
     followUp: "Question suivante...",
     loading: "Chargement de {model}...",
     noModel: "Aucun modèle chargé. Chargez-en un dans Unsloth d'abord.",
+    signedOut: "Connectez-vous à Unsloth, puis posez à nouveau votre question.",
     failed: "Une erreur s'est produite. Le backend est-il en cours d'exécution ?",
     autoModel: "Modèle actif",
     copy: "Copier",

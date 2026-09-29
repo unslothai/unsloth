@@ -3077,6 +3077,7 @@ export const it = {
     followUp: "Chiedi ancora...",
     loading: "Caricamento di {model}...",
     noModel: "Nessun modello caricato. Caricane prima uno in Unsloth.",
+    signedOut: "Accedi a Unsloth, poi chiedi di nuovo.",
     failed: "Qualcosa è andato storto. Il backend è in esecuzione?",
     autoModel: "Modello attivo",
     copy: "Copia",

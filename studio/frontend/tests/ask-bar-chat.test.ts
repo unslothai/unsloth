@@ -40,9 +40,8 @@ async function withServer(handler: Handler, run: (chat: Chat, seen: string[]) =>
   if (address === null || typeof address === "string") throw new Error("no port");
   let base = "";
   const chat = loadWithStubs<Chat>(new URL("../src/ask/chat.ts", import.meta.url), {
-    "@/features/auth/api": {
-      authFetch: (path: string, init?: RequestInit) => fetch(`${base}${path}`, init),
-    },
+    "@/features/auth/api": { refreshSession: async () => false },
+    "@/features/auth/session": { getAuthToken: () => "access-token" },
     "@/features/chat/api/padded-response": paddedResponse,
     "@/features/chat/lib/speech-only-status": speechOnly,
     "@tauri-apps/api/core": {
@@ -52,6 +51,7 @@ async function withServer(handler: Handler, run: (chat: Chat, seen: string[]) =>
       },
     },
     "@/lib/api-base": {
+      apiUrl: (path: string) => `${base}${path}`,
       setApiBase: (port: number) => {
         base = `http://127.0.0.1:${port}`;
       },
@@ -203,6 +203,18 @@ test("the chat request refuses a spoken reply", async () => {
     async (chat) => {
       await collect(chat);
       assert.equal(header, "1");
+    },
+  );
+});
+
+test("a signed-out session says so and never leaves the panel", async () => {
+  await withServer(
+    (req, _body, res) => {
+      assert.equal(req.headers.authorization, "Bearer access-token");
+      res.writeHead(401).end();
+    },
+    async (chat) => {
+      await assert.rejects(chat.resolveModel(new AbortController().signal, () => {}), { kind: "signedOut" });
     },
   );
 });

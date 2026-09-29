@@ -2994,6 +2994,7 @@ export const en = {
     followUp: "Follow up...",
     loading: "Loading {model}...",
     noModel: "No model is loaded. Load one in Unsloth first.",
+    signedOut: "Sign in to Unsloth, then ask again.",
     failed: "Something went wrong. Is the backend running?",
     autoModel: "Active model",
     copy: "Copy",

@@ -2918,6 +2918,7 @@ export const zhCN = {
     followUp: "继续追问...",
     loading: "正在加载 {model}...",
     noModel: "尚未加载模型。请先在 Unsloth 中加载一个模型。",
+    signedOut: "请先登录 Unsloth，然后再提问。",
     failed: "出错了。后端正在运行吗？",
     autoModel: "当前模型",
     copy: "复制",

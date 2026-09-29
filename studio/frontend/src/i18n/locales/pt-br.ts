@@ -3038,6 +3038,7 @@ export const ptBR = {
     followUp: "Perguntar mais...",
     loading: "Carregando {model}...",
     noModel: "Nenhum modelo carregado. Carregue um no Unsloth primeiro.",
+    signedOut: "Entre no Unsloth e pergunte novamente.",
     failed: "Algo deu errado. O backend está em execução?",
     autoModel: "Modelo ativo",
     copy: "Copiar",

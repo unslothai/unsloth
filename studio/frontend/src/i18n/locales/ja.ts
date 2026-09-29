@@ -2958,6 +2958,7 @@ export const ja = {
     followUp: "続けて質問...",
     loading: "{model} を読み込み中...",
     noModel: "モデルが読み込まれていません。先に Unsloth でモデルを読み込んでください。",
+    signedOut: "Unsloth にサインインしてから、もう一度質問してください。",
     failed: "問題が発生しました。バックエンドは起動していますか？",
     autoModel: "使用中のモデル",
     copy: "コピー",

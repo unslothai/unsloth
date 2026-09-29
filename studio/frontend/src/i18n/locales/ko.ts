@@ -3004,6 +3004,7 @@ export const ko = {
     followUp: "이어서 질문...",
     loading: "{model} 불러오는 중...",
     noModel: "로드된 모델이 없습니다. 먼저 Unsloth에서 모델을 로드하세요.",
+    signedOut: "Unsloth에 로그인한 다음 다시 질문하세요.",
     failed: "문제가 발생했습니다. 백엔드가 실행 중인가요?",
     autoModel: "사용 중인 모델",
     copy: "복사",
