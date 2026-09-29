@@ -428,7 +428,7 @@ def _move_gemma4_token_types_to_input_embeddings(model):
     if target.type in ("cpu", "meta"):
         return
 
-    # transformers 5.5 builds Gemma 4's vision mask groups on mm_token_type_ids' device (the root hook's) but indexes them from the embedding's.
+    # transformers 5.5-5.8 build Gemma 4's vision mask groups on mm_token_type_ids' device (the root hook's) but index them from the embedding's; 5.9 moves them itself.
     def to_input_embeddings(module, args, kwargs):
         if kwargs.get("mm_token_type_ids") is not None:
             kwargs["mm_token_type_ids"] = kwargs["mm_token_type_ids"].to(target)
