@@ -210,8 +210,10 @@ def _pin_host_weights(
     module: Any,
     host: dict,
     logger: Any = None,
+    buffer_host: Optional[dict] = None,
 ) -> int:
-    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
+    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives.
+    ``buffer_host`` are the kept host BUFFERS (a torchao-free int8 linear stores its weight as one)."""
     import torch
 
     mode = _pin_mode()
@@ -226,6 +228,16 @@ def _pin_host_weights(
         and p.data.is_contiguous()
         and not p.data.is_pinned()
     ]
+    buffers = [
+        (name, b)
+        for name, b in _named_buffers(module)
+        if (buffer_host or {}).get(name) is b
+        and b.device.type == "cpu"
+        and _keepable_buffer(b)
+        and b.is_contiguous()
+        and not b.is_pinned()
+    ]
+    params = params + [("\0" + name, b) for name, b in buffers]
     sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
     if not sizes or sum(sizes) == 0:
         return 0
@@ -288,9 +300,30 @@ def _pin_host_weights(
             )
         return 0
     for name, p, view in placed:
+        if name.startswith("\0"):
+            name = name[1:]
+            _set_buffer(module, name, view)
+            buffer_host[name] = view
+            continue
         p.data = view
         host[name] = view
     return need
+
+
+def _named_buffers(module: Any) -> list:
+    named = getattr(module, "named_buffers", None)
+    return list(named()) if callable(named) else []
+
+
+def _keepable_buffer(buffer: Any) -> bool:
+    import torch
+    return type(buffer) is torch.Tensor
+
+
+def _set_buffer(module: Any, name: str, tensor: Any) -> None:
+    prefix, _, leaf = name.rpartition(".")
+    owner = module.get_submodule(prefix) if prefix else module
+    owner._buffers[leaf] = tensor
 
 
 def _wrap_cpu_offload_hook(
@@ -305,20 +338,47 @@ def _wrap_cpu_offload_hook(
         module.__dict__[_KEEP_ATTR] = state
     state.setdefault("owner", {})
     host, owner, version = state["host"], state["owner"], state["version"]
+    # The same for plain BUFFERS: a torchao-free int8 linear keeps its weight and scale as buffers, which the stock
+    # offload copied back to pageable host memory after every call and re-uploaded unpinned (measured on Wan2.2-5B:
+    # 6.3 s of copies per call against a 1.2 s denoise). A buffer is kept while the device copy is the same tensor at
+    # the same version, i.e. nothing wrote to it.
+    buffer_host = state.setdefault("buffer_host", {})
+    buffer_version = state.setdefault("buffer_version", {})
 
     def _capture(mod: Any) -> None:
         host.clear()
         owner.clear()
+        buffer_host.clear()
         for name, p in mod.named_parameters():
             if p.device.type == "cpu" and _keepable(p):
                 host[name] = p.data
                 owner[name] = p
+        for name, b in _named_buffers(mod):
+            if b.device.type == "cpu" and _keepable_buffer(b):
+                buffer_host[name] = b
 
     _capture(module)
     version.clear()
+    buffer_version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
 
     def _init_hook(mod: Any) -> Any:
+        for name, b in _named_buffers(mod):
+            kept = buffer_host.get(name)
+            seen = buffer_version.get(name)
+            if (
+                kept is None
+                or b.device.type == "cpu"
+                or seen is None
+                or seen[0] is not b
+                or seen[1] != b._version
+                or seen[2] != b.data_ptr()
+            ):
+                continue
+            try:
+                _set_buffer(mod, name, kept)
+            except Exception:  # noqa: BLE001 - the stock copy below handles it
+                pass
         for name, p in mod.named_parameters():
             kept = host.get(name)
             seen = version.get(name)
@@ -339,11 +399,12 @@ def _wrap_cpu_offload_hook(
         out = init_hook(mod)
         _capture(mod)
         version.clear()
+        buffer_version.clear()
         return out
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         # `host` gate: an all-subclass module (GGUF, torchao) never fills `version`, so would rescan every forward.
-        onload = not version and bool(host)
+        onload = not version and not buffer_version and bool(host or buffer_host)
         if onload:
             for name, p in mod.named_parameters():
                 kept = host.get(name)
@@ -354,11 +415,15 @@ def _wrap_cpu_offload_hook(
                 ):
                     host.pop(name, None)
                     owner.pop(name, None)
+            current = dict(_named_buffers(mod))
+            for name in list(buffer_host):
+                if current.get(name) is not buffer_host[name]:
+                    buffer_host.pop(name, None)
         if onload and not state.get("pin_tried"):
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
             try:
-                pinned = _pin_host_weights(mod, host, logger)
+                pinned = _pin_host_weights(mod, host, logger, buffer_host = buffer_host)
             except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
                 pinned = 0
             if pinned and logger is not None:
@@ -372,6 +437,9 @@ def _wrap_cpu_offload_hook(
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version, p.data_ptr())
+            for name, b in _named_buffers(mod):
+                if name in buffer_host and b.device.type != "cpu":
+                    buffer_version[name] = (b, b._version, b.data_ptr())
         return out
 
     try:

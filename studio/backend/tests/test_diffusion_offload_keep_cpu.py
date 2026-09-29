@@ -400,3 +400,60 @@ def test_the_ram_gate_is_sized_from_the_container(
     monkeypatch.setattr(torch, "empty", empty)
     assert dm._pin_host_weights(module, {"weight": data}) == 0
     assert bool(allocated) is pinned
+
+
+class _BufferLinear(torch.nn.Module):
+    """A weight held as plain buffers, as the torchao-free int8 linear stores it."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.register_buffer("weight_q", torch.randint(-127, 127, (8, 8), dtype = torch.int8))
+        self.register_buffer("weight_scale", torch.rand(8))
+        self.bias = torch.nn.Parameter(torch.zeros(8))
+
+    def forward(self, x):
+        return x @ (self.weight_q.float() * self.weight_scale[:, None]).t() + self.bias
+
+
+def _buffer_pipe(device):
+    pipe = _pipe(device, "transformer")
+    pipe.components["transformer"] = pipe.transformer = _BufferLinear()
+    return pipe
+
+
+def _buffer_ptrs(module):
+    return [b.data_ptr() for b in module.buffers()]
+
+
+@cuda
+@pytest.mark.parametrize("pin", ["0", "1"])
+def test_buffer_weights_keep_their_host_storage_and_are_pinned(monkeypatch, pin):
+    """A buffer weight used to be copied back to pageable host memory after every call and re-uploaded unpinned."""
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
+    x = torch.randn(4, 8)
+    stock = _buffer_pipe("cuda")
+    stock.enable_model_cpu_offload()
+    ref = _render(stock, x)
+    pipe = _buffer_pipe("cuda")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    assert torch.equal(_render(pipe, x), ref)
+    host = _buffer_ptrs(pipe.transformer)
+    for _ in range(3):
+        assert torch.equal(_render(pipe, x), ref)
+        assert _buffer_ptrs(pipe.transformer) == host
+    assert all(b.is_pinned() == (pin == "1") for b in pipe.transformer.buffers())
+
+
+@cuda
+def test_a_buffer_written_on_the_device_is_copied_back():
+    pipe = _buffer_pipe("cuda")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    before = pipe.transformer.weight_scale.clone()
+    pipe.transformer(torch.ones(1, 8))
+    pipe.transformer.weight_scale.add_(1)
+    pipe.transformer._hf_hook.init_hook(pipe.transformer)
+    assert pipe.transformer.weight_scale.device.type == "cpu"
+    assert torch.equal(pipe.transformer.weight_scale, before + 1)

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Conventional video families (Wan2.2, HunyuanVideo-1.5, LTX-2) when the card has to offload.
 
 Precision is decided by the offload tier, never dropped by it: the planner gets the DiT / text-encoder / VAE split so
@@ -414,3 +417,37 @@ def test_generate_refuses_below_the_offload_floor(fake_runtime, monkeypatch, tmp
     free["bytes"] = 20 * 1024**3
     with pytest.raises(RuntimeError, match = "needs about"):
         backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+
+
+def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
+    """The DiT is quantised on the card, block by block as far as the free memory goes, and sent back to the host
+    afterwards when the plan moves it."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    import core.inference.video as V
+
+    dit = torch.nn.Module()
+    dit.blocks = torch.nn.ModuleList(
+        [torch.nn.Linear(1024, 1024, bias = False).to(torch.bfloat16) for _ in range(4)]
+    )
+    dit.proj_out = torch.nn.Linear(1024, 64, bias = False).to(torch.bfloat16)
+    block_bytes = 1024 * 1024 * 2
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cuda")
+    # room for the overhead, the linear workspace and exactly two blocks
+    free = (
+        V.DEFAULT_BASE_OVERHEAD_MIB * 1024 * 1024
+        + V._STAGE_LINEAR_WORKSPACE * block_bytes
+        + 2 * block_bytes
+        + 1
+    )
+    monkeypatch.setattr("utils.hardware.trusted_mem_get_info", lambda d, module = None: (free, 10 * free))
+    staged = V._stage_denoiser_for_quant(dit, target)
+    on_card = [m for m in staged if next(m.parameters()).is_cuda]
+    assert len(on_card) == len(staged) >= 2
+    assert all(next(b.parameters()).is_cuda for b in dit.blocks[:2])
+    assert not next(dit.blocks[3].parameters()).is_cuda
+    V._unstage_modules(staged)
+    assert all(not p.is_cuda for p in dit.parameters())
+    # nothing staged off CUDA, or for a DiT already on the card
+    assert V._stage_denoiser_for_quant(dit, types.SimpleNamespace(device = "mps")) == []

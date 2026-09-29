@@ -1572,6 +1572,94 @@ def _render_under_no_grad(state: Any) -> bool:
     )
 
 
+# Room left on the card while a DiT is staged for quantising: the base overhead plus what one linear needs while it
+# is rotated and packed (its bf16 weight, the rotated copy and the int8 result), taken as a multiple of the largest.
+_STAGE_LINEAR_WORKSPACE = 3
+
+
+def _stage_units(module: Any) -> list:
+    """The pieces a DiT is staged in: every block of a block list, every other child whole."""
+    import torch
+
+    units: list = []
+    for child in module.children():
+        if isinstance(child, torch.nn.ModuleList):
+            units.extend(child)
+        else:
+            units.append(child)
+    return units
+
+
+def _module_dense_bytes(module: Any) -> int:
+    from itertools import chain
+
+    return sum(int(t.numel()) * int(t.element_size()) for t in chain(module.parameters(), module.buffers()))
+
+
+def _stage_denoiser_for_quant(transformer: Any, target: Any, *, logger: Any = None) -> list:
+    """Move as much of a CPU-resident DiT onto ``target``'s CUDA device as fits, block by block, so the quantiser runs
+    there. Returns the modules moved (their original home was the host). Every quantiser here works per linear, on the
+    device the weight lives on, so a DiT that only partly fits is quantised partly on the card and partly on the host,
+    with the same result. Never raises; nothing is moved off CUDA or on a card whose free memory cannot be read."""
+    try:
+        import torch
+
+        if (
+            transformer is None
+            or getattr(target, "device", None) != "cuda"
+            or not torch.cuda.is_available()
+        ):
+            return []
+        first = next(transformer.parameters(), None)
+        if first is None or first.device.type != "cpu":
+            return []
+        device = torch.device(getattr(target, "torch_device", None) or "cuda")
+        from utils.hardware import trusted_mem_get_info
+
+        free_bytes, _ = trusted_mem_get_info(device, module = torch.cuda)
+        largest_linear = max(
+            (
+                _module_dense_bytes(m)
+                for m in transformer.modules()
+                if isinstance(m, torch.nn.Linear)
+            ),
+            default = 0,
+        )
+        budget = (
+            int(free_bytes)
+            - DEFAULT_BASE_OVERHEAD_MIB * 1024 * 1024
+            - _STAGE_LINEAR_WORKSPACE * largest_linear
+        )
+        staged: list = []
+        moved_bytes = 0
+        for unit in _stage_units(transformer):
+            size = _module_dense_bytes(unit)
+            if size == 0 or moved_bytes + size > budget:
+                continue
+            unit.to(device)
+            staged.append(unit)
+            moved_bytes += size
+        if staged and logger is not None:
+            logger.info(
+                "video.transformer_quant: quantising on %s with %.1f of %.1f GB of the DiT staged there",
+                device,
+                moved_bytes / 1e9,
+                _module_dense_bytes(transformer) / 1e9,
+            )
+        return staged
+    except Exception as exc:  # noqa: BLE001 -- quantising on the host is slower, never wrong
+        if logger is not None:
+            logger.warning("video.transformer_quant: staging on the card failed (%s)", exc)
+        return []
+
+
+def _unstage_modules(modules: list) -> None:
+    """Send staged modules back to the host (the plan offloads the DiT) and return their card memory."""
+    for module in modules:
+        module.to("cpu")
+    clear_gpu_cache()
+
+
 def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     """The scheme a DiT that has to be offloaded runs as: auto takes int8, which has a torchao-free build whose plain
     int8 buffers ride every offload hook, so memory decides where the DiT sits and never its precision. An explicit
@@ -5591,17 +5679,28 @@ class VideoBackend:
         ):
             engaged = []
             for view in views:
-                # Pass each expert view so both DiTs quantise with the same scheme. The family name drives
-                # _FAMILY_SCHEME_DENY.
-                scheme = quantize_transformer(
-                    view,
-                    target,
-                    # native_scheme is concrete where auto resolved to the torchao-free int8 for a moving DiT.
-                    mode = native_scheme or transformer_quant,
-                    family = fam.name,
-                    logger = logger,
-                    **native_kwargs,
+                # Quantise on the card, not the host: the bf16 DiT comes out of from_pretrained on the CPU, where the
+                # int8 rotation and packing took 59 s (Wan2.2-5B) to 154 s (LTX-2) of the load. Whatever fits is
+                # staged block by block; a DiT the plan moves goes back to the host afterwards, one kept resident
+                # stays (placement below finishes the move).
+                staged = _stage_denoiser_for_quant(
+                    getattr(view, "transformer", None), target, logger = logger
                 )
+                try:
+                    # Pass each expert view so both DiTs quantise with the same scheme. The family name drives
+                    # _FAMILY_SCHEME_DENY.
+                    scheme = quantize_transformer(
+                        view,
+                        target,
+                        # native_scheme is concrete where auto resolved to the torchao-free int8 for a moving DiT.
+                        mode = native_scheme or transformer_quant,
+                        family = fam.name,
+                        logger = logger,
+                        **native_kwargs,
+                    )
+                finally:
+                    if staged and video_offload:
+                        _unstage_modules(staged)
                 if scheme is not None:
                     engaged.append(scheme)
             # All experts or none: the first is mutated in place, so a second-expert failure cannot fall back to dense.
