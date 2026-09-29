@@ -298,3 +298,16 @@ def test_a_changed_vram_budget_is_allowed_to_retry(crashing):
     with patch("core.inference.llama_cpp._active_vram_fraction", return_value = 0.5):
         crashing.load()
     assert crashing.spawns > before
+
+
+def test_a_changed_model_memory_setting_is_allowed_to_retry(crashing):
+    with patch(
+        "core.inference.llama_cpp._model_memory_settings_or_none", return_value = (False, False)
+    ):
+        crashing.load()
+    before = crashing.spawns
+    with patch(
+        "core.inference.llama_cpp._model_memory_settings_or_none", return_value = (True, False)
+    ):
+        crashing.load()
+    assert crashing.spawns > before

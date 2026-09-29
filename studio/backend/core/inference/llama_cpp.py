@@ -4022,6 +4022,14 @@ def _vram_usable_mib(
     )
 
 
+def _model_memory_settings_or_none() -> Optional[tuple[bool, bool]]:
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+        return get_model_memory_settings()
+    except Exception:
+        return None
+
+
 def _active_vram_fraction() -> float:
     """The user's VRAM budget, or ``_CTX_FIT_VRAM_FRACTION`` when they set none.
 
@@ -23410,12 +23418,13 @@ class LlamaCppBackend:
 
             # Fail fast before killing the live server. Keyed on the whole request, so an
             # identical replay is blocked but any changed setting (quant, -c, TP, spec, VRAM
-            # budget) retries; an explicit reload also retries (freed memory can make the same
+            # budget, Model Memory) retries; an explicit reload also retries (freed memory can make the same
             # load fit) and clears the entry, so only a repeat abort blocks again.
             _abort_memo_model = repr(
                 (
                     replace(intent, hf_token = None, force_reload = False, verified_gguf = None),
                     _vram_frac,
+                    _model_memory_settings_or_none(),
                 )
             )
             if intent.force_reload:
