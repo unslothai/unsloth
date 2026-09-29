@@ -22,7 +22,6 @@ export async function fetchPillSettings(): Promise<PillSettings> {
 }
 
 // Settings tab and startup sync take turns so read+apply is atomic; a marker check raced the IPC awaits.
-// snapshot impossible rather than merely unlikely.
 let nativeApplyChain: Promise<unknown> = Promise.resolve();
 
 export function withNativeApplyLock<T>(run: () => Promise<T>): Promise<T> {
@@ -49,15 +48,8 @@ export async function updatePillSettings(
 export async function syncNativePillConfig(settings: PillSettings): Promise<void> {
   const status = await pillStatus();
   if (!status.supported) return;
-  if (
-    settings.enabled !== status.enabled ||
-    settings.excludedApps.join("\n") !== status.excludedApps.join("\n")
-  ) {
-    await pillSetConfig({
-      enabled: settings.enabled,
-      hotkey: status.hotkey,
-      excludedApps: settings.excludedApps,
-    });
+  if (settings.enabled !== status.enabled) {
+    await pillSetConfig({ enabled: settings.enabled });
   }
 }
 

@@ -17,7 +17,6 @@ class PillSettingsUpdate(BaseModel):
     defaultModel: Optional[str] = Field(None, max_length = 2_000)
     defaultGgufVariant: Optional[str] = Field(None, max_length = 200)
     autoLoad: Optional[bool] = None
-    excludedApps: Optional[list[str]] = Field(None, max_length = 500)
 
 
 @router.get("/settings")
@@ -30,7 +29,6 @@ _ARG_BY_FIELD = {
     "defaultModel": "default_model",
     "defaultGgufVariant": "default_gguf_variant",
     "autoLoad": "auto_load",
-    "excludedApps": "excluded_apps",
 }
 
 

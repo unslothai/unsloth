@@ -42,7 +42,7 @@ function SparkIcon(): ReactElement {
       strokeWidth="1.6"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="size-[18px] shrink-0 text-muted-foreground"
+      className="size-4.5 shrink-0 text-muted-foreground"
     >
       <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
       <circle cx="12" cy="12" r="3.2" />
@@ -52,7 +52,7 @@ function SparkIcon(): ReactElement {
 
 function Key({ children }: { children: ReactNode }): ReactElement {
   return (
-    <kbd className="rounded-[4px] border border-border/70 bg-muted/60 px-[5px] py-px font-sans text-ui-10 leading-ui-14 text-muted-foreground">
+    <kbd className="rounded-[4px] border border-border/70 bg-muted/60 px-1.25 py-px font-sans text-ui-10 leading-ui-14 text-muted-foreground">
       {children}
     </kbd>
   );
@@ -67,7 +67,6 @@ export function AskApp(): ReactElement {
   const [loadingModel, setLoadingModel] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [context, setContext] = useState<string | null>(null);
   const [showNonce, setShowNonce] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -83,11 +82,10 @@ export function AskApp(): ReactElement {
       const { isTauri } = await import("@/lib/api-base");
       if (!isTauri) return;
       const { listen } = await import("@tauri-apps/api/event");
-      const unlistenShow = await listen<string | null>("ask://show", (event) => {
+      const unlistenShow = await listen("ask://show", () => {
         // Drop the controller too, or a run parked on an unabortable fetch drives the reset session.
         abortRef.current?.abort();
         abortRef.current = null;
-        setContext(event.payload ?? null);
         setTurns([]);
         setQuery("");
         setErrorKey(null);
@@ -226,17 +224,12 @@ export function AskApp(): ReactElement {
       const used = model ?? status.active_model ?? "default";
       setModelLabel(shortModelName(used));
 
-      const withContext = (text: string, first: boolean): string =>
-        first && context ? `${text}\n\nText:\n"""\n${context}\n"""` : text;
       const answered = history.filter((turn) => turn.complete);
-      const messages = answered.flatMap((turn, index) => [
-        { role: "user" as const, content: withContext(turn.question, index === 0) },
+      const messages = answered.flatMap((turn) => [
+        { role: "user" as const, content: turn.question },
         { role: "assistant" as const, content: turn.answer },
       ]);
-      messages.push({
-        role: "user",
-        content: withContext(question, answered.length === 0),
-      });
+      messages.push({ role: "user", content: question });
       let sawToken = false;
       for await (const delta of streamCompletion(
         { model: used, messages, stream: true },
@@ -292,7 +285,6 @@ export function AskApp(): ReactElement {
     abortRef.current?.abort();
     abortRef.current = null;
     setTurns([]);
-    setContext(null);
     setErrorKey(null);
     setPhase("input");
     inputRef.current?.focus();
@@ -325,7 +317,7 @@ export function AskApp(): ReactElement {
     <div
       key={showNonce}
       ref={containerRef}
-      className="ask-pop w-[640px] overflow-hidden rounded-2xl border border-border/60 bg-popover/70 text-popover-foreground shadow-2xl"
+      className="ask-pop w-160 overflow-hidden rounded-2xl border border-border/60 bg-popover/70 text-popover-foreground shadow-2xl"
     >
       <form
         onSubmit={(event) => {
@@ -352,21 +344,6 @@ export function AskApp(): ReactElement {
           <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-muted-foreground/70 border-t-transparent" />
         )}
       </form>
-
-      {context && (
-        <div className="flex items-center gap-2 px-5 pb-3 -mt-1">
-          <span className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/50 py-0.5 pl-2.5 pr-1 text-ui-11 text-muted-foreground">
-            {t("systemPill.ask.context", { chars: String(context.length) })}
-            <button
-              type="button"
-              onClick={() => setContext(null)}
-              className="rounded-full px-1 hover:bg-accent hover:text-accent-foreground"
-            >
-              ×
-            </button>
-          </span>
-        </div>
-      )}
 
       {(turns.length > 0 || phase === "error") && (
         <div
@@ -406,7 +383,7 @@ export function AskApp(): ReactElement {
             t("systemPill.ask.loading", { model: loadingModel })
           ) : (
             <>
-              <span className="size-[6px] shrink-0 rounded-full bg-emerald-500/80" />
+              <span className="size-1.5 shrink-0 rounded-full bg-emerald-500/80" />
               <span className="truncate">
                 {modelLabel ?? t("systemPill.ask.autoModel")}
               </span>

@@ -7,13 +7,10 @@ export type PillNativeStatus = {
   supported: boolean;
   enabled: boolean;
   hotkey: string;
-  excludedApps: string[];
 };
 
 export type PillNativeConfig = {
   enabled: boolean;
-  hotkey: string;
-  excludedApps: string[];
 };
 
 async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {

@@ -6,7 +6,6 @@ export type PillSettings = {
   defaultModel: string | null;
   defaultGgufVariant: string | null;
   autoLoad: boolean;
-  excludedApps: string[];
 };
 
 export type PillModelOption = {

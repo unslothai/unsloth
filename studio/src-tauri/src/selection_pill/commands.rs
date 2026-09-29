@@ -23,7 +23,6 @@ pub struct PillStatus {
     pub supported: bool,
     pub enabled: bool,
     pub hotkey: String,
-    pub excluded_apps: Vec<String>,
 }
 
 fn make_status(config: PillConfig) -> PillStatus {
@@ -31,7 +30,6 @@ fn make_status(config: PillConfig) -> PillStatus {
         supported: cfg!(target_os = "macos"),
         enabled: config.enabled,
         hotkey: config.ask_hotkey,
-        excluded_apps: config.excluded_apps,
     }
 }
 
@@ -52,12 +50,8 @@ pub fn pill_set_config(
     mut config: PillConfig,
 ) -> Result<PillStatus, String> {
     ensure_main_window(&window)?;
-    // The UI never edits hotkeys; preserve the stored values.
-    {
-        let current = state.config.lock().unwrap();
-        config.hotkey = current.hotkey.clone();
-        config.ask_hotkey = current.ask_hotkey.clone();
-    }
+    // The UI never edits the hotkey; preserve the stored one.
+    config.ask_hotkey = state.config.lock().unwrap().ask_hotkey.clone();
     // Commit only after the disk write and hotkey apply succeed, so a failure is retried.
     persist_and_apply(&app, &config)?;
     *state.config.lock().unwrap() = config.clone();

@@ -42,15 +42,9 @@ async function syncConfigToNative(): Promise<void> {
         try {
           const status = await pillStatus();
           if (!status.supported || status.enabled === settings.enabled) return;
-          const corrected = await updatePillSettings({
-            enabled: status.enabled,
-          });
+          await updatePillSettings({ enabled: status.enabled });
           // Also rewrite selection-pill.json: syncNativePillConfig would skip it, but init reads the file.
-          await pillSetConfig({
-            enabled: status.enabled,
-            hotkey: status.hotkey,
-            excludedApps: corrected.excludedApps,
-          });
+          await pillSetConfig({ enabled: status.enabled });
         } catch {
         }
       }

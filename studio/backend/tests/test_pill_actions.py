@@ -28,7 +28,6 @@ def test_settings_defaults_and_partial_update(pill_home):
         "defaultModel": None,
         "defaultGgufVariant": None,
         "autoLoad": True,
-        "excludedApps": [],
     }
 
     settings = pill.put_settings(
@@ -39,12 +38,12 @@ def test_settings_defaults_and_partial_update(pill_home):
     assert settings["defaultModel"] == "some/model-GGUF"
 
     settings = pill.put_settings(
-        pill.PillSettingsUpdate(excludedApps = ["com.apple.Passwords"]),
+        pill.PillSettingsUpdate(autoLoad = False),
         current_subject = "test-user",
     )
     assert settings["enabled"] is True
     assert settings["defaultModel"] == "some/model-GGUF"
-    assert settings["excludedApps"] == ["com.apple.Passwords"]
+    assert settings["autoLoad"] is False
 
 
 def test_explicit_null_clears_default_model(pill_home):

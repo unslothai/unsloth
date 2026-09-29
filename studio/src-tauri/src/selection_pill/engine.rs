@@ -107,11 +107,10 @@ pub fn toggle_ask(app: &AppHandle) {
         monitor::hide_ask(app, &window);
         return;
     }
-    show_ask(app, None);
+    show_ask(app);
 }
 
-/// Show the ask bar, optionally seeded with context text.
-pub fn show_ask(app: &AppHandle, context: Option<String>) {
+fn show_ask(app: &AppHandle) {
     let Some(window) = app.get_webview_window(ASK_WINDOW_LABEL) else {
         return;
     };
@@ -122,7 +121,7 @@ pub fn show_ask(app: &AppHandle, context: Option<String>) {
     let x = screen.x + (screen.width - size.0) / 2.0;
     let y = screen.y + screen.height * 0.22;
     let _ = window.set_position(LogicalPosition::new(x, y));
-    let _ = app.emit_to(ASK_WINDOW_LABEL, EVENT_ASK_SHOW, context);
+    let _ = app.emit_to(ASK_WINDOW_LABEL, EVENT_ASK_SHOW, ());
     panel::show_key_panel(&window);
 }
 
