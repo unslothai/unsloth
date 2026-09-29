@@ -55,7 +55,6 @@ _kv_resume = None
 _lifecycle_lock = threading.Lock()
 
 
-# Serializes loads. A load into a new slot holds only this, so inference keeps starting.
 _load_lock = threading.Lock()
 
 

@@ -2039,8 +2039,6 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 )
             return entries
 
-        # Labelled from the display id /api/inference/status publishes; the id stays raw for
-        # agents-tab's path filter.
         def _gguf_model(llama_backend) -> list[ModelDetails]:
             if not (llama_backend.is_loaded and llama_backend.model_identifier):
                 return []
@@ -2070,7 +2068,6 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         if not hide_resident:
             loaded_models += _gguf_model(llama_backend)
 
-        # Models kept alongside, the caller's own when accounts are managed.
         for slot in _visible_extra_slots():
             loaded_models += _orchestrator_models(slot.orchestrator)
             loaded_models += _in_slot(slot, lambda: _gguf_model(slot.llama))

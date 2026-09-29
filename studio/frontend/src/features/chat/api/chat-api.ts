@@ -464,7 +464,6 @@ export async function fetchGgufStagedMetadata(payload: {
   };
 }
 
-/** The unload was refused because chats are still generating on that model. */
 export class ActiveGenerationsError extends Error {
   readonly running: number;
 

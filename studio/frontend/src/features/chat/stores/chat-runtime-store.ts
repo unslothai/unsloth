@@ -2247,7 +2247,6 @@ type ToolStatusEntry = {
   owner?: () => void;
 };
 
-/** ``quant`` is undefined until looked up, null for a model without one. */
 export type LoadedModelSummary = { id: string; quant?: string | null };
 
 type ChatRuntimeStore = {
@@ -2286,7 +2285,6 @@ type ChatRuntimeStore = {
   /** What /api/inference/status says is resident, as opposed to what the picker selected.
    *  undefined until the first read, so the header does not flash "not loaded". */
   residentCheckpoint: string | null | undefined;
-  /** Every local model the server holds in memory, the selected one included. */
   loadedModels: LoadedModelSummary[];
   activeModelIsLocal: boolean;
   loadedContextLength: number | null;

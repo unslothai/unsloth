@@ -469,7 +469,6 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      // The selected model's slot: with several loaded, a bare read describes the primary.
       const selected = useChatRuntimeStore.getState().params.checkpoint;
       const read = Promise.all([
         getInferenceStatus(

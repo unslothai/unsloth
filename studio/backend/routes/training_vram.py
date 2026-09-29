@@ -82,7 +82,6 @@ def summarize_resident_chat() -> Dict[str, Any]:
                 or (filling and _inference._loading_slot[1])
             )
             if name:
-                # A model kept alongside cannot be sized here, so the caller frees rather than keeps.
                 gguf_name = gguf_name or name
                 loading = True
     except Exception as e:
@@ -472,7 +471,6 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         ]
         if kept:
             logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
-            # Stashed, so a request naming one brings it back once training is done.
             unload_extra_models(stash = True)
             freed.extend(f"kept:{name}" for name in kept)
     except Exception as e:

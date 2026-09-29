@@ -114,7 +114,6 @@ interface ModelSelectorProps {
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
-  /** Local models held in memory. With more than one, the trigger names the count, not one of them. */
   loadedCount?: number;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -855,7 +854,6 @@ export function ModelSelector({
 
   function handleEject(modelId?: string) {
     onEject?.(modelId);
-    // Ejecting a model kept alongside leaves the list open to act on the rest.
     if (!modelId) setOpen(false);
   }
 

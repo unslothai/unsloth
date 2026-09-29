@@ -551,10 +551,6 @@ class GpuMemoryShortError(RuntimeError):
         self.gpu_indices = gpu_indices
 
 
-# The backends serving side by side (the primary and any loaded alongside), so a load can price the
-# VRAM the others hold. The driver's free-memory figure alone lags a fresh launch and is virtualised
-# away in some sandboxes. Registered by the routes, never on construction: helper and test backends
-# are not serving, and atexit keeps every constructed one alive.
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
 
 
@@ -657,7 +653,6 @@ class GgufLoadIntent:
     # a launch-time rewrite makes the launched and requested lists diverge.
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
-    # Loaded alongside others: refuse rather than spill out of the GPU memory they left.
     refuse_partial_gpu_fit: bool = False
     compare_mtp_draft: bool = False
     force_reload: bool = False
@@ -7696,7 +7691,6 @@ class LlamaCppBackend:
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
-        # Per GPU, MiB the running server holds (its plan, committed once healthy).
         self._planned_vram_mib: dict[int, int] = {}
         self._pending_plan_mib: dict[int, int] = {}
 
@@ -24382,7 +24376,6 @@ class LlamaCppBackend:
                 # from the default unless the verdict is recorded on its own.
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
-                # The planner shrank the context to fit the free VRAM.
                 _ctx_capped_for_vram = False
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
@@ -32827,7 +32820,6 @@ class LlamaCppBackend:
         return held
 
     def _note_server_pid(self, pid: int) -> None:
-        # The pidfile holds one server: the primary's. A server loaded alongside is still swept.
         if getattr(self, "_owns_pidfile", True):
             self._record_server_pid(pid)
             return

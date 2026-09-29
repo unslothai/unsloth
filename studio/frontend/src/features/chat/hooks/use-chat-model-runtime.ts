@@ -598,7 +598,6 @@ function publishLoadedModels(
   statusQuant?: string | null,
 ): void {
   const current = useChatRuntimeStore.getState().loadedModels;
-  // The status names the quant it serves now: an entry kept from before a quant swap drops its old one.
   const known = new Map(
     current.map((m) => [
       m.id,
@@ -613,13 +612,11 @@ function publishLoadedModels(
   const unchanged =
     next.length === current.length && next.every((m, i) => m === current[i]);
   if (!unchanged) useChatRuntimeStore.setState({ loadedModels: next });
-  // Status names the models; only /v1/models carries each one's quant, so look it up once per model.
   if (next.every((m) => m.quant !== undefined)) return;
   const lookup = ++quantLookupGeneration;
   void listOpenAIModels().then(
     (models) => {
       if (lookup !== quantLookupGeneration) return;
-      // Applied by id to whatever is loaded now.
       const details = new Map(
         models.filter((m) => m.loaded).map((m) => [m.id, m]),
       );
@@ -635,7 +632,6 @@ function publishLoadedModels(
   );
 }
 
-/** Unload a model kept alongside. The server refuses while its own chats generate, so ask then. */
 async function unloadKeptModel(keptId: string): Promise<boolean> {
   try {
     await unloadModel({ model_path: keptId });
@@ -1068,7 +1064,6 @@ export function useChatModelRuntime() {
           // /unload then leaves the resident model untouched, so derive the UI
           // checkpoint from the backend rather than clearing it optimistically.
           if (!preserveCheckpoint) {
-            // The kept models are still loaded, so the selection the load started from stands.
             if (!useChatRuntimeStore.getState().keepModelsLoaded) clearCheckpoint();
             await refresh();
           }
@@ -1778,15 +1773,12 @@ export function useChatModelRuntime() {
         ReturnType<typeof confirmStopRunningChatsIfNeeded>
       >;
       const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
-      // With the box off a load replaces only the chat's own model. Once that is unloaded, loading
-      // beside the others keeps the backend from replacing one of them as well.
       const replacesOneOfSeveral =
         !keepModelsLoaded &&
         !forceReload &&
         !isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) &&
         useChatRuntimeStore.getState().loadedModels.length > 1;
       try {
-        // Loading alongside replaces nothing, so no running chat is in its way.
         stopDecision =
           keepModelsLoaded && !forceReload
             ? {
@@ -3016,7 +3008,6 @@ export function useChatModelRuntime() {
                   // unloaded the live server.
                   cpu_fallback: rollbackState.loadedCpuFallback,
                   n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
-                  // Back beside the kept models, not in place of the primary.
                   alongside: keepModelsLoaded || replacesOneOfSeveral,
                   tensor_split: rollbackState.loadedSplitRatio ?? undefined,
                   gpu_ids: rollbackState.loadedGpuIds ?? undefined,
@@ -3788,8 +3779,6 @@ export function useChatModelRuntime() {
       .getState()
       .loadedModels.map((m) => m.id)
       .filter((id) => id !== params.checkpoint);
-    // One question for every model: the selected one's eject asks, or ask here when it is not local.
-    // The answer covers the rest, so their unloads stop their chats instead of refusing.
     const selectedLocal =
       Boolean(params.checkpoint) && !isExternalModelId(params.checkpoint);
     if (selectedLocal) {
@@ -3800,7 +3789,6 @@ export function useChatModelRuntime() {
         "unload",
       );
       if (!decision.proceed) return false;
-      // As the selected model's eject does: a queued prompt would otherwise load one back.
       cancelPreStreamRunReservations(decision.preStreamRunTokens);
       requestLocalPromptQueueStop(decision.promptQueueThreadIds);
     }

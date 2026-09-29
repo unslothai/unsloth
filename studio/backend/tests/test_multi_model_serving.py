@@ -373,7 +373,6 @@ def test_eviction_takes_as_many_lru_slots_as_the_shortfall_needs(backends, monke
     mid = _slot("org/E-GGUF", last_used = 2.0)
     mid.llama._planned_vram_mib = {0: 6000}
     inf._extra_slots += [small_old, mid]
-    # 500 + 6000 covers the 5000 MiB shortfall, so the most recent slot is spared.
     assert inf._eviction_victims(None, 5000) == [small_old, mid]
     _gated_load_fakes(monkeypatch, short_fits = [1])
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
@@ -498,7 +497,6 @@ def test_an_evicted_slot_keeps_its_conversation_kv_until_it_is_back(backends, mo
     restored, deleted = [], []
 
     def restore(backend, kv):
-        # Under the load gate, so a load queued behind this one cannot publish first.
         assert keepwarm._load_lock.locked()
         restored.append((backend, kv))
 
@@ -770,7 +768,6 @@ def test_a_plain_switch_forgets_the_model_it_replaced(backends, monkeypatch):
     inf._note_primary_load(LoadRequest(model_path = "org/P-GGUF"))
     inf.note_chat_evicted()
     assert "org/P-GGUF" in inf._evicted
-    # Kept loaded, P comes back when named; a plain switch replaced it on purpose.
     inf._note_primary_load(LoadRequest(model_path = "org/Q-GGUF"))
     assert "org/P-GGUF" not in inf._evicted
 

@@ -1794,7 +1794,6 @@ function GgufVariantExpander({
   loadedQuants,
 }: {
   repoId: string;
-  /** Quants of this repo loaded right now; the list marks them. */
   loadedQuants?: readonly string[];
   pipelineTag?: string | null;
   /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
@@ -2964,7 +2963,6 @@ export function HubModelPicker({
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const setKeepModelsLoaded = useChatRuntimeStore((s) => s.setKeepModelsLoaded);
-  // Chat only: a task picker's pipeline takes the whole GPU, so nothing stays loaded there.
   const isChatPicker = task === undefined;
   const chatLoadedModelId = chatModelLoaded({
     checkpoint: selectedCheckpoint,
@@ -2984,8 +2982,6 @@ export function HubModelPicker({
   const hfToken = useHfTokenStore((s) => s.token);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
-  // Chat's loaded models lead both lists. On Device already lists them, so they sort to the top and
-  // are marked in place; Recommended rarely does, so there they are added as rows.
   const loadedIdSet = useMemo(
     () =>
       new Set(
@@ -2995,7 +2991,6 @@ export function HubModelPicker({
   );
   const isKeptLoaded = (repoId: string) =>
     loadedIdSet.has(repoId.toLowerCase());
-  // The quants a repo runs right now, so a repo with several cached says which one is loaded.
   const loadedQuantsFor = (repoId: string): string[] => {
     const quants =
       task === undefined
@@ -5797,7 +5792,6 @@ export function HubModelPicker({
     );
 
   const showConnected = section === "connected";
-  // Each loaded row ejects itself, so with several the footer's button is for the lot.
   const ejectsAll = Boolean(onEjectAll) && loadedModels.length > 1;
   // The Connected layout uses a wider box, so it drops the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
@@ -5827,11 +5821,9 @@ export function HubModelPicker({
   };
 
 
-  // Ejects one of several loaded models; with one, the footer's button does it.
   const ejectsRow = (modelId: string) =>
     Boolean(onEject) && loadedModels.length > 1 && isKeptLoaded(modelId);
 
-  // In the row's menu where the gutter already holds the gear and the menu.
   const ejectMenuItems = (modelId: string) =>
     ejectsRow(modelId) && onEject
       ? [
@@ -5850,7 +5842,6 @@ export function HubModelPicker({
         ]
       : undefined;
 
-  // A loaded-models row has no gear, so its eject is a button of its own.
   const renderEjectAction = (modelId: string) =>
     onEject && ejectsRow(modelId) ? (
       <Tooltip delayDuration={0}>
@@ -5877,7 +5868,6 @@ export function HubModelPicker({
       </Tooltip>
     ) : null;
 
-  // Recommended's own row, for a loaded model that list does not carry.
   const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
     const optionKey = makeModelOptionKey("loaded", entry.id);
     const isSelected = modelIdsMatchForPicker(value, entry.id);

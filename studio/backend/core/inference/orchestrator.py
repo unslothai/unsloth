@@ -3470,7 +3470,6 @@ _inference_backend = None
 _inference_backend_lock = threading.Lock()
 
 
-# The slot (llama backend + orchestrator) serving a model loaded alongside the primary; set per request.
 routed_slot: contextvars.ContextVar = contextvars.ContextVar("routed_slot", default = None)
 
 

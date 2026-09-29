@@ -195,8 +195,6 @@ def acquire_for(
                 raise GpuBusyForAnotherAccountError(_owner, busy)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
-        # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last,
-        # nor a model loaded alongside take it from the account that loaded the primary.
         claims = _owner != owner or ((register is not None or replacing) and not alongside)
         _owner = owner
         _owner_epoch += 1

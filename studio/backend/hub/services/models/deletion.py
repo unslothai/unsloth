@@ -628,7 +628,6 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    # A load filling a slot of its own names no model on its backend until its files are down.
     if filling and _loaded_id_matches_repo(filling, repo_id):
         return True
     for backend in backends:
@@ -661,7 +660,6 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
         active_name = backend.active_model_name
         if active_name and _loaded_id_matches_repo(active_name, repo_id):
             return True
-    # A model still loading into a slot of its own is already reading these files.
     for backend in kept:
         if any(_loaded_id_matches_repo(m, repo_id) for m in getattr(backend, "loading_models", ())):
             return True
@@ -718,7 +716,6 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
     else:
         if (backend.is_loaded or backend.is_active) and backend.model_identifier:
             return "Unload the model before clearing the model cache"
-        # Models kept alongside read the same cache.
         for llama, orchestrator in kept:
             if (llama.is_loaded or llama.is_active) or orchestrator.active_model_name:
                 return "Unload the model before clearing the model cache"

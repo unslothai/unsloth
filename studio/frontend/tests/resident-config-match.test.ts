@@ -1982,7 +1982,6 @@ test("with the box off a pick replaces only the chat's own model", () => {
     USE_CHAT_MODEL_RUNTIME,
     /const replacesOneOfSeveral =\s*!keepModelsLoaded &&\s*!forceReload &&\s*!isExternalModelId\(useChatRuntimeStore\.getState\(\)\.params\.checkpoint\) &&\s*useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1;/,
   );
-  // The chat's model goes first, forced once running chats were confirmed, then the pick loads beside the rest.
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive \|\| replacesOneOfSeveral\) \{/);
   assert.equal(
     USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| replacesOneOfSeveral,/g)?.length,
