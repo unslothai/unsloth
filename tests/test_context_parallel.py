@@ -320,3 +320,21 @@ def test_fp32_qkv_is_downcast_under_cp(monkeypatch):
     with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
         ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
     assert seen[0] == torch.float32 and seen[1] in (torch.bfloat16, torch.float16)
+
+
+@pytest.mark.parametrize("distributed_type", ["DEEPSPEED", "FSDP"])
+def test_deepspeed_and_fsdp_are_refused(monkeypatch, distributed_type):
+    import types
+
+    monkeypatch.setattr(cp.dist, "is_available", lambda: True)
+    monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+    args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    accelerator = types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = distributed_type)
+    )
+    Trainer = _patched_trainer(monkeypatch, args = args, accelerator = accelerator, model = None)
+    with pytest.raises(NotImplementedError, match = "DDP only"):
+        Trainer()

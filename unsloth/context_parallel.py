@@ -223,10 +223,17 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism currently supports Llama-style attention only "
                 "(Llama, Qwen2, Gemma)."
             )
+        accelerator = getattr(self, "accelerator", None)
+        # Only DDP prepares data from state.device_mesh's cp dim; DeepSpeed shards across every
+        # rank and FSDP2 expects a parallelism_config to go with the mesh.
+        distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
+        if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
+            raise NotImplementedError(
+                f"Unsloth: context parallelism supports DDP only, not {distributed_type}."
+            )
         manager = ContextParallelManager(size)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
-        accelerator = getattr(self, "accelerator", None)
         if accelerator is not None:
             accelerator.state.device_mesh = manager.device_mesh
             # Ring attention's backward collectives must not straddle DDP's no_sync accumulation.
