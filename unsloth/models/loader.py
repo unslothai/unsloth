@@ -49,6 +49,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    _prefer_legacy_lowercase_cache,
     is_automatic_device_map,
     prepare_device_map,
     requested_device_map,
@@ -945,6 +946,10 @@ class FastLanguageModel(FastLlamaModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            # Stripping is a remap (revision dropped); the base may only be cached under its old lowercased id.
+            model_name = _prefer_legacy_lowercase_cache(
+                model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+            )
         # Report the loader decision before fetching this repo, including adapter bases.
         if on_model_resolved is not None:
             on_model_resolved(model_name)
@@ -1154,6 +1159,9 @@ class FastLanguageModel(FastLlamaModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+                model_name = _prefer_legacy_lowercase_cache(
+                    model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+                )
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
@@ -1784,6 +1792,9 @@ class FastModel(FastBaseModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            model_name = _prefer_legacy_lowercase_cache(
+                model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+            )
         # Report the loader decision before fetching this repo, including adapter bases.
         if on_model_resolved is not None:
             on_model_resolved(model_name)
@@ -2146,6 +2157,9 @@ class FastModel(FastBaseModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+                model_name = _prefer_legacy_lowercase_cache(
+                    model_name, kwargs.get("local_files_only", False), kwargs.get("cache_dir", None)
+                )
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
