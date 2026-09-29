@@ -498,7 +498,8 @@ export function isRtfAttachment(
 // CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
 // document-specific adapters, so previews must apply the same MIME-or-extension match
 // before looking at PDF/DOCX/HTML names.
-function isTextAttachment(
+/** Whether the text adapter claims the file; it runs before the document ones. */
+export function isTextAttachment(
   name: string,
   contentType: string | undefined,
 ): boolean {

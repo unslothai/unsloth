@@ -260,3 +260,8 @@ test("a sent document shown from its stored text downloads and chats as a .txt",
   assert.match(dialog, /const name = saveAs\?\.name \?\? \(source\.name \|\| "attachment"\);/);
   assert.match(dialog, /downloadFile\(blob, name, contentType \|\| undefined\)/);
 });
+
+test("a card preview follows the text adapter before a binary document viewer", async () => {
+  const preview = await readSrcAsync("components/assistant-ui/attachment-card-preview.tsx");
+  assert.match(preview, /if \(binary && isTextAttachment\(file\.name, file\.type\)\) return \{ kind: "text" \};\n\s*if \(document\)/);
+});

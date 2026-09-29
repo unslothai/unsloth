@@ -25,6 +25,7 @@ const {
   extractPdfAttachmentText,
   getDocxAttachmentError,
   isAudioAttachment,
+  isTextAttachment,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
@@ -1144,4 +1145,17 @@ test("a thumbnail repack restores only image parts the kept elements reference",
   assert.ok(kept.includes("word/media/one.png"));
   assert.ok(!kept.includes("word/media/two.png"));
   assert.ok(!kept.includes("word/chunk.mht"));
+});
+
+test("the text adapter claims text/plain documents but not real ones", () => {
+  const cases: [string, string, boolean][] = [
+    ["notes.pdf", "text/plain", true],
+    ["notes.docx", "text/plain", true],
+    ["a.pdf", "application/pdf", false],
+    ["a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", false],
+    ["a.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false],
+    ["a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", false],
+    ["a.pdf", "", false],
+  ];
+  for (const [name, type, text] of cases) assert.equal(isTextAttachment(name, type), text, `${name} (${type || "no type"})`);
 });

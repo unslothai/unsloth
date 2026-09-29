@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentKind, DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import { type DocumentKind, DocumentView, documentKind, isMarkdown, sheetDelimiter } from "@/components/file-viewer";
 import { queueParse } from "@/components/file-viewer/parse-queue";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { type AttachmentFileKind, readAttachmentText } from "@/features/chat";
+import { type AttachmentFileKind, isTextAttachment, readAttachmentText } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { type FC, type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
@@ -27,6 +27,9 @@ export function attachmentPreview(
   if (!file || file.size === 0 || file.size > MAX_PREVIEW_BYTES) return null;
   // The resolved kind is MIME first; only preview when the extension agrees with it.
   const document = documentKind(file.name, file.type);
+  // The text adapter runs first: a text/plain "notes.pdf" is sent, so previewed, as text.
+  const binary = document !== null && (document !== "sheet" || !sheetDelimiter(file.name, file.type));
+  if (binary && isTextAttachment(file.name, file.type)) return { kind: "text" };
   if (document) return DOCUMENT_KINDS[document] === kind ? { kind: "document", document } : null;
   if (kind === "text" && isMarkdown(file.name, file.type)) return { kind: "markdown" };
   if (kind === "text" || kind === "code" || kind === "web") return { kind: "text" };
