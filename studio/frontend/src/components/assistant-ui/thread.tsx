@@ -132,7 +132,7 @@ import {
   type PromptEntry,
   type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
-import { PromptKindPill } from "@/features/chat/prompt-storage/prompt-kind-pill";
+import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
@@ -6709,13 +6709,12 @@ const ComposerToolsMenu: FC<{
               onSelect={() => aui.composer().setText(p.text)}
             >
               <span className="truncate">{p.name}</span>
-              <PromptKindPill kind="prompt" />
             </DropdownMenuItem>
           ))}
           {recentLists.map((l) => (
             <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
               <span className="truncate">{l.name}</span>
-              <PromptKindPill kind="list" count={l.items.length} />
+              <PromptCountBadge count={l.items.length} />
             </DropdownMenuItem>
           ))}
           {recentPrompts.length > 0 || recentLists.length > 0 ? (

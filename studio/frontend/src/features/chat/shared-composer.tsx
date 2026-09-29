@@ -126,7 +126,7 @@ import {
   type PromptEntry,
   type PromptListEntry,
 } from "./api/prompts-api";
-import { PromptKindPill } from "./prompt-storage/prompt-kind-pill";
+import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
@@ -2268,13 +2268,12 @@ export function SharedComposer({
               }}
             >
               <span className="truncate">{p.name}</span>
-              <PromptKindPill kind="prompt" />
             </DropdownMenuItem>
           ))}
           {recentLists.map((l) => (
             <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
               <span className="truncate">{l.name}</span>
-              <PromptKindPill kind="list" count={l.items.length} />
+              <PromptCountBadge count={l.items.length} />
             </DropdownMenuItem>
           ))}
           {recentPrompts.length > 0 || recentLists.length > 0 ? (
