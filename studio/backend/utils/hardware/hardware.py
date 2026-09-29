@@ -67,6 +67,9 @@ DETECTION_EPOCH = 0
 def invalidate_detection() -> int:
     """Retire any detection in flight. Returns the new epoch."""
     global DETECTION_EPOCH
+    from . import gpu_query
+
+    gpu_query.invalidate_static("hardware re-detection")
     with _EPOCH_LOCK:
         DETECTION_EPOCH += 1
         return DETECTION_EPOCH
@@ -1716,12 +1719,22 @@ def _gpu_present_but_unusable_message(
 
 
 def export_capability() -> dict:
-    """Whether model export can run here, with a torch-aware reason when it cannot. Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch. Returns {export_supported, export_unsupported_reason, export_unsupported_message}."""
-    if get_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+    """Whether model export can run here, with a torch-aware reason when it cannot. Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch. Returns {export_supported, export_unsupported_reason, export_unsupported_message, torchao_export_supported}; the last is False only on Windows ROCm without a loadable torchao, where the portable FP8/INT8 formats are hidden."""
+    device = get_device()
+    torchao_export_supported = True
+    # get_device() ran detect_hardware(), so IS_ROCM (hip field OR "rocm" tag) is settled.
+    if sys.platform == "win32" and IS_ROCM:
+        try:
+            from core._torchao_stub import torchao_export_loadable
+            torchao_export_supported = torchao_export_loadable()
+        except Exception:
+            torchao_export_supported = False
+    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
         return {
             "export_supported": True,
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
+            "torchao_export_supported": torchao_export_supported,
         }
     verdict = current_chat_only_verdict()
     # No accelerator: name the blocker. Detection failure first, since the branches below all describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
@@ -1764,6 +1777,7 @@ def export_capability() -> dict:
         "export_supported": False,
         "export_unsupported_reason": reason,
         "export_unsupported_message": message,
+        "torchao_export_supported": torchao_export_supported,
     }
 
 
@@ -5056,8 +5070,10 @@ def _get_hf_safetensors_total_params(
             return None
 
         from huggingface_hub import model_info as hf_model_info
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
-        info = hf_model_info(model_name, token = hf_token)
+        # A refused token must not drop this to the text-tower-only config estimate.
+        info = call_hub_with_anonymous_retry(hf_model_info, hf_token, model_name)
         safetensors = getattr(info, "safetensors", None)
         if isinstance(safetensors, dict):
             total = safetensors.get("total")
@@ -5948,14 +5964,62 @@ def _repair_smi_visible_devices(
     return all(dev.get("memory_total_gb") is not None for dev in devices)
 
 
-def get_backend_visible_gpu_info() -> Dict[str, Any]:
-    device = get_device()
+# (probe start, inventory or None once confirmed empty) per (device, mask); newer wins.
+_last_good_visible_info: Dict[tuple, tuple] = {}
+_last_good_visible_lock = threading.Lock()
 
+
+def get_backend_visible_gpu_info() -> Dict[str, Any]:
+    """Backend-visible GPU inventory; an unproven empty probe returns the last one, marked ``stale``."""
+    device = get_device()
+    key = (
+        str(device),
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("HIP_VISIBLE_DEVICES"),
+        os.environ.get("ROCR_VISIBLE_DEVICES"),
+        os.environ.get("ZE_AFFINITY_MASK"),
+    )
+    started = time.monotonic()
+    info = _probe_backend_visible_gpu_info(device)
+    confirmed_empty = info.pop("_confirmed_empty", False)
+    info.pop("probe_failed", None)
+    info.pop("smi_absent", None)
+    found = bool(info.get("available") and info.get("devices"))
+    if found or confirmed_empty:
+        with _last_good_visible_lock:
+            prior = _last_good_visible_info.get(key)
+            if prior is None or prior[0] <= started:
+                _last_good_visible_info[key] = (started, copy.deepcopy(info) if found else None)
+        return info
+    # NVIDIA only: elsewhere no probe can prove a device went away, and those paths keep main's behaviour.
+    if device != DeviceType.CUDA or IS_ROCM:
+        return info
+    with _last_good_visible_lock:
+        last = (_last_good_visible_info.get(key) or (0.0, None))[1]
+    if last is None:
+        return info
+    logger.warning(
+        "GPU inventory probe came back empty after an earlier read found %d device(s); "
+        "keeping that inventory (marked stale) instead of reporting no GPU.",
+        len(last.get("devices") or []),
+    )
+    stale = copy.deepcopy(last)
+    stale["stale"] = True
+    for dev in stale.get("devices") or []:
+        for k in ("vram_used_gb", "vram_free_gb", "vram_utilization_pct"):
+            if k in dev:
+                dev[k] = None
+    return stale
+
+
+def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
         # Held back in case torch cannot size them either: an unknown total is a poor
         # answer, but losing the card outright is worse than the pre-repair behaviour.
         unrepaired_smi_result: Optional[Dict[str, Any]] = None
+        # nvidia-smi answered and listed no card under this mask: the one proof of "no GPU".
+        smi_answered_empty = False
         # Try native SMI first (nvidia-smi; skipped for ROCm).
         if device == DeviceType.CUDA and not IS_ROCM:
             try:
@@ -5965,6 +6029,12 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 result = nvidia.get_backend_visible_gpu_info(
                     parent_visible_spec["numeric_ids"],
                     parent_visible_spec["raw"],
+                )
+                smi_answered_empty = (
+                    not result.get("available")
+                    and not result.get("probe_failed")
+                    and not result.get("smi_absent")
+                    and result.get("index_kind") != "unresolved"
                 )
                 if result.get("available"):
                     if _repair_smi_visible_devices(
@@ -6077,6 +6147,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             "parent_visible_gpu_ids": parent_visible_ids,
             "devices": [],
             "index_kind": "physical",
+            "_confirmed_empty": smi_answered_empty,
         }
 
     if device == DeviceType.MLX:

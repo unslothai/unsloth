@@ -15,10 +15,11 @@ from .llama import (
     original_apply_o,
 )
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device
+from ._utils import move_to_device, per_layer_device, DEVICE_TYPE
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
+from ._utils import embedding_applies_scale
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -69,6 +70,62 @@ except:
 
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
+
+# softcap, window_size and cache_leftpad all exist from flash-attn 2.6.3, the HAS_FLASH_ATTENTION_SOFTCAPPING floor.
+_FLASH_DECODE = (
+    HAS_FLASH_ATTENTION_SOFTCAPPING
+    and DEVICE_TYPE == "cuda"
+    and os.environ.get("UNSLOTH_GEMMA2_FLASH_DECODE", "1") != "0"
+)
+if _FLASH_DECODE:
+    try:
+        from flash_attn import flash_attn_with_kvcache
+    except Exception:
+        _FLASH_DECODE = False
+_FLASH_DECODE_PROBED = {}
+
+
+def _gemma2_flash_decode(Q, K_cache, V_cache, kv_seq_len, leftpad, scale, softcap, window):
+    """One-token attention over the paged cache [max_len, bsz, n_kv_heads, head_dim], left padded by leftpad."""
+    return flash_attn_with_kvcache(
+        Q.transpose(1, 2),
+        K_cache.permute(1, 0, 2, 3),
+        V_cache.permute(1, 0, 2, 3),
+        cache_seqlens = kv_seq_len,
+        cache_leftpad = leftpad,
+        softmax_scale = scale,
+        softcap = softcap,
+        # Keeps window - 1 earlier keys plus the current one, as HF and the manual path do.
+        window_size = (window - 1, 0) if window is not None else (-1, -1),
+    )
+
+
+def _flash_decode_usable(config, hidden_states, attention_mask):
+    if not _FLASH_DECODE or hidden_states.dtype not in (torch.float16, torch.bfloat16):
+        return False
+    if attention_mask is not None and attention_mask.dim() != 2:
+        return False
+    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+    if head_dim > 256 or head_dim % 8 != 0:
+        return False
+    key = (hidden_states.device, hidden_states.dtype)
+    if key not in _FLASH_DECODE_PROBED:
+        # A wheel built without this GPU's arch fails at launch; find out before any layer relies on it.
+        try:
+            q = torch.zeros(
+                1, 1, 1, head_dim, device = hidden_states.device, dtype = hidden_states.dtype
+            )
+            kv = torch.zeros(
+                2, 1, 1, head_dim, device = hidden_states.device, dtype = hidden_states.dtype
+            )
+            _gemma2_flash_decode(q, kv, kv, 1, None, 1.0, 50.0, None)
+            _FLASH_DECODE_PROBED[key] = True
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: flash-attn decoding failed on {key}, using the manual Gemma2 decode path: {error}"
+            )
+            _FLASH_DECODE_PROBED[key] = False
+    return _FLASH_DECODE_PROBED[key]
 
 
 # Logit softcapping.
@@ -394,6 +451,21 @@ def Gemma2Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
+    if kwargs.get("flash_decode", False):
+        A = _gemma2_flash_decode(
+            Qn,
+            self.paged_attention_K,
+            self.paged_attention_V,
+            kv_seq_len,
+            kwargs.get("leftpad"),
+            self.scalar,
+            self.t,
+            self.config.sliding_window if use_sliding_window else None,
+        )
+        A = A.reshape(bsz, 1, attention_size)
+        A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
+        return A, (Kn, Vn)
+
     # Handle sliding windows
     sliding_window = self.config.sliding_window
     if use_sliding_window and kv_seq_len > sliding_window:
@@ -458,36 +530,54 @@ def Gemma2Model_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 is 55.5000 in bfloat16 against 55.4256 in float32, and 2048**0.5 is 45.2500 against 45.2548.
-    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
+    if not embedding_applies_scale(self.model.embed_tokens):
+        hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
-    if bsz != 1:
-        if HAS_FLASH_ATTENTION_SOFTCAPPING:
-            SWA = True
-            GA = False
-        else:
-            SWA = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (bsz, q_len),
-                hidden_states,
-                seq_len,
-                sliding_window = self.config.sliding_window,
-            )
-            GA = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (bsz, q_len),
-                hidden_states,
-                seq_len,
-            )
+    flash_decode = _flash_decode_usable(self.config, hidden_states, attention_mask)
+    leftpad = None
+    masked_keys = False
+    if flash_decode and attention_mask is not None:
+        leftpad = (attention_mask.cumsum(-1) == 0).sum(-1, dtype = torch.int32)
+        # cache_leftpad only skips leading zeros; any other masked key needs the manual masks.
+        if not bool(((attention_mask != 0).sum(-1) + leftpad == attention_mask.shape[-1]).all()):
+            flash_decode = False
+            leftpad = None
+            masked_keys = True
+    if flash_decode:
+        # The kernel applies the window itself and skips each row's left padding.
+        SWA = None
+        GA = None
+    elif bsz != 1 or masked_keys:
+        SWA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+            sliding_window = self.config.sliding_window,
+        )
+        GA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+        )
     else:
-        SWA = attention_mask
-        GA = attention_mask
+        # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
+        SWA = None
+        GA = None
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
+        if SWA is not None:
+            SWA = move_to_device(layer_device, SWA)
+        if GA is not None:
+            GA = move_to_device(layer_device, GA)
+        if leftpad is not None:
+            leftpad = move_to_device(layer_device, leftpad)
 
         use_sliding_window = idx % 2 == 0
 
@@ -503,6 +593,8 @@ def Gemma2Model_fast_forward_inference(
             attention_mask = SWA if use_sliding_window else GA,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             use_sliding_window = use_sliding_window,
+            flash_decode = flash_decode,
+            leftpad = leftpad,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             decoder_layer.post_attention_layernorm,
