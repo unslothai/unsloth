@@ -747,3 +747,45 @@ def test_the_conversation_id_reaches_the_provider_client(monkeypatch):
     with pytest.raises(LoopEntered) as excinfo:
         _run(inf, _payload(enable_tools = True, enabled_tools = ["python"], thread_id = "thread-7"))
     assert excinfo.value.args[0]["thread_id"] == "thread-7"
+
+
+@pytest.mark.parametrize(
+    "provider_type, model, caching, noted",
+    [
+        ("anthropic", "claude-sonnet-4-6", None, False),
+        ("openrouter", "anthropic/claude-sonnet-4.6", None, False),
+        ("openrouter", "~anthropic/claude-opus-latest", True, False),
+        ("anthropic", "claude-sonnet-4-6", False, True),
+        ("openrouter", "anthropic/claude-sonnet-4.6", False, True),
+        ("openrouter", "deepseek/deepseek-v3.2", None, True),
+    ],
+)
+def test_a_thread_from_yesterday_keeps_the_claude_cache_breakpoint_stable(
+    monkeypatch, provider_type, model, caching, noted
+):
+    from datetime import date
+
+    inf = _install(monkeypatch, provider_type)
+    monkeypatch.setattr(
+        inf, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-16."
+    )
+    monkeypatch.setattr(inf, "conversation_start_date", lambda *_a, **_k: date(2026, 8, 15))
+    monkeypatch.setattr(inf, "_request_has_api_key", lambda _request: False)
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second"},
+    ]
+    _run(
+        inf,
+        _payload(
+            messages = history,
+            external_model = model,
+            enable_tools = False,
+            thread_id = "thread-7",
+            enable_prompt_caching = caching,
+        ),
+    )
+    sent = FakeExternalClient.last["passthrough"]
+    assert sent["thread_id"] == "thread-7"
+    assert sent["messages"][-1]["content"].startswith("[Current date: ") is noted

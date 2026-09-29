@@ -138,6 +138,18 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def caches_at_the_last_block(
+    provider_type: Optional[str], model: Optional[str], enable_prompt_caching: Optional[bool]
+) -> bool:
+    if enable_prompt_caching is False:
+        return False
+    if provider_type == "anthropic":
+        return True
+    return provider_type == "openrouter" and (model or "").strip().lower().lstrip("~").startswith(
+        "anthropic/"
+    )
+
+
 def _is_azure_openai_host(host: str) -> bool:
     return host.endswith((".openai.azure.com", ".services.ai.azure.com"))
 
@@ -1697,9 +1709,7 @@ class ExternalProviderClient:
 
             # Claude caches only behind cache_control; the top-level form advances the breakpoint every turn. Other
             # families cache automatically and the field is documented for Claude's providers only.
-            if enable_prompt_caching is not False and normalized_or_model.lstrip("~").startswith(
-                "anthropic/"
-            ):
+            if caches_at_the_last_block("openrouter", model, enable_prompt_caching):
                 cache_control = {"type": "ephemeral"}
                 if prompt_cache_ttl == "1h":
                     cache_control["ttl"] = "1h"
