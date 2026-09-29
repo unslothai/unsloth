@@ -276,9 +276,9 @@ const TABS: TabDef[] = [
 ];
 
 // The Ask bar is a macOS desktop feature; its tab stays hidden elsewhere.
-const PLATFORM_TABS = TABS.filter(
-  (tab) => tab.id !== "system" || (isTauri && isMacPlatform()),
-);
+function tabOnThisPlatform(tab: SettingsTab): boolean {
+  return tab !== "system" || (isTauri && isMacPlatform());
+}
 
 const clientPlatform = getClientPlatform();
 const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
@@ -316,7 +316,7 @@ export function SettingsDialog() {
   const stacked = useStackedLayout();
   const hubSource = useHubSource();
   const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
-  const visibleTabs = useMemo(() => PLATFORM_TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
+  const visibleTabs = useMemo(() => TABS.filter((tab) => tabOnThisPlatform(tab.id) && settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
   const activeTab = resolveSettingsTab(requestedTab, isOwner);
