@@ -316,6 +316,8 @@ test("menu items for web shortcuts follow a mounted handler, and honour claims",
   // Availability asks claims(), and the root has it re-ask when a modal opens or closes.
   assert.match(hook, /\(triggers\.get\(id\) \?\? \[\]\)\.some\(\(t\) => t\.claims\(\)\)/);
   assert.match(hook, /attributeFilter: \["aria-hidden", "inert"\]/);
+  // Backdrops portal to body, and Radix skips aria-hidden on anything holding aria-live.
+  assert.match(hook, /modalObserver\.observe\(document\.body, \{ childList: true \}\)/);
   for (const id of ["toggleSidebar", "findInPage", "previousChat", "nextChat"]) {
     assert.ok(ROOT.includes(`useShortcutAvailable("${id}", isTauri)`), `${id} enables its item`);
   }
