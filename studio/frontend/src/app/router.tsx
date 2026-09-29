@@ -13,18 +13,18 @@ import { Route as chatRoute } from "./routes/chat";
 import { Route as exportRoute } from "./routes/export";
 import { Route as imagesRoute } from "./routes/images";
 import { Route as videoRoute } from "./routes/video";
+import { Route as audioRoute } from "./routes/audio";
 import { Route as indexRoute } from "./routes/index";
 import { Route as loginRoute } from "./routes/login";
 import { Route as hubRoute } from "./routes/hub";
-import { Route as onboardingRoute } from "./routes/onboarding";
 import { Route as projectsRoute } from "./routes/projects";
+import { Route as libraryRoute } from "./routes/library";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
 import { Route as studioRoute } from "./routes/studio";
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  onboardingRoute,
   loginRoute,
   changePasswordRoute,
   hubRoute,
@@ -32,9 +32,11 @@ const routeTree = rootRoute.addChildren([
   studioRoute,
   chatRoute,
   projectsRoute,
+  libraryRoute,
   exportRoute,
   imagesRoute,
   videoRoute,
+  audioRoute,
   dataRecipesRoute,
   dataRecipeRoute,
   apiMonitorRoute,

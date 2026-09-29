@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
 import io
 import os
 from pathlib import Path
 from typing import Any
+
+from fastapi import HTTPException
 
 from utils.paths import recipe_datasets_root
 
@@ -25,6 +28,11 @@ def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
 
 
 def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
+    account_path(
+        Path(base_path) / path_value
+        if base_path and not Path(path_value).is_absolute()
+        else path_value
+    )
     try:
         path = Path(path_value)
         candidates: list[Path] = []
@@ -128,14 +136,101 @@ def _apply_data_designer_image_context_patch() -> None:
     _IMAGE_CONTEXT_PATCHED = True
 
 
+def _require_public_provider_endpoint(endpoint: str) -> None:
+    """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
+    transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
+    may rebind to loopback or the LAN after this public-address check.
+
+    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
+    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
+    if not managed_account():
+        return
+    from urllib.parse import urlsplit
+
+    from core.inference.providers import (
+        managed_private_url_hint,
+        provider_address_excluding_metadata,
+        public_provider_address,
+    )
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    url = str(endpoint or "")
+    if get_managed_private_provider_urls_allowed():
+        try:
+            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
+            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            if urlsplit(url).scheme not in ("http", "https"):
+                raise ValueError("Provider endpoints must use http or https.")
+            provider_address_excluding_metadata(url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+            ) from exc
+        return
+
+    try:
+        if urlsplit(url).scheme != "https":
+            raise ValueError(
+                "Managed accounts may only use HTTPS provider endpoints."
+                + managed_private_url_hint()
+            )
+        public_provider_address(url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+        ) from exc
+
+
+def install_public_egress_guard() -> None:
+    """Managed recipe workers: the engine dials providers itself, so every name resolves through this
+    guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
+    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
+
+    With the switch on the guard narrows to the metadata services rather than standing down: a
+    worker whose engine dials for itself has nothing else between it and that address."""
+    if not managed_account():
+        return
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    import ipaddress
+    import socket
+
+    from core.inference.providers import _metadata_address
+
+    resolve = socket.getaddrinfo
+
+    def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # Per lookup, not captured at install: a worker outlives the switch it started under.
+        private_allowed = get_managed_private_provider_urls_allowed()
+        infos = resolve(host, port, *args, **kwargs)
+        for info in infos:
+            address = str(info[4][0]).split("%", 1)[0]
+            if _metadata_address(address):
+                raise socket.gaierror(
+                    f"Managed accounts may not reach cloud metadata services: {host!r}"
+                )
+            if not private_allowed and not ipaddress.ip_address(address).is_global:
+                raise socket.gaierror(
+                    f"Managed accounts may only reach public-network addresses: {host!r}"
+                )
+        return infos
+
+    def guarded_gethostbyname(host):
+        return str(guarded_getaddrinfo(host, None, socket.AF_INET)[0][4][0])
+
+    socket.getaddrinfo = guarded_getaddrinfo
+    socket.gethostbyname = guarded_gethostbyname
+
+
 def build_model_providers(recipe: dict[str, Any]):
     from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[ModelProvider] = []
     for provider in recipe.get("model_providers", []):
+        _require_public_provider_endpoint(provider.get("endpoint"))
         api_key = provider.get("api_key")
         api_key_env = provider.get("api_key_env")
-        if not api_key and api_key_env:
+        if not api_key and api_key_env and not managed_account():
             api_key = os.getenv(api_key_env)
         providers.append(
             ModelProvider(
@@ -166,11 +261,36 @@ def _validate_recipe_runtime_support(recipe: dict[str, Any], model_providers: li
         raise ValueError("Add a Provider connection block before running this recipe.")
 
 
+def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
+    """True when the recipe asks for a local (stdio) MCP provider, i.e. a command
+    this host would run. Routes gate on it to keep that behind a UI session."""
+    providers = recipe.get("mcp_providers") or []
+    if not isinstance(providers, list):
+        return False
+    return any(
+        isinstance(provider, dict) and provider.get("provider_type") == "stdio"
+        for provider in providers
+    )
+
+
+def _require_confinable_mcp_transport(provider_type: str) -> None:
+    """Refuse network MCP for managed accounts: the engine opens its own connections and cannot use chat's confined transport."""
+    if provider_type not in {"sse", "streamable_http"} or not managed_account():
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Recipe MCP servers are unavailable for managed accounts until the recipe "
+            "engine uses the account-confined MCP transport."
+        ),
+    )
+
+
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
-    # Same gate as the chat MCP path: stdio providers spawn a local subprocess,
-    # so build them only when this host allows it (desktop / explicit opt-in).
+    # Same gate as the chat MCP path: stdio providers spawn a local subprocess, so build
+    # them only when this host allows it (desktop loopback default / explicit opt-in).
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -200,9 +320,10 @@ def build_mcp_providers(recipe: dict[str, Any]) -> list:
             continue
 
         if provider_type in {"sse", "streamable_http"}:
+            _require_confinable_mcp_transport(provider_type)
             api_key = provider.get("api_key")
             api_key_env = provider.get("api_key_env")
-            if not api_key and api_key_env:
+            if not api_key and api_key_env and not managed_account():
                 api_key = os.getenv(str(api_key_env))
             providers.append(
                 MCPProvider(
@@ -241,6 +362,7 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
 
 
 def build_config_builder(recipe: dict[str, Any]):
+    validate_recipe_access(recipe)
     _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
     from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
@@ -258,8 +380,8 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = oxc_local_callable_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config currently skips processors.
-    # Re-attach so drop_columns/schema_transform survive the API payload.
+    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
+    # survive the API payload.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -276,20 +398,21 @@ def build_config_builder(recipe: dict[str, Any]):
 
 
 def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = None):
+    validate_recipe_access(recipe)
+    account_path(artifact_path)
     _apply_data_designer_image_context_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts; packaged Unsloth can run with
-        # cwd=/, so keep default callers on Unsloth's writable recipe artifact root.
+        # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
+        # writable recipe artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)
 
-    # DataDesigner requires >=1 model provider even with no LLM columns; stub
-    # one so sampler/expression-only recipes run without a real provider.
+    # DataDesigner requires >=1 model provider even with no LLM columns.
     if not model_providers:
         from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
         model_providers = [

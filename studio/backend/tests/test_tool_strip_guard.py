@@ -74,3 +74,22 @@ def test_no_quadratic_blowup_on_unclosed_markers():
     out = strip_tool_call_markup(big, final = True)
     assert time.perf_counter() - t0 < 2.0
     assert out == ""
+
+
+def test_the_two_bracket_depth_rules_stay_separate():
+    """The scanner is shared; the depth rule is not, and both callers need their own.
+
+    The healer counts braces toward the bracket depth (its Gemma array normalizer needs
+    that); the display strip counts brackets only, or a stray ``}`` would end the span
+    early and leave the rest of a malformed call on screen.
+    """
+    from core import tool_healing
+    from core.inference.tool_call_parser import _balanced_bracket_end, strip_tool_markup
+
+    truncated = '[{"name": "x", "arguments": {"a": 1}]'
+    assert tool_healing._balanced_bracket_end(truncated, 0) is None
+    assert tool_healing._balanced_bracket_end(truncated, 0, braces_count = False) == 36
+    assert _balanced_bracket_end(truncated, 0) == 36
+
+    assert strip_tool_markup("[TOOL_CALLS] [} prose ] tail", final = True) == "tail"
+    assert tool_healing.strip_tool_call_markup("[TOOL_CALLS] [} prose ] tail") == " prose ] tail"

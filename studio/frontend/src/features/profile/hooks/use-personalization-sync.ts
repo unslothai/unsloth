@@ -8,6 +8,7 @@ import {
   isDefaultCustomization,
   isPalette,
   loadPersonalization,
+  migrateShippedSidebarNavDefault,
   sanitizeCustomization,
   savePersonalization,
   setPalette,
@@ -18,11 +19,12 @@ import {
 } from "@/features/settings";
 import {
   DEFAULT_LOCALE_PREFERENCE,
+  LOCALE_INITIALIZATION_TIMEOUT_MS,
+  type LocalePreference,
   getLocalePreference,
   isLocalePreference,
   setLocale,
   useLocalePreference,
-  type LocalePreference,
 } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -33,10 +35,10 @@ import type { AvatarShape } from "../stores/user-profile-store";
 
 const PUSH_DEBOUNCE_MS = 800;
 
-// Version 2 payloads store the language preference ("auto" or a pinned
-// locale). Version 1 always serialized the resolved locale, so its "en" is
-// usually the old default rather than an explicit pick.
-const PERSONALIZATION_VERSION = 2;
+// Version 2 payloads store the language preference ("auto" or a pinned locale). Version 1 always
+// serialized the resolved locale, so its "en" is usually the old default rather than an explicit
+// pick. Version 3 migrates untouched sidebar layouts to keep Video under More. Version 4 pins Video
+const PERSONALIZATION_VERSION = 5;
 
 type ProfileSnapshot = {
   displayName: string;
@@ -141,10 +143,9 @@ function serialized(data: PersonalizationWrite): string {
   return JSON.stringify(data);
 }
 
-// Version 1 clients wrote language on every save, so a legacy "en" usually
-// means the user never picked a language. Map it to auto; explicit picks of
-// other locales (the old default was English) are kept. Version 2 payloads
-// are trusted verbatim, so a deliberate English pick stays pinned.
+// Version 1 clients wrote language on every save, so a legacy "en" usually means the user never
+// picked a language. Map it to auto; explicit picks of other locales (the old default was English)
+// are kept. Version 2 payloads are trusted verbatim, so a deliberate English pick stays pinned.
 export function remoteLanguagePreference(
   version: unknown,
   language: unknown,
@@ -228,16 +229,16 @@ export function usePersonalizationSync(enabled: boolean): void {
       return;
     }
     let cancelled = false;
+    const localeHydrationController = new AbortController();
     void (async () => {
       try {
         const remote = await loadPersonalization();
         if (cancelled) return;
         if (remote.saved) {
-          // Legacy records predating a field come back server-defaulted. Keep
-          // the local value and re-push it (lastSaved below records the remote
-          // default so the push detects the diff) rather than treating the
-          // default as an explicit remote choice. A record that actually stored
-          // the field reports <field>Saved=true and still wins.
+          // Legacy records predating a field come back server-defaulted. Keep the local value and
+          // re-push it (lastSaved below records the remote default so the push detects the diff)
+          // rather than treating the default as an explicit remote choice. A record that actually
+          // stored the field reports <field>Saved=true and still wins.
           const localGreeting =
             useUserProfileStore.getState().showGreetingSloth;
           const remoteGreeting = remote.profile.showGreetingSloth !== false;
@@ -261,16 +262,41 @@ export function usePersonalizationSync(enabled: boolean): void {
           const keepLocalPalette =
             remote.paletteSaved === false && localPalette !== "standard";
           const nextPalette = keepLocalPalette ? localPalette : remotePalette;
-          const remoteCustomization = sanitizeCustomization(
+          const storedRemoteCustomization = sanitizeCustomization(
             remote.appearance.customization,
+          );
+          const remoteCustomization = migrateShippedSidebarNavDefault(
+            storedRemoteCustomization,
+            remote.version,
+            PERSONALIZATION_VERSION,
           );
           const localCustomization = latestCustomizationRef.current;
           const keepLocalCustomization =
             remote.customizationSaved === false &&
             !isDefaultCustomization(localCustomization);
+          const keepLocalChatWidth =
+            remote.chatWidthSaved === false ||
+            remote.appearance.customization?.chatWidth === undefined;
+          const keepLocalComposerAttachments =
+            remote.composerAttachmentsSaved === false ||
+            remote.appearance.customization?.composerAttachments === undefined;
+          const keepLocalSentAttachments =
+            remote.sentAttachmentsSaved === false ||
+            remote.appearance.customization?.sentAttachments === undefined;
           const nextCustomization = keepLocalCustomization
             ? localCustomization
-            : remoteCustomization;
+            : {
+                ...remoteCustomization,
+                ...(keepLocalChatWidth && {
+                  chatWidth: localCustomization.chatWidth,
+                }),
+                ...(keepLocalComposerAttachments && {
+                  composerAttachments: localCustomization.composerAttachments,
+                }),
+                ...(keepLocalSentAttachments && {
+                  sentAttachments: localCustomization.sentAttachments,
+                }),
+              };
           const remoteLanguage = remoteLanguagePreference(
             remote.version,
             remote.appearance.language,
@@ -288,20 +314,48 @@ export function usePersonalizationSync(enabled: boolean): void {
           ) {
             useAppearanceCustomStore.getState().replaceAll(nextCustomization);
           }
-          if (nextLanguage !== latestLanguageRef.current)
-            setLocale(nextLanguage);
-          // lastSaved records what the server actually has (server-side defaults
-          // for legacy fields) so the debounced push re-uploads preserved local
-          // values.
-          lastSavedRef.current = serialized(
-            payload(
+          if (nextLanguage !== latestLanguageRef.current) {
+            const localeResult = await setLocale(nextLanguage, {
+              signal: localeHydrationController.signal,
+              // A catalog that will not load must not decide whether the rest of personalization
+              // syncs. Adopting the preference and rendering English keeps the local preference
+              // equal to the server's, so the baseline below is honest and the debounced push
+              // cannot overwrite the remote language with a stale local one.
+              adoptOnFailure: true,
+              // And a catalog request that is accepted but never completes
+              // must not hold hydration, and with it every save for the rest
+              // of the session, open forever. Same bound as startup.
+              timeoutMs: LOCALE_INITIALIZATION_TIMEOUT_MS,
+            });
+            if (cancelled) return;
+            // "superseded" means a newer request took over, so this language is no longer the one
+            // in effect and must not be recorded as the synchronized baseline: the newer request
+            // may itself have failed, leaving the local preference on neither value. Hydration
+            // still has to finish, or every later save stays paused for the session; an empty
+            // baseline makes the next push send whatever is in effect.
+            if (localeResult === "cancelled") return;
+            if (localeResult === "superseded") {
+              if (authGenerationRef.current === generation) {
+                lastSavedRef.current = "";
+                setHydratedGeneration(generation);
+              }
+              return;
+            }
+          }
+          // lastSaved records what the server actually has (server-side defaults for legacy fields)
+          // so the debounced push re-uploads preserved local values.
+          lastSavedRef.current = serialized({
+            ...payload(
               { ...nextProfile, showGreetingSloth: remoteGreeting },
               nextTheme,
               remotePalette,
-              remoteCustomization,
+              storedRemoteCustomization,
               nextLanguage,
             ),
-          );
+            // Preserve the server's actual version here so a legacy record is
+            // re-saved even when the sidebar layout itself was customized.
+            version: remote.version,
+          });
         } else {
           const rawProfile = profileSnapshot();
           const nextProfile = normalizeProfile(rawProfile);
@@ -350,6 +404,7 @@ export function usePersonalizationSync(enabled: boolean): void {
     })();
     return () => {
       cancelled = true;
+      localeHydrationController.abort();
     };
   }, [enabled]);
 

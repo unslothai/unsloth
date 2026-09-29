@@ -88,7 +88,7 @@ test("a fresh id in a later snapshot opens the panel", () => {
   assert.equal(opened, true);
 });
 
-test("Studio's own chat never opens the panel", () => {
+test("Unsloth's own chat never opens the panel", () => {
   const opened = observeResponse(
     watchFrom(WATCH_AT),
     snapshot([entry("uireq", "completed", SERVER_NOW - 2, false)]),

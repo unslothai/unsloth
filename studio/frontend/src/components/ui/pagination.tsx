@@ -6,10 +6,12 @@ import type * as React from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
   MoreHorizontalCircle01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
@@ -79,8 +81,7 @@ function PaginationPrevious({
       className={cn("pl-2!", className)}
       {...props}
     >
-      <HugeiconsIcon
-        icon={ArrowLeft01Icon}
+      <ChevronLeftIcon
         strokeWidth={2}
         data-icon="inline-start"
       />
@@ -101,8 +102,7 @@ function PaginationNext({
       {...props}
     >
       <span className="hidden sm:block">Next</span>
-      <HugeiconsIcon
-        icon={ArrowRight01Icon}
+      <ChevronRightIcon
         strokeWidth={2}
         data-icon="inline-end"
       />

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -42,14 +43,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
-import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
+import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import {
-  type LocalModelInfo,
-  useTrainingConfigStore,
-} from "@/features/training";
+import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -80,13 +78,13 @@ import {
   getEstimatedSize,
   mergedFormatPayload,
 } from "./constants";
-import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
   getCachedCheckpoints,
   getCachedLocalModels,
   refreshCheckpoints,
   refreshLocalModels,
 } from "./export-navigation-cache";
+import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -99,8 +97,7 @@ const SEARCH_INPUT_REASONS = new Set([
   "input-clear",
 ]);
 
-// GGUF LoRA output float types (Q8_0 first / default). Q8_0 falls back to F16 per tensor for dims
-// not divisible by the block size (32); no "auto" - the choice is explicit.
+// GGUF LoRA output float types (Q8_0 default). Q8_0 falls back to F16 per tensor for dims not divisible by 32; no "auto".
 const LORA_GGUF_OUTTYPES = ["q8_0", "f16", "bf16", "f32"] as const;
 
 type SourceTab = "local" | "checkpoint" | "hf";
@@ -149,8 +146,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  // Lowercase `_gguf` matches the backend's intermediate dir (core/export/export.py);
-  // `_GGUF` would relocate+delete that sibling.
+  // Lowercase `_gguf` matches the backend's intermediate dir; `_GGUF` would relocate+delete it.
   if (slash < 0) return `${trimmed}_gguf`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
@@ -168,14 +164,14 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
-  const { hfToken, setHfToken } = useTrainingConfigStore(
+  const signalReady = useAppShellReadySignal();
+  const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
+      hfToken: s.token,
+      setHfToken: s.setToken,
     })),
   );
 
-  // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
     () => getCachedCheckpoints() ?? [],
   );
@@ -203,10 +199,8 @@ export function ExportPage() {
   const debouncedModelQuery = useDebouncedValue(modelInput);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
-  // Seed the method + quants from a live run so that navigating away and back
-  // (which remounts this page) keeps the method card selected and the run panel
-  // showing its logs/progress. The run itself lives in the global store; only
-  // this form state is local and would otherwise reset to null on remount.
+  // Seed the method + quants from a live run so navigating away and back (which remounts this
+  // page) keeps the selection. The run lives in the global store; only this form state is local.
   const [exportMethod, setExportMethod] = useState<ExportMethod | null>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) && s.summary ? s.summary.method : null;
@@ -219,8 +213,8 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
-  // Merged precision: one or more MERGED_FORMATS values, exported in one run. Seed from a live run
-  // so navigating away and back (which remounts this page) keeps the selection, like exportMethod.
+  const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
+  // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) &&
@@ -238,10 +232,10 @@ export function ExportPage() {
   const hardware = useHardwareInfo();
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const torchaoUnavailable = !hardware.torchaoExportSupported;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
-  // Only gray out on an authoritative unsupported response; while unloaded the backend route guard
-  // stays authoritative. The backend supplies the precise reason; the fallback below is a backstop.
+  // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
   const exportUnsupportedMessage =
@@ -252,30 +246,36 @@ export function ExportPage() {
       MERGED_FORMATS.filter((f) => {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
-        // Portable torchao is the fallback for hosts without the NVIDIA compressed path, i.e. a
-        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors) and on macOS/MLX (the
-        // backend rejects quantized export there).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // Portable torchao is the fallback for hosts without the NVIDIA compressed path. Hidden on
+        // NVIDIA (use compressed-tensors), macOS/MLX (rejected) and where torchao cannot load.
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !torchaoUnavailable;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, torchaoUnavailable],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop picks the gate removed, only once hardware is loaded: before that hasNvidia reads false.
+  useEffect(() => {
+    if (!hardware.loaded) return;
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
   );
   const effectiveImatrix = useImatrix || requiresImatrix;
 
-  // Whether the inline export panel is expanded. The panel also shows itself
-  // whenever a run is active/terminal (see `panelActive`), so it survives
-  // navigation even though this local flag resets on remount.
+  // Whether the inline export panel is expanded. The panel also shows itself whenever a run is
+  // active/terminal (see `panelActive`), so it survives navigation even though this flag resets.
   const [panelOpen, setPanelOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
@@ -286,8 +286,7 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
-  // Export run state lives in the global runtime store so it keeps running and
-  // streaming in the background, in parallel with training and inference.
+  // Export run state lives in the global runtime store so it keeps streaming in the background.
   const runExport = useExportRuntimeStore((s) => s.runExport);
   const resetExportRun = useExportRuntimeStore((s) => s.reset);
   const isExporting = useExportRuntimeStore((s) => s.isExporting);
@@ -304,7 +303,6 @@ export function ExportPage() {
     steps: exportTourSteps,
   });
 
-  // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedCheckpoints() !== null;
@@ -329,16 +327,13 @@ export function ExportPage() {
     };
   }, []);
 
-  // Apply the ?run= deep link (e.g. from a finished run's "Export to GGUF"
-  // button) once its run appears in the checkpoint list: select the run and
-  // default to GGUF. The main checkpoint is auto-selected further below, after
-  // the model-change effect that clears the checkpoint.
+  // Apply the ?run= deep link once its run appears in the checkpoint list: select the run and
+  // default to GGUF. The main checkpoint is auto-selected below, after the model-change effect.
   const { run: preselectRun } = useSearch({ from: "/export" });
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preselectRun) {
-      // Deep link cleared (e.g. navigated to /export via the sidebar): stop
-      // treating the previously preselected run specially.
+      // Deep link cleared (e.g. navigated to /export via the sidebar): stop preselecting that run.
       appliedRunRef.current = null;
       return;
     }
@@ -352,7 +347,6 @@ export function ExportPage() {
     setExportMethod("gguf");
   }, [preselectRun, models]);
 
-  // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedLocalModels() !== null;
@@ -378,7 +372,19 @@ export function ExportPage() {
     };
   }, []);
 
-  // ---- Derived state ----
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      loadingCheckpoints ||
+      isLoadingLocalModels ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [isLoadingLocalModels, loadingCheckpoints, signalReady]);
+
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
@@ -392,13 +398,11 @@ export function ExportPage() {
     [selectedModelData],
   );
 
-  // Derive training info from selected model's API metadata
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
   const isQuantized = !!selectedModelData?.is_quantized;
   // isAdapter / isQuantized come from the checkpoint's metadata and are stale in "model" source
-  // mode (a direct base export), so treat both as false outside checkpoint mode to avoid wrongly
-  // gating the methods.
+  // mode, so treat both as false outside checkpoint mode to avoid wrongly gating the methods.
   const effectiveIsAdapter = sourceMode === "checkpoint" && isAdapter;
   const effectiveIsQuantized = sourceMode === "checkpoint" && isQuantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
@@ -408,9 +412,8 @@ export function ExportPage() {
   const sourceBaseModelName =
     sourceMode === "model" ? (selectedSourceModel ?? "—") : baseModelName;
 
-  // For a full fine-tune checkpoint the weights live in the checkpoint dir
-  // itself (its base_model may be a local/custom path that can't be sized), so
-  // size that dir; for LoRA adapters the export merges into the base model.
+  // For a full fine-tune checkpoint the weights live in the checkpoint dir itself (its base_model
+  // may be unsizeable), so size that dir; LoRA adapters merge into the base model.
   const sizeTargetModel = useMemo(() => {
     if (sourceMode === "checkpoint" && !isAdapter) {
       const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
@@ -442,10 +445,9 @@ export function ExportPage() {
     isLoading: isLoadingHfModels,
     error: hfSearchError,
   } = useHubModelSearch(debouncedModelQuery, {
-    accessToken: debouncedHfToken || undefined,
+    accessToken: hfApiToken(debouncedHfToken),
     excludeGguf: true,
-    // Curated unsloth listing by default, but a typed query searches the whole
-    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    // Curated unsloth listing by default; a typed query searches the whole Hub (unsloth first).
     ownerScope: debouncedModelQuery.trim() ? "all" : "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -516,14 +518,12 @@ export function ExportPage() {
   const sourceTab: SourceTab =
     sourceMode === "checkpoint" ? "checkpoint" : modelSource;
 
-  // Reset checkpoint when the selected model changes
   useEffect(() => {
     setCheckpoint(null);
   }, [selectedModelIdx]);
 
-  // Default to the newest checkpoint when none is chosen (checkpoints are sorted newest-first).
-  // Declared after the reset effect above so it runs last and isn't clobbered back to null. Covers
-  // both a ?run= deep link and a plain finetune opened without an explicit checkpoint pick.
+  // Default to the newest checkpoint when none is chosen. Declared after the reset effect above
+  // so it runs last; covers both a ?run= deep link and a plain finetune.
   useEffect(() => {
     if (sourceMode !== "checkpoint") return;
     if (checkpoint != null || checkpointsForModel.length === 0) return;
@@ -593,6 +593,14 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  // Derived, not reset in an effect: an imatrix is calibrated for one model, so another source must not inherit it.
+  const imatrixSourceKey = JSON.stringify([
+    sourceTab,
+    sourceMode === "checkpoint" ? selectedModelIdx : null,
+    selectedExportSource,
+  ]);
+  const imatrixPath =
+    customImatrix.sourceKey === imatrixSourceKey ? customImatrix.path : "";
   const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
@@ -628,8 +636,7 @@ export function ExportPage() {
   ]);
   const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
-  // GGUF method exporting an adapter checkpoint as a GGUF LoRA (vs full-model quants). Reuses the
-  // LoRA-adapter export path; no quant list needed.
+  // GGUF method exporting an adapter checkpoint as a GGUF LoRA; reuses the LoRA export path.
   const ggufAsLora =
     exportMethod === "gguf" &&
     ggufTarget === "lora" &&
@@ -715,16 +722,14 @@ export function ExportPage() {
   );
 
   // ---- Export handlers ----
-  // Assemble the run params from the current form and hand off to the global
-  // runtime store, which drives load -> export -> cleanup in the background.
+  // Assemble the run params and hand off to the global runtime store, which drives the run.
   const handleStart = useCallback(async () => {
     const source =
       sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
     // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
     if (exportUnsupported) return;
-    // GGUF with no quant, or merged with no format, would run an unintended/empty export; require
-    // at least one (mirrors canExport, in case the panel's Start button bypasses the outer one).
+    // GGUF with no quant, or merged with no format, would run an empty export; require at least one.
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
@@ -760,18 +765,16 @@ export function ExportPage() {
         exportMethod);
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
-    // Consent gate for an HF source's custom (auto_map) code, run before we hand
-    // off to runExport (which performs the load in the background). A local
-    // checkpoint/model the user exported is trusted by default.
+    // Consent gate for an HF source's custom (auto_map) code, before handing off to runExport.
+    // A local checkpoint/model the user exported is trusted by default.
     let trustRemoteCode = modelSource !== "hf";
     let approvedRemoteCodeFingerprint: string | null = null;
     if (sourceMode !== "checkpoint") {
       const remoteCodeOk = await confirmRemoteCodeIfNeeded({
         modelName: source,
         hfToken: actionHfToken || null,
-        // An HF source can need trust_remote_code via its YAML default with no
-        // auto_map to review; signal it so a YAML-only model does not export
-        // with it false.
+        // An HF source can need trust_remote_code via its YAML default with no auto_map to review;
+        // signal it so a YAML-only model does not export with it false.
         requiresTrustRemoteCode: modelSource === "hf",
         onApprove: (fingerprint) => {
           trustRemoteCode = true;
@@ -793,6 +796,7 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
+      imatrixPath,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
@@ -827,6 +831,7 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
+    imatrixPath,
     selectedFormats,
     hubMultiFormat,
     ggufAsLora,
@@ -844,8 +849,7 @@ export function ExportPage() {
     runExport,
   ]);
 
-  // Open the inline panel into a fresh config state. Clears any previous
-  // terminal run (a still-running export cannot be cleared, so it stays).
+  // Open the inline panel into a fresh config state, clearing any previous terminal run.
   const handleOpenPanel = useCallback(() => {
     if (!isExporting) {
       resetExportRun();
@@ -853,8 +857,7 @@ export function ExportPage() {
     setPanelOpen(true);
   }, [isExporting, resetExportRun]);
 
-  // Collapse the panel. Only reachable from config / terminal states (never
-  // mid-run), so resetting the store back to idle is safe.
+  // Collapse the panel. Only reachable from config / terminal states, so resetting is safe.
   const handleClosePanel = useCallback(() => {
     resetExportRun();
     setPanelOpen(false);
@@ -862,8 +865,7 @@ export function ExportPage() {
 
   const showPanel = panelOpen || panelActive;
 
-  // Bring the panel into view when it opens and offer a scroll-down affordance
-  // (like Chat) when its end is below the fold.
+  // Bring the panel into view when it opens and offer a scroll-down affordance (like Chat).
   const panelEndRef = useRef<HTMLDivElement>(null);
   const [panelEndVisible, setPanelEndVisible] = useState(true);
 
@@ -878,8 +880,7 @@ export function ExportPage() {
   useEffect(() => {
     const el = panelEndRef.current;
     if (!showPanel || !el) return;
-    // The scroll-down button is also gated on showPanel, so there is no need to
-    // reset visibility when the panel closes; the observer self-corrects on open.
+    // The scroll-down button is also gated on showPanel, so the observer self-corrects on open.
     const obs = new IntersectionObserver(
       ([entry]) => setPanelEndVisible(entry.isIntersecting),
       { rootMargin: "0px 0px -40px 0px" },
@@ -888,10 +889,9 @@ export function ExportPage() {
     return () => obs.disconnect();
   }, [showPanel]);
 
-  // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
+      <main className="mx-auto max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
@@ -1158,7 +1158,7 @@ export function ExportPage() {
                                       No models found
                                     </ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  <ComboboxList>
                                     {(id: string) => (
                                       <ComboboxItem
                                         key={id}
@@ -1271,7 +1271,7 @@ export function ExportPage() {
                                     No local models found
                                   </ComboboxEmpty>
                                 )}
-                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                <ComboboxList>
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
@@ -1317,7 +1317,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-foreground/[0.04] p-3">
+                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1326,7 +1326,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1374,7 +1374,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-ui-10 font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold">
                           {i + 1}
                         </span>
                         {step}
@@ -1532,11 +1532,19 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {torchaoUnavailable && (
+                      <div className="text-ui-11 text-muted-foreground">
+                        Portable FP8/INT8 (torchao) export needs torchao, which
+                        is not installed here. Update Unsloth, or use
+                        16-bit or GGUF.
                       </div>
                     )}
                   </div>
@@ -1676,16 +1684,50 @@ export function ExportPage() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
-                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                              ? "Required for the selected IQ low-bit quant."
+                              : "Improves quant quality and unlocks the IQ low-bit quants."}
                           </div>
                         </div>
                         <Switch
+                          aria-label="Importance matrix (imatrix)"
                           checked={effectiveImatrix}
                           onCheckedChange={setUseImatrix}
                           disabled={requiresImatrix}
                         />
                       </div>
+                      {effectiveImatrix && (
+                        <div className="space-y-1.5">
+                          <label
+                            htmlFor="export-imatrix-path"
+                            className="text-sm font-medium"
+                          >
+                            Local imatrix file (optional)
+                          </label>
+                          <InputGroup>
+                            <InputGroupInput
+                              id="export-imatrix-path"
+                              aria-describedby="export-imatrix-path-help"
+                              placeholder="/path/to/imatrix.gguf"
+                              value={imatrixPath}
+                              onChange={(e) =>
+                                setCustomImatrix({
+                                  sourceKey: imatrixSourceKey,
+                                  path: e.target.value,
+                                })
+                              }
+                            />
+                          </InputGroup>
+                          <p
+                            id="export-imatrix-path-help"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Absolute path to a .dat or .gguf imatrix file on the
+                            machine running Unsloth. Leave blank to
+                            auto-download the upstream Unsloth imatrix for the
+                            base model, if one exists.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

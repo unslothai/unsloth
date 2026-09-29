@@ -1,22 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import {
-  Cancel01Icon,
-  LayoutAlignLeftIcon,
-  MinusSignIcon,
-  SquareIcon,
-  SquareSquareIcon,
-} from "@hugeicons/core-free-icons";
+import { Z_LAYER } from "@/lib/z-layers";
+import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
+import { ArrowLeft, ArrowRight, Copy, Minus, Square, X } from "lucide-react";
 import {
   type MouseEvent,
+  type PointerEvent,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -96,7 +93,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex size-8 items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "relative z-[80] inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -109,44 +106,55 @@ export function DesktopTitlebarNavigation({
   expanded,
   onToggleSidebar,
   className,
+  showSidebarToggle = true,
 }: {
   expanded: boolean;
   onToggleSidebar: () => void;
   className?: string;
+  /** Off in mobile, where Navbar's SidebarTrigger owns the slot; a spacer holds it open. */
+  showSidebarToggle?: boolean;
 }): ReactElement {
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
+  // Window chrome: the band around these is a fixed 34px, so they keep their
+  // size while the slot holding them scales.
   const buttonClass =
-    "inline-flex size-[33px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
   return (
     <div
       className={cn(
-        "flex mt-1 translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
         className,
       )}
       role="toolbar"
       aria-label="Sidebar and page navigation"
     >
-      <button
-        type="button"
-        title={expanded ? "Collapse sidebar" : "Expand sidebar"}
-        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-        onMouseDown={stopTitlebarDrag}
-        onDoubleClick={stopTitlebarDrag}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleSidebar();
-        }}
-        className={buttonClass}
-      >
-        <HugeiconsIcon
-          icon={LayoutAlignLeftIcon}
-          strokeWidth={1.75}
-          className="size-icon"
-        />
-      </button>
+      {showSidebarToggle ? (
+        <button
+          type="button"
+          title={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          onMouseDown={stopTitlebarDrag}
+          onDoubleClick={stopTitlebarDrag}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSidebar();
+          }}
+          className={buttonClass}
+        >
+          <HugeiconsIcon
+            icon={LayoutAlignLeftIcon}
+            strokeWidth={1.75}
+            className="size-icon !size-[calc(var(--icon-size)+1px)]"
+          />
+        </button>
+      ) : (
+        // Holds the slot the navbar's own trigger sits in, so it is the
+        // button's fixed size, not a scaled one.
+        <div aria-hidden="true" className="size-[30px] shrink-0" />
+      )}
       <button
         type="button"
         title="Go back"
@@ -162,7 +170,7 @@ export function DesktopTitlebarNavigation({
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon"
+          className="size-icon !size-[calc(var(--icon-size)+1px)]"
         />
       </button>
       <button
@@ -180,7 +188,7 @@ export function DesktopTitlebarNavigation({
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon"
+          className="size-icon !size-[calc(var(--icon-size)+1px)]"
         />
       </button>
     </div>
@@ -195,21 +203,28 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
+  // Outside SidebarProvider, so read the same media query the provider does.
+  const isMobile = useIsMobileShell();
 
   const maximizeRefreshSequence = useRef(0);
   const maximizeRefreshTimer = useRef<number | null>(null);
   // The titlebar sits outside the sidebar wrapper, so it cannot inherit
   // --sidebar-width. Read the resized width from the same store instead.
-  const { width } = useSidebarWidth();
+  const { width, scale: widthScale } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
       ? // The live value only exists mid-drag; otherwise the committed width.
-        `var(--studio-sidebar-live-width, ${width}px)`
+        `var(--studio-sidebar-live-width, ${width * widthScale}px)`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
+  // The buttons in this slot are fixed but their padding and gaps scale, so
+  // the slot grows with them and never shrinks under the three 30px buttons.
+  // The drag region starts where it ends.
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
+    showSidebarSurface && !pinned
+      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
+      : sidebarWidth;
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
@@ -316,9 +331,11 @@ export function WindowTitlebar({
     [runWindowAction],
   );
 
-  const handleResizeMouseDown = useCallback(
+  // pointerdown, not mousedown: Radix dismisses modals on pointerdown, which fires first,
+  // so a mousedown handler starts the resize but the dialog closes underneath it.
+  const handleResizePointerDown = useCallback(
     (direction: WindowResizeDirection) =>
-      (event: MouseEvent<HTMLDivElement>) => {
+      (event: PointerEvent<HTMLDivElement>) => {
         if (event.button !== 0) {
           return;
         }
@@ -340,39 +357,47 @@ export function WindowTitlebar({
 
   return (
     <>
+      {showSidebarSurface && (
+        <div
+          data-slot="window-titlebar-decoration"
+          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
+          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
+          // document element, where it would restyle the whole document once per drag frame.
+          data-titlebar-live-width-scope=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
+        >
+          {pinned && (
+            <div
+              className="absolute top-0 size-3 -translate-x-px bg-sidebar"
+              style={{ left: sidebarWidth }}
+            />
+          )}
+          <div
+            className="absolute top-0 h-px bg-sidebar-border"
+            style={{ left: contentBorderLeft, right: 0 }}
+          />
+          {pinned && (
+            <div
+              className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
+              style={{ left: sidebarWidth }}
+            />
+          )}
+        </div>
+      )}
       <header
         className={cn(
           "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
+        data-titlebar-live-width-scope=""
         aria-label="Window titlebar"
       >
-        {showSidebarSurface && pinned && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"
-            style={{ left: sidebarWidth }}
-          />
-        )}
-        {showSidebarSurface && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-full h-px bg-sidebar-border"
-            style={{ left: contentBorderLeft, right: 0 }}
-          />
-        )}
-        {showSidebarSurface && pinned && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
-            style={{ left: sidebarWidth }}
-          />
-        )}
         {showSidebarSurface && (
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              "pl-3",
+              "pl-4",
             )}
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
@@ -381,6 +406,7 @@ export function WindowTitlebar({
             <DesktopTitlebarNavigation
               expanded={pinned}
               onToggleSidebar={togglePinned}
+              showSidebarToggle={!isMobile}
             />
           </div>
         )}
@@ -388,14 +414,14 @@ export function WindowTitlebar({
           className="pointer-events-auto absolute top-0 h-full"
           style={{
             left: titlebarNavigationWidth,
-            right: "calc(var(--studio-window-control-inset,112px) + 0.5rem)",
+            right: "var(--studio-window-control-inset,112px)",
           }}
           onMouseDown={handleDragMouseDown}
           onDoubleClick={handleDragDoubleClick}
           aria-hidden="true"
         />
         <div
-          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
+          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5"
           role="toolbar"
           aria-label="Window controls"
         >
@@ -403,10 +429,11 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            <HugeiconsIcon
-              icon={MinusSignIcon}
-              strokeWidth={1.75}
-              className="size-[15px]"
+            <Minus
+              aria-hidden="true"
+              absoluteStrokeWidth
+              strokeWidth={1.5}
+              size={16}
             />
           </WindowControlButton>
           <WindowControlButton
@@ -415,64 +442,95 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            <HugeiconsIcon
-              icon={maximized ? SquareSquareIcon : SquareIcon}
-              strokeWidth={1.75}
-              className="size-[14px]"
-            />
+            {maximized ? (
+              <Copy
+                aria-hidden="true"
+                absoluteStrokeWidth
+                strokeWidth={1.5}
+                size={14}
+                className="rotate-180"
+              />
+            ) : (
+              <Square
+                aria-hidden="true"
+                absoluteStrokeWidth
+                strokeWidth={1.5}
+                size={14}
+              />
+            )}
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
+            // No optimistic overlay here. Rust raises it only once the quit confirmations
+            // have passed, and one of those can be a dialog asking whether to keep
+            // training: painting "Closing Unsloth Desktop..." behind that question would
+            // answer it before the user does. The wait this covers is the reap, and Rust's
+            // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
+            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"
           >
-            <HugeiconsIcon
-              icon={Cancel01Icon}
-              strokeWidth={1.75}
-              className="size-[15px]"
+            <X
+              aria-hidden="true"
+              absoluteStrokeWidth
+              strokeWidth={1.5}
+              size={20}
             />
           </WindowControlButton>
         </div>
       </header>
       <div
         aria-hidden="true"
-        className="fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
-        onMouseDown={handleResizeMouseDown("North")}
+        className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("North")}
+      />
+      {/* resize grips stay above dialogs and notifications. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("South")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
-        onMouseDown={handleResizeMouseDown("South")}
+        className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("West")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
-        onMouseDown={handleResizeMouseDown("West")}
+        className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("East")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
-        onMouseDown={handleResizeMouseDown("East")}
+        className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("NorthWest")}
       />
       <div
         aria-hidden="true"
-        className="fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
-        onMouseDown={handleResizeMouseDown("NorthWest")}
+        className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+        style={{
+          zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
+          // keep the resize corner outside the close button.
+          clipPath:
+            "polygon(0 0, 100% 0, 100% 100%, calc(100% - 0.25rem) 100%, calc(100% - 0.25rem) 0.25rem, 0 0.25rem)",
+        }}
+        onPointerDown={handleResizePointerDown("NorthEast")}
       />
       <div
         aria-hidden="true"
-        className="fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
-        onMouseDown={handleResizeMouseDown("NorthEast")}
+        className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("SouthWest")}
       />
       <div
         aria-hidden="true"
-        className="fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
-        onMouseDown={handleResizeMouseDown("SouthWest")}
-      />
-      <div
-        aria-hidden="true"
-        className="fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
-        onMouseDown={handleResizeMouseDown("SouthEast")}
+        className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+        style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+        onPointerDown={handleResizePointerDown("SouthEast")}
       />
     </>
   );

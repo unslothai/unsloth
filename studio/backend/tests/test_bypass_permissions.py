@@ -21,6 +21,7 @@ import pytest
 
 import core.inference.tools as tools
 from core.inference.tools import (
+    _SANDBOX_TEMP_DIRNAME,
     _bash_exec,
     _build_bypass_env,
     _build_safe_env,
@@ -80,7 +81,7 @@ def test_bypass_env_keeps_benign_strips_secret_repoints_home(monkeypatch, tmp_pa
     assert env.get("HOSTVAR") == "benign-123"  # full host env inherited
     assert "HF_TOKEN" not in env  # ...minus secrets
     assert env["HOME"] == str(tmp_path)  # $HOME-based cred lookups defused
-    assert env["TMPDIR"] == str(tmp_path)
+    assert env["TMPDIR"] == str(tmp_path / _SANDBOX_TEMP_DIRNAME)
 
 
 def test_safe_env_excludes_host_and_secret(monkeypatch, tmp_path):
@@ -133,12 +134,33 @@ def captured_popen(monkeypatch):
     return cap
 
 
+@pytest.fixture
+def captured_prepared_launch(monkeypatch):
+    cap = {}
+
+    def fake_spawn(prepared, **kwargs):
+        cap["prepared"] = prepared
+        cap["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(tools.os_sandbox, "spawn_prepared_launch", fake_spawn)
+    return cap
+
+
+def _carries(preexec, expected) -> bool:
+    """A backend that isolates COMPOSES its pre-exec onto the plan's rather than replacing it, so on such a host the identity is one closure down."""
+    if preexec is expected:
+        return True
+    return any(cell.cell_contents is expected for cell in (preexec.__closure__ or ()))
+
+
 @_POSIX_ONLY
-def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
+def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_prepared_launch, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
-    assert captured_popen["kwargs"]["preexec_fn"] is tools._sandbox_preexec
-    assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]
+    kwargs = captured_prepared_launch["kwargs"]
+    assert _carries(kwargs["preexec_fn"], tools._sandbox_preexec)
+    assert "HF_TOKEN" not in kwargs["env"]
 
 
 @_POSIX_ONLY
@@ -162,7 +184,10 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
 def test_bash_blocklist_skipped_when_bypassed(captured_popen):
     out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = True)
     assert out == "FAKEOUT"  # blocklist skipped -> reached (faked) execution
-    assert captured_popen["cmd"][0] in ("bash", "cmd")
+    # Windows resolves bash to an absolute path (Git for Windows), so compare the
+    # program name rather than the spelling of argv[0].
+    shell = os.path.basename(captured_popen["cmd"][0]).lower()
+    assert shell in ("bash", "bash.exe", "cmd", "cmd.exe")
 
 
 @_POSIX_ONLY
@@ -496,9 +521,10 @@ def test_bypass_env_repoints_all_temp_vars(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMP", "/host/tmp")
     monkeypatch.setenv("TMP", "/host/tmp")
     env = _build_bypass_env(str(tmp_path))
-    assert env["TMPDIR"] == str(tmp_path)
-    assert env["TEMP"] == str(tmp_path)
-    assert env["TMP"] == str(tmp_path)
+    expected = str(tmp_path / _SANDBOX_TEMP_DIRNAME)
+    assert env["TMPDIR"] == expected
+    assert env["TEMP"] == expected
+    assert env["TMP"] == expected
 
 
 # ── credential-location redirect vars are dropped (regression) ──────────

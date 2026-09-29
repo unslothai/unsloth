@@ -10,12 +10,10 @@ import { parseUnslothDeepLink } from "./parse-deep-link";
 
 const acceptIntent = createDeepLinkIntentGate(2_000);
 
+// Via Rust so a hidden login start also gets its Dock icon restored.
 async function restoreMainWindow(): Promise<void> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const window = getCurrentWindow();
-  await window.show();
-  await window.unminimize();
-  await window.setFocus();
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("reveal_main_window");
 }
 
 export function DeepLinkHandler() {
