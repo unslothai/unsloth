@@ -8164,11 +8164,6 @@ class _ExtraSlot:
 _extra_slots: list[_ExtraSlot] = []
 _slot_lock = threading.Lock()
 _loading_slot: Optional[tuple[_ExtraSlot, str]] = None
-_evicted: dict[str, LoadRequest] = {}
-_evicted_kv: dict[str, dict] = {}
-_evicted_owner: dict[str, str] = {}
-_primary_request: Optional[LoadRequest] = None
-_primary_account: Optional[str] = None
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
@@ -8257,97 +8252,12 @@ def _release_slot(slot: _ExtraSlot) -> None:
         slot.refs -= 1
 
 
-def _restorable(request: LoadRequest) -> Optional[LoadRequest]:
-    """The request to replay when this model is evicted; a leased native path cannot be replayed."""
-    if request.native_path_lease:
-        return None
-    return request.model_copy(
-        update = {
-            "hf_token": None,
-            "load_request_id": None,
-            "force_reload": False,
-            "force_cancel_active": False,
-            "alongside": True,
-        }
-    )
-
-
-def _stash_key(request: LoadRequest) -> str:
+def _model_key(request: LoadRequest) -> str:
     return (
         f"{request.model_path}:{request.gguf_variant}"
         if request.gguf_variant
         else request.model_path
     )
-
-
-def _stash_evicted(
-    request: Optional[LoadRequest],
-    kv: Optional[dict] = None,
-    account: Optional[str] = None,
-) -> None:
-    from core.inference.llama_keepwarm import _delete_resume_files
-
-    if request is None:
-        return
-    key = _stash_key(request)
-    # Two accounts can each have kept the same model; neither entry may overwrite the other's.
-    if account is not None and _evicted_owner.get(key, account) != account:
-        key = f"{key}@{account}"
-    _evicted[key] = request
-    if account is None:
-        _evicted_owner.pop(key, None)
-    else:
-        _evicted_owner[key] = account
-    stale = _evicted_kv.pop(key, None)
-    if stale is not None:
-        _delete_resume_files(stale)
-    if kv is not None:
-        _evicted_kv[key] = kv
-
-
-def _evicted_visible(key: str) -> bool:
-    owner = _evicted_owner.get(key)
-    return owner is None or not account_access.managed_account() or owner == current_account_id()
-
-
-def _evicted_request(requested) -> Optional[LoadRequest]:
-    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
-
-    if not _evicted or not isinstance(requested, str) or not requested:
-        return None
-    base, variant = split_model_ref(requested)
-    for key, request in list(_evicted.items()):
-        if not _evicted_visible(key):
-            continue
-        if not _matches_any(base, (request.model_path, public_model_id(request.model_path))):
-            continue
-        if looks_like_quant(variant) and (request.gguf_variant or "").lower() != variant.lower():
-            continue
-        return request
-    return None
-
-
-def _forget_evicted(model_path: str, keep_kv: bool = False) -> Optional[dict]:
-    """A deliberate unload or a fresh load of the model: nothing to bring back. Returns the saved
-    KV for ``keep_kv``, else deletes it."""
-    from core.inference.llama_keepwarm import _delete_resume_files
-
-    global _primary_request
-    kept = None
-    for key, request in list(_evicted.items()):
-        if not _evicted_visible(key):
-            continue
-        if _matches_any(model_path, (request.model_path, public_model_id(request.model_path))):
-            del _evicted[key]
-            _evicted_owner.pop(key, None)
-            kv = _evicted_kv.pop(key, None)
-            if kv is not None and keep_kv and kept is None:
-                kept = kv
-            elif kv is not None:
-                _delete_resume_files(kv)
-    if _primary_request is not None and _matches_any(model_path, (_primary_request.model_path,)):
-        _primary_request = None
-    return kept
 
 
 def _eviction_victims(
@@ -8388,20 +8298,6 @@ def _claim_victim(slot: _ExtraSlot) -> bool:
         return True
 
 
-def note_chat_evicted() -> None:
-    """Images/Video is taking the GPU: remember every chat model so a request naming one brings it back."""
-    from core.inference import orchestrator as _orchestrator_module
-
-    primary_serving = _llama_cpp_backend.is_active or getattr(
-        _orchestrator_module._inference_backend, "active_model_name", None
-    )
-    # Single-model users keep the no-auto-reload default; auto-switch alone decides there.
-    if primary_serving and _extra_slots:
-        _stash_evicted(_primary_request, account = _primary_account)
-    for slot in _extra_slots:
-        _stash_evicted(slot.request, account = slot.account)
-
-
 def _slot_generations() -> set:
     return {event for slot in list(_extra_slots) for event in list(slot.generations)}
 
@@ -8437,19 +8333,9 @@ def _raise_or_cancel_slot_generations(
     return len(events)
 
 
-def _drop_extra_slot(slot: _ExtraSlot, stash: bool = False) -> None:
+def _drop_extra_slot(slot: _ExtraSlot) -> None:
     with suppress(ValueError):
         _extra_slots.remove(slot)
-    if stash:
-        from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
-
-        kv = None
-        if slot.request is not None and get_auto_unload_keep_kv():
-            try:
-                kv = slot.llama.save_slots_for_resume()
-            except Exception as exc:
-                logger.debug("slot save before eviction failed: %s", exc)
-        _stash_evicted(slot.request, kv, slot.account)
     try:
         slot.llama.unload_model()
     finally:
@@ -8459,11 +8345,7 @@ def _drop_extra_slot(slot: _ExtraSlot, stash: bool = False) -> None:
         slot.orchestrator._cleanup()
 
 
-def unload_extra_models(
-    keep = None,
-    stash: bool = False,
-    spare_filling: bool = False,
-) -> int:
+def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
     """Drop every extra slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
     dropped = 0
     filling = _loading_slot[0] if _loading_slot else None
@@ -8474,7 +8356,7 @@ def unload_extra_models(
         if keep is None or (loaded and not keep(slot.llama)):
             dropped += 1
             try:
-                _drop_extra_slot(slot, stash)
+                _drop_extra_slot(slot)
             except Exception as exc:
                 logger.warning("Could not unload an extra model: %s", exc)
     return dropped
@@ -8490,34 +8372,10 @@ def unload_llama_slots() -> int:
             continue
         dropped += 1
         try:
-            _drop_extra_slot(slot, True)
+            _drop_extra_slot(slot)
         except Exception as exc:
             logger.warning("Could not unload an extra model: %s", exc)
     return dropped
-
-
-def _note_primary_load(request: LoadRequest) -> None:
-    """The primary now serves ``request``: what an eviction must bring back."""
-    global _primary_request, _primary_account
-    replaced = _primary_request
-    _forget_evicted(request.model_path)
-    if replaced is not None and not request.alongside:
-        _forget_evicted(replaced.model_path)
-    _primary_request = _restorable(request)
-    _primary_account = current_account_id()
-
-
-async def _restore_evicted(request: LoadRequest, fastapi_request, current_subject: str) -> None:
-    try:
-        await load_model_gated(
-            request, fastapi_request, current_subject, current_request_counted = True
-        )
-    except HTTPException as exc:
-        raise HTTPException(
-            status_code = 503,
-            detail = f"Could not reload {request.model_path}: {exc.detail}",
-            headers = {"Retry-After": "5"},
-        ) from exc
 
 
 # Serializes opt-in auto-switch loads so two requests can't race a swap. One
@@ -10549,14 +10407,6 @@ async def _maybe_auto_switch_model(
     scope = getattr(fastapi_request, "scope", None)
     if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
         return
-    from auth.authentication import request_admitted_without_credential
-
-    stashed = _evicted_request(requested_model)
-    if stashed is not None and not request_admitted_without_credential(fastapi_request):
-        if not await asyncio.to_thread(_loaded_satisfies, requested_model):
-            await _restore_evicted(stashed, fastapi_request, current_subject)
-        if await _route_to_extra_slot(requested_model) is not None:
-            return
     auto_switch_on = get_openai_auto_switch_enabled()
 
     def _refuse_non_gguf_endpoint() -> None:
@@ -11111,7 +10961,6 @@ async def _maybe_auto_switch_model(
                                     **load_internal_kw,
                                 )
                             _switch_loaded_ok = True
-                            _note_primary_load(load_request)
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id
                             target_backend._loaded_by_user_action = False
@@ -11475,7 +11324,6 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
-                    _note_primary_load(request)
                 except GpuOwnerBusyError as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -16859,8 +16707,8 @@ async def load_model_gated(
                                 if not _claim_victim(victim):
                                     continue
                                 if victim.request is not None:
-                                    evicted.append(_stash_key(victim.request))
-                                await asyncio.to_thread(_drop_extra_slot, victim, True)
+                                    evicted.append(_model_key(victim.request))
+                                await asyncio.to_thread(_drop_extra_slot, victim)
                                 dropped += 1
                         if not dropped:
                             if not exc.capped:
@@ -16873,17 +16721,10 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
-            # Under the gate, so a load queued behind this one cannot publish first and be overwritten.
-            kv = _forget_evicted(request.model_path, keep_kv = True)
-            if kv is not None:
-                from core.inference.llama_keepwarm import restore_kv_resume
-                await asyncio.to_thread(restore_kv_resume, get_llama_cpp_backend(), kv)
-            if extra is None:
-                _note_primary_load(request)
-            else:
+            if extra is not None:
                 from core.inference.llama_keepwarm import _note_activity
 
-                extra.request = _restorable(request)
+                extra.request = request
                 extra.last_used = time.monotonic()
                 # A fresh load is use: without it the idle loop drops the slot on its next tick.
                 _note_activity()
@@ -16924,7 +16765,7 @@ async def _pick_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if is_npu_model_path(request.model_path):
         routed_slot.set(None)
         return None
-    requested = _stash_key(request)
+    requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
     if slot is None and request.gguf_variant:
         # Another quant of a loaded repo replaces it where it is: requests name the repo, so a
@@ -19852,7 +19693,6 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     if extra is not None:
         from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-        _forget_evicted(request.model_path)
         async with inference_lifecycle_gate():
             if _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active):
                 deadline = time.monotonic() + _POST_CANCEL_DRAIN_TIMEOUT_S
@@ -19878,8 +19718,6 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         account_access.require_resident_control(
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
-    if request.cancel_load_request_id is None:
-        _forget_evicted(request.model_path)
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.

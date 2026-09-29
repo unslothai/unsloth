@@ -471,7 +471,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         ]
         if kept:
             logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
-            unload_extra_models(stash = True)
+            unload_extra_models()
             freed.extend(f"kept:{name}" for name in kept)
     except Exception as e:
         logger.warning("Could not unload models kept alongside: %s", e)

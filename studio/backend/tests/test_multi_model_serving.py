@@ -61,10 +61,6 @@ def backends(monkeypatch):
     monkeypatch.setattr(inf, "_llama_cpp_backend", primary)
     monkeypatch.setattr(orchestrator, "_inference_backend", FakeOrchestrator())
     monkeypatch.setattr(inf, "_extra_slots", [extra])
-    monkeypatch.setattr(inf, "_evicted", {})
-    monkeypatch.setattr(inf, "_primary_request", None)
-    monkeypatch.setattr(inf, "_evicted_owner", {})
-    monkeypatch.setattr(inf, "_primary_account", None)
     return primary, extra
 
 
@@ -360,7 +356,6 @@ def test_a_short_fit_evicts_the_least_recently_used_slot(backends, monkeypatch):
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert [s.llama.model_identifier for s in inf._extra_slots] == ["org/B-GGUF", "org/C-GGUF"]
     assert not older.llama.is_active
-    assert list(inf._evicted) == ["org/D-GGUF"] and inf._evicted["org/D-GGUF"].alongside
     assert inf._extra_slots[-1].request.model_path == "org/C-GGUF"
 
 
@@ -378,7 +373,6 @@ def test_eviction_takes_as_many_lru_slots_as_the_shortfall_needs(backends, monke
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert [s.llama.model_identifier for s in inf._extra_slots] == ["org/B-GGUF", "org/C-GGUF"]
-    assert set(inf._evicted) == {"org/D-GGUF", "org/E-GGUF"}
 
 
 def test_a_short_fit_with_nothing_left_to_evict_is_a_409(backends, monkeypatch):
@@ -399,72 +393,8 @@ def test_a_capped_context_is_taken_only_once_nothing_is_left_to_evict(backends, 
     _gated_load_fakes(monkeypatch, short_fits = ["capped", "capped"])
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
-    assert not extra.llama.is_active and list(inf._evicted) == ["org/B-GGUF:Q8_0"]
+    assert not extra.llama.is_active
     assert [s.llama.model_identifier for s in inf._extra_slots] == ["org/C-GGUF"]
-
-
-def test_images_taking_the_gpu_remembers_every_chat_model(backends, monkeypatch):
-    _, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
-    monkeypatch.setattr(inf, "_primary_request", LoadRequest(model_path = "org/A-GGUF"))
-    inf.note_chat_evicted()
-    inf.unload_extra_models()
-    assert set(inf._evicted) == {"org/A-GGUF", "org/B-GGUF:Q8_0"} and inf._extra_slots == []
-    assert inf._evicted_request("org/b-gguf") is not None
-    assert inf._evicted_request("org/B-GGUF:Q4_K_M") is None
-    inf._forget_evicted("org/B-GGUF")
-    assert set(inf._evicted) == {"org/A-GGUF"}
-
-
-def test_an_evicted_model_is_restored_when_a_request_names_it(backends, monkeypatch):
-    import auth.authentication as authentication
-
-    monkeypatch.setattr(inf, "_extra_slots", [])
-    inf._evicted["org/B-GGUF:Q8_0"] = LoadRequest(
-        model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True
-    )
-    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda r: False)
-    restored = []
-
-    async def gated(request, *args, **kwargs):
-        restored.append(
-            (request.model_path, request.alongside, kwargs.get("current_request_counted"))
-        )
-        inf._extra_slots.append(_slot(request.model_path, request.gguf_variant))
-
-    monkeypatch.setattr(inf, "load_model_gated", gated)
-
-    async def run():
-        await inf._maybe_auto_switch_model("org/B-GGUF", object(), "s")
-        return inf.routed_slot.get()
-
-    assert asyncio.run(run()) is inf._extra_slots[0]
-    assert restored == [("org/B-GGUF", True, True)]
-
-
-def test_a_keyless_caller_restores_nothing(backends, monkeypatch):
-    import auth.authentication as authentication
-    from contextlib import suppress
-
-    monkeypatch.setattr(inf, "_extra_slots", [])
-    inf._evicted["org/B-GGUF"] = LoadRequest(model_path = "org/B-GGUF", alongside = True)
-    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda r: True)
-    restored = []
-
-    async def gated(request, *args, **kwargs):
-        restored.append(request.model_path)
-
-    monkeypatch.setattr(inf, "load_model_gated", gated)
-    with suppress(Exception):
-        asyncio.run(inf._maybe_auto_switch_model("org/B-GGUF", object(), "s"))
-    assert restored == []
-
-
-def test_a_manual_unload_forgets_the_evicted_model(backends, monkeypatch):
-    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
-    inf._evicted["org/C-GGUF"] = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/C-GGUF"), "s"))
-    assert inf._evicted == {}
 
 
 def test_a_load_that_tears_nothing_down_stops_no_chat():
@@ -479,43 +409,6 @@ def test_routing_marks_a_slot_as_used(backends):
     assert extra.last_used == 0.0
     _routed("org/B-GGUF")
     assert extra.last_used > 0.0
-
-
-def test_an_evicted_slot_keeps_its_conversation_kv_until_it_is_back(backends, monkeypatch):
-    import core.inference.llama_keepwarm as keepwarm
-    import utils.openai_auto_switch_settings as settings
-
-    _, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
-    manifest = {"dir": "/tmp/x", "slots": [{"id": 0, "filename": "s0.bin"}]}
-    extra.llama.save_slots_for_resume = lambda: manifest
-    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
-    monkeypatch.setattr(inf, "_evicted_kv", {})
-    inf._drop_extra_slot(extra, stash = True)
-    assert inf._evicted_kv == {"org/B-GGUF:Q8_0": manifest}
-
-    restored, deleted = [], []
-
-    def restore(backend, kv):
-        assert keepwarm._load_lock.locked()
-        restored.append((backend, kv))
-
-    monkeypatch.setattr(keepwarm, "restore_kv_resume", restore)
-    monkeypatch.setattr(keepwarm, "_delete_resume_files", lambda kv: deleted.append(kv))
-    _gated_load_fakes(monkeypatch, short_fits = [])
-    request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
-    asyncio.run(inf.load_model_gated(request, None, "s"))
-    assert (
-        len(restored) == 1
-        and restored[0][1] is manifest
-        and restored[0][0] is inf._extra_slots[-1].llama
-    )
-    assert inf._evicted_kv == {} and deleted == []
-
-    inf._evicted_kv["org/C-GGUF"] = manifest
-    inf._evicted["org/C-GGUF"] = LoadRequest(model_path = "org/C-GGUF")
-    inf._forget_evicted("org/C-GGUF")
-    assert deleted == [manifest] and inf._evicted_kv == {}
 
 
 def test_a_load_prices_the_vram_the_other_servers_hold():
@@ -625,31 +518,6 @@ def test_unloading_a_generating_slot_is_refused_unless_forced(backends, monkeypa
     forced = UnloadRequest(model_path = "org/B-GGUF", force_cancel_active = True)
     asyncio.run(inf._unload_model_impl(forced, "s"))
     assert event.is_set() and not extra.llama.is_loaded and inf._extra_slots == []
-
-
-def test_a_swap_that_bypasses_load_model_gated_still_records_the_primary(backends, monkeypatch):
-    monkeypatch.setattr(inf, "current_account_id", lambda: "alice")
-    inf._evicted["org/C-GGUF"] = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    inf._note_primary_load(LoadRequest(model_path = "org/C-GGUF", hf_token = "secret"))
-    assert inf._evicted == {} and inf._primary_account == "alice"
-    assert inf._primary_request.model_path == "org/C-GGUF" and inf._primary_request.hf_token is None
-    assert "_note_primary_load(load_request)" in inspect.getsource(inf._maybe_auto_switch_model)
-    assert "_note_primary_load(request)" in inspect.getsource(inf.load_model_for_preview)
-
-
-def test_a_managed_account_neither_restores_nor_forgets_another_accounts_model(
-    backends, monkeypatch
-):
-    _, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
-    inf.note_chat_evicted()
-    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
-    monkeypatch.setattr(inf, "current_account_id", lambda: "someone-else")
-    assert inf._evicted_request("org/B-GGUF") is None
-    inf._forget_evicted("org/B-GGUF")
-    assert list(inf._evicted) == ["org/B-GGUF:Q8_0"]
-    monkeypatch.setattr(inf, "current_account_id", lambda: "owner")
-    assert inf._evicted_request("org/B-GGUF") is not None
 
 
 def test_the_load_response_names_the_models_evicted_for_it(backends, monkeypatch):
@@ -763,14 +631,6 @@ def test_reloading_a_kept_model_stops_only_its_own_chats(backends, monkeypatch):
     assert on_slot.is_set() and not on_primary.is_set()
 
 
-def test_a_plain_switch_forgets_the_model_it_replaced(backends, monkeypatch):
-    inf._note_primary_load(LoadRequest(model_path = "org/P-GGUF"))
-    inf.note_chat_evicted()
-    assert "org/P-GGUF" in inf._evicted
-    inf._note_primary_load(LoadRequest(model_path = "org/Q-GGUF"))
-    assert "org/P-GGUF" not in inf._evicted
-
-
 def test_training_frees_the_models_kept_alongside(backends, monkeypatch):
     from routes import training_vram
 
@@ -780,7 +640,6 @@ def test_training_frees_the_models_kept_alongside(backends, monkeypatch):
     assert training_vram.summarize_resident_chat()["any"] is True
     assert training_vram.free_chat_models_for_training("test") == ["kept:org/B-GGUF"]
     assert inf._extra_slots == [] and not extra.llama.is_active
-    assert list(inf._evicted) == ["org/B-GGUF:Q8_0"]
 
 
 def test_another_quant_of_a_loaded_model_replaces_it_in_place(backends, monkeypatch):
@@ -831,7 +690,6 @@ def test_a_chat_starting_on_a_victim_during_eviction_spares_it(backends, monkeyp
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert mid in inf._extra_slots and mid.llama.is_active
-    assert list(inf._evicted) == ["org/D-GGUF"]
 
 
 def test_victims_that_cannot_make_room_are_left_loaded(backends):
@@ -839,68 +697,6 @@ def test_victims_that_cannot_make_room_are_left_loaded(backends):
     extra.llama._planned_vram_mib = {0: 3000}
     assert inf._eviction_victims(None, 10000) == []
     assert inf._eviction_victims(None, 2000) == [extra]
-
-
-def test_two_accounts_stashing_one_model_keep_their_own_entries(backends, monkeypatch):
-    _, extra = backends
-    extra.account = "alice"
-    extra.request = LoadRequest(model_path = "org/B-GGUF", alongside = True)
-    bobs = inf._ExtraSlot(
-        FakeLlama("org/B-GGUF"),
-        FakeOrchestrator(),
-        "bob",
-        LoadRequest(model_path = "org/B-GGUF", alongside = True, max_seq_length = 8192),
-    )
-    inf._extra_slots.append(bobs)
-    inf.note_chat_evicted()
-    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
-    monkeypatch.setattr(inf, "current_account_id", lambda: "alice")
-    assert inf._evicted_request("org/B-GGUF") is extra.request
-    monkeypatch.setattr(inf, "current_account_id", lambda: "bob")
-    assert inf._evicted_request("org/B-GGUF") is bobs.request
-
-
-def test_anthropic_messages_answers_with_the_model_it_restored(backends, monkeypatch):
-    import auth.authentication as authentication
-
-    primary, _ = backends
-    monkeypatch.setattr(inf, "_extra_slots", [])
-    inf._evicted["org/B-GGUF"] = LoadRequest(model_path = "org/B-GGUF", alongside = True)
-    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda r: False)
-
-    async def restore(request, *args, **kwargs):
-        inf._extra_slots.append(
-            inf._ExtraSlot(FakeLlama("org/B-GGUF"), FakeOrchestrator(), "owner")
-        )
-
-    monkeypatch.setattr(inf, "load_model_gated", restore)
-    used = []
-
-    class Named(Exception):
-        pass
-
-    real = inf._llama_public_model_id
-
-    def spy(backend, fallback = None):
-        if fallback is None:
-            return real(backend)
-        used.append(backend)
-        raise Named()
-
-    monkeypatch.setattr(inf, "_llama_public_model_id", spy)
-    app = FastAPI()
-    app.include_router(inf.router, prefix = "/v1")
-    app.dependency_overrides[get_current_subject] = lambda: "s"
-    with TestClient(app, raise_server_exceptions = False) as client:
-        client.post(
-            "/v1/messages",
-            json = {
-                "model": "org/B-GGUF",
-                "max_tokens": 16,
-                "messages": [{"role": "user", "content": "hi"}],
-            },
-        )
-    assert used == [inf._extra_slots[0].llama] and used[0] is not primary
 
 
 def test_a_routed_request_holds_its_slot_until_it_ends(backends):
@@ -967,14 +763,6 @@ def test_a_token_count_waits_only_on_its_own_models_chats(backends):
         assert asyncio.run(count_on("org/A-GGUF")) == 0
 
 
-def test_a_sharer_leaving_the_primary_keeps_what_restores_it(backends, monkeypatch):
-    monkeypatch.setattr(inf, "_primary_request", LoadRequest(model_path = "org/A-GGUF"))
-    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
-    monkeypatch.setattr(inf.account_access, "release_shared_resident", lambda kind: True)
-    asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/A-GGUF"), "s"))
-    assert inf._primary_request is not None and inf._primary_request.model_path == "org/A-GGUF"
-
-
 def test_counting_for_an_idle_kept_model_ignores_the_primarys_chat(backends):
     import threading
 
@@ -1016,7 +804,7 @@ def test_a_model_still_loading_alongside_keeps_the_chat_claim(backends, monkeypa
 def test_an_idle_sweep_spares_the_slot_a_load_is_filling(backends, monkeypatch):
     _, extra = backends
     monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
-    assert inf.unload_extra_models(keep = lambda llama: False, stash = True, spare_filling = True) == 0
+    assert inf.unload_extra_models(keep = lambda llama: False, spare_filling = True) == 0
     assert inf._extra_slots == [extra] and extra.llama.is_active
 
 
@@ -1038,8 +826,8 @@ def test_a_llama_update_stops_every_llama_slot_and_only_those(backends, monkeypa
 def test_a_selective_sweep_stops_a_filling_slot_unless_it_spares_it(backends, monkeypatch):
     _, extra = backends
     monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
-    assert inf.unload_extra_models(lambda llama: False, True, spare_filling = True) == 0
-    assert inf.unload_extra_models(lambda llama: not llama.is_active, True) == 1
+    assert inf.unload_extra_models(lambda llama: False, spare_filling = True) == 0
+    assert inf.unload_extra_models(lambda llama: not llama.is_active) == 1
     assert inf._extra_slots == []
 
 
@@ -1186,13 +974,6 @@ def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
     with TestClient(app) as client:
         ids = [entry["id"] for entry in client.get("/api/inference/loaded-models").json()["data"]]
     assert ids.count("lemonade:qwen3-0.6b-FLM") == 1 and "org/B-GGUF" in ids and "org/D-GGUF" in ids
-
-
-def test_a_single_model_evicted_for_images_is_not_reloaded_on_its_own(backends, monkeypatch):
-    monkeypatch.setattr(inf, "_extra_slots", [])
-    inf._note_primary_load(LoadRequest(model_path = "org/P-GGUF"))
-    inf.note_chat_evicted()
-    assert "org/P-GGUF" not in inf._evicted
 
 
 def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, tmp_path):

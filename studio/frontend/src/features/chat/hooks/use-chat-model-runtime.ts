@@ -2614,7 +2614,7 @@ export function useChatModelRuntime() {
                 `Unloaded ${loadResponse.evicted.join(", ")} to make room`,
                 {
                   description:
-                    "Select it again, or name it in an API request, to load it back.",
+                    "Select it again to load it back.",
                 },
               );
             }
