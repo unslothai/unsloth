@@ -77,7 +77,6 @@ on:
       - 'unsloth/__init__.py'
       - 'unsloth/_gpu_init.py'
       - 'studio/backend/utils/hardware/**'
-      - 'studio/backend/core/training/training.py'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
       - 'unsloth-cli.py'

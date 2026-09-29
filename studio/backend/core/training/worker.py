@@ -2438,7 +2438,6 @@ def _configure_mlx_training_schedule(
 
 
 def _run_mlx_main_process_action(trainer, action, context):
-    """Run one worker side effect on rank 0 and synchronize failures."""
     world_size = int(trainer.distributed_world_size)
     if world_size <= 1:
         return action()
