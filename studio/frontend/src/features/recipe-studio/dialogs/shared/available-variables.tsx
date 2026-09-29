@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Badge } from "@/components/ui/badge";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useMemo, useState } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { RECIPE_STUDIO_REFERENCE_BADGE_TONES } from "../../utils/ui-tones";
 import { getAvailableVariableEntries } from "../../utils/variables";
 
 type AvailableVariablesProps = {
@@ -18,16 +21,16 @@ const USER_EXPANDED_FIELDS = [
   "state",
   "age",
 ] as const;
-const USER_BADGE_CLASS =
-  "corner-squircle border-amber-500/25 bg-amber-500/10 font-mono text-[11px] text-amber-700 dark:text-amber-300";
-
 export function AvailableVariables({
   configId,
 }: AvailableVariablesProps): ReactElement | null {
   const [showUserFields, setShowUserFields] = useState(false);
   const configs = useRecipeStudioStore((state) => state.configs);
   const vars = getAvailableVariableEntries(configs, configId);
-  const variableNames = useMemo(() => new Set(vars.map((entry) => entry.name)), [vars]);
+  const variableNames = useMemo(
+    () => new Set(vars.map((entry) => entry.name)),
+    [vars],
+  );
   const hasUserRoot = variableNames.has("user");
   const userFieldEntries = useMemo(
     () =>
@@ -49,10 +52,10 @@ export function AvailableVariables({
         {vars.map((v) => {
           const className =
             v.name === "user" || v.name.startsWith("user.")
-              ? USER_BADGE_CLASS
+              ? RECIPE_STUDIO_REFERENCE_BADGE_TONES.user
               : v.source === "seed"
-              ? "corner-squircle border-blue-500/25 bg-blue-500/10 font-mono text-[11px] text-blue-700 dark:text-blue-300"
-              : "corner-squircle font-mono text-[11px]";
+                ? RECIPE_STUDIO_REFERENCE_BADGE_TONES.seed
+                : RECIPE_STUDIO_REFERENCE_BADGE_TONES.default;
           if (v.name !== "user") {
             return (
               <Badge
@@ -71,19 +74,27 @@ export function AvailableVariables({
               onClick={() => setShowUserFields((prev) => !prev)}
               className="cursor-pointer"
               aria-expanded={showUserFields}
+              aria-label={
+                showUserFields ? "Hide user fields" : "Show user fields"
+              }
             >
               <Badge variant="secondary" className={className}>
-                {`{{ ${v.name} }}`}
+                <span>{`{{ ${v.name} }}`}</span>
+                <HugeiconsIcon
+                  icon={ChevronDownStandardIcon}
+                  className={`size-3 transition-transform ${showUserFields ? "rotate-180" : ""}`}
+                />
               </Badge>
             </button>
           );
         })}
-        {hasUserRoot && showUserFields &&
+        {hasUserRoot &&
+          showUserFields &&
           userFieldEntries.map((entry) => (
             <Badge
               key={`user-expanded:${entry.name}`}
               variant="secondary"
-              className={USER_BADGE_CLASS}
+              className={RECIPE_STUDIO_REFERENCE_BADGE_TONES.user}
             >
               {`{{ ${entry.name} }}`}
             </Badge>

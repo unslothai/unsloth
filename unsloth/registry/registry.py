@@ -1,3 +1,8 @@
+# ModelMeta.quant_types below is a dataclass field annotated with a PEP 604 union,
+# which evaluates at class creation and is a TypeError on the 3.9 floor pyproject
+# declares.
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum
@@ -11,7 +16,6 @@ class QuantType(Enum):
     BF16 = "bf16"  # only for Deepseek V3
 
 
-# Tags for Hugging Face model paths
 BNB_QUANTIZED_TAG = "bnb-4bit"
 UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
 GGUF_TAG = "GGUF"
@@ -26,14 +30,14 @@ QUANT_TAG_MAP = {
 }
 
 
-# NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
+# Models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH.
 @dataclass
 class ModelInfo:
     org: str
     base_name: str
     version: str
     size: int
-    name: str = None  # full model name, constructed from base_name, version, and size unless provided
+    name: str = None  # constructed from base_name, version, size unless provided
     is_multimodal: bool = False
     instruct_tag: str = None
     quant_type: QuantType = None
@@ -62,16 +66,20 @@ class ModelInfo:
 
     @classmethod
     def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag, key = ""
+        cls,
+        base_name,
+        version,
+        size,
+        quant_type,
+        instruct_tag,
+        key = "",
     ):
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
         return key
 
     @property
-    def model_path(
-        self,
-    ) -> str:
+    def model_path(self) -> str:
         return f"{self.org}/{self.name}"
 
 
@@ -83,9 +91,7 @@ class ModelMeta:
     model_info_cls: type[ModelInfo]
     model_sizes: list[str] = field(default_factory = list)
     instruct_tags: list[str] = field(default_factory = list)
-    quant_types: list[QuantType] | dict[str, list[QuantType]] = field(
-        default_factory = list
-    )
+    quant_types: list[QuantType] | dict[str, list[QuantType]] = field(default_factory = list)
     is_multimodal: bool = False
 
 
@@ -113,9 +119,7 @@ def register_model(
     key = f"{org}/{name}"
 
     if key in MODEL_REGISTRY:
-        raise ValueError(
-            f"Model {key} already registered, current keys: {MODEL_REGISTRY.keys()}"
-        )
+        raise ValueError(f"Model {key} already registered, current keys: {MODEL_REGISTRY.keys()}")
 
     MODEL_REGISTRY[key] = model_info_cls(
         org = org,
@@ -159,14 +163,14 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
 
     for size in model_sizes:
         for instruct_tag in instruct_tags:
-            # Handle quant types per model size
             if isinstance(quant_types, dict):
                 _quant_types = quant_types[size]
             else:
                 _quant_types = quant_types
             for quant_type in _quant_types:
-                # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
-                _org = "unsloth"  # unsloth models -- these are all quantized versions of the original model
+                # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of
+                # QUANT_TYPE.UNSLOTH
+                _org = "unsloth"  # quantized versions of the original model
                 register_model(
                     model_info_cls = model_info_cls,
                     org = _org,

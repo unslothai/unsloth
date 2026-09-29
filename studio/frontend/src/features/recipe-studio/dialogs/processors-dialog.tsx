@@ -71,7 +71,7 @@ export function ProcessorsDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-auto sm:max-w-2xl shadow-border"
       >
         <VisuallyHidden.Root>
           <DialogTitle>Processors</DialogTitle>
@@ -93,7 +93,7 @@ export function ProcessorsDialog({
           {schemaProcessor && (
             <div className="space-y-3">
               <AvailableVariables configId="" />
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Name"
                   htmlFor={nameId}
@@ -106,7 +106,7 @@ export function ProcessorsDialog({
                   onChange={(event) => updateSchema({ name: event.target.value })}
                 />
               </div>
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel
                   label="Template (JSON)"
                   htmlFor={templateId}
@@ -114,7 +114,7 @@ export function ProcessorsDialog({
                 />
                 <Textarea
                   id={templateId}
-                  className="corner-squircle nodrag min-h-[220px]"
+                  className="corner-squircle nodrag min-h-[calc(220px*var(--ui-space-scale,1))]"
                   value={schemaProcessor.template}
                   onChange={(event) =>
                     updateSchema({ template: event.target.value })
