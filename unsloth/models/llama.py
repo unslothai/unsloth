@@ -2312,6 +2312,11 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # transformers raises if cache_implementation is set beside a user-supplied cache.
     if kwargs.get("past_key_values", None) is not None:
+        # FalconH1 keeps its own input preparation for its hybrid Mamba/attention cache.
+        if getattr(getattr(self, "config", None), "model_type", None) == "falcon_h1":
+            raise NotImplementedError(
+                "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
+            )
         kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
         # The fast decode path only seeds its KV buffers when they are missing, and a single
         # uncached token goes straight to it: drop the previous generate()'s buffers.
