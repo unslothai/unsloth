@@ -972,6 +972,7 @@ class _ModelDownloadProgress:
         self._retry_at = 0.0
         self._display = _DownloadProgressDisplay()
         self._configured = False
+        # A local model has no Hub reading of its own, but a remote base it names is still listed.
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
         # Repos the load announced (its base, the base the loader substitutes): bytes summed for liveness.
@@ -1065,20 +1066,19 @@ class _ModelDownloadProgress:
     def poll(self) -> None:
         if not self._configured:
             self._configure()
-        if self._disabled:
-            return
         if time.monotonic() < self._retry_at:
             return
         try:
+            readings = {}
             try:
-                reading = self._read(self._model, gguf = self._is_gguf())
+                if not self._disabled:
+                    readings[self._model] = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
                 if exc.code != 404 or self._progress_prefix == "/api/models":
                     raise
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            readings = {self._model: reading}
             for repo in self._companion_repos():
                 if repo in self._finished:
                     readings[repo] = self._finished[repo]
@@ -1105,7 +1105,8 @@ class _ModelDownloadProgress:
             self._failures = 0
             self._retry_at = 0.0
             active = self._active_repo if self._active_repo in readings else self._model
-            self._display.update(readings[active], active)
+            if active in readings:
+                self._display.update(readings[active], active)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing

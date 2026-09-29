@@ -9943,3 +9943,19 @@ def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, c
     out = capsys.readouterr().out
     assert "19.0 MiB / 20.0 MiB" in out
     assert "1.0 GiB / 4.0 GiB" in out
+
+
+def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monkeypatch):
+    server = _LoadServer(
+        [_load_job("owner/base")], {"owner/base": [_reading(GiB), _reading(2 * GiB)]}
+    )
+    clock = [0.0]
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "/models/my-lora", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 2 * GiB
+    assert server.count("my-lora") == 0
