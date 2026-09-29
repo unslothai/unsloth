@@ -1059,9 +1059,11 @@ export function ChatProvidersSettings({
         name: updated.display_name,
         baseUrl: updated.base_url ?? "",
         apiType: updated.api_type ?? "chat_completions",
-        models: keepSavedModels ? (updated.models ?? existing.models) : modelsToSave,
+        models: keepSavedModels
+          ? (updated.models?.length ? updated.models : existing.models)
+          : modelsToSave,
         availableModels: keepSavedModels
-          ? (updated.available_models ?? existing.availableModels)
+          ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
 
