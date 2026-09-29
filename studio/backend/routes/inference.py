@@ -8843,12 +8843,6 @@ async def _preflight_image_for_switch(
                 " GGUF build of it, which accepts several."
             ),
         )
-    # Non-GGUF backends only receive decoded base64 images.
-    if not target_is_gguf and image_preflight.get("remote") and image_preflight.get("b64") is None:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Remote image URLs are not supported. Use a base64 data URL.",
-        )
     # Only what the single-image path selects: an architecture guess must not refuse the rest.
     encoded_images = (
         image_preflight.get("b64s", ()) if target_is_gguf else (image_preflight.get("b64"),)
@@ -26218,22 +26212,22 @@ async def produce_openai_chat_completions(
         _image_b64 = _pre_parsed[2] or payload.image_base64
         if _image_b64 is None and _local_image_payloads:
             _image_b64 = _local_image_payloads[0]
-        # Read the way the render reads it; separate from b64s, which GGUF validates unchanged.
-        _admitted_payloads = _conversation_with_image_markers(payload.messages)[1]
+        # Read as the render reads it after the fetch; b64s stays as sent for GGUF to validate.
+        _served_messages = _remote_images_as_served(payload.messages)
+        _admitted_payloads = _conversation_with_image_markers(_served_messages)[1]
         if _legacy_image_distinct:
             _admitted_payloads = [*_admitted_payloads, payload.image_base64]
         _image_preflight = {
             "b64": _image_b64,
             "b64s": _local_image_payloads,
             "admitted": _admitted_payloads,
-            "remote": _messages_have_remote_image(payload.messages),
             "multiple": (
                 _images_on_turn + int(_legacy_image_distinct) > 1
                 or bool(_pre_parsed[2] and _legacy_image_distinct)
             ),
             # Refused after the load whatever the target is, so refused before evicting for it.
             "unservable_alongside": _newest_turn_shows_more_images_than_it_sends(
-                payload.messages, _legacy_image_distinct
+                _served_messages, _legacy_image_distinct
             ),
         }
 
@@ -35254,7 +35248,7 @@ _REMOTE_IMAGE_REQUEST_DEADLINE_S = 60.0
 _REMOTE_IMAGE_FETCH_REFUSAL = (
     "Could not fetch the remote image URL. Send the image as a base64 data URL instead."
 )
-# Token counting renders a fixed media marker and charges a flat per-image allowance.
+# Stands in for a remote image in token counts and in the switch preflight's image checks.
 _COUNT_IMAGE_PLACEHOLDER = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1Pe"
     "AAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
@@ -35312,6 +35306,29 @@ def _placeholder_remote_images_for_count(openai_messages: list[dict]) -> None:
             if rejection is not None:
                 raise HTTPException(status_code = rejection[0], detail = rejection[1])
             image_url["url"] = _COUNT_IMAGE_PLACEHOLDER
+
+
+def _remote_images_as_served(messages) -> list[dict]:
+    def _fetchable(part) -> bool:
+        url = (
+            (part.get("image_url") or {}).get("url", "") if part.get("type") == "image_url" else ""
+        )
+        return _image_url_scheme(url) == "https"
+
+    served = []
+    for message in messages or ():
+        plain = message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        content = plain.get("content")
+        if isinstance(content, list):
+            content = [
+                {**part, "image_url": {"url": _COUNT_IMAGE_PLACEHOLDER}}
+                if _fetchable(part)
+                else part
+                for part in content
+            ]
+            plain = {**plain, "content": content}
+        served.append(plain)
+    return served
 
 
 def _inline_remote_image_url(
