@@ -6584,6 +6584,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         monkeypatch,
         lines,
         stream_options = None,
+        **payload_extra,
     ):
         import routes.inference as inf_mod
 
@@ -6608,6 +6609,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             stream = True,
             stream_options = stream_options,
             tools = [_LOOKUP_TOOL],
+            **payload_extra,
         )
 
         response = await _openai_passthrough_stream(
@@ -8848,8 +8850,12 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_passthrough_prompt_progress_reaches_monitor_and_response_header(self, monkeypatch):
+    @pytest.mark.parametrize("client_progress", [False, True])
+    def test_passthrough_prompt_progress_reaches_monitor_and_response_header(
+        self, monkeypatch, client_progress
+    ):
         async def _run():
+            extra = {"return_progress": True} if client_progress else {}
             result = await self._run_passthrough_stream(
                 monkeypatch,
                 [
@@ -8857,6 +8863,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
                     "data: [DONE]",
                 ],
+                **extra,
             )
 
             assert result.upstream_bodies[0]["return_progress"] is True
@@ -8867,8 +8874,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["running_phase"] == "token_generation"
             assert entry["prompt_progress"]["processed"] == 1200
             assert entry["prompt_progress"]["percent"] == 60.0
-            # The caller never asked for return_progress, so its stream stays unchanged.
-            assert "prompt_progress" not in result.body
+            # Progress reaches the caller only on its own return_progress opt-in.
+            assert ("prompt_progress" in result.body) is client_progress
             assert '"ok"' in result.body
 
         asyncio.run(_run())
