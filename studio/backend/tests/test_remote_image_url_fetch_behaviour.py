@@ -443,6 +443,26 @@ class TestSafetensorsAndMlxFetchToo:
         assert fetched == ["https://images.example/a.webp", "https://images.example/b.webp"]
         assert len(backend.calls[0]["images"]) == 2
 
+    def test_two_images_on_a_single_image_model_refuse_before_any_fetch(self, monkeypatch):
+        def _never(*_a, **_k):
+            raise AssertionError("an invalid request must not wait on a fetch")
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
+        backend = safetensors._ScriptedBackend(safetensors._fixed("a cat"))
+        backend.models["sf-model"]["is_vision"] = True
+        client = _client(monkeypatch, safetensors._llama_stub())
+        safetensors._install(monkeypatch, backend)
+        r = client.post(
+            "/v1/chat/completions",
+            json = _chat_body(
+                "https://images.example/a.webp", "https://images.example/b.webp", model = "sf-model"
+            ),
+        )
+
+        assert r.status_code == 400, r.text
+        assert "one image per message" in r.text
+        assert backend.calls == []
+
     def test_a_system_image_does_not_refuse_a_text_only_model(self, monkeypatch):
         def _never(*_a, **_k):
             raise AssertionError("a system image is never served, so never fetched")

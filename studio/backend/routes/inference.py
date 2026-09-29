@@ -35384,6 +35384,8 @@ def _inline_request_remote_images(payload) -> None:
 def _inline_served_remote_images(payload, several: bool) -> None:
     # Only what the renderers read: the image _extract_content_parts selects, and on a
     # multi-image model every user turn's (_conversation_with_image_markers).
+    if not several and _images_in_last_user_message(payload.messages) > 1:
+        return  # Refused below as "one image per message".
     latest = latest_user = None
     for message in payload.messages:
         if message.role in ("system", "developer") or not isinstance(message.content, list):
