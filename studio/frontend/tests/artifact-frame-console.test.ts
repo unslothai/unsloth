@@ -13,7 +13,6 @@ import {
   buildCanvasFixPrompt,
   canvasErrors,
   canvasStack,
-  canvasStackFull,
   emptyCanvasConsole,
   parseCanvasReport,
 } from "../src/features/chat/artifacts/canvas-console.ts";
@@ -277,45 +276,6 @@ test("the stack drops the repeated message line and Studio's own frames", () => 
     ].join("\n"),
   })!;
   assert.equal(canvasStack(entry), "    at <anonymous>:2:48");
-});
-
-test("the full trace keeps the frames the trimmed one drops", () => {
-  const entry = parseCanvasReport({
-    type: "unsloth:artifact-error",
-    message: "Uncaught TypeError: Cannot read properties of null",
-    stack: [
-      "TypeError: Cannot read properties of null",
-      "    at <anonymous>:2:48",
-      "    at unslothRenderArtifact (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
-    ].join("\n"),
-  })!;
-  assert.match(canvasStackFull(entry), /at unslothRenderArtifact \(http/);
-  assert.doesNotMatch(canvasStack(entry), /at unslothRenderArtifact \(http/);
-  assert.match(frameSource, /fullTraces \? canvasStackFull\(entry\) : canvasStack\(entry\)/);
-});
-
-test("the banner's console button toggles rather than only opening", () => {
-  assert.match(frameSource, /onConsoleOpenChange\(!consoleOpen\)/);
-  assert.match(frameSource, /errorConsoleHideAction/);
-});
-
-test("the console has the one toggle and no errors-only filter", () => {
-  assert.match(frameSource, /aria-pressed=\{fullTraces\}/);
-  assert.doesNotMatch(frameSource, /errorsOnly/);
-});
-
-test("the card keeps one name and puts open/hide on aria-expanded", () => {
-  const cardSource = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/artifacts/artifact-card.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  assert.match(cardSource, /aria-label=\{`Open \$\{artifact\.title\}/);
-  assert.match(cardSource, /aria-expanded=\{showing\}/);
 });
 
 test("a panel dragged shut is reported closed, not left selected at no width", () => {

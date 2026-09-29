@@ -38,7 +38,6 @@ import {
   buildCanvasFixPrompt,
   canvasErrors,
   canvasStack,
-  canvasStackFull,
   emptyCanvasConsole,
   parseCanvasReport,
 } from "./canvas-console";
@@ -46,9 +45,6 @@ import { useChatArtifactsStore } from "./store";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
-const CONSOLE_DEFAULT_HEIGHT = 220;
-const CONSOLE_CANVAS_MIN = 160;
-const CONSOLE_STEP = 32;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
 // Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
@@ -183,32 +179,6 @@ export function ArtifactHtmlFrame({
   const [errorsDismissedCode, setErrorsDismissedCode] = useState<
     string | null
   >(null);
-  const [fullTraces, setFullTraces] = useState(false);
-  const [consoleHeight, setConsoleHeight] = useState(CONSOLE_DEFAULT_HEIGHT);
-  const rootRef = useRef<HTMLDivElement>(null);
-  // Pointer capture: the iframe would otherwise swallow the moves.
-  const dragFrom = useRef<{ y: number; height: number } | null>(null);
-  const consoleHeaderRef = useRef<HTMLDivElement>(null);
-  const clampConsole = (height: number) => {
-    const floor = consoleHeaderRef.current?.offsetHeight ?? 34;
-    const room = (rootRef.current?.clientHeight ?? 0) - CONSOLE_CANVAS_MIN;
-    return Math.max(floor, Math.min(height, Math.max(floor, room)));
-  };
-  const onDragStart = (event: React.PointerEvent<HTMLDivElement>) => {
-    dragFrom.current = { y: event.clientY, height: consoleHeight };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  };
-  const onDragMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const from = dragFrom.current;
-    if (!from) return;
-    setConsoleHeight(clampConsole(from.height + (from.y - event.clientY)));
-  };
-  const onDragEnd = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragFrom.current) return;
-    dragFrom.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  };
   const pendingEntries = useRef<CanvasConsoleEntry[]>([]);
   const pendingDropped = useRef(false);
   const flushHandle = useRef<number | null>(null);
@@ -388,12 +358,9 @@ export function ArtifactHtmlFrame({
     stageFixPrompt(buildCanvasFixPrompt(title, errors));
     onFixWithModel?.();
   };
-  const stackOf = (entry: CanvasConsoleEntry) =>
-    fullTraces ? canvasStackFull(entry) : canvasStack(entry);
 
   return (
     <div
-      ref={rootRef}
       className={cn("relative", fill ? "h-full" : undefined)}
     >
       <iframe
@@ -409,178 +376,141 @@ export function ArtifactHtmlFrame({
         style={{ height: fill ? "100%" : height }}
         title={title}
       />
-      {showBlockedBanner || showErrorBanner ? (
-        <div className="absolute inset-x-0 top-0 flex flex-col gap-2 p-2">
-          {showBlockedBanner ? (
-            <Alert
-              role="group"
-              dir={locale === "ar" ? "rtl" : "ltr"}
-              aria-label={t("settings.chat.artifacts.blockedTitle")}
-              className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur"
-            >
-              <ShieldAlertIcon className="text-amber-500" />
-              <AlertAction>
+      {showBlockedBanner ? (
+        <div className="absolute inset-x-0 top-0 p-2">
+          <Alert
+            role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
+            aria-label={t("settings.chat.artifacts.blockedTitle")}
+            className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur"
+          >
+            <ShieldAlertIcon className="text-amber-500" />
+            <AlertAction>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => {
+                  focusAfterAction();
+                  setDismissedCode(code);
+                }}
+              >
+                <XIcon />
+              </Button>
+            </AlertAction>
+            <AlertTitle role="alert">
+              {t("settings.chat.artifacts.blockedTitle")}
+              <span className="sr-only">
+                {" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </span>
+            </AlertTitle>
+            <AlertDescription>
+              <p>
+                {t(
+                  blockedForCanvas.uris.length === 1
+                    ? "settings.chat.artifacts.blockedBanner"
+                    : "settings.chat.artifacts.blockedBannerPlural",
+                  { count: blockedForCanvas.uris.length, hosts: blockedFrom },
+                )}{" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </p>
+              <div className="flex flex-wrap gap-2">
                 <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                  size="sm"
                   onClick={() => {
                     focusAfterAction();
-                    setDismissedCode(code);
+                    setGrantedCode(code);
                   }}
                 >
-                  <XIcon />
+                  {t("settings.chat.artifacts.blockedBannerAction")}
                 </Button>
-              </AlertAction>
-              <AlertTitle role="alert">
-                {t("settings.chat.artifacts.blockedTitle")}
-                <span className="sr-only">
-                  {" "}
-                  {t("settings.chat.artifacts.blockedHint", {
-                    setting: t("settings.chat.artifacts.allowNetworkAccess"),
-                  })}
-                </span>
-              </AlertTitle>
-              <AlertDescription>
-                <p>
-                  {t(
-                    blockedForCanvas.uris.length === 1
-                      ? "settings.chat.artifacts.blockedBanner"
-                      : "settings.chat.artifacts.blockedBannerPlural",
-                    { count: blockedForCanvas.uris.length, hosts: blockedFrom },
-                  )}{" "}
-                  {t("settings.chat.artifacts.blockedHint", {
-                    setting: t("settings.chat.artifacts.allowNetworkAccess"),
-                  })}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      focusAfterAction();
-                      setGrantedCode(code);
-                    }}
-                  >
-                    {t("settings.chat.artifacts.blockedBannerAction")}
-                  </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-canvas-network",
+                      focusFallback:
+                        actionFocusTargetRef?.current ?? iframeRef.current,
+                    });
+                  }}
+                >
+                  {t("settings.chat.artifacts.blockedSettingsAction")}
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+      {showErrorBanner && firstError && !showBlockedBanner ? (
+        <div className="absolute inset-x-0 top-0 p-2">
+          <Alert
+            role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
+            aria-label={errorTitle}
+            className="border-destructive/40 bg-background/95 shadow-md backdrop-blur"
+          >
+            <TriangleAlertIcon className="text-destructive" />
+            <AlertAction>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => {
+                  focusAfterAction();
+                  setErrorsDismissedCode(code);
+                }}
+              >
+                <XIcon />
+              </Button>
+            </AlertAction>
+            <AlertTitle role="alert">{errorTitle}</AlertTitle>
+            <AlertDescription>
+              <p
+                className="line-clamp-2 break-words font-mono text-ui-11p5"
+                title={firstError.text}
+              >
+                {firstError.text}
+                {locationLabel(firstError) ? ` (${locationLabel(firstError)})` : ""}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={fixWithModel}
+                  title={t("settings.chat.artifacts.errorHint")}
+                >
+                  {t("settings.chat.artifacts.errorBannerAction")}
+                </Button>
+                {onConsoleOpenChange ? (
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      useSettingsDialogStore.getState().openDialog("chat", {
-                        scrollTarget: "chat-canvas-network",
-                        focusFallback:
-                          actionFocusTargetRef?.current ?? iframeRef.current,
-                      });
-                    }}
+                    onClick={() => onConsoleOpenChange(!consoleOpen)}
                   >
-                    {t("settings.chat.artifacts.blockedSettingsAction")}
+                    {t(
+                      consoleOpen
+                        ? "settings.chat.artifacts.errorConsoleHideAction"
+                        : "settings.chat.artifacts.errorConsoleAction",
+                    )}
                   </Button>
-                </div>
-              </AlertDescription>
+                ) : null}
+              </div>
+            </AlertDescription>
           </Alert>
-          ) : null}
-          {showErrorBanner && firstError ? (
-            <Alert
-              role="group"
-              dir={locale === "ar" ? "rtl" : "ltr"}
-              aria-label={errorTitle}
-              className="border-destructive/40 bg-background/95 shadow-md backdrop-blur"
-            >
-              <TriangleAlertIcon className="text-destructive" />
-              <AlertAction>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={t("settings.chat.artifacts.blockedDismiss")}
-                  onClick={() => {
-                    focusAfterAction();
-                    setErrorsDismissedCode(code);
-                  }}
-                >
-                  <XIcon />
-                </Button>
-              </AlertAction>
-              <AlertTitle role="alert">{errorTitle}</AlertTitle>
-              <AlertDescription>
-                <p
-                  className="line-clamp-2 break-words font-mono text-ui-11p5"
-                  title={firstError.text}
-                >
-                  {firstError.text}
-                  {locationLabel(firstError)
-                    ? ` (${locationLabel(firstError)})`
-                    : ""}
-                </p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={fixWithModel}
-                    title={t("settings.chat.artifacts.errorHint")}
-                  >
-                    {t("settings.chat.artifacts.errorBannerAction")}
-                  </Button>
-                  {onConsoleOpenChange ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onConsoleOpenChange(!consoleOpen)}
-                    >
-                      {t(
-                        consoleOpen
-                          ? "settings.chat.artifacts.errorConsoleHideAction"
-                          : "settings.chat.artifacts.errorConsoleAction",
-                      )}
-                    </Button>
-                  ) : null}
-                </div>
-              </AlertDescription>
-            </Alert>
-          ) : null}
         </div>
       ) : null}
       {consoleOpen ? (
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
           dir={locale === "ar" ? "rtl" : "ltr"}
-          style={{
-            height: consoleHeight,
-            maxHeight: `calc(100% - ${CONSOLE_CANVAS_MIN}px)`,
-            minHeight: 0,
-          }}
-          className="absolute inset-x-0 bottom-0 flex flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
+          className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
           <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label={t("settings.chat.artifacts.consoleResize")}
-            tabIndex={0}
-            onPointerDown={onDragStart}
-            onPointerMove={onDragMove}
-            onPointerUp={onDragEnd}
-            onPointerCancel={onDragEnd}
-            onDoubleClick={() =>
-              setConsoleHeight((height) =>
-                height <= clampConsole(0) + 4
-                  ? clampConsole(CONSOLE_DEFAULT_HEIGHT)
-                  : clampConsole(0),
-              )
-            }
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-              event.preventDefault();
-              setConsoleHeight((height) =>
-                clampConsole(
-                  height + (event.key === "ArrowUp" ? CONSOLE_STEP : -CONSOLE_STEP),
-                ),
-              );
-            }}
-            className="group absolute inset-x-0 -top-1.5 z-10 h-3 cursor-ns-resize touch-none focus-visible:outline-none"
-          >
-            <div className="mx-auto mt-1 h-1 w-10 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70 group-focus-visible:bg-ring" />
-          </div>
-          <div
-            ref={consoleHeaderRef}
             className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2.5 py-1.5"
           >
             <span className="text-xs text-muted-foreground">
@@ -592,18 +522,6 @@ export function ArtifactHtmlFrame({
               )}
             </span>
             <span className="flex-1" />
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-pressed={fullTraces}
-              className={cn(
-                "text-xs font-normal",
-                fullTraces ? "text-foreground" : "text-muted-foreground",
-              )}
-              onClick={() => setFullTraces((value) => !value)}
-            >
-              {t("settings.chat.artifacts.consoleFullTraces")}
-            </Button>
             <Button
               size="icon-sm"
               variant="ghost"
@@ -656,9 +574,9 @@ export function ArtifactHtmlFrame({
                     {entry.text}
                     {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
                   </p>
-                  {stackOf(entry) ? (
+                  {canvasStack(entry) ? (
                     <pre className="mt-2 overflow-x-auto border-l border-border pl-2.5 leading-relaxed text-muted-foreground">
-                      {stackOf(entry)}
+                      {canvasStack(entry)}
                     </pre>
                   ) : null}
                 </li>

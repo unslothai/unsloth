@@ -246,96 +246,94 @@ export function ArtifactSurface({
           variant === "panel" && "rounded-t-[28px]",
         )}
       >
-        <div className="flex items-center gap-2">
-          <div
-            className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
-            role="tablist"
-            aria-label="Canvas view"
-          >
-            {(["preview", "source"] as const).map((mode) => {
-              const isPreview = mode === "preview";
-              const Icon = isPreview ? EyeIcon : CodeToggleIcon;
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  role="tab"
-                  disabled={isLoadingArtifact && !isPreview}
-                  onClick={() => showView(mode)}
-                  className={cn(
-                    "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
-                    effectiveViewMode === mode
-                      ? "bg-background text-foreground shadow-sm"
-                      : "hover:bg-background/70 hover:text-foreground",
-                    isLoadingArtifact &&
-                      !isPreview &&
-                      "cursor-not-allowed opacity-50",
-                  )}
-                  aria-label={
-                    isPreview ? "Preview canvas" : "View canvas source"
-                  }
-                  aria-selected={effectiveViewMode === mode}
-                  aria-pressed={effectiveViewMode === mode}
-                  title={
-                    isPreview
-                      ? "Preview"
-                      : isLoadingArtifact
-                        ? "Source available when generation finishes"
-                        : "Source"
-                  }
-                >
-                  <Icon className="size-4" />
-                </button>
-              );
-            })}
-          </div>
-          <button
-            type="button"
-            disabled={isLoadingArtifact}
-            aria-label={reloadLabel}
-            title={reloadLabel}
-            onClick={() => {
-              if (effectiveViewMode !== "preview") showView("preview");
-              setReloadNonce((nonce) => nonce + 1);
-            }}
-            className={cn(
-              "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
-              isLoadingArtifact && "cursor-not-allowed opacity-50",
-            )}
-          >
-            <RotateCwIcon className="size-4" />
-          </button>
-          <button
-            type="button"
-            disabled={isLoadingArtifact}
-            aria-pressed={consoleOpen && effectiveViewMode === "preview"}
-            aria-label={consoleLabel}
-            title={consoleLabel}
-            onClick={() => {
-              if (effectiveViewMode !== "preview") {
-                showView("preview");
-                setConsoleOpen(true);
-                return;
-              }
-              setConsoleOpen((open) => !open);
-            }}
-            className={cn(
-              "flex h-8 items-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors",
-              consoleOpen && effectiveViewMode === "preview"
-                ? "bg-muted/60 text-foreground"
-                : "hover:bg-muted/40 hover:text-foreground",
-              isLoadingArtifact && "cursor-not-allowed opacity-50",
-            )}
-          >
-            <TerminalIcon className="size-4" />
-            {outputCounts.errors > 0 ? (
-              <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
-                {outputCounts.errors}
-              </span>
-            ) : null}
-          </button>
+        <div
+          className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
+          role="tablist"
+          aria-label="Canvas view"
+        >
+          {(["preview", "source"] as const).map((mode) => {
+            const isPreview = mode === "preview";
+            const Icon = isPreview ? EyeIcon : CodeToggleIcon;
+            return (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                disabled={isLoadingArtifact && !isPreview}
+                onClick={() => showView(mode)}
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
+                  effectiveViewMode === mode
+                    ? "bg-background text-foreground shadow-sm"
+                    : "hover:bg-background/70 hover:text-foreground",
+                  isLoadingArtifact &&
+                    !isPreview &&
+                    "cursor-not-allowed opacity-50",
+                )}
+                aria-label={
+                  isPreview ? "Preview canvas" : "View canvas source"
+                }
+                aria-selected={effectiveViewMode === mode}
+                aria-pressed={effectiveViewMode === mode}
+                title={
+                  isPreview
+                    ? "Preview"
+                    : isLoadingArtifact
+                      ? "Source available when generation finishes"
+                      : "Source"
+                }
+              >
+                <Icon className="size-4" />
+              </button>
+            );
+          })}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={isLoadingArtifact}
+          aria-label={reloadLabel}
+          title={reloadLabel}
+          onClick={() => {
+            if (effectiveViewMode !== "preview") showView("preview");
+            setReloadNonce((nonce) => nonce + 1);
+          }}
+          className={cn(
+            "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+            isLoadingArtifact && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <RotateCwIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          disabled={isLoadingArtifact}
+          aria-pressed={consoleOpen && effectiveViewMode === "preview"}
+          aria-label={consoleLabel}
+          title={consoleLabel}
+          onClick={() => {
+            if (effectiveViewMode !== "preview") {
+              showView("preview");
+              setConsoleOpen(true);
+              return;
+            }
+            setConsoleOpen((open) => !open);
+          }}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors",
+            consoleOpen && effectiveViewMode === "preview"
+              ? "bg-muted/60 text-foreground"
+              : "hover:bg-muted/40 hover:text-foreground",
+            isLoadingArtifact && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <TerminalIcon className="size-4" />
+          {outputCounts.errors > 0 ? (
+            <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
+              {outputCounts.errors}
+            </span>
+          ) : null}
+        </button>
           <Button
             type="button"
             variant="ghost"
