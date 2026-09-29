@@ -102,5 +102,6 @@ def pin_installer_torch_vendor(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
     for module in list(sys.modules.values()):
         # __dict__, not hasattr: a lazy module's __getattr__ would import on the probe.
-        if "_installed_torch_is_rocm" in (getattr(module, "__dict__", None) or {}):
+        # Keyed on _rocm_torch_preferred: _torchao_stub has its own _installed_torch_is_rocm.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
             monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
