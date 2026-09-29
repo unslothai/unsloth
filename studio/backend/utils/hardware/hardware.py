@@ -5945,6 +5945,10 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
     ]
     if not rows:
         return []
+    if allowed is not None:
+        # visible_ordinal is the child's numbering, which follows the mask's order.
+        order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        rows.sort(key = lambda row: order.index(row["index"]))
     usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
     usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
     devices = []
@@ -5986,7 +5990,11 @@ def _amd_inference_devices() -> list[Dict[str, Any]]:
             or hip_ids is None
         ):
             return []
-        gpu_ids = [gpu_id for gpu_id in gpu_ids if hip_ids.get(gpu_id) in allowed]
+        order = [int(x) for x in os.environ[masks[0]].split(",") if x.strip()]
+        gpu_ids = sorted(
+            (gpu_id for gpu_id in gpu_ids if hip_ids.get(gpu_id) in allowed),
+            key = lambda gpu_id: order.index(hip_ids[gpu_id]),
+        )
     devices = []
     for ordinal, gpu_id in enumerate(gpu_ids):
         free_total = vram_mib.get(gpu_id)

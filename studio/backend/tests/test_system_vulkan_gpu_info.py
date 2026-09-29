@@ -668,3 +668,16 @@ def test_gpu_device_ordinal_declines_the_amd_inventory(monkeypatch):
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert inference_gpu is gpu
+
+
+def test_visible_ordinals_follow_the_mask_order(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    _two_nvidia_cards(monkeypatch, [("RTX 3080", 10.0), ("RTX 4090", 24.0)])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+
+    _, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert [(d["name"], d["visible_ordinal"]) for d in inference_gpu["devices"]] == [
+        ("RTX 4090", 0),
+        ("RTX 3080", 1),
+    ]
