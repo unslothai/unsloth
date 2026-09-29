@@ -39,7 +39,6 @@ function autoReloadConnections(): ExternalProviderConfig[] {
   );
 }
 
-/** Polls opted-in llama.cpp connections; reloads their models on first contact and each reconnect. */
 export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
   // Connection id -> endpoint it was last reloaded at. Absent: offline or not reloaded yet.
   const online = new Map<string, string>();

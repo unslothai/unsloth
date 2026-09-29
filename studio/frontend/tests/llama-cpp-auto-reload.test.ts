@@ -36,7 +36,6 @@ test("a reload keeps manual IDs and picks, drops removed IDs and enables new one
     mergeReloadedModels(["manual", "alpha"], ["alpha", "beta"], ["beta", "gamma"]),
     ["manual", "gamma"],
   );
-  // A manual ID the server now lists stays selected once.
   assert.deepEqual(
     mergeReloadedModels(["manual"], [], ["manual", "alpha"]),
     ["manual", "alpha"],
@@ -142,7 +141,6 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => puts.length === 3);
     assert.deepEqual(puts[2].models, ["manual", "gamma"]);
 
-    // Switched off: a reconnect changes nothing.
     store.setState({ providers: [{ ...row(), autoReloadModels: false }] });
     served = null;
     await idle();

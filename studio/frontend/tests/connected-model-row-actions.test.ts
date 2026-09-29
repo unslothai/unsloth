@@ -812,7 +812,6 @@ test("a served catalogue cannot take away a context window it has no field for",
 });
 
 test("connection saves write back the live store, not the render snapshot", () => {
-  // Auto reload can update a llama.cpp row while a save awaits the backend.
   const liveWrites = providersDialog.match(
     /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
   );
