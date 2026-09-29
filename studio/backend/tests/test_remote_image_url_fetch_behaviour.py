@@ -27,6 +27,7 @@ from auth.authentication import get_current_subject  # noqa: E402
 import core.inference.external_provider as external_provider  # noqa: E402
 import routes.inference as inference_route  # noqa: E402
 
+from . import test_sf_client_tools_passthrough as safetensors  # noqa: E402
 from .llama_backend_double import FakeLlamaCppBackend  # noqa: E402
 
 _METADATA = "http://169.254.169.254/latest/meta-data/"
@@ -357,6 +358,128 @@ class TestRefusalsAreRealRefusals:
             "/v1/chat/completions", json = _chat_body("https://images.example/cat.webp")
         )
         assert r.status_code == 400, r.text
+
+
+class TestSafetensorsAndMlxFetchToo:
+    def _post(
+        self,
+        monkeypatch,
+        body = None,
+        *,
+        is_vision = True,
+        several = False,
+    ):
+        backend = safetensors._ScriptedBackend(safetensors._fixed("a cat"))
+        backend.models["sf-model"]["is_vision"] = is_vision
+        backend.models["sf-model"]["chat_template_info"]["accepts_multiple_images"] = several
+        client = _client(monkeypatch, safetensors._llama_stub())
+        safetensors._install(monkeypatch, backend)
+        body = body or _chat_body("https://images.example/cat.webp", model = "sf-model")
+        return backend, client.post("/v1/chat/completions", json = body)
+
+    @staticmethod
+    def _fetch_all_but_old(monkeypatch):
+        fetched = []
+
+        def _fetch(url, *_a, **_k):
+            fetched.append(url)
+            return None if "old" in url else ("image/webp", _webp_b64())
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _fetch)
+        return fetched
+
+    @staticmethod
+    def _forbid_fetch(monkeypatch):
+        def _never(*_a, **_k):
+            raise AssertionError("this request must not wait on a fetch")
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
+
+    @staticmethod
+    def _turn(url, role = "user"):
+        return {**_chat_body(url, model = "sf-model")["messages"][0], "role": role}
+
+    def test_the_fetched_image_reaches_the_model(self, monkeypatch):
+        monkeypatch.setattr(
+            external_provider,
+            "safe_fetch_remote_image_sync",
+            lambda *_a, **_k: ("image/webp", _webp_b64()),
+        )
+        backend, r = self._post(monkeypatch)
+
+        assert r.status_code == 200, r.text
+        assert backend.calls[0]["image"] is not None
+        assert backend.calls[0]["image"].size == (2, 2)
+
+    def test_a_failed_fetch_refuses_rather_than_dropping_the_image(self, monkeypatch):
+        monkeypatch.setattr(
+            external_provider, "safe_fetch_remote_image_sync", lambda *_a, **_k: None
+        )
+        backend, r = self._post(monkeypatch)
+
+        assert r.status_code == 400, r.text
+        assert "Could not fetch the remote image URL" in r.text
+        assert backend.calls == []
+
+    @pytest.mark.parametrize("later", ["user", "assistant"])
+    def test_only_the_image_a_single_image_model_reads_is_fetched(self, monkeypatch, later):
+        fetched = self._fetch_all_but_old(monkeypatch)
+        old = self._turn("https://images.example/old.webp")
+        body = _chat_body("https://images.example/new.webp", model = "sf-model")
+        if later == "user":
+            body["messages"][:0] = [old, {"role": "assistant", "content": "ok"}]
+        else:
+            # A user's own image outranks a newer assistant one.
+            body["messages"] += [{**old, "role": "assistant"}, {"role": "user", "content": "and?"}]
+        backend, r = self._post(monkeypatch, body)
+
+        assert r.status_code == 200, r.text
+        assert fetched == ["https://images.example/new.webp"]
+        assert backend.calls[0]["image"].size == (2, 2)
+
+    def test_a_multi_image_model_fetches_only_user_turn_images(self, monkeypatch):
+        fetched = self._fetch_all_but_old(monkeypatch)
+        body = _chat_body("https://images.example/b.webp", model = "sf-model")
+        body["messages"][:0] = [
+            self._turn("https://images.example/a.webp"),
+            self._turn("https://images.example/old.webp", "assistant"),
+        ]
+        backend, r = self._post(monkeypatch, body, several = True)
+
+        assert r.status_code == 200, r.text
+        assert fetched == ["https://images.example/a.webp", "https://images.example/b.webp"]
+        assert len(backend.calls[0]["images"]) == 2
+
+    @pytest.mark.parametrize("legacy", [False, True], ids = ["two_parts", "part_and_legacy"])
+    def test_two_images_on_a_single_image_model_refuse_before_any_fetch(self, monkeypatch, legacy):
+        self._forbid_fetch(monkeypatch)
+        urls = ["https://images.example/a.webp", "https://images.example/b.webp"]
+        body = _chat_body(*urls[: 1 if legacy else 2], model = "sf-model")
+        if legacy:
+            body["image_base64"] = _webp_b64()
+        backend, r = self._post(monkeypatch, body)
+
+        assert r.status_code == 400, r.text
+        assert "one image per message" in r.text
+        assert backend.calls == []
+
+    @pytest.mark.parametrize("role", ["system", "developer"])
+    def test_a_system_or_developer_image_does_not_refuse_a_text_only_model(self, monkeypatch, role):
+        self._forbid_fetch(monkeypatch)
+        body = _chat_body(model = "sf-model")
+        body["messages"][:0] = [self._turn("https://images.example/logo.webp", role)]
+        backend, r = self._post(monkeypatch, body, is_vision = False)
+
+        assert r.status_code == 200, r.text
+        assert len(backend.calls) == 1
+
+    def test_a_text_only_model_refuses_before_any_fetch(self, monkeypatch):
+        self._forbid_fetch(monkeypatch)
+        backend, r = self._post(monkeypatch, is_vision = False)
+
+        assert r.status_code == 400, r.text
+        assert "text-only" in r.text
+        assert backend.calls == []
 
 
 class TestBudget:

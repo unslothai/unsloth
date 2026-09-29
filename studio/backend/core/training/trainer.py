@@ -308,6 +308,16 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     return False if saw_a_usable_value else None
 
 
+def _raise_if_empty_train_split(dataset, stage: str) -> None:
+    # Format detection and SFTTrainer die with a bare StopIteration on an empty split.
+    if hasattr(dataset, "__len__") and len(dataset) == 0:
+        where = f" {stage}" if stage else ""
+        raise ValueError(
+            f"The training dataset has no rows{where}. "
+            "Add at least one example before starting training."
+        )
+
+
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
 _UNSET = object()
 
@@ -3296,6 +3306,8 @@ class UnslothTrainer:
                     self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),
                 )
 
+            _raise_if_empty_train_split(dataset, "")
+
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
@@ -3362,6 +3374,8 @@ class UnslothTrainer:
                 if split_result is not None:
                     train_portion, eval_dataset = split_result
                     dataset_info["dataset"] = train_portion
+
+            _raise_if_empty_train_split(dataset_info["dataset"], "after formatting")
 
             return (dataset_info, eval_dataset)
 

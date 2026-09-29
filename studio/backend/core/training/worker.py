@@ -2853,9 +2853,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     format_type = format_type,
                     dataset_name = hf_dataset or "local",
                     custom_format_mapping = custom_format_mapping,
+                    split_name = "eval",
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                    if hasattr(eval_dataset, "__len__") and len(eval_dataset) == 0:
+                        _send(
+                            "warning",
+                            message = "The eval dataset is empty after preprocessing, so this run has no evaluation.",
+                        )
+                        eval_dataset = None
+                        # A user-supplied split that filters to nothing must not carve one out of train.
+                        eval_enabled = False
                 else:
                     eval_errors = ev.get("errors", [])
                     raise ValueError(
