@@ -693,9 +693,7 @@ function RootLayout() {
             className={
               isChatLike
                 ? "overflow-hidden"
-                : // Below a custom titlebar the scroller starts under the band, so neither
-                  // pinned toolbars nor its scrollbar pass beneath the window controls.
-                  // Reserve the scrollbar so the Library does not shift when it appears.
+                : // Reserve the scrollbar so the Library does not shift when it appears.
                   isLibraryRoute
                   ? "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto [scrollbar-gutter:stable]"
                   : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"

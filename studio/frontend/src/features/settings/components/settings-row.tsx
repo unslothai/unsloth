@@ -32,10 +32,7 @@ export function SettingsRow({
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
-  /**
-   * Hangs under the control, right-aligned: a status line, a note, a follow-up button. Kept out
-   * of the control's box so the control itself stays centred on the label and description.
-   */
+  /** Right-aligned line under the control, kept out of its box so the control stays centred. */
   below?: ReactNode;
 }) {
   return (
