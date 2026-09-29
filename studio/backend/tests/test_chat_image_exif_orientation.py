@@ -107,16 +107,37 @@ def test_a_tagged_png_is_decoded_once(monkeypatch):
 
 
 @pytest.mark.parametrize("subsampling", [0, 1, 2])
-def test_a_tagged_jpeg_keeps_its_colour_detail(subsampling):
-    head, b64 = _sent_to_llama(_photo(6, subsampling = subsampling)).split(",", 1)
+def test_a_tagged_jpeg_keeps_its_quality_and_colour_detail(subsampling):
+    raw = _photo(6, subsampling = subsampling)
+    head, b64 = _sent_to_llama(raw).split(",", 1)
+    assert head == "data:image/jpeg;base64"
     sent = Image.open(BytesIO(base64.b64decode(b64)))
+    assert sent.quantization == Image.open(BytesIO(raw)).quantization
     assert JpegImagePlugin.get_sampling(sent) == subsampling
+
+
+def test_a_tagged_jpeg_whose_tables_start_at_one_is_still_accepted():
+    img = Image.new("L", (300, 100))
+    exif = img.getexif()
+    exif[0x0112] = 6
+    buf = BytesIO()
+    img.save(buf, format = "JPEG", exif = exif, quality = 95)
+    raw = bytearray(buf.getvalue())
+    raw[raw.index(b"\xff\xdb") + 4] = 1  # DQT defines table 1
+    raw[raw.index(b"\xff\xc0") + 12] = 1  # SOF0's one component reads it
+    head, b64 = _sent_to_llama(bytes(raw)).split(",", 1)
+    assert head == "data:image/jpeg;base64"
+    sent = Image.open(BytesIO(base64.b64decode(b64)))
+    assert sent.size == (100, 300)
+    assert list(sent.quantization.values()) == list(Image.open(BytesIO(raw)).quantization.values())
 
 
 def test_a_webp_tag_is_skipped_the_way_chromium_skips_it():
     head, b64 = _sent_to_llama(_photo(6, "WEBP"), "image/webp").split(",", 1)
+    assert head == "data:image/png;base64"
     sent = Image.open(BytesIO(base64.b64decode(b64)))
     assert sent.size == (300, 100)
+    assert _quadrants(sent) == _AS_DISPLAYED[1][1]
 
 
 @pytest.mark.parametrize("orientation", [3, 6, 8])

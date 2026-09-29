@@ -35215,6 +35215,9 @@ def _stb_reads_png(raw: bytes) -> bool:
 def _llama_image_data_url(raw: bytes) -> str:
     """Preserve PNG and JPEG bytes stb_image reads; convert other images to PNG.
 
+    An image whose EXIF orientation turns it is re-encoded upright: a JPEG stays JPEG with its
+    source quantization tables and subsampling, anything else becomes PNG.
+
     Avoid inflating photos while still rejecting corrupt images with Pillow:
     stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
     """
@@ -35229,7 +35232,8 @@ def _llama_image_data_url(raw: bytes) -> str:
             upright.save(
                 buf,
                 format = "JPEG",
-                qtables = img.quantization,
+                # A list: Pillow keeps only dict keys 0..n-1, and some encoders number tables from 1.
+                qtables = [img.quantization[key] for key in sorted(img.quantization)],
                 subsampling = JpegImagePlugin.get_sampling(img),
             )
             return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
