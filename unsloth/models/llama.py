@@ -3284,7 +3284,7 @@ class FastLlamaModel:
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         **kwargs,
     ):
-        # The flag reflects the LAST load; a seq2seq model loaded earlier still needs FastBaseModel.
+        # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
             for peft_arg, flag in (
@@ -3296,7 +3296,7 @@ class FastLlamaModel:
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
-            # The causal-LM default list names no T5 leaf (q/k/v/o/wi/wo); let FastBaseModel pick seq2seq targets.
+            # The causal default names no T5 leaf; FastBaseModel picks seq2seq targets.
             if target_modules == _DEFAULT_TARGET_MODULES and _text_seq2seq:
                 target_modules = None
             return FastBaseModel.get_peft_model(

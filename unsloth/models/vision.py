@@ -67,11 +67,7 @@ def _multimodal_auto_classes():
 
 
 def _is_text_seq2seq_config(config):
-    """Text encoder-decoder (T5, BART, Marian): mapped under AutoModelForSeq2SeqLM and no multimodal auto class.
-
-    Voxtral, Qwen2-Audio, Granite Speech and T5Gemma2 are also mapped under Seq2SeqLM (4.57 has no
-    AutoModelForMultimodalLM to claim the audio ones), so any modality sub-config keeps its route.
-    """
+    """T5 / BART / Marian: Seq2SeqLM-mapped, no multimodal class or sub-config (Voxtral, T5Gemma2 are Seq2SeqLM too)."""
     import transformers
 
     if config is None or any(
@@ -3200,14 +3196,13 @@ class FastBaseModel:
                 if finetune_attention_modules and finetune_mlp_modules:
                     target_modules = sorted({name.rsplit(".", 1)[-1] for name in _linears})
                 elif finetune_attention_modules or finetune_mlp_modules:
-                    # Full paths: a leaf name alone cannot say which family it sits in.
                     target_modules = [
                         name
                         for name in _linears
                         if bool(re.search(r"attention|attn", name.lower()))
                         == finetune_attention_modules
                     ]
-                    # The list already encodes the family choice; get_peft_regex would reject full paths.
+                    # Full paths carry the family choice; get_peft_regex would reject them.
                     finetune_attention_modules = finetune_mlp_modules = True
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
