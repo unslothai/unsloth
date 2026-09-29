@@ -108,7 +108,9 @@ _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
 _mlx_dora_peft_kwargs = _worker._mlx_dora_peft_kwargs
 
 
-def test_mlx_studio_optimizer_aliases_are_explicit():
+def test_mlx_studio_optimizer_aliases_are_explicit(monkeypatch):
+    # Pin the local fallback: a zoo with the MLX normalizer keeps adamw_8bit (real 8-bit AdamW).
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.trainer", None)
     assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("paged_adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("adafactor") == "adafactor"
