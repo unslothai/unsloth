@@ -1049,7 +1049,6 @@ class TestEnsureRocmTorch:
         assert self._windows_repair(None).call_count == 0
 
     def test_swapped_card_on_a_multiarch_install_gets_its_device_pack(self):
-        # The multi-arch build names no family, so only the device packs say which card it serves.
         dists = self._dists("amd-torch-device-gfx1151", "amd_torchvision_device_gfx1151")
         pip_try = self._windows_repair(None, gfx = "gfx1200", dists = dists)
         assert pip_try.call_count == 1

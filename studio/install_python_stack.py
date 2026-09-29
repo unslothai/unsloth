@@ -350,7 +350,6 @@ def _bare_gfx(gfx_arch: "str | None") -> str:
 
 
 def _is_windows_multiarch_gfx(gfx_arch: "str | None") -> bool:
-    """The arch has a device pack on the multi-arch index (membership only)."""
     return _bare_gfx(gfx_arch) in _WINDOWS_MULTIARCH_GFX
 
 
@@ -375,8 +374,6 @@ def _windows_routes_multiarch(gfx_arch: "str | None") -> bool:
 
 
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
-    """The pinned torch / torchvision / torchaudio trio for a multi-arch device, all on
-    one release tag of the multi-arch index."""
     gfx = _bare_gfx(gfx_arch)
     return (
         f"torch[device-{gfx}]=={_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}",
@@ -427,8 +424,6 @@ def _windows_rocm_torch_pkg_specs_for(
 
 
 def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:
-    """Package specs for the Windows ROCm torch install of `gfx_arch` on the index
-    _windows_rocm_index_url picks for it."""
     return _windows_rocm_torch_pkg_specs_for(_windows_rocm_index_url(gfx_arch), gfx_arch)
 
 
