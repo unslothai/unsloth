@@ -8843,6 +8843,11 @@ async def _preflight_image_for_switch(
                 " GGUF build of it, which accepts several."
             ),
         )
+    # The images the model reads are fetched after the load, so a scheme it refuses is refused now.
+    for scheme in image_preflight.get("fetch_schemes", {}).get(target_takes_several, ()):
+        rejection = _remote_image_scheme_rejection(scheme) if scheme else None
+        if not target_is_gguf and rejection is not None:
+            raise HTTPException(status_code = rejection[0], detail = rejection[1])
     # Only what the single-image path selects: an architecture guess must not refuse the rest.
     encoded_images = (
         image_preflight.get("b64s", ()) if target_is_gguf else (image_preflight.get("b64"),)
@@ -26229,6 +26234,13 @@ async def produce_openai_chat_completions(
             "unservable_alongside": _newest_turn_shows_more_images_than_it_sends(
                 _served_messages, _legacy_image_distinct
             ),
+            "fetch_schemes": {
+                several: [
+                    _image_url_scheme(part.image_url.url)
+                    for part in _served_remote_parts(payload.messages, several)
+                ]
+                for several in (False, True)
+            },
         }
 
     # Defer the resident claim: chat has several post-switch capability checks that can still
@@ -35397,14 +35409,10 @@ def _inline_request_remote_images(payload) -> None:
                 part.image_url.url = fetches.inline(part.image_url.url)
 
 
-def _inline_served_remote_images(payload, several: bool) -> None:
-    # Only what the renderers read: the image _extract_content_parts selects, and on a
-    # multi-image model every user turn's (_conversation_with_image_markers).
-    images_on_turn = _images_in_last_user_message(payload.messages)
-    if not several and images_on_turn + int(_legacy_image_is_distinct(payload)) > 1:
-        return  # The caller refuses it as "one image per message".
+def _served_image_part(messages):
+    """The image part _extract_content_parts selects, counting a remote URL as fetched."""
     latest = latest_user = None
-    for message in payload.messages:
+    for message in messages:
         if message.role in ("system", "developer") or not isinstance(message.content, list):
             continue
         part = next(
@@ -35424,18 +35432,31 @@ def _inline_served_remote_images(payload, several: bool) -> None:
             latest = part
             if message.role == "user":
                 latest_user = part
-    selected = latest_user or latest
+    return latest_user or latest
+
+
+def _served_remote_parts(messages, several: bool) -> list:
+    # Only what the renderers read: the image _extract_content_parts selects, and on a
+    # multi-image model every user turn's (_conversation_with_image_markers).
+    selected = _served_image_part(messages)
+    return [
+        part
+        for message in messages
+        if isinstance(message.content, list)
+        for part in message.content
+        if isinstance(part, ImageContentPart)
+        and not part.image_url.url.startswith("data:")
+        and (part is selected or (several and message.role == "user"))
+    ]
+
+
+def _inline_served_remote_images(payload, several: bool) -> None:
+    images_on_turn = _images_in_last_user_message(payload.messages)
+    if not several and images_on_turn + int(_legacy_image_is_distinct(payload)) > 1:
+        return  # The caller refuses it as "one image per message".
     fetches = _RemoteImageFetches()
-    for message in payload.messages:
-        if not isinstance(message.content, list):
-            continue
-        for part in message.content:
-            if (
-                isinstance(part, ImageContentPart)
-                and not part.image_url.url.startswith("data:")
-                and (part is selected or (several and message.role == "user"))
-            ):
-                part.image_url.url = fetches.inline(part.image_url.url)
+    for part in _served_remote_parts(payload.messages, several):
+        part.image_url.url = fetches.inline(part.image_url.url)
 
 
 def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_image = None) -> bool:

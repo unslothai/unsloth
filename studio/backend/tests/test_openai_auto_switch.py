@@ -11089,15 +11089,33 @@ def test_chat_loads_a_non_gguf_target_for_remote_images(monkeypatch, count):
     assert len(recorder.calls) == 1
 
 
-def test_chat_refuses_an_unfetchable_scheme_beside_a_remote_image_before_switch(monkeypatch):
+@pytest.mark.parametrize(
+    ("turns", "detail"),
+    [
+        ([["http://example.com/0.png"]], "Unsupported image URL scheme ('http:')"),
+        (
+            [["https://example.com/0.png", "http://example.com/1.png"]],
+            "one image per message",
+        ),
+        (
+            [["http://example.com/0.png"], ["https://example.com/1.png"]],
+            "Unsupported image URL scheme ('http:')",
+        ),
+    ],
+    ids = ["alone", "beside https", "earlier turn"],
+)
+def test_chat_refuses_an_unfetchable_scheme_before_non_gguf_switch(monkeypatch, turns, detail):
     backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
     monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
-    payload = _chat_image_request("https://example.com/0.png", "http://example.com/1.png")
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [_chat_image_request(*urls).messages[0] for urls in turns],
+    )
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
-    assert "one image per message" in exc.value.detail
+    assert detail in exc.value.detail
     assert recorder.calls == []
     assert backend.model_identifier == "org/A-GGUF"
 
