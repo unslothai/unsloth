@@ -197,9 +197,7 @@ def _launch_explicit_ctx(tmp_path, monkeypatch, model_gb, n_ctx, **load_kwargs):
     backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
     backend._estimate_compute_buffer_bytes = lambda **k: 1
     cmd = _launch(backend, gguf, n_ctx = n_ctx, **load_kwargs)["cmd"]
-    # --device none runs on the CPU, which launches with --fit off.
-    cpu_only = "--device" in (load_kwargs.get("extra_args") or ())
-    assert cmd[cmd.index("--fit") + 1] == ("off" if cpu_only else "on")
+    assert cmd[cmd.index("--fit") + 1] == "on"
     return backend.last_load_warning or ""
 
 

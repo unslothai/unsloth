@@ -6,14 +6,19 @@
 from __future__ import annotations
 
 import os
+import struct
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
 
 
 # Real crash log: the GGML_ASSERT line scrolls out of a short tail behind the [New LWP] dump.
@@ -72,8 +77,8 @@ def test_classifier_surfaces_actionable_message():
         returncode = -6,
     )
     assert msg == LlamaCppBackend._sched_reserve_abort_message()
-    assert "ggml_backend_sched_split_graph" in msg
-    assert "enough memory" not in msg  # i.e. not the generic fallback
+    assert "cur_backend_id" in msg
+    assert "failed to start" not in msg  # not the generic fallback
 
 
 def test_classifier_generic_fallback_unchanged_for_unknown_crash():
@@ -118,3 +123,113 @@ def test_memo_safe_with_missing_binary_or_model():
     assert not LlamaCppBackend._sched_reserve_aborts(None, "m")
     assert not LlamaCppBackend._sched_reserve_aborts("/x", None)
     LlamaCppBackend._record_sched_reserve_abort(None, None)  # no-op, no raise
+
+
+# ---- load_model: fail fast on an identical replay ----------------------------
+
+_REAL_POPEN = subprocess.Popen
+_ABORT_OUTPUT = [
+    "/src/ggml/src/ggml-backend.cpp:1242: GGML_ASSERT(*cur_backend_id != -1) failed\n",
+    "#3  ggml_backend_sched_split_graph ()\n",
+    "#5  llama_context::sched_reserve() ()\n",
+]
+
+
+def _write_gguf(path: Path) -> Path:
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string("llama")
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    return path
+
+
+class _Crashing:
+    """A CPU-only backend whose every llama-server spawn aborts in the graph scheduler."""
+
+    def __init__(self, tmp_path):
+        binary = tmp_path / "llama-server"
+        binary.write_text("x")
+        b = LlamaCppBackend()
+        b._get_gpu_memory = lambda _binary = None, **kw: []
+        b._get_gpu_free_memory = lambda _binary = None, **kw: []
+        b._read_gguf_metadata = lambda _path: None
+        b._can_estimate_kv = lambda: False
+        b._get_gguf_size_bytes = lambda _path: 1024
+        b._mmproj_vram_bytes = lambda _path: 0
+        b._resolve_launch_mmproj_path = lambda **kwargs: None
+        b._apu_ram_shortfall_message = lambda *args, **kwargs: None
+        b._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
+        b._find_llama_server_binary = lambda include_denied = False: str(binary)
+        b._is_vulkan_backend = lambda _binary = None: False
+        b._detect_audio_type_strict = lambda: None
+        b._apply_detected_audio = lambda _detected: True
+
+        def crashed(timeout, **_kw):
+            # As the real wait does on exit: let the drain thread collect the tail.
+            if b._stdout_thread is not None:
+                b._stdout_thread.join(timeout = 2)
+            return False
+
+        b._wait_for_health = crashed
+        self.backend = b
+        self.gguf = _write_gguf(tmp_path / "model.gguf")
+        self.spawns = 0
+
+    def load(self, **load_kwargs) -> str:
+        def fake_popen(cmd, **kwargs):
+            if not cmd or "--port" not in [str(c) for c in cmd]:
+                return _REAL_POPEN(cmd, **kwargs)
+            self.spawns += 1
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "returncode": -6,
+                    "stdout": iter(_ABORT_OUTPUT),
+                    "poll": lambda self: -6,
+                    "terminate": lambda self: None,
+                    "wait": lambda self, timeout = None: -6,
+                    "kill": lambda self: None,
+                },
+            )()
+
+        with (
+            patch.object(subprocess, "Popen", side_effect = fake_popen),
+            pytest.raises(RuntimeError) as err,
+        ):
+            self.backend.load_model(
+                GgufLoadIntent(gguf_path = str(self.gguf), model_identifier = "t", **load_kwargs)
+            )
+        return str(err.value)
+
+
+@pytest.fixture
+def crashing(tmp_path):
+    LlamaCppBackend._sched_reserve_abort_keys.clear()
+    yield _Crashing(tmp_path)
+    LlamaCppBackend._sched_reserve_abort_keys.clear()
+
+
+def test_scheduler_abort_names_the_cause(crashing):
+    assert crashing.load() == LlamaCppBackend._sched_reserve_abort_message()
+
+
+def test_identical_replay_fails_fast_without_spawning(crashing):
+    crashing.load()
+    before = crashing.spawns
+    kills = []
+    crashing.backend._kill_process = lambda: kills.append(1)
+    assert crashing.load() == LlamaCppBackend._sched_reserve_abort_message()
+    assert crashing.spawns == before
+    assert not kills, "a memoed replay must not tear down the running server"
+
+
+@pytest.mark.parametrize("change", [{"n_ctx": 2048}, {"tensor_parallel": True}])
+def test_a_changed_setting_is_allowed_to_retry(crashing, change):
+    crashing.load()
+    before = crashing.spawns
+    crashing.load(**change)
+    assert crashing.spawns > before
