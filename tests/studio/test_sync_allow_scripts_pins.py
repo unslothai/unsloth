@@ -77,8 +77,8 @@ def test_stale_pin_fails_check_and_fix_repairs():
                 "@biomejs/biome@1.9.4": True,  # stale, bumped to 1.9.9
                 "msw@2.14.3": False,  # stale denial, bumped to 2.15.0
                 "fsevents": True,  # bare: never stale
-                "ghost@9.9.9": True,  # not in lockfile: left alone
-                "weird@*": True,  # non-exact spec: left alone
+                "ghost@9.9.9": True,
+                "weird@*": True,
             },
             LOCK,
         )

@@ -20,11 +20,15 @@ from picker.service import (
 def test_iter_ggufs_skips_gguf_companions(tmp_path):
     mtp_dir = tmp_path / "MTP"
     mtp_dir.mkdir()
+    dspark_dir = tmp_path / "dspark"
+    dspark_dir.mkdir()
     main = tmp_path / "model-Q8_0.gguf"
     main.write_bytes(b"")
     (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
     (tmp_path / "mtp-model-Q8_0.gguf").write_bytes(b"")
     (mtp_dir / "model-Q8_0-MTP.gguf").write_bytes(b"")
+    # A DSpark drafter has its own chat template; probing it reads the wrong one.
+    (dspark_dir / "dspark-model-Q8_0.gguf").write_bytes(b"")
     (tmp_path / "model-Q8_0-be.gguf").write_bytes(b"")
 
     assert _iter_ggufs(tmp_path) == [main]
@@ -210,7 +214,9 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
     import huggingface_hub
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+    monkeypatch.setattr(
+        "picker.service.iter_snapshots_preferring_whole", lambda resolved, variant: []
+    )
 
     def _fail_download(*args, **kwargs):
         raise AssertionError("oversized remote template must not be downloaded")
@@ -245,7 +251,9 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     observed_cache_dirs = []
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+    monkeypatch.setattr(
+        "picker.service.iter_snapshots_preferring_whole", lambda resolved, variant: []
+    )
     monkeypatch.setattr("picker.service.active_hf_hub_cache", lambda: str(selected_cache))
 
     def _fake_download(repo_id, rel, **kwargs):

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Condensed row actions for model rows: everything except the run-settings
-// gear collapses into one dots menu (pin, update, delete) so rows don't grow
-// an icon strip. Mirrors the sidebar chat rows' MoreVertical menu pattern.
+// Condensed row actions for model rows so pin, update, and delete do not grow into an icon strip.
+// Mirrors the sidebar chat rows' MoreVertical menu pattern.
 
 import {
   DropdownMenu,
@@ -12,14 +11,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePlatformStore } from "@/config/env";
 import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
+  DeleteImpactSummary,
   UpdateConfirmDialog,
   ggufVariantsMatch,
   subscribeJobListeners,
+  useDeleteImpact,
 } from "@/features/hub";
+import { useRevealLabel } from "@/features/library";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -39,6 +40,15 @@ import {
   useState,
 } from "react";
 
+/** A caller-supplied entry. Rendered under the pin and above cache/update, so delete stays last. */
+export interface ModelRowMenuItem {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  onSelect: () => void;
+  disabled?: boolean;
+}
+
 interface ModelRowMenuPin {
   pinned: boolean;
   /** Menu item labels, e.g. "Pin quant to the top" / "Unpin quant". */
@@ -50,7 +60,7 @@ interface ModelRowMenuPin {
 interface ModelRowMenuUpdate {
   title: string;
   description: ReactNode;
-  /** Repo + variant the update targets (see ModelUpdateAction). */
+  /** Repo + variant the update targets. */
   repoId: string;
   variant?: string | null;
   disabled?: boolean;
@@ -61,6 +71,9 @@ interface ModelRowMenuUpdate {
 interface ModelRowMenuDelete {
   title: string;
   description: ReactNode;
+  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually reclaims
+   *  and what shared assets it leaves behind. Omit to keep the plain wording. */
+  impact?: { repoId: string; variant?: string | null; cachePath?: string | null };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -78,7 +91,9 @@ export function ModelRowMenu({
   buttonClassName,
   iconClassName,
   cachePath,
+  onReveal,
   pin,
+  items,
   update,
   del,
 }: {
@@ -87,23 +102,27 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
+  /** Enables "Reveal in Finder" for paths outside the cache. */
+  onReveal?: () => Promise<void>;
   pin?: ModelRowMenuPin;
+  /** Extra entries for actions this menu has no shape of its own for. */
+  items?: readonly ModelRowMenuItem[];
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const revealLabel =
-    deviceType === "mac"
-      ? "Reveal in Finder"
-      : deviceType === "windows"
-        ? "Reveal in File Explorer"
-        : "Reveal in File Manager";
+  // Null unless this is the owner on the backend's own machine with a file manager.
+  const revealLabel = useRevealLabel();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && Boolean(del?.impact),
+    del?.impact?.repoId ?? "",
+    del?.impact?.variant,
+    del?.impact?.cachePath,
+  );
   const [updateOpen, setUpdateOpen] = useState(false);
 
-  // Refresh the caller when this repo+variant's managed update completes
-  // (mirrors ModelUpdateAction).
+  // Refresh the caller when this repo+variant's managed update completes.
   const onUpdatedRef = useRef(update?.onUpdated);
   useEffect(() => {
     onUpdatedRef.current = update?.onUpdated;
@@ -144,8 +163,8 @@ export function ModelRowMenu({
 
   const onUpdateConfirm = update?.onConfirm;
   const handleUpdateConfirm = useCallback(() => {
-    // Start the re-download and close the dialog; the Downloads panel owns
-    // progress + cancel. Only a failure to START toasts.
+    // Start the re-download and close the dialog; the Downloads panel owns progress and cancel. Only
+    // a failure to START toasts.
     void Promise.resolve()
       .then(onUpdateConfirm)
       .catch((err) => {
@@ -159,15 +178,20 @@ export function ModelRowMenu({
   const cachePathRepoId = cachePath?.repoId;
   const cachePathVariant = cachePath?.variant;
   const handleReveal = useCallback(() => {
-    if (!cachePathRepoId) return;
-    revealCachedModel(cachePathRepoId, cachePathVariant).catch((err) => {
+    const reveal = onReveal
+      ? onReveal()
+      : cachePathRepoId
+        ? revealCachedModel(cachePathRepoId, cachePathVariant)
+        : null;
+    reveal?.catch((err) => {
       toast.error(
         err instanceof Error ? err.message : "Failed to open file manager",
       );
     });
-  }, [cachePathRepoId, cachePathVariant]);
+  }, [onReveal, cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  const canReveal = Boolean(revealLabel && (cachePath || onReveal));
+  if (!pin && !update && !del && !canReveal && !items?.length) return null;
 
   return (
     <>
@@ -178,7 +202,8 @@ export function ModelRowMenu({
             onClick={(e) => e.stopPropagation()}
             aria-label={ariaLabel}
             className={cn(
-              "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+              // Fixed box, matching ModelLoadSettingsAction beside it.
+              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
               buttonClassName,
             )}
           >
@@ -210,7 +235,20 @@ export function ModelRowMenu({
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {cachePath && (
+          {items?.map((item) => (
+            <DropdownMenuItem
+              key={item.key}
+              disabled={item.disabled}
+              onSelect={(e) => {
+                e.stopPropagation();
+                item.onSelect();
+              }}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </DropdownMenuItem>
+          ))}
+          {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
                 e.stopPropagation();
@@ -239,7 +277,9 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(cachePath || pin || update) && <DropdownMenuSeparator />}
+              {(canReveal || pin || update || items?.length) && (
+                <DropdownMenuSeparator />
+              )}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}
@@ -268,8 +308,14 @@ export function ModelRowMenu({
             setDeleteOpen(nextOpen);
           }}
           title={del.title}
-          description={del.description}
+          description={
+            <>
+              {del.description}
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          }
           deleting={deleting}
+          blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
           onConfirm={() => void handleDeleteConfirm()}
         />
       )}

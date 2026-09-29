@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ProfileStats } from "../../api/profile-stats";
 import {
   formatCompactNumber,
   formatDuration,
   formatFullNumber,
+  formatProfileCount,
 } from "../../utils/stats-format";
 import { StatTile, StatsCard } from "./stat-primitives";
 
@@ -21,6 +22,7 @@ const STATUS_TONE: Record<string, string> = {
 /** Training-side counterpart to the chat stats: runs, steps, GPU time, loss. */
 export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
+  const locale = useLocale();
   const { training } = stats;
 
   return (
@@ -30,19 +32,19 @@ export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
     >
       <div className="grid grid-cols-2 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile
-          value={formatFullNumber(training.runs)}
+          value={formatFullNumber(training.runs, locale)}
           label={t("settings.profile.stats.trainingRuns")}
         />
         <StatTile
-          value={formatFullNumber(training.completed)}
+          value={formatFullNumber(training.completed, locale)}
           label={t("settings.profile.stats.trainingCompleted")}
         />
         <StatTile
-          value={formatCompactNumber(training.steps)}
+          value={formatCompactNumber(training.steps, locale)}
           label={t("settings.profile.stats.trainingSteps")}
         />
         <StatTile
-          value={formatCompactNumber(training.tokens)}
+          value={formatCompactNumber(training.tokens, locale)}
           label={t("settings.profile.stats.trainingTokens")}
         />
         <StatTile
@@ -82,7 +84,7 @@ export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
               <div className="flex shrink-0 items-center gap-4 text-xs tabular-nums">
                 <span className="text-muted-foreground">
                   {t("settings.profile.stats.runSteps", {
-                    steps: formatFullNumber(run.steps),
+                    steps: formatProfileCount(run.steps, "step", locale),
                   })}
                 </span>
                 <span className="text-muted-foreground">

@@ -37,10 +37,8 @@ _PARITY_CI = _WORKFLOWS / "cross-platform-parity-ci.yml"
 _RUN_ALL = REPO_ROOT / "tests" / "run_all.sh"
 _SH_DIR = REPO_ROOT / "tests" / "sh"
 
-# Files deliberately not run by the auto-discovered Backend CI step. Each needs
-# a reason here AND in the workflow; anything else in tests/sh must run.
+# Files deliberately not run by the auto-discovered Backend CI step.
 _EXPECTED_CI_SKIPS = {
-    "test_install_host_defaults.sh": "asserts an install.ps1 layout that has drifted",
     "test_install_rollback_lifecycle.sh": "runs on both platforms in cross-platform-parity-ci.yml",
 }
 
@@ -96,7 +94,6 @@ class TestBackendCiRunsEveryShellTest:
             f"Backend CI skips {sorted(unexpected)} without a reason recorded in "
             "_EXPECTED_CI_SKIPS; add one or stop skipping it"
         )
-        # Everything else in the directory is covered by the glob.
         for name in _shell_test_files():
             assert name not in skips or name in _EXPECTED_CI_SKIPS, name
 
@@ -195,3 +192,193 @@ class TestBackendCiPathFilters:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _github_path_matcher(pattern: str) -> re.Pattern:
+    """GitHub path filters: ** crosses directories, * and ? do not."""
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _workflows_running_powershell_tests():
+    """Every workflow that invokes a tests/**.ps1 file, with its PR path filter."""
+    found = {}
+    for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+        text = workflow.read_text(encoding = "utf-8")
+        invoked = sorted(set(re.findall(r"pwsh -NoProfile -File (tests/[^\s`\"']+\.ps1)", text)))
+        if not invoked:
+            continue
+        parsed = yaml.safe_load(text)
+        triggers = parsed.get(True, parsed.get("on", {})) or {}
+        paths = (triggers.get("pull_request") or {}).get("paths")
+        found[workflow.name] = (invoked, paths)
+    return found
+
+
+class TestGithubPathMatcher:
+    """The guard below is only as good as this matcher; a wrong one would pass
+    everything silently."""
+
+    @pytest.mark.parametrize(
+        "pattern,path,expected",
+        [
+            ("tests/studio/*.ps1", "tests/studio/test_x.ps1", True),
+            ("tests/studio/*.ps1", "tests/studio/nested/test_x.ps1", False),
+            ("tests/studio/*.ps1", "tests/studio/test_x.py", False),
+            ("tests/studio/**", "tests/studio/nested/test_x.ps1", True),
+            ("studio/**", "studio/setup.ps1", True),
+            ("studio/**", "tests/studio/setup.ps1", False),
+            (
+                "tests/studio/test_uninstall_*.ps1",
+                "tests/studio/test_uninstall_arg_guard.ps1",
+                True,
+            ),
+            ("tests/studio/test_uninstall_*.ps1", "tests/studio/test_node_decision.ps1", False),
+            ("install.ps1", "install.ps1", True),
+            ("install.ps1", "studio/install.ps1", False),
+        ],
+    )
+    def test_matcher_semantics(self, pattern, path, expected):
+        assert bool(_github_path_matcher(pattern).match(path)) is expected
+
+
+class TestPowerShellTestsRunOnAPr:
+    """tests/sh had this exact hole (see the module docstring) and so did the
+    Windows side: studio-windows-inference-smoke.yml ran six PowerShell tests
+    while its path filter matched none of them, so a PR fixing one of those
+    tests never ran it."""
+
+    def test_some_workflow_runs_powershell_tests(self):
+        assert (
+            _workflows_running_powershell_tests()
+        ), "no workflow invokes a tests/*.ps1 file; did the invocation form change?"
+
+    def test_every_invoked_powershell_test_triggers_its_workflow(self):
+        unguarded = []
+        for name, (invoked, paths) in _workflows_running_powershell_tests().items():
+            if paths is None:
+                continue  # no filter at all means it always runs
+            matchers = [_github_path_matcher(p) for p in paths]
+            for test in invoked:
+                if not any(m.match(test) for m in matchers):
+                    unguarded.append(f"{name} runs {test} but its paths filter never matches it")
+        assert not unguarded, (
+            "these PowerShell tests can break without any PR running them; add the "
+            f"path (or a scoped glob) to the workflow's paths filter: {unguarded}"
+        )
+
+    def test_multi_test_steps_propagate_each_exit_code(self):
+        """A `shell: pwsh` step inherits only the LAST command's exit code, so a
+        step running several tests must check $LASTEXITCODE after each one.
+        Without it, test_resolve_cuda_toolkit.ps1 failed two checks on every
+        Windows run for as long as anyone can tell, and CI stayed green."""
+        offenders = []
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            for block in re.findall(
+                r"run: \|\n(.*?)(?=\n      [-a-zA-Z]|\Z)",
+                workflow.read_text(encoding = "utf-8"),
+                re.S,
+            ):
+                invocations = re.findall(
+                    r"pwsh -NoProfile -File (tests/[^\s`\"']+\.ps1)[^\n]*\n(.*?)(?=pwsh -NoProfile -File|\Z)",
+                    block,
+                    re.S,
+                )
+                if len(invocations) < 2:
+                    continue  # a single invocation's exit code is the step's
+                for test, following in invocations:
+                    if "$LASTEXITCODE" not in following:
+                        offenders.append(f"{workflow.name}: {test} runs without an exit-code check")
+        assert not offenders, (
+            "these tests can fail without failing their step; add "
+            f"`if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}` after each: {offenders}"
+        )
+
+    def test_every_invoked_powershell_test_exists(self):
+        missing = [
+            f"{name} -> {test}"
+            for name, (invoked, _) in _workflows_running_powershell_tests().items()
+            for test in invoked
+            if not (REPO_ROOT / test).is_file()
+        ]
+        assert not missing, f"workflows invoke PowerShell tests that do not exist: {missing}"
+
+
+class TestWindowsPowerShellStepsAreGated:
+    """A step that runs powershell.exe on a multi-OS job must say so.
+
+    Windows PowerShell 5.1 is the host the Desktop app launches the installer in, so the .ps1
+    suites here have a second leg that runs it. `powershell` does not exist on a hosted Linux or
+    macOS runner, and a step without the guard fails the whole job for a reason that has nothing
+    to do with the change under test. Observed exactly that way: a merge dropped the `if:` line
+    from one such step because an identical line already appeared above it.
+
+    A job pinned to windows-latest needs no guard, so the rule is about jobs whose runner is not
+    provably Windows: a matrix expression, or anything else that is not a windows-* literal.
+    """
+
+    @staticmethod
+    def _multi_os_jobs(doc):
+        for name, job in (doc.get("jobs") or {}).items():
+            runs_on = job.get("runs-on")
+            labels = runs_on if isinstance(runs_on, list) else [runs_on]
+            if all(
+                isinstance(l, str) and l.startswith("windows-") for l in labels if l is not None
+            ):
+                continue
+            yield name, job
+
+    @staticmethod
+    def _windows_powershell_steps(job):
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            run = str(step.get("run") or "")
+            if "powershell -NoProfile" not in run:
+                continue
+            if "pwsh -NoProfile" in run:
+                continue
+            yield step
+
+    def test_every_windows_powershell_step_is_gated_on_windows(self):
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            for job_name, job in self._multi_os_jobs(doc):
+                for step in self._windows_powershell_steps(job):
+                    condition = str(step.get("if") or "")
+                    assert "runner.os == 'Windows'" in condition, (
+                        f"{workflow.name}: job {job_name}, step {step.get('name')!r} runs "
+                        f"powershell.exe on a job that is not pinned to a Windows runner, with no "
+                        f"`if: runner.os == 'Windows'`. That executable does not exist on the "
+                        f"Linux and macOS legs."
+                    )
+
+    def test_the_rule_finds_the_steps_it_is_about(self):
+        """Without this, a walk that matched nothing would leave the rule above vacuous."""
+        found = 0
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            for _, job in self._multi_os_jobs(doc):
+                found += len(list(self._windows_powershell_steps(job)))
+        assert found >= 5, (
+            f"only {found} Windows PowerShell steps found on multi-OS jobs; the walk above is "
+            f"looking in the wrong place"
+        )

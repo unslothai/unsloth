@@ -221,8 +221,7 @@ def __init__(self, processing_class):
     rewritten = rewriter("__init__", source)
 
     class _Tokenizer:
-        # Inner tokenizer must NOT be consulted when the processor exposes
-        # pad_token_id itself.
+        # Inner tokenizer must NOT be consulted when the processor exposes pad_token_id itself.
         pad_token_id = 999
 
     class _Processor:

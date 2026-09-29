@@ -5,7 +5,7 @@
  * An HTML comment written mid-sentence is inline raw HTML, not a block, so it
  * belongs to its paragraph: the `-->` may arrive on a later line of that same
  * paragraph and everything between renders as nothing, while past the paragraph
- * the `<!--` is ordinary text. Both changelog scanners share that answer here.
+ * the `<!--` is ordinary text. Both release-note scanners share that answer here.
  *
  * The backend needs none of it: a heading closes the paragraph it sits under, so
  * no heading can ever land inside one of these comments.

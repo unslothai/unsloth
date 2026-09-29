@@ -4,11 +4,11 @@
 import sys
 import os
 import tempfile
+import unicodedata
 from pathlib import Path
 import importlib.util
 
 
-# Mock the datasets module (not installed).
 class MockDataset:
     def __init__(self, data_dict):
         self.data = data_dict
@@ -19,10 +19,8 @@ class MockDataset:
 
     def __getitem__(self, idx):
         if isinstance(idx, str):
-            # Column access, e.g. dataset['text'].
             return self.data[idx]
         elif isinstance(idx, int):
-            # Row access by index.
             return {key: values[idx] for key, values in self.data.items()}
         else:
             raise TypeError(f"Invalid index type: {type(idx)}")
@@ -32,20 +30,30 @@ class MockDataset:
         return cls(data_dict)
 
 
-# __spec__ must be set so importlib.util.find_spec doesn't raise ValueError when
-# transformers' import_utils later probes for the real `datasets` package.
+# __spec__ must be set so importlib.util.find_spec doesn't raise ValueError when transformers' import_utils later probes
+# for the real `datasets` package.
 datasets_mock = type(sys)("datasets")
 datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
 datasets_mock.Dataset = MockDataset
-sys.modules["datasets"] = datasets_mock
 
-# Import raw_text directly to avoid unsloth/__init__.py dependencies.
 current_dir = os.path.dirname(__file__)
 raw_text_path = os.path.join(os.path.dirname(current_dir), "unsloth", "dataprep", "raw_text.py")
 
 spec = importlib.util.spec_from_file_location("raw_text", raw_text_path)
 raw_text_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(raw_text_module)
+
+# The mock is only in place while raw_text executes its `from datasets import Dataset`.
+# Leaving it in sys.modules poisoned every later test module in the same session: `from datasets import IterableDataset`
+# then raised ImportError and tests/utils/test_packing.py failed to collect.
+_real_datasets = sys.modules.get("datasets")
+sys.modules["datasets"] = datasets_mock
+try:
+    spec.loader.exec_module(raw_text_module)
+finally:
+    if _real_datasets is None:
+        del sys.modules["datasets"]
+    else:
+        sys.modules["datasets"] = _real_datasets
 
 RawTextDataLoader = raw_text_module.RawTextDataLoader
 TextPreprocessor = raw_text_module.TextPreprocessor
@@ -102,12 +110,10 @@ def test_raw_text_loader():
         tokenizer = MockTokenizer()
         loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
 
-        # Text output (legacy mode).
         text_dataset = loader.load_from_file(test_file, return_tokenized = False)
         assert len(text_dataset) > 0, "Should create at least one chunk"
         assert "text" in text_dataset.column_names, "Dataset should have 'text' column"
 
-        # Tokenized output (new efficient mode).
         tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
         assert len(tokenized_dataset) > 0, "Should create at least one tokenized chunk"
         assert (
@@ -124,11 +130,9 @@ def test_raw_text_loader():
             first_sample["attention_mask"]
         ), "input_ids and attention_mask should have same length"
 
-        # labels field (for causal LM training).
         assert "labels" in tokenized_dataset.column_names, "Dataset should have 'labels' column"
         assert first_sample["labels"] == first_sample["input_ids"], "labels should match input_ids"
 
-        # Constructor validation.
         try:
             bad_loader = RawTextDataLoader(tokenizer, chunk_size = 0, stride = 2)
             assert False, "Should raise ValueError for chunk_size=0"
@@ -141,10 +145,9 @@ def test_raw_text_loader():
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
-        # smart_chunk_text validation: called directly, chunk_size/stride are its own
-        # arguments and bypass the constructor guard, so it must guard itself or an
-        # invalid stride makes `start_idx += chunk_size - stride` non-positive and the
-        # chunking loop never terminates (hangs).
+        # smart_chunk_text validation: called directly, chunk_size/stride are its own arguments and bypass the
+        # constructor guard, so it must guard itself or an invalid stride makes `start_idx += chunk_size - stride`
+        # non-positive and the chunking loop never terminates (hangs).
         long_text = "This is a test file for raw text training. " * 10
         valid_chunks = loader.smart_chunk_text(long_text, chunk_size = 5, stride = 2)
         assert len(valid_chunks) > 0, "Valid stride should produce chunks"
@@ -161,7 +164,6 @@ def test_raw_text_loader():
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
-        # Preprocessor.
         preprocessor = TextPreprocessor()
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
         assert "messy text" in clean_text, "Should clean text properly"
@@ -170,8 +172,8 @@ def test_raw_text_loader():
             paragraph_text == "Line 1\n\nLine 2"
         ), "Should preserve paragraph breaks while normalizing newlines"
 
-        # Non-ASCII horizontal whitespace (NBSP, thin/em/ideographic space, VT, FF) must
-        # normalize to one ASCII space, not be deleted, or adjacent words fuse on HTML/PDF/OCR input.
+        # Non-ASCII horizontal whitespace (NBSP, thin/em/ideographic space, VT, FF) must normalize to one ASCII space,
+        # not be deleted, or adjacent words fuse on HTML/PDF/OCR input.
         unicode_whitespace_cases = [
             ("hello\u00a0world", "hello world"),
             ("hello\u202fworld", "hello world"),
@@ -186,30 +188,27 @@ def test_raw_text_loader():
                 f"Should normalize Unicode/control whitespace to a single space " f"for {raw!r}"
             )
 
-        # Mixed paragraph + Unicode whitespace.
         mixed = preprocessor.clean_text("Section\u00a01\r\n\r\nBody\ftext\u202fhere")
         assert (
             mixed == "Section 1\n\nBody text here"
         ), "Should preserve paragraph breaks and normalize Unicode whitespace simultaneously"
 
-        # Tabs collapse to a single space.
         assert preprocessor.clean_text("a\tb") == "a b"
         assert preprocessor.clean_text("a\t\tb") == "a b"
 
         # Spaces around newlines trimmed on both sides, even across multiple newlines.
         assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
 
-        # Stripping a non-ASCII char between spaces must not leave a double space
-        # (also guards idempotence: otherwise "word1 (c) word2" needs a second pass).
-        assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
-        assert preprocessor.clean_text("a \u00e9 b") == "a b"
-        assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
+        # Stripping an invisible character between spaces must not leave a double space.
+        assert preprocessor.clean_text("word1 \u200b word2") == "word1 word2"
+        assert preprocessor.clean_text("a \ue000 b") == "a b"
+        assert preprocessor.clean_text("prefix \ufffd suffix") == "prefix suffix"
 
-        # Stripping a non-ASCII char adjacent to a newline must not leave a stray space.
-        assert preprocessor.clean_text("foo \u00e9\nbar") == "foo\nbar"
-        assert preprocessor.clean_text("foo\n\u00e9 bar") == "foo\nbar"
-        # The double-space collapse must not swallow a paragraph break near a non-ASCII char.
-        assert preprocessor.clean_text("a \u00a9\n\nb") == "a\n\nb"
+        # Stripping an invisible character adjacent to a newline must not leave a stray space.
+        assert preprocessor.clean_text("foo \u200b\nbar") == "foo\nbar"
+        assert preprocessor.clean_text("foo\n\ue000 bar") == "foo\nbar"
+        # The double-space collapse must not swallow a paragraph break near an invisible character.
+        assert preprocessor.clean_text("a \u200b\n\nb") == "a\n\nb"
 
         # Idempotence: clean_text twice == once.
         idempotent_inputs = [
@@ -225,20 +224,95 @@ def test_raw_text_loader():
             twice = preprocessor.clean_text(once)
             assert once == twice, f"clean_text should be idempotent for {raw!r}"
 
-        # Validation.
         stats = preprocessor.validate_dataset(text_dataset)
         assert stats["total_samples"] > 0, "Should count samples"
         assert "warnings" in stats, "Should include warnings"
 
-        print("✅ All tests passed!")
+        # Plain ASCII: a Windows console is cp1252 and cannot encode a check mark, so one
+        # here killed the driver mid-file. pytest hid it, capturing stdout as UTF-8.
+        print("All tests passed!")
         return True
 
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        return False
-
+    # No `except Exception: return False` here: it swallowed the failure and still reported a
+    # pass, so every assertion above ran in CI unable to fail it. That is how this shipped.
     finally:
         os.unlink(test_file)
+
+
+def test_clean_text_keeps_text_in_any_script():
+    """Top level on purpose: an assertion inside test_raw_text_loader used to be swallowed."""
+    preprocessor = TextPreprocessor()
+    for script_text in [
+        "Le caf\u00e9 \u00e9tait tr\u00e8s bon.",
+        "\u00bfD\u00f3nde est\u00e1 la ni\u00f1a?",
+        "Gr\u00f6\u00dfe und Stra\u00dfe",
+        "\u673a\u5668\u5b66\u4e60\u5f88\u6709\u8da3\u3002",
+        "\u3053\u3093\u306b\u3061\u306f\u3001\u4e16\u754c\u3002",
+        "\u0645\u0631\u062d\u0628\u0627\u060c \u0628\u0627\u0644\u0639\u0627\u0644\u0645",
+        "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440!",
+        "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e\u0964",
+        "\uc548\ub155\ud558\uc138\uc694.",
+        "\u0393\u03b5\u03b9\u03ac \u03c3\u03bf\u03c5",
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+        "\u0dc1\u0dca\u200d\u0dbb\u0dd3",
+        "Price: \u20ac100, x \u2264 4, \u00a9 2026 Acme\u2122",
+        "I \u2764\ufe0f you 1\ufe0f\u20e3 \U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
+        "\u06dd\u0661\u0662 \u0600\u0663",
+        "\U00013000\U00013430\U00013001",
+        "f\u2061(x) = a\u2062b",
+        # Garay (Unicode 16) is unassigned in older interpreters' databases and must survive anyway.
+        "\U00010d50\U00010d51",
+    ]:
+        assert (
+            preprocessor.clean_text(script_text) == script_text
+        ), f"clean_text must keep text in any script: {script_text!r}"
+
+
+def test_clean_text_drops_invisible_characters():
+    """The control for the test above: invisible characters are still removed."""
+    preprocessor = TextPreprocessor()
+    for raw, expected in [
+        ("a\x00b", "ab"),
+        ("a\x1bb", "ab"),
+        ("\ufeffhello", "hello"),
+        ("co\u00adop", "coop"),
+        ("a\u200bb", "ab"),
+        ("\u202eabc", "abc"),
+        ("a\u200eb\u2060c", "abc"),
+        ("\u2066abc\u2069", "abc"),
+        ("a\ue000b", "ab"),
+        ("a\ufffdb", "ab"),
+        ("a\uffffb", "ab"),
+    ]:
+        assert preprocessor.clean_text(raw) == expected, raw
+
+
+def test_clean_text_decision_cannot_drift_between_interpreters():
+    """unicodedata ships with the interpreter (3.9 has Unicode 13.0, 3.14 has 16.0), and
+    Unicode freezes only Cc, Co and Cs. Keying on any other category would clean the same
+    corpus differently per Python. https://www.unicode.org/policies/property_value_stability_table.html
+    """
+    immutable = {"Cc", "Co", "Cs"}
+    assert set(raw_text_module._TextCharTable._DROP_CATEGORIES) <= immutable, (
+        "clean_text may only key on the General_Category values Unicode has frozen "
+        f"({sorted(immutable)}); the rest differ between Python versions."
+    )
+
+    # Everything else dropped is named explicitly, not derived from the database.
+    preprocessor = TextPreprocessor()
+    for codepoint in (0x00AD, 0x200B, 0x200E, 0x2060, 0x2066, 0xFEFF, 0xFFFD, 0xE0001):
+        assert preprocessor.clean_text(f"a{chr(codepoint)}b") == "ab", hex(codepoint)
+
+    # Unassigned (Cn) means newer than this interpreter's database, so it must survive.
+    unassigned = [
+        cp
+        for cp in range(0x10D40, 0x10D90)
+        if unicodedata.category(chr(cp)) == "Cn" and not (cp & 0xFFFE) == 0xFFFE
+    ]
+    for codepoint in unassigned[:8]:
+        text = f"a{chr(codepoint)}b"
+        assert preprocessor.clean_text(text) == text, hex(codepoint)
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
@@ -291,7 +365,63 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
         input_ids, list
     ), f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
     assert input_ids == [0, 1, 2, 3], f"unexpected input_ids: {input_ids}"
-    print("✅ test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed!")
+    print("test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed")
+    return True
+
+
+def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
+    """Only the final chunk gets EOS; mid-stride chunks stay exactly chunk_size long."""
+
+    class WordTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = -1
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = list(range(len(text.split())))
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    text = " ".join(f"w{i}" for i in range(37))  # 37 tokens: several full chunks + a short tail
+    loader = RawTextDataLoader(WordTokenizer(), chunk_size = 10, stride = 3)
+
+    tokenized_chunks = loader.chunk_text(text, return_tokenized = True)
+    assert len(tokenized_chunks) > 2, "test needs several chunks to cover the intermediate case"
+    for i, chunk in enumerate(tokenized_chunks):
+        ids = chunk["input_ids"]
+        is_last = i == len(tokenized_chunks) - 1
+        if is_last:
+            assert ids[-1] == -1, f"last chunk should end with eos_token_id, got {ids}"
+        else:
+            assert (
+                len(ids) == 10
+            ), f"chunk {i} should stay exactly chunk_size (10), got {len(ids)}: {ids}"
+            assert (
+                ids[-1] != -1
+            ), f"chunk {i} is not the last chunk but ends with eos_token_id: {ids}"
+
+    text_chunks = loader.chunk_text(text, return_tokenized = False)
+    assert len(text_chunks) > 2
+    for i, chunk in enumerate(text_chunks):
+        is_last = i == len(text_chunks) - 1
+        assert (
+            chunk.endswith("</s>") == is_last
+        ), f"chunk {i} (last={is_last}) eos suffix mismatch: {chunk!r}"
+
+    print("test_smart_chunk_text_no_eos_on_intermediate_full_chunks passed")
     return True
 
 
@@ -328,7 +458,7 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
             return_tensors = None,
             add_special_tokens = False,
         ):
-            token_ids = [ord(c) % 100 for c in text]  # whitespace -> real tokens
+            token_ids = [ord(c) % 100 for c in text]
             if return_tensors == "pt":
                 return {"input_ids": [token_ids]}
             return {"input_ids": token_ids}
@@ -359,6 +489,61 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
                     f"(eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
                 )
     print("test_smart_chunk_text_empty_input_returns_no_chunks passed")
+    return True
+
+
+def test_negative_stride_is_rejected():
+    """chunk_size > 0 and stride < chunk_size both pass for a negative stride, but
+    `start_idx += chunk_size - stride` then advances by MORE than chunk_size, so the
+    tokens between one chunk's end and the next chunk's start are never emitted.
+    Nothing raises and nothing is logged, so the caller trains on a corpus with holes
+    in it: chunk_size = 10 with stride = -5 emits 70 of a 100 token document."""
+
+    class CharTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(32 + (t % 90)) for t in token_ids)
+
+    tokenizer = CharTokenizer()
+    text = "x" * 100
+
+    # Both entry points validate stride, so both need the lower bound.
+    try:
+        RawTextDataLoader(tokenizer, chunk_size = 10, stride = -5)
+        assert False, "the constructor should reject a negative stride"
+    except ValueError as e:
+        assert "stride" in str(e) and "non-negative" in str(e), str(e)
+
+    loader = RawTextDataLoader(tokenizer, chunk_size = 10, stride = 0)
+    try:
+        loader.smart_chunk_text(text, chunk_size = 10, stride = -5)
+        assert False, "smart_chunk_text should reject a negative stride"
+    except ValueError as e:
+        assert "stride" in str(e) and "non-negative" in str(e), str(e)
+
+    # stride = 0 stays valid: it just means the chunks do not overlap.
+    chunks = loader.smart_chunk_text(text, chunk_size = 10, stride = 0)
+    assert len(chunks) > 0, "stride = 0 should still produce chunks"
+
+    print("test_negative_stride_is_rejected passed")
     return True
 
 
@@ -402,10 +587,232 @@ def test_load_from_files_all_empty_raises():
     return True
 
 
+def test_validate_dataset_handles_tokenized_and_text_columns():
+    """validate_dataset() must work for both dataset shapes:
+    - text-column datasets (return_tokenized=False), no tokenizer needed
+    - input_ids-column datasets (return_tokenized=True, the default), which
+      require a tokenizer to decode back to text for validation
+    Also asserts the clear ValueError when input_ids is present but no
+    tokenizer was passed, and when neither column exists.
+    """
+
+    class MockTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            words = text.split()
+            token_ids = list(range(len(words)))
+
+            if return_tensors == "pt":
+
+                class MockTensor:
+                    def __init__(self, data):
+                        self.data = data
+
+                    def __getitem__(self, idx):
+                        return self.data
+
+                    def __len__(self):
+                        return len(self.data)
+
+                    def tolist(self):
+                        return self.data
+
+                return {"input_ids": [MockTensor(token_ids)]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    tokenizer = MockTokenizer()
+    loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
+    preprocessor = TextPreprocessor()
+
+    test_content = "This is a test file for raw text training. " * 10
+    with tempfile.NamedTemporaryFile(mode = "w", suffix = ".txt", delete = False) as f:
+        f.write(test_content)
+        test_file = f.name
+
+    try:
+        text_dataset = loader.load_from_file(test_file, return_tokenized = False)
+        stats = preprocessor.validate_dataset(text_dataset)
+        assert stats["total_samples"] > 0, "Should count samples from text column"
+        assert "warnings" in stats
+
+        tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
+        stats = preprocessor.validate_dataset(tokenized_dataset, tokenizer = tokenizer)
+        assert stats["total_samples"] > 0, "Should count samples decoded from input_ids"
+        assert "warnings" in stats
+        assert stats["max_length"] > 0
+
+        try:
+            preprocessor.validate_dataset(tokenized_dataset)
+            assert False, "Should raise ValueError when input_ids present but no tokenizer given"
+        except ValueError as e:
+            assert "tokenizer" in str(e).lower(), str(e)
+
+        class FakeEmptyDataset:
+            column_names = ["some_other_column"]
+
+            def __len__(self):
+                return 0
+
+        try:
+            preprocessor.validate_dataset(FakeEmptyDataset())
+            assert False, "Should raise ValueError when neither text nor input_ids column exists"
+        except ValueError as e:
+            assert "text" in str(e).lower() and "input_ids" in str(e).lower(), str(e)
+
+        print("test_validate_dataset_handles_tokenized_and_text_columns passed")
+        return True
+
+    finally:
+        os.unlink(test_file)
+
+
+def test_validate_dataset_accepts_objects_without_column_names():
+    """Dispatching on `column_names` must not narrow the accepted input types.
+
+    validate_dataset() read dataset["text"] directly, so it worked for any
+    mapping-like object: DataFrames, plain dicts, custom __getitem__ wrappers.
+    """
+
+    preprocessor = TextPreprocessor()
+    texts = ["first sample with enough characters", "second sample with enough characters"]
+    longest = max(len(t) for t in texts)
+
+    class DuckTypedDataset:
+        # Only __len__ + __getitem__, i.e. the pre-existing implicit contract.
+        def __init__(self, data):
+            self.data = data
+
+        def __len__(self):
+            return len(next(iter(self.data.values())))
+
+        def __getitem__(self, key):
+            return self.data[key]
+
+    stats = preprocessor.validate_dataset(DuckTypedDataset({"text": texts}))
+    assert stats["total_samples"] == 2, stats
+    assert stats["empty_samples"] == 0, stats
+    assert stats["max_length"] == longest, stats
+
+    stats = preprocessor.validate_dataset({"text": texts})
+    assert stats["max_length"] == longest, stats
+
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
+
+    if pd is not None:
+        stats = preprocessor.validate_dataset(pd.DataFrame({"text": texts}))
+        assert stats["total_samples"] == 2, stats
+        assert stats["max_length"] == longest, stats
+
+    print("test_validate_dataset_accepts_objects_without_column_names passed")
+    return True
+
+
+def test_validate_dataset_streams_instead_of_materialising_columns():
+    """Columns must be streamed via Dataset.iter(), not copied whole.
+
+    dataset[column] pulls every row into Python objects at once, which for token
+    ids is the bulk of peak memory and grows with the dataset.
+    """
+
+    class BatchedDataset:
+        column_names = ["input_ids"]
+
+        def __init__(self, rows):
+            self.rows = rows
+            self.materialised = 0
+
+        def __len__(self):
+            return len(self.rows)
+
+        def iter(self, batch_size):
+            for start in range(0, len(self.rows), batch_size):
+                yield {"input_ids": self.rows[start : start + batch_size]}
+
+        def __getitem__(self, key):
+            self.materialised += 1
+            return self.rows
+
+    class Tokenizer:
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    dataset = BatchedDataset([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    stats = TextPreprocessor().validate_dataset(dataset, tokenizer = Tokenizer())
+
+    assert stats["total_samples"] == 3, stats
+    assert stats["empty_samples"] == 0, stats
+    assert dataset.materialised == 0, "column was materialised instead of streamed"
+
+    print("test_validate_dataset_streams_instead_of_materialising_columns passed")
+    return True
+
+
+def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
+    """`min_length` must not come back as infinity.
+
+    It is seeded with float("inf") and only ever lowered inside the loop, on exactly
+    the iterations that also append to `text_lengths`. The inf->0 normalisation sat
+    inside `if text_lengths:`, so within that guard it could never see inf: the branch
+    was dead, and the case it existed for, a dataset where no sample has content,
+    skipped the line entirely and returned min_length = inf to the caller.
+
+    The warning guard has to move with it. With the normalisation hoisted, min_length
+    becomes 0 for an empty dataset, and `0 < 10` would newly claim "some samples are
+    very short" about zero measured samples.
+    """
+
+    preprocessor = TextPreprocessor()
+
+    for label, texts in (("all blank", ["", "   ", "\n"]), ("no rows", [])):
+        stats = preprocessor.validate_dataset({"text": texts})
+        assert stats["min_length"] == 0, (label, stats)
+        assert stats["max_length"] == 0, (label, stats)
+        assert not any("very short" in w for w in stats["warnings"]), (label, stats)
+
+    # a genuinely short sample must still be reported
+    stats = preprocessor.validate_dataset({"text": ["hi", "a much longer sample of text"]})
+    assert stats["min_length"] == 2, stats
+    assert any("very short" in w for w in stats["warnings"]), stats
+
+    print("test_validate_dataset_reports_zero_min_length_when_nothing_has_content passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
+    test_clean_text_keeps_text_in_any_script()
+    test_clean_text_drops_invisible_characters()
+    test_clean_text_decision_cannot_drift_between_interpreters()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_smart_chunk_text_no_eos_on_intermediate_full_chunks() and success
     success = test_load_from_file_skips_non_object_json_lines() and success
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
     success = test_load_from_files_all_empty_raises() and success
+    success = test_negative_stride_is_rejected() and success
+    success = test_validate_dataset_handles_tokenized_and_text_columns() and success
+    success = test_validate_dataset_accepts_objects_without_column_names() and success
+    success = test_validate_dataset_streams_instead_of_materialising_columns() and success
+    success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
     sys.exit(0 if success else 1)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { bumpInventoryVersion } from "@/features/hub";
 import { toastError, toastSuccess } from "@/shared/toast";
 import {
   getRecipeJobAnalysis,
@@ -269,6 +270,7 @@ export async function trackRecipeExecution({
       completedPayload.processor_artifacts !== null
         ? (completedPayload.processor_artifacts as Record<string, unknown>)
         : null;
+    const eventDatasetRows = Array.isArray(eventDataset) ? eventDataset : [];
     const shouldFetchPreviewDataset =
       kind === "preview" && !Array.isArray(eventDataset);
     const shouldFetchAnalysis =
@@ -283,7 +285,11 @@ export async function trackRecipeExecution({
         : Promise.resolve(eventAnalysis),
       shouldFetchPreviewDataset || kind === "full"
         ? getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 })
-        : Promise.resolve({ dataset: eventDataset ?? [], total: rows }),
+        : // The event carries every record produced, which is not always the number asked for.
+          Promise.resolve({
+            dataset: eventDatasetRows,
+            total: eventDatasetRows.length,
+          }),
     ]);
 
     const analysis =
@@ -320,6 +326,9 @@ export async function trackRecipeExecution({
       finishedAt: latestExecution.finishedAt ?? Date.now(),
     };
     onUpsert(latestExecution);
+    if (kind === "full") {
+      bumpInventoryVersion();
+    }
 
     if (notify) {
       if (kind === "preview") {
