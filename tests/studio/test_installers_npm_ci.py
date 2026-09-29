@@ -45,7 +45,6 @@ def test_installers_pick_npm_ci_when_a_lockfile_exists():
 
 
 def test_bun_only_runs_against_a_committed_bun_lock():
-    # bun.lock is gitignored, so a leftover one from an earlier bun install must not outrank package-lock.json.
     gate = "if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then"
     assert gate in _read("studio/setup.sh")
     assert gate in _read("build.sh")

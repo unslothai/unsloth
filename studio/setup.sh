@@ -2306,8 +2306,7 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# A package-lock.json always wins: `npm ci` installs exactly it and fails instead of rewriting
-# it. bun only without one (bun.lock is gitignored, so a stale one from an old bun run must not win).
+# package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
 # run_quiet calls exit on failure, which would kill the script before the npm
