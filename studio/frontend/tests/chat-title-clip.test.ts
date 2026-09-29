@@ -735,3 +735,22 @@ test("title sampling fields follow the provider's capabilities", async () => {
   const openai = await buildTitleRequest("external::conn-1::gpt-5.4", "x");
   assert.deepEqual(fields(openai), []);
 });
+
+test("a Responses custom connection still asks reasoning off", async () => {
+  for (const [model, expected] of [
+    ["gpt-5.4", "none"],
+    ["gpt-5", "minimal"],
+  ] as const) {
+    stageConnection({ providerType: "custom", apiType: "responses", models: [model] });
+    const request = await buildTitleRequest(`external::conn-1::${model}`, "x");
+    assert.equal(request?.reasoning_effort, expected, model);
+  }
+});
+
+test("the title budget is floored at the provider's minimum output", async () => {
+  const local = await buildTitleRequest("unsloth/gemma-4-E2B-it-GGUF", "x");
+  assert.equal(local?.max_tokens, 24);
+  stageConnection({ providerType: "kimi", hasApiKey: true });
+  const kimi = await buildTitleRequest("external::conn-1::kimi-k2-thinking", "x");
+  assert.equal(kimi?.max_tokens, 16000);
+});

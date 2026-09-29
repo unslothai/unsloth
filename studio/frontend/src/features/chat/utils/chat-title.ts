@@ -15,6 +15,7 @@ import {
 } from "../external-providers";
 import {
   clampReasoningEffortToLevels,
+  getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
@@ -342,6 +343,7 @@ function titleReasoningFields(
     {
       isReasoningProvider: provider.isReasoningModel === true,
       baseUrl: provider.baseUrl ?? null,
+      apiType: provider.apiType,
     },
   );
   const responsesRoute =
@@ -385,7 +387,14 @@ export async function buildTitleRequest(
     stream: true,
     ...(local || caps?.temperature !== false ? { temperature: 0.2 } : {}),
     ...(local || caps?.topP !== false ? { top_p: 0.9 } : {}),
-    max_tokens: 24,
+    // Floored like the chat request: always-thinking models (Kimi) need room before the title.
+    max_tokens:
+      routing.kind === "external"
+        ? Math.max(
+            24,
+            getExternalMinOutputTokens(routing.provider.providerType),
+          )
+        : 24,
     ...(local || caps?.topK ? { top_k: 20 } : {}),
     ...(local || caps?.repetitionPenalty ? { repetition_penalty: 1.0 } : {}),
     ...(routing.kind === "external"
@@ -403,7 +412,7 @@ export async function buildTitleRequest(
   };
 }
 
-/** Truncated answers are discarded: hitting the 24-token cap means it wrote something else. */
+/** Truncated answers are discarded: hitting the token cap means it wrote something else. */
 export async function titleFromStream(
   chunks: AsyncIterable<OpenAIChatChunk>,
 ): Promise<string | null> {
