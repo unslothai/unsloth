@@ -75,6 +75,7 @@ def _profile_steps(profile):
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "resolves POSIX system binary paths")
 def test_apt_host_with_the_apparmor_restriction_gets_bwrap_and_the_profile(linux):
     linux["tool"]("apt-get")
     linux["restricted"] = True
@@ -148,6 +149,7 @@ def test_detection_never_runs_the_elevation_check(linux):
     assert linux["sudo_checks"] == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "resolves POSIX system binary paths")
 def test_passwordless_sudo_is_the_first_choice(linux):
     linux["tool"]("sudo")
     kind, path = plan_mod.linux_elevation()
