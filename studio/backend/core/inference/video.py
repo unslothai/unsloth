@@ -1762,8 +1762,14 @@ def _video_streamed_peak_bytes(module: Any, offload_type: str, *, prefetch: bool
     except Exception:  # noqa: BLE001 -- same layer set diffusers streams leaf by leaf
         nn = torch.nn
         leaf_types = (
-            nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d,
-            nn.Linear, nn.Embedding,
+            nn.Conv1d,
+            nn.Conv2d,
+            nn.Conv3d,
+            nn.ConvTranspose1d,
+            nn.ConvTranspose2d,
+            nn.ConvTranspose3d,
+            nn.Linear,
+            nn.Embedding,
         )
 
     counted: set[int] = set()

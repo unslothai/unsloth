@@ -403,9 +403,16 @@ def test_vram_floor_adds_the_largest_onloaded_block_or_leaf():
     encoder.shared = torch.nn.Embedding(1024, 3 * 512).to(torch.bfloat16)
     encoder.layers = torch.nn.ModuleList([_linear(1) for _ in range(4)])
     vae = _linear(3)
-    pipe = types.SimpleNamespace(components = {"transformer": dit, "text_encoder": encoder, "vae": vae})
+    pipe = types.SimpleNamespace(
+        components = {"transformer": dit, "text_encoder": encoder, "vae": vae}
+    )
 
-    def _plan(policy, backend, te = False, dit = True):
+    def _plan(
+        policy,
+        backend,
+        te = False,
+        dit = True,
+    ):
         return types.SimpleNamespace(
             offload_policy = policy,
             stream_text_encoders = te,
