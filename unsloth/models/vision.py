@@ -1402,8 +1402,17 @@ def _mxfp4_lora_keeps_experts_packed(
         except Exception:
             device_map = "cpu"
     # unsloth_zoo only sees offload after this config is built, so check explicit maps here.
+    # Offloading modules that hold no experts (lm_head, embeddings, attention) keeps them packed.
+    import re
+
+    no_experts = re.compile(
+        r"(^|\.)(lm_head|embed_tokens|norm|rotary_emb|self_attn|input_layernorm|"
+        r"post_attention_layernorm|router)(\.|$)"
+    )
     if isinstance(device_map, dict) and any(
-        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
+        str(value).split(":")[0] in ("cpu", "disk")
+        and ("experts" in str(key) or not no_experts.search(str(key)))
+        for key, value in device_map.items()
     ):
         return False
     if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
@@ -1558,7 +1567,7 @@ def _mxfp4_lora_keeps_experts_packed(
                 )
             else:
                 devices = list(range(backend.device_count())) if probed else []
-            free_bytes = 0
+            frees = []
             for index in devices:
                 try:
                     free = backend.mem_get_info(index)[0]
@@ -1570,9 +1579,17 @@ def _mxfp4_lora_keeps_experts_packed(
                     budget = convert_file_size_to_int(budget)
                 if isinstance(budget, int):
                     free = min(free, budget)
-                free_bytes += free
+                frees.append(free if max_memory else 0.9 * free)
             # Measured free memory keeps an activation margin; an explicit max_memory is taken as given.
-            limit = free_bytes if max_memory else 0.9 * free_bytes
+            if device_map != "sequential" and len(frees) > 1 and checkpoint_bytes:
+                # get_balanced_memory caps every card but the last at size / n (its buffer left out).
+                low_zero = device_map == "balanced_low_0"
+                per_card = checkpoint_bytes / (len(frees) - 1 if low_zero else len(frees))
+                frees = [
+                    free if low_zero and i == 0 else min(free, per_card)
+                    for i, free in enumerate(frees[:-1])
+                ] + frees[-1:]
+            limit = sum(frees)
             if checkpoint_bytes and probed and checkpoint_bytes > limit:
                 return False
         except Exception:

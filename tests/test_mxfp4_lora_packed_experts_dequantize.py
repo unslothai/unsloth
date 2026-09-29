@@ -604,3 +604,34 @@ def test_offline_sizing_ignores_repo_files_a_load_never_fetches(zoo, tmp_path, m
     assert _helper()(*args) is False
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (10**9, 10**9))
     assert _helper()(*args) is True
+
+
+def test_balanced_placement_caps_earlier_cards_like_get_balanced_memory(zoo, sizes):
+    # 80 + 4 GiB free sums past 60 GiB, but "auto" caps card 0 near 30 GiB, so the rest would offload.
+    sizes["checkpoint"], sizes["free"] = 60, [80, 4]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is False
+    assert _helper()("mxfp4", False, "balanced", "openai/gpt-oss-120b") is False
+    sizes["free"] = [4, 80]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
+    sizes["free"] = [80, 4]
+    assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-120b") is True
+
+
+@pytest.mark.parametrize(
+    "key, packed",
+    [
+        ("lm_head", True),
+        ("model.embed_tokens", True),
+        ("model.norm", True),
+        ("model.layers.3.self_attn", True),
+        ("model.layers.3.mlp.router", True),
+        ("model.layers.3.mlp.experts", False),
+        ("model.layers.3.mlp", False),
+        ("model.layers.3", False),
+        ("model", False),
+        ("", False),
+    ],
+)
+def test_an_explicit_map_offloading_only_non_expert_modules_keeps_packed(zoo, sizes, key, packed):
+    device_map = {"": 0, key: "cpu"} if key else {"": "cpu"}
+    assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-20b") is packed
