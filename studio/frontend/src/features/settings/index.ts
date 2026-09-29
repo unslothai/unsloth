@@ -87,6 +87,7 @@ export {
   useShortcutLabels,
   useShortcutAvailable,
 } from "./hooks/use-shortcut";
+export { useHubSourceNotice } from "./hooks/use-hub-source-notice";
 export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
