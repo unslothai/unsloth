@@ -57,7 +57,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
         { id: "", weight: 1 },
         { id: "org/off", weight: 0 },
       ],
-      familyOverride: "auto",
+      familyOverride: "qwen-image",
       familyOverrideForPick,
       cpuOffload: false,
       speedMode: "auto",
@@ -106,6 +106,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
     assert.deepEqual(advanced?.loras, [{ id: "org/style", weight: 0.7 }]);
     assert.equal(advanced?.transformer_quant, quant);
     assert.equal(advanced?.text_encoder_quant, "int8");
+    assert.equal((advanced as { family_override?: string }).family_override, undefined);
     assert.equal(
       callbacks.currentLoadAdvanced("org/different-model").loras,
       undefined,

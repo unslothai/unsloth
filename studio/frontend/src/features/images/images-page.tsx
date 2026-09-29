@@ -4456,7 +4456,8 @@ export function ImagesPage({
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
       {
-        ...currentLoadAdvanced(rememberedModel.repoId, true, true),
+        // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
+        ...currentLoadAdvanced(rememberedModel.repoId, false, true),
         ...(rememberedModel.familyOverride
           ? { family_override: rememberedModel.familyOverride }
           : {}),
