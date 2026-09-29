@@ -95,3 +95,15 @@ def test_direct_forward_onto_cache_continues_after_it(model_and_tokenizer, atten
         kwargs = {"attention_mask": full.attention_mask} if attention_mask else {}
         got = model(full.input_ids[:, n:], past_key_values = cache, **kwargs).logits[0].float()
     assert (got - expected).abs().max() <= 0.02 * expected.abs().max()
+
+
+def test_saved_cache_reused_after_another_generate(model_and_tokenizer):
+    # One uncached token goes straight to the fast decode path, which must not reuse the KV
+    # buffers an unrelated generate() left behind.
+    model, tokenizer = model_and_tokenizer
+    full = _ids(tokenizer, HISTORY + QUESTION)
+    cache = _cache(model, {"input_ids": full.input_ids[:, :-1]})
+    expected_tokens, expected_logits = _generate(model, full, past_key_values = cache)
+    model.generate(**_ids(tokenizer, OTHER), max_new_tokens = 8)
+    tokens, logits = _generate(model, full, past_key_values = cache)
+    assert torch.equal(tokens, expected_tokens) and torch.equal(logits, expected_logits)

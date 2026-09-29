@@ -2310,6 +2310,11 @@ def unsloth_fast_generate(self, *args, **kwargs):
     # transformers raises if cache_implementation is set beside a user-supplied cache.
     if kwargs.get("past_key_values", None) is not None:
         kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+        # The fast decode path only seeds its KV buffers when they are missing, and a single
+        # uncached token goes straight to it: drop the previous generate()'s buffers.
+        for module in self.modules():
+            if hasattr(module, "paged_attention"):
+                del module.paged_attention_K, module.paged_attention_V, module.paged_attention
         # A user StaticCache makes transformers auto-compile with CUDA graphs, which overwrite the
         # decode kernels' reused buffers.
         if hasattr(getattr(self, "generation_config", None), "disable_compile"):
