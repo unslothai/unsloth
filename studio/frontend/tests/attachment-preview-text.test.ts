@@ -21,6 +21,7 @@ const {
   attachmentAudioSrc,
   attachmentTextLanguage,
   countAttachmentTextLines,
+  decodeHtmlAttachmentBytes,
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
   getDocxAttachmentError,
@@ -1067,6 +1068,98 @@ test("a preview is never stricter than the adapter that took the file", async ()
       "text/plain",
     ),
     (error: Error) => error instanceof UndecodableTextError,
+  );
+});
+
+function legacyPage(head: string, body: number[]) {
+  return new Uint8Array([
+    ...new TextEncoder().encode(head),
+    ...body,
+    ...new TextEncoder().encode("</p>"),
+  ]);
+}
+
+const WINDOWS_1252_BODY = [
+  0x43, 0x61, 0x66, 0xe9, 0x20, 0x80, 0x31, 0x32, 0x2c, 0x20, 0x6e, 0x61, 0xef,
+  0x76, 0x65,
+];
+const SHIFT_JIS_BODY = [
+  0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, 0x82, 0xcc, 0x83, 0x79, 0x81, 0x5b, 0x83,
+  0x57,
+];
+
+test("an html attachment is read in the encoding its page declares", async () => {
+  const word = legacyPage(
+    '<html><head><meta http-equiv=Content-Type content="text/html; charset=windows-1252"></head><p>',
+    WINDOWS_1252_BODY,
+  );
+  const japanese = legacyPage('<meta charset="Shift_JIS"><p>', SHIFT_JIS_BODY);
+  for (const [bytes, name, expected] of [
+    [word, "report.htm", "Café €12, naïve"],
+    [japanese, "page.html", "日本語のページ"],
+  ] as const) {
+    const file = new File([bytes], name, { type: "text/html" });
+    const { text } = await readAttachmentText(file, file.name, file.type);
+    assert.ok(text.includes(expected), text);
+    assert.ok(!text.includes("\uFFFD"), text);
+  }
+});
+
+test("decodeHtmlAttachmentBytes reads the charset the way a browser does", () => {
+  const utf8 = new TextEncoder().encode(
+    "<meta charset=windows-1252><p>Café</p>",
+  );
+  assert.equal(
+    decodeHtmlAttachmentBytes(new Uint8Array([0xef, 0xbb, 0xbf, ...utf8])),
+    "<meta charset=windows-1252><p>Café</p>",
+  );
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode("<p>Café</p>")),
+    "<p>Café</p>",
+  );
+  for (const head of [
+    "<!-- <meta charset=Shift_JIS> --><meta charset=windows-1252><p>",
+    '<div title="<meta charset=Shift_JIS>"><meta charset=windows-1252><p>',
+  ]) {
+    assert.equal(
+      decodeHtmlAttachmentBytes(legacyPage(head, WINDOWS_1252_BODY)),
+      `${head}Café €12, naïve</p>`,
+    );
+  }
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      new TextEncoder().encode('<meta charset="utf-16"><p>Café</p>'),
+    ),
+    '<meta charset="utf-16"><p>Café</p>',
+  );
+});
+
+test("a UTF-8 html page keeps its text when its meta names a legacy charset", async () => {
+  const page =
+    '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><p>Café €12 日本語</p>';
+  const file = new File([new TextEncoder().encode(page)], "saved.html", {
+    type: "text/html",
+  });
+  const { text } = await readAttachmentText(file, file.name, file.type);
+  assert.equal(text, page);
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode(page).subarray(0, -6), true),
+    page.slice(0, -5),
+  );
+  const jis = legacyPage('<meta charset="iso-2022-jp"><p>', [
+    0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42,
+  ]);
+  assert.equal(
+    decodeHtmlAttachmentBytes(jis),
+    '<meta charset="iso-2022-jp"><p>日本語</p>',
+  );
+  const sjis = '<meta charset="Shift_JIS"><p>日本語のページです</p>';
+  assert.equal(decodeHtmlAttachmentBytes(new TextEncoder().encode(sjis)), sjis);
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      legacyPage('<meta charset="gbk"><p>', [0xd7, 0xa8, 0xd2, 0xb5]),
+    ),
+    '<meta charset="gbk"><p>专业</p>',
   );
 });
 
