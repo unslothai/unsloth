@@ -64,10 +64,12 @@ function useIsTurnBookmarked(
 
 function useTurnBookmark(): { bookmarked: boolean; toggle: () => void } | null {
   const incognito = useChatRuntimeStore((state) => state.incognito);
-  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  const openerId = useAuiState(({ thread, message }) =>
-    turnOpenerIdAt(thread.messages, message.index),
+  // one primitive selector: it runs on every store write (keystrokes, streamed tokens) for every mounted message
+  const key = useAuiState(
+    ({ thread, message, threadListItem }) =>
+      `${threadListItem.remoteId ?? ""}\n${turnOpenerIdAt(thread.messages, message.index) ?? ""}`,
   );
+  const [threadId, openerId] = key.split("\n");
   const bookmarked = useIsTurnBookmarked(threadId, openerId);
   const toggleBookmarkedTurn = useBookmarkedTurnsStore(
     (state) => state.toggleBookmarkedTurn,
@@ -144,11 +146,12 @@ export const UserTurnLabel: FC = () => {
 
 const UserTurnLabelText: FC = () => {
   const t = useT();
-  const turn = useAuiState(({ thread, message }) =>
-    turnNumberAt(thread.messages, message.index),
+  const key = useAuiState(
+    ({ thread, message, threadListItem }) =>
+      `${turnNumberAt(thread.messages, message.index)}\n${threadListItem.remoteId ?? ""}\n${message.id}`,
   );
-  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  const messageId = useAuiState(({ message }) => message.id);
+  const [turnText, threadId, messageId] = key.split("\n");
+  const turn = Number(turnText);
   const bookmarked = useIsTurnBookmarked(threadId, messageId);
   if (turn === 0) {
     return null;
