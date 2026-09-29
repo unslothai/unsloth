@@ -1818,7 +1818,13 @@ def _same_base_model(a: str, b: str) -> bool:
     return a == b or _tail(a) == _tail(b)
 
 
-def _unhook_from_manager(manager: Any, module: Any, *, logger: Any = None, what: str) -> bool:
+def _unhook_from_manager(
+    manager: Any,
+    module: Any,
+    *,
+    logger: Any = None,
+    what: str,
+) -> bool:
     """Remove ``module`` from a ComponentsManager's offload rotation without moving it."""
     hooks = list(getattr(manager, "model_hooks", None) or ())
     target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
@@ -2014,7 +2020,6 @@ def stream_prequantized_module(
         if onload.type == "cuda" and not use_stream:
             # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
-
             converted = convert_legacy_int8_weights(module)
             if converted:
                 use_stream = _weights_pinnable(module)
@@ -2038,7 +2043,6 @@ def stream_prequantized_module(
                 kwargs["record_stream"] = True
             if "low_cpu_mem_usage" in params:
                 from itertools import chain
-
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
                 ) // (1024 * 1024)
@@ -2050,7 +2054,9 @@ def stream_prequantized_module(
         _remove_group_offload_hooks(module)
         raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
     # Only a full up-front pin keeps a second host copy; lazy pinning holds one group at a time.
-    mode = ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
+    mode = (
+        ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
+    )
     if logger is not None:
         logger.info(
             "diffusion.prequant: %s streamed block by block on %s (%s copies)",

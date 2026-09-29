@@ -663,7 +663,9 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
             _refresh_quantised_streaming_capability()
         except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
             import structlog as _structlog
-            _structlog.get_logger(__name__).debug("quantised streaming capability skipped: %s", _qs_exc)
+            _structlog.get_logger(__name__).debug(
+                "quantised streaming capability skipped: %s", _qs_exc
+            )
 
     if _post_warm_retired(generation):
         return

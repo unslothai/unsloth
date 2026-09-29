@@ -1119,7 +1119,6 @@ def h3_streamed_int8_supported(target: Any = None) -> bool:
         return False
     try:
         from .diffusion_prequant import torchao_group_offload_supported
-
         return bool(torchao_group_offload_supported())
     except Exception:  # noqa: BLE001 -- an unanswerable probe hides the tier
         return False
@@ -1143,14 +1142,17 @@ def _h3_others_bytes(
         * 1024
         * 1024
     )
-    beside = (
-        max(text_encoder_gb, components[2]) if rotating else text_encoder_gb + components[2]
-    )
+    beside = max(text_encoder_gb, components[2]) if rotating else text_encoder_gb + components[2]
     return int(beside * scale * 1000.0**3) + headroom_bytes
 
 
 def _h3_dense_denoiser_resident_bytes(
-    fam: Any, *, denoiser: Any, te_scheme: Optional[str], dtype: Any, rotating: bool = False
+    fam: Any,
+    *,
+    denoiser: Any,
+    te_scheme: Optional[str],
+    dtype: Any,
+    rotating: bool = False,
 ) -> Optional[tuple[int, int]]:
     """``(denoiser_bytes, everything_else_bytes)`` for a MiniMax-H3 modular pipeline, or None.
 
@@ -1180,7 +1182,11 @@ def _h3_dense_denoiser_resident_bytes(
 
 
 def _h3_planned_denoiser_bytes(
-    fam: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool = False
+    fam: Any,
+    *,
+    te_scheme: Optional[str],
+    dtype: Any,
+    rotating: bool = False,
 ) -> Optional[tuple[int, int]]:
     """The same ``(denoiser_bytes, everything_else_bytes)`` split, PREDICTED from the family table.
 
@@ -1346,9 +1352,7 @@ def _h3_auto_denoiser_scheme(
 
     if not torchao_group_offload_supported():
         # Without streaming, a torchao denoiser can only be pinned beside the larger rotating component.
-        sizes = _h3_planned_denoiser_bytes(
-            fam, te_scheme = te_scheme, dtype = dtype, rotating = True
-        )
+        sizes = _h3_planned_denoiser_bytes(fam, te_scheme = te_scheme, dtype = dtype, rotating = True)
         free_bytes = (free_reader or _h3_free_device_bytes)(device)
         hosted_bytes = int(h3_transformer_resident_gb(H3_AUTO_FALLBACK_SCHEME) * 1000.0**3)
         if sizes is None or not _h3_dense_denoiser_fits((hosted_bytes, sizes[1]), free_bytes):
@@ -6267,6 +6271,7 @@ class VideoBackend:
                         pin_prequantized_module,
                         stream_prequantized_module,
                     )
+
                     pinned_sizes = _h3_dense_denoiser_resident_bytes(
                         fam,
                         denoiser = denoiser,
@@ -6363,7 +6368,9 @@ class VideoBackend:
         # needs ``denoiser_pinned``, which only exists after the offload. ``effective_speed`` itself was resolved above
         # the offload, because the pin reads it.
         # ── the speed layer this workflow used to skip entirely.
-        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (denoiser_pinned or denoiser_streamed):
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (
+            denoiser_pinned or denoiser_streamed
+        ):
             # Compile only a resident or streamed denoiser: in the rotation the graph fights the onload hooks
             # (measured 69-85 s vs 30-115 s eager). Group offload hooks are compiler-disabled.
             logger.info(
