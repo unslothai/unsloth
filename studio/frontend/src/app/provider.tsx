@@ -575,7 +575,6 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-collapsed-chat-controls-inset": "12px",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
-  // Non-chat pages scroll in a box below the band, clear of the window controls.
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
@@ -585,7 +584,6 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
-  // Three 46px caption buttons.
   "--studio-window-control-inset": "138px",
 } as CSSProperties;
 

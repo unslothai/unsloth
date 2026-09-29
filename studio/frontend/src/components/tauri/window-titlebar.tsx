@@ -290,7 +290,6 @@ export function WindowTitlebar({
     showSidebarSurface && !pinned
       ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
       : sidebarWidth;
-  // The card's corner starts on the sidebar's last column, so its left edge meets the sidebar's.
   const cornerLeft = `calc(${sidebarWidth} - 1px)`;
 
   const refreshMaximized = useCallback(async () => {
@@ -434,7 +433,6 @@ export function WindowTitlebar({
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
         >
-          {/* Window chrome: a fixed 12px, sidebar colour outside the card's corner. */}
           {pinned && (
             <div
               className="absolute top-0 size-[12px] bg-[radial-gradient(circle_at_100%_100%,transparent_11px,var(--color-sidebar)_12px)]"
@@ -514,7 +512,6 @@ export function WindowTitlebar({
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            // Windows 11 caption red.
             className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
           >
             <CaptionGlyph kind="close" />
