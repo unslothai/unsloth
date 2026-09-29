@@ -43,10 +43,11 @@ listed in full whenever the catalog fits the loaded local model's context window
 so a model that can hold the full listing always gets it.
 
 When the full listing would take more than three quarters of the window, which
-would otherwise get even a short prompt refused, each tool whose description and
-schema together exceed about 1,500 characters is listed in a compact form: its
+would otherwise get even a short prompt refused, the largest tools (only those
+whose description and schema together exceed about 1,500 characters) are listed
+in a compact form, largest first, until the listing fits: a compact tool shows its
 first sentence plus its top-level parameters with their types, required flags and
-short enums. The model then also gets `mcp_tool_schema`, which returns a tool's
+short enums. Every other tool keeps its full schema. The model then also gets `mcp_tool_schema`, which returns a tool's
 full description and JSON Schema on demand, in pages when it is longer than the
 room left for a tool result. A compact tool called without one of its required
 arguments, or whose call the server rejects, answers with that schema so the model
