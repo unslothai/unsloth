@@ -272,8 +272,3 @@ studio/backend/requirements/.*-filtered-*.txt
 tests/security/fixtures/malicious_wheel.whl
 tests/security/fixtures/malicious_sdist.tar.gz
 tests/security/fixtures/clean_wheel.whl
-
-# Extras
-AGENTS.md
-.unsloth/
-extras/
