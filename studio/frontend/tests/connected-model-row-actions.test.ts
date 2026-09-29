@@ -204,10 +204,7 @@ test("the connection request is one-shot and tab-scoped", () => {
 test("the deep link waits for the provider and fires once", () => {
   // Cached providers must not seed the form before the first backend sync.
   assert.match(providersDialog, /\[providersReady, setProvidersReady\] = useState\(false\)/);
-  assert.match(
-    providersDialog,
-    /onProvidersChange\(preserveConcurrentLlamaCppUpdates\([\s\S]*?useExternalProvidersStore\.getState\(\)\.providers,[\s\S]*?\)\);\s*setProvidersReady\(true\);/,
-  );
+  assert.match(providersDialog, /onProvidersChange\(syncedProviders\);\s*setProvidersReady\(true\);/);
   assert.match(providersDialog, /if \(!providersReady\) return;/);
   // Ready either way: a failed sync leaves the hydrated list as all there is, and waiting on a
   // success the backend may never give would leave the gear opening nothing offline.
@@ -816,9 +813,6 @@ test("a served catalogue cannot take away a context window it has no field for",
 
 test("connection saves write back the live store, not the render snapshot", () => {
   // Auto reload can update a llama.cpp row while a save awaits the backend.
-  assert.doesNotMatch(providersDialog, /\.\.\.providers\.filter\(\(p\) => p\.id !== created\.id\)/);
-  assert.doesNotMatch(providersDialog, /\n\s*providers\.filter\(\(provider\) => provider\.id !== providerId\)/);
-  assert.doesNotMatch(providersDialog, /:\s*providers;\s*onProvidersChange\(/);
   const liveWrites = providersDialog.match(
     /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
   );

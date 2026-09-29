@@ -42,6 +42,7 @@ export interface ExternalProviderConfig {
   promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
+  /** llama.cpp only, this browser only: reload models on connect and reconnect. */
   autoReloadModels?: boolean;
   /** Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the create dialog
    *  and is the TTL the auto-create-per-thread path POSTs. OpenAI's hard default is 20. */
@@ -461,7 +462,7 @@ export function toExternalBackendProviderType(
     : providerType;
 }
 
-export const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
 const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";

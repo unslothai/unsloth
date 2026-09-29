@@ -205,47 +205,6 @@ export function mergeLocalProviderOptions(
 
 
 
-export function preserveConcurrentLlamaCppUpdates(
-  syncedProviders: ExternalProviderConfig[],
-  previousProviders: ExternalProviderConfig[],
-  currentProviders: ExternalProviderConfig[],
-): ExternalProviderConfig[] {
-  const previousById = new Map(
-    previousProviders.map((provider) => [provider.id, provider]),
-  );
-  const currentById = new Map(
-    currentProviders.map((provider) => [provider.id, provider]),
-  );
-  return syncedProviders.map((synced) => {
-    if (synced.providerType !== "llama_cpp") return synced;
-    const previous = previousById.get(synced.id);
-    const current = currentById.get(synced.id);
-    let merged = mergeLocalProviderOptions(current, synced);
-    if (!previous || !current) return merged;
-    if (
-      previous.baseUrl !== current.baseUrl ||
-      previous.hasApiKey !== current.hasApiKey
-    ) {
-      merged = {
-        ...merged,
-        baseUrl: current.baseUrl,
-        hasApiKey: current.hasApiKey,
-      };
-    }
-    if (
-      previous.models !== current.models ||
-      previous.availableModels !== current.availableModels
-    ) {
-      merged = {
-        ...merged,
-        models: current.models,
-        availableModels: current.availableModels,
-      };
-    }
-    return merged;
-  });
-}
-
 /** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
@@ -338,10 +297,7 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      // No backend CAS: an auto-reloading llama.cpp catalog is written only by the queued save paths.
-      const settingsMayBackfill =
-        uiProviderType !== "llama_cpp" || existing?.autoReloadModels !== true;
-      if ((needsModelBackfill || needsAvailableBackfill) && settingsMayBackfill) {
+      if (needsModelBackfill || needsAvailableBackfill) {
         backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
