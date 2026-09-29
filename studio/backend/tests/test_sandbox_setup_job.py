@@ -132,6 +132,13 @@ def test_sudo_runs_each_fixed_step_non_interactively(monkeypatch, env):
     assert env["resets"] >= 5 and env["hooks"] == 1
 
 
+def test_a_root_process_runs_each_pinned_step_directly(monkeypatch, env):
+    _linux_plan(monkeypatch, "root", None)
+    commands, run_env = job_mod._commands(plan_mod.detect())
+    assert commands == [_pinned(step) for step in _STEPS]
+    assert run_env == dict(plan_mod.ELEVATED_ENV)
+
+
 def test_sudo_wanting_a_password_stops_and_hands_over_the_command(monkeypatch, env):
     sudo = env["fake"]("sudo", code = 1, output = "sudo: a password is required")
     plan = _linux_plan(monkeypatch, "sudo", sudo)
@@ -192,6 +199,24 @@ def test_one_setup_at_a_time_across_both_jobs(monkeypatch, env, tmp_path):
     _settle(first)
     assert first.state == "succeeded"
     assert len(env["recorded"]()) == 2
+
+
+def test_a_running_setup_never_stands_in_for_a_different_operation(monkeypatch, env, tmp_path):
+    gate = tmp_path / "open"
+    install = env["fake"]("install-runtime", gate = gate)
+    runtime = plan_mod.SetupPlan(
+        platform = "win32", action = plan_mod.WINDOWS_RUNTIME, steps = ((install,),)
+    )
+    monkeypatch.setattr(plan_mod, "windows_runtime_plan", lambda: runtime)
+    first = job_mod.start(plan_mod.WINDOWS_RUNTIME)
+    try:
+        assert job_mod.start(plan_mod.WINDOWS_RUNTIME) is first
+        with pytest.raises(job_mod.SetupUnavailable, match = "windows-runtime"):
+            job_mod.start(plan_mod.WINDOWS_SETUP)
+    finally:
+        gate.write_text("")
+    _settle(first)
+    assert len(env["recorded"]()) == 1
 
 
 def test_windows_setup_installs_then_prepares_in_order(monkeypatch, env):
@@ -338,7 +363,10 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
 
     def setup():
         barrier.wait()
-        results["setup"] = job_mod.start(plan_mod.LINUX_INSTALL)
+        try:
+            results["setup"] = job_mod.start(plan_mod.LINUX_INSTALL)
+        except job_mod.SetupUnavailable as exc:
+            results["setup"] = exc  # host preparation won; a different operation is refused
 
     def prepare():
         barrier.wait()
@@ -353,7 +381,10 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
         started_setup = job_mod.current() is not None
         started_prep = bool(prep_spawns)
         assert started_setup != started_prep
-        assert results["setup"].id == results["prepare"].id
+        if started_prep:
+            assert isinstance(results["setup"], job_mod.SetupUnavailable)
+        else:
+            assert results["setup"].id == results["prepare"].id
     finally:
         gate.write_text("")
         if job_mod.current() is not None:

@@ -129,6 +129,8 @@ def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict
     except LookupError as exc:
         raise SetupUnavailable(f"{exc}; run the command in a terminal instead.") from exc
     env = dict(sandbox_setup_plan.ELEVATED_ENV)
+    if kind == "root":
+        return steps, env
     if kind == "sudo":
         return [[path, "-n", *step] for step in steps], env
     if shell is None:
@@ -202,8 +204,18 @@ def _run(
     job.state = state
 
 
+def _joined(running: SetupJob, operation: str) -> SetupJob:
+    """The run already in progress, but only for the same request: another one never stands in."""
+    if running.operation != operation:
+        raise SetupUnavailable(
+            f"Another sandbox setup ({running.operation}) is still running; "
+            "start this one once it finishes."
+        )
+    return running
+
+
 def start(operation: str) -> SetupJob:
-    """Start the setup for `operation`, or return the run already in progress (of any operation)."""
+    """Start the setup for `operation`, or return the run of the same operation already in progress."""
     global _current
     from . import mxc_host_prep_job
 
@@ -211,7 +223,7 @@ def start(operation: str) -> SetupJob:
         raise SetupUnavailable(f"Unknown setup operation: {operation}")
     in_progress = current()
     if in_progress is not None and in_progress.state == "running":
-        return in_progress
+        return _joined(in_progress, operation)
     if operation == sandbox_setup_plan.WINDOWS_RUNTIME:
         plan = sandbox_setup_plan.windows_runtime_plan()
     else:
@@ -222,13 +234,16 @@ def start(operation: str) -> SetupJob:
     with HOST_CHANGE_LOCK:
         with _lock:
             if _current is not None and _current.state == "running":
-                return _current
+                return _joined(_current, operation)
         prep = mxc_host_prep_job.current()
         if prep is not None and prep.state == "running":
-            return SetupJob(
-                id = prep.id,
-                operation = sandbox_setup_plan.WINDOWS_SETUP,
-                started_at = prep.started_at,
+            return _joined(
+                SetupJob(
+                    id = prep.id,
+                    operation = sandbox_setup_plan.WINDOWS_SETUP,
+                    started_at = prep.started_at,
+                ),
+                operation,
             )
         job = SetupJob(id = uuid.uuid4().hex, operation = operation, manual_command = plan.manual_command)
         with _lock:

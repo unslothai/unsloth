@@ -35,6 +35,8 @@ def linux(monkeypatch, tmp_path):
     monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: state["blocked"])
     monkeypatch.setattr(plan_mod, "_APPARMOR_PROFILE", str(tmp_path / "bwrap-userns-restrict"))
     monkeypatch.setattr(plan_mod, "_is_wsl", lambda: state["wsl"])
+    monkeypatch.setattr(plan_mod, "_running_as_root", lambda: state["root"])
+    state["root"] = False
     state["sudo_checks"] = 0
 
     def sudo_check(_sudo):
@@ -168,6 +170,18 @@ def test_without_sudo_or_a_desktop_only_the_command_is_offered(linux, monkeypatc
     fields = plan_mod.setup_fields_for(object(), True, available = False)
     assert fields["setup_action"] is None and fields["can_run_setup"] is False
     assert fields["manual_command"].startswith("sudo apt-get update && sudo apt-get")
+
+
+def test_a_root_process_runs_the_steps_itself_and_shows_them_without_sudo(linux, monkeypatch):
+    linux["tool"]("apt-get")
+    linux["root"] = True
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: True)
+    assert plan_mod.linux_elevation() == ("root", None)
+    assert linux["sudo_checks"] == 0
+    fields = plan_mod.setup_fields_for(object(), True, available = False)
+    assert fields["can_run_setup"] is True and fields["setup_action"] == plan_mod.LINUX_INSTALL
+    assert fields["manual_command"].startswith("apt-get update && apt-get")
+    assert "sudo" not in fields["manual_command"]
 
 
 def test_wsl_never_uses_pkexec(linux, monkeypatch):

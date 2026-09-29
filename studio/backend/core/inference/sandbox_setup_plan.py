@@ -132,8 +132,13 @@ def _os_isolation_available() -> bool:
         return False
 
 
+def _running_as_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
 def manual_command(steps) -> str:
-    return " && ".join(f"sudo {shlex.join(step)}" for step in steps)
+    prefix = "" if _running_as_root() else "sudo "
+    return " && ".join(f"{prefix}{shlex.join(step)}" for step in steps)
 
 
 def trusted_system_binary(name: str) -> str | None:
@@ -230,7 +235,7 @@ def _graphical_session() -> bool:
 
 
 def linux_elevation(*, force: bool = False) -> tuple[str | None, str | None]:
-    """(kind, trusted path): passwordless sudo, then pkexec on a desktop session, else neither."""
+    """(kind, trusted path): already root, passwordless sudo, then pkexec on a desktop, else neither."""
     global _elevation_cache
     now = time.monotonic()
     with _lock:
@@ -250,6 +255,8 @@ def forget_elevation() -> None:
 
 
 def _linux_elevation() -> tuple[str | None, str | None]:
+    if _running_as_root():
+        return "root", None  # e.g. a container: the pinned steps run as they are
     sudo = _trusted_tool("sudo")
     if sudo is not None and _sudo_without_password(sudo):
         return "sudo", sudo
