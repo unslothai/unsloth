@@ -5972,67 +5972,24 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
     return devices
 
 
-def _amd_inference_devices() -> list[Dict[str, Any]]:
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    from . import amd
-
-    vram_mib, gpu_ids = amd.get_gpu_vram_report()
-    if LlamaCppBackend._gpu_device_ordinal_active():
-        return []  # renumbers after the HIP masks; llama.cpp's own amd-smi probe declines it too
-    masks = [
-        name
-        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
-        if os.environ.get(name) is not None
-    ]
-    # amd-smi ids are not HIP's: ordinals (and any HIP mask) need the published mapping.
-    hip_ids = amd.get_hip_id_by_gpu_index()
-    if hip_ids is None and len(gpu_ids) == 1 and not masks:
-        hip_ids = {gpu_ids[0]: 0}
-    if (
-        hip_ids is None
-        or any(g not in hip_ids for g in gpu_ids)
-        or len(masks) > 1
-        or masks == ["ROCR_VISIBLE_DEVICES"]
-    ):
-        return []
-    gpu_ids = sorted(gpu_ids, key = lambda g: hip_ids[g])
-    if masks:
-        allowed = LlamaCppBackend._visible_devices_mask(masks[0])
-        if allowed is None:
-            return []
-        order = [int(x) for x in os.environ[masks[0]].split(",") if x.strip()]
-        gpu_ids = sorted(
-            (g for g in gpu_ids if hip_ids[g] in allowed), key = lambda g: order.index(hip_ids[g])
-        )
-    devices = []
-    for ordinal, gpu_id in enumerate(gpu_ids):
-        free_total = vram_mib.get(gpu_id)
-        total_gb = round(free_total[1] / 1024, 2) if free_total else None
-        used_gb = round((free_total[1] - free_total[0]) / 1024, 2) if free_total else None
-        # amd-smi's metric call carries no marketing name.
-        devices.append(_smi_inference_device(gpu_id, ordinal, None, total_gb, used_gb))
-    return devices
-
-
 def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
-    """llama.cpp's GPUs when its CUDA or ROCm build is the other vendor from torch, else None.
+    """The NVIDIA cards a CUDA llama.cpp runs on when torch is another backend, else None.
 
-    SMI only: torch answers for the other vendor, and a CUDA/HIP context here would pin VRAM.
+    nvidia-smi only: torch answers for the other vendor, and a CUDA context here would pin VRAM.
+    A ROCm llama.cpp beside CUDA torch is not covered: amd-smi cannot prove the memory scope
+    HIP sees (an APU reports only its carve-out) without opening a HIP context.
     """
     try:
         llama_backend = _installed_llama_backend()
     except Exception as e:
         logger.debug("Could not read the installed llama.cpp backend: %s", e)
         return None
-    if llama_backend not in ("cuda", "rocm") or llama_backend == _backend_label(get_device()):
+    if llama_backend != "cuda" or _backend_label(get_device()) == "cuda":
         return None
     try:
-        devices = (
-            _nvidia_inference_devices() if llama_backend == "cuda" else _amd_inference_devices()
-        )
+        devices = _nvidia_inference_devices()
     except Exception as e:
-        logger.debug("%s inference GPU query failed: %s", llama_backend, e)
+        logger.debug("CUDA inference GPU query failed: %s", e)
         return None
     # Not []: the load estimate reads an empty list as "this host has no GPU". A card
     # without a capacity (procfs placeholder rows) would read as a known 0 GB budget.

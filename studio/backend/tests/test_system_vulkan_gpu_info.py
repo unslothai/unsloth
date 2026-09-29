@@ -511,23 +511,18 @@ def test_rocm_torch_with_a_rocm_llama_cpp_keeps_the_training_inventory(monkeypat
     assert inference_gpu["backend"] == "rocm"
 
 
-def test_cuda_torch_with_a_rocm_llama_cpp_reports_the_amd_card(monkeypatch):
+def test_cuda_torch_with_a_rocm_llama_cpp_keeps_the_training_inventory(monkeypatch):
+    """amd-smi cannot prove HIP's memory scope (an APU reports only its carve-out)."""
     import utils.hardware.amd as amd
     import utils.hardware.nvidia as nvidia
 
     _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
     monkeypatch.setattr(nvidia, "get_physical_gpu_inventory", _refuse)
-    # {amd-smi id: (free MiB, total MiB)}, plus every id the call enumerated.
-    monkeypatch.setattr(amd, "get_gpu_vram_report", lambda: ({0: (8192, 32768)}, [0]))
+    monkeypatch.setattr(amd, "get_gpu_vram_report", _refuse)
 
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
-    assert gpu["backend"] == "cuda"
-    assert inference_gpu["backend"] == "rocm"
-    (card,) = inference_gpu["devices"]
-    assert card["memory_total_gb"] == 32.0
-    assert card["vram_used_gb"] == 24.0
-    assert card["vram_free_gb"] == 8.0
+    assert inference_gpu is gpu
 
 
 def test_a_silent_nvidia_smi_falls_back_to_the_training_inventory(monkeypatch):
@@ -626,50 +621,6 @@ def test_an_unresolvable_cuda_mask_declines_the_nvidia_inventory(monkeypatch):
     assert inference_gpu is gpu
 
 
-def _two_amd_cards(monkeypatch, hip_ids):
-    import utils.hardware.amd as amd
-    monkeypatch.setattr(
-        amd, "get_gpu_vram_report", lambda: ({0: (26000, 32000), 1: (10000, 16000)}, [0, 1])
-    )
-    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: hip_ids)
-
-
-def test_cross_vendor_amd_cards_follow_hip_visible_devices(monkeypatch):
-    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
-    # amd-smi and HIP enumerate in different orders on this host.
-    _two_amd_cards(monkeypatch, {0: 1, 1: 0})
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-
-    _, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
-
-    assert [d["index"] for d in inference_gpu["devices"]] == [1]
-
-
-def test_stacked_or_unmappable_amd_masks_decline_the_inventory(monkeypatch):
-    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
-    _two_amd_cards(monkeypatch, None)
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-
-    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
-    assert inference_gpu is gpu
-
-    _two_amd_cards(monkeypatch, {0: 0, 1: 1})
-    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
-    monkeypatch.setattr(main, "_system_gpu_cache", None)
-    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
-    assert inference_gpu is gpu
-
-
-def test_gpu_device_ordinal_declines_the_amd_inventory(monkeypatch):
-    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
-    _two_amd_cards(monkeypatch, {0: 0, 1: 1})
-    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
-
-    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
-
-    assert inference_gpu is gpu
-
-
 def test_visible_ordinals_follow_the_mask_order(monkeypatch):
     _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
     _two_nvidia_cards(monkeypatch, [("RTX 3080", 10.0), ("RTX 4090", 24.0)])
@@ -681,27 +632,6 @@ def test_visible_ordinals_follow_the_mask_order(monkeypatch):
         ("RTX 4090", 0),
         ("RTX 3080", 1),
     ]
-
-
-def test_amd_ordinals_follow_hip_order_without_a_mask(monkeypatch):
-    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
-    _two_amd_cards(monkeypatch, {0: 1, 1: 0})
-
-    _, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
-
-    assert [(d["index"], d["visible_ordinal"]) for d in inference_gpu["devices"]] == [
-        (1, 0),
-        (0, 1),
-    ]
-
-
-def test_multi_amd_without_a_hip_mapping_declines(monkeypatch):
-    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
-    _two_amd_cards(monkeypatch, None)
-
-    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
-
-    assert inference_gpu is gpu
 
 
 def test_a_non_pci_cuda_order_declines_multi_nvidia(monkeypatch):
