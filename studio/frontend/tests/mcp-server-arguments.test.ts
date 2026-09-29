@@ -809,3 +809,24 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   assert.doesNotMatch(CHAT_MCP_SERVERS_DIALOG, /await refresh\(\)/);
   assert.doesNotMatch(MCP_COMPOSER_BUTTON, /await refresh\(\)/);
 });
+
+test("the Decisions preset matches a row saved under another port", () => {
+  const literal = MCP_COMPOSER_BUTTON.match(/const STUDIO_DECISIONS_URL =\s*(\/.+\/);/)?.[1];
+  assert.ok(literal);
+  const decisions = new Function(`return ${literal}`)() as RegExp;
+  for (const url of [
+    "http://127.0.0.1:8888/mcp/decisions",
+    "http://127.0.0.1:8889/mcp/decisions",
+    "http://localhost:8888/mcp/decisions",
+  ]) {
+    assert.ok(decisions.test(url), url);
+  }
+  for (const url of [
+    "https://127.0.0.1:8888/mcp/decisions",
+    "http://example.com/mcp/decisions",
+    "http://127.0.0.1:8888/mcp",
+    "http://127.0.0.1:8888/mcp/decisions/extra",
+  ]) {
+    assert.ok(!decisions.test(url), url);
+  }
+});

@@ -69,9 +69,14 @@ const MCP_PRESETS: readonly McpPreset[] = [
   },
 ] as const;
 
+const STUDIO_DECISIONS_URL =
+  /^http:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?\/mcp\/decisions$/;
+
 // mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle reuses its row instead of duplicating.
 function normalizeMcpUrl(url: string): string {
-  return (url || "").trim().toLowerCase().replace(/\/+$/, "");
+  const norm = (url || "").trim().toLowerCase().replace(/\/+$/, "");
+  // Studio's own Decisions server runs in process, so a row saved under an older port is the same server.
+  return STUDIO_DECISIONS_URL.test(norm) ? "studio:decisions" : norm;
 }
 
 export function McpComposerButton({
