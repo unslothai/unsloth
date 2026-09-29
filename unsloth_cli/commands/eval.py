@@ -28,7 +28,14 @@ def _silence():
 
     sys.stdout.flush()
     sys.stderr.flush()
-    real = os.fdopen(os.dup(1), "w", closefd = True)
+    # keep the entry point's UTF-8 reconfigure (Windows legacy code pages); fdopen would reset it
+    real = os.fdopen(
+        os.dup(1),
+        "w",
+        closefd = True,
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8",
+        errors = "replace",
+    )
     saved_out, saved_err = os.dup(1), os.dup(2)
     devnull_fd = os.open(os.devnull, os.O_WRONLY)
     try:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -457,3 +458,22 @@ def test_unsloth_backend_refuses_multi_process(env, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     result = _run("fake/model", "--tasks", "gsm8k")
     assert result.exit_code == 2 and "--backend hf" in result.output
+
+
+def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
+    import subprocess
+
+    script = tmp_path / "enc.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "from unsloth_cli.commands.eval import _silence\n"
+        "with _silence() as c:\n"
+        "    c.print('Evaluating gsm8k\\u2026')\n"
+    )
+    env = dict(os.environ, PYTHONPATH = str(_REPO_ROOT), PYTHONCOERCECLOCALE = "0", LC_ALL = "C")
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8=0", str(script)], capture_output = True, env = env
+    )
+    assert proc.returncode == 0, proc.stderr.decode(errors = "replace")
+    assert "Evaluating gsm8k\u2026" in proc.stdout.decode("utf-8")
