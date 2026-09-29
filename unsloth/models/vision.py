@@ -1296,7 +1296,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
         model_eos_token_id = model_eos_token_id[0]
 
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+    # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
+    default_pad_token_id = model_eos_token_id
+    if (
+        _is_text_seq2seq_config(self.config)
+        and getattr(self.config, "pad_token_id", None) is not None
+    ):
+        default_pad_token_id = self.config.pad_token_id
+    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
