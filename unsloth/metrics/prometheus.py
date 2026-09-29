@@ -86,14 +86,14 @@ _SPECS = {
         (
             "prompt_tokens",
             "Histogram",
-            "unsloth_prompt_tokens",
+            "unsloth_prompt_tokens_per_request",
             "Prompt tokens per request",
             {"buckets": _TOKEN_BUCKETS},
         ),
         (
             "generation_tokens",
             "Histogram",
-            "unsloth_generation_tokens",
+            "unsloth_generation_tokens_per_request",
             "Generated tokens per request",
             {"buckets": _TOKEN_BUCKETS},
         ),
@@ -147,13 +147,13 @@ _SPECS = {
 
 
 def _get_or_create(kind, name, help_text, kwargs):
-    # Re-importing this module (e.g. importlib.reload) must not re-register: prometheus raises on duplicates.
+    cls = {"Counter": Counter, "Gauge": Gauge, "Histogram": Histogram}[kind]
+    # Re-importing this module (e.g. importlib.reload) must not re-register: prometheus raises on
+    # duplicates. Counter "x_total" also claims "x", hence the type check.
     existing = REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
-    if existing is not None:
+    if isinstance(existing, cls):
         return existing
-    return {"Counter": Counter, "Gauge": Gauge, "Histogram": Histogram}[kind](
-        name, help_text, **kwargs
-    )
+    return cls(name, help_text, **kwargs)
 
 
 def _init_metrics():

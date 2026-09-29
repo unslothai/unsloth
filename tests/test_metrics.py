@@ -89,6 +89,14 @@ def test_generate_counts_tokens_and_finish_reason(metrics):
     assert s["total_generation_tokens"] == 2 * 4 + 3 * 2
     assert s["finish_reasons"] == {"length": 1, "stop": 1}
     assert s["active_requests"] == 0
+    if metrics.prometheus.is_prometheus_available():
+        from prometheus_client import REGISTRY
+
+        v = REGISTRY.get_sample_value
+        assert v("unsloth_generation_tokens_total") == 14
+        assert v("unsloth_prompt_tokens_total") == 17
+        assert v("unsloth_request_latency_seconds_count") == 2
+        assert v("unsloth_generation_tokens_per_request_sum") == 14
 
 
 def test_generate_encoder_decoder_and_embeds(metrics):
@@ -123,6 +131,7 @@ def test_generate_wrapper_keeps_name(metrics):
 class _Trainer:
     def __init__(self):
         self.state = types.SimpleNamespace(global_step = 7)
+        self.args = types.SimpleNamespace(gradient_accumulation_steps = 4)
         self.lr_scheduler = types.SimpleNamespace(get_last_lr = lambda: [3e-4])
 
     def training_step(
@@ -154,9 +163,16 @@ def test_training_step_patch(metrics):
     assert float(trainer.training_step(None, batch)) == 1.25
     s = stats.get_stats()
     assert s["total_steps"] == 1 and s["total_samples"] == 4
-    assert s["avg_loss"] == 1.25 and s["current_lr"] == 3e-4
+    assert s["avg_loss"] == 1.25 * 4 and s["current_lr"] == 3e-4
     assert 0.01 <= s["avg_step_time"] < 5
     assert s["samples_per_second"] == pytest.approx(4 / s["avg_step_time"])
+
+    packed = {
+        "input_ids": torch.zeros(1, 9, dtype = torch.long),
+        "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 1, 2, 3]]),
+    }
+    trainer.training_step(None, packed)
+    assert stats.get_stats()["total_samples"] == 4 + 3
 
 
 def test_telemetry_coalesces_sends(metrics, monkeypatch):

@@ -114,12 +114,20 @@ def instrument_generate(generate):
 
 
 def _batch_size(inputs):
-    if isinstance(inputs, dict):
-        for key in ("input_ids", "inputs", "input_features", "inputs_embeds", "pixel_values"):
-            v = inputs.get(key)
-            if hasattr(v, "shape") and len(v.shape) > 0:
-                return int(v.shape[0])
-    return 0
+    if not isinstance(inputs, dict):
+        return 0
+    for key in ("input_ids", "inputs", "input_features", "inputs_embeds", "pixel_values"):
+        v = inputs.get(key)
+        if hasattr(v, "shape") and len(v.shape) > 0:
+            rows = int(v.shape[0])
+            break
+    else:
+        return 0
+    # Padding-free / packed batches are one row of several sequences, each restarting position_ids at 0.
+    pos = inputs.get("position_ids")
+    if rows == 1 and isinstance(pos, torch.Tensor) and pos.dim() == 2:
+        return max(1, int((pos[0] == 0).sum()))
+    return rows
 
 
 def _learning_rate(trainer):
@@ -133,7 +141,8 @@ def _learning_rate(trainer):
 
 
 def patch_training_metrics(Trainer):
-    """Wrap Trainer.training_step (idempotent). Enabled cost per micro-batch: one loss `.item()` sync."""
+    """Wrap Trainer.training_step (idempotent). Enabled cost per micro-batch: a loss `.item()`
+    sync (plus a position_ids count for padding-free batches)."""
     if getattr(Trainer.training_step, "_unsloth_metrics_wrapped", False):
         return
     original = Trainer.training_step
@@ -149,6 +158,9 @@ def patch_training_metrics(Trainer):
             step_time = time.perf_counter() - start
             loss = result.get("loss") if isinstance(result, dict) else result
             loss = float(loss.item() if hasattr(loss, "item") else loss)
+            # training_step returns this micro-batch's share of the optimizer-step loss; times GA,
+            # the mean over one accumulation window equals the loss Trainer logs.
+            loss *= getattr(getattr(self, "args", None), "gradient_accumulation_steps", 1) or 1
             batch_size = _batch_size(inputs)
             lr = _learning_rate(self)
             get_stats_collector().training_stats.record_batch(

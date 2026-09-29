@@ -31,8 +31,8 @@ Inference: every `generate()` of a model loaded by `FastLanguageModel` / `FastMo
 | Metric | Meaning |
 |---|---|
 | `unsloth_request_total{finish_reason}` | requests; `length` if the longest row hit `max_new_tokens`, `error` if generate raised, else `stop` |
-| `unsloth_prompt_tokens_total`, `unsloth_prompt_tokens` | prompt tokens (token-id inputs only; embeds / audio count 0) |
-| `unsloth_generation_tokens_total`, `unsloth_generation_tokens` | returned tokens minus prompt, summed over rows (padding after an early EOS counts) |
+| `unsloth_prompt_tokens_total`, `unsloth_prompt_tokens_per_request` | prompt tokens (token-id inputs only; embeds / audio count 0) |
+| `unsloth_generation_tokens_total`, `unsloth_generation_tokens_per_request` | returned tokens minus prompt, summed over rows (padding after an early EOS counts) |
 | `unsloth_request_latency_seconds` | wall time of `generate()` |
 | `unsloth_time_per_output_token_seconds` | request latency / generated tokens (includes prefill) |
 | `unsloth_requests_active`, `unsloth_tokens_per_second` | gauges over the last 1000 requests |
@@ -44,8 +44,8 @@ Training: `Trainer.training_step` (one call per micro-batch) is wrapped.
 
 | Metric | Meaning |
 |---|---|
-| `unsloth_training_steps_total`, `unsloth_training_samples_total` | micro-batches and samples |
-| `unsloth_training_loss` | loss returned by the last `training_step` (as `training_step` returns it) |
+| `unsloth_training_steps_total`, `unsloth_training_samples_total` | micro-batches and sequences (padding-free rows split on `position_ids`) |
+| `unsloth_training_loss` | last micro-batch loss x GA; its mean over an accumulation window equals the loss Trainer logs |
 | `unsloth_learning_rate` | scheduler's last LR |
 | `unsloth_training_step_time_seconds` | wall time of forward + backward (not split) |
 | `unsloth_training_samples_per_second`, `unsloth_training_batch_size` | throughput, batch size |
