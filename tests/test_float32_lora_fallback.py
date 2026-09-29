@@ -25,7 +25,6 @@ def test_base_weight_dtype_plain(dtype):
 
 
 def test_base_weight_dtype_reads_quant_state():
-    # A 4-bit weight is stored as uint8; the dtype that matters is the quant_state's.
     weight = torch.zeros(2, 2, dtype = torch.uint8)
     weight.quant_state = types.SimpleNamespace(dtype = torch.float32)
     assert _base_weight_dtype(_proj(weight)) == torch.float32
@@ -52,7 +51,6 @@ def test_fp32_nf4_dequant_matches_bitsandbytes():
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
 def test_fp32_nf4_single_token_decode():
-    # The 4bit gemv kernels are fp16/bf16 only, so fp32 must take the dequantize path.
     import bitsandbytes as bnb
     from unsloth.kernels.utils import fast_linear_forward
 
