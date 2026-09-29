@@ -1814,8 +1814,12 @@ def _video_streamed_peak_bytes(module: Any, offload_type: str, *, prefetch: bool
             if isinstance(mod, leaf_types):
                 inside |= {id(m) for m in mod.modules()}
                 units.append(_own(mod, True))
+            elif next(mod.children(), None) is not None:
+                # a parent's loose params onload in its pre-forward and stay until its post-forward, under every
+                # descendant leaf and its prefetch; summing every enclosing group bounds any nesting path
+                fixed += _own(mod, False)
             else:
-                # loose params of a non-leaf parent form their own group
+                # loose params of a childless non-leaf (a norm) form their own group
                 units.append(_own(mod, False))
     units = sorted(units, reverse = True)
     # a copy stream prefetches the next group while the current one computes

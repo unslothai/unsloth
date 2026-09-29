@@ -558,6 +558,32 @@ def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
     assert V._stage_denoiser_for_quant(dit, types.SimpleNamespace(device = "mps")) == []
 
 
+def test_leaf_streaming_peak_keeps_an_enclosing_parent_group_onloaded():
+    """A parent's own params stay onloaded across its descendant leaves, so they add to the two-leaf window."""
+    torch = pytest.importorskip("torch")
+    from core.inference.video import _video_streamed_peak_bytes
+
+    mib = 1 << 20
+
+    def _linear(n):
+        return torch.nn.Linear(1024, n * 512, bias = False).to(torch.bfloat16)
+
+    root = torch.nn.Module()
+    root.block = torch.nn.Module()
+    root.block.table = torch.nn.Parameter(torch.zeros(mib // 2, dtype = torch.bfloat16))
+    root.block.a = _linear(2)
+    root.block.b = _linear(2)
+    root.head = _linear(2)
+    root.norm = torch.nn.LayerNorm(mib // 4, dtype = torch.bfloat16)
+
+    def size(t):
+        return t.numel() * t.element_size()
+
+    # inside block: its 1 MiB table plus leaf a and the prefetched leaf b
+    assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 5 * mib
+    assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = False, size = size) == 3 * mib
+
+
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
     """_apply_group_offload keeps a refusing encoder resident under the same policy; the floor must follow the hooks."""
     torch = pytest.importorskip("torch")
