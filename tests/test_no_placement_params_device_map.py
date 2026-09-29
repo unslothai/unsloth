@@ -12,8 +12,6 @@ from unsloth.models.loader_utils import exclude_no_placement_params
 
 
 class ScaledEmbedding(nn.Embedding):
-    """Like transformers' FP8Embedding: the lookup multiplies by a sibling weight_scale."""
-
     def __init__(self, n, d):
         super().__init__(n, d)
         self.weight_scale = nn.Parameter(torch.ones(1))
@@ -72,7 +70,6 @@ def covered(device_map, name):
 def check(device_map, device):
     names = [n for n, _ in list(Model().named_parameters()) + list(Model().named_buffers())]
     table = "model.layers.1.ple.ple_embedding.ngram_embedding."
-    # The whole owning module stays off the map, its weight_scale included.
     assert not covered(device_map, table + "weight") and not covered(
         device_map, table + "weight_scale"
     )

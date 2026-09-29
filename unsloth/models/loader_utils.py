@@ -286,8 +286,7 @@ def _single_device_index(device_map):
 
 
 def no_placement_tensor_names(model):
-    """Names of every parameter / buffer of a module that owns one of the model's
-    `_no_placement_params` (see `exclude_no_placement_params`). Empty for other models."""
+    """Every tensor name under a module owning one of the model's `_no_placement_params`."""
     names = getattr(model, "_no_placement_params", None)
     if not names:
         return set()
@@ -303,11 +302,8 @@ def no_placement_tensor_names(model):
 
 
 def exclude_no_placement_params(device_map, model_class, config):
-    """Keep a model's `_no_placement_params` out of the device map, so they stay on CPU.
-
-    transformers escapes them only when the next device is a GPU, so on one GPU Qwen4Exp's
-    ~102 GB n-gram table sent the whole model to CPU. The table is frozen and gathers rows on
-    CPU. `UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1` restores the transformers behaviour."""
+    """Keep `_no_placement_params` off the device map (on CPU): transformers' handling sent all of
+    Qwen4Exp to CPU on one GPU. `UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1` restores it."""
     names = getattr(model_class, "_no_placement_params", None) if model_class is not None else None
     if not names or os.environ.get("UNSLOTH_PLACE_NO_PLACEMENT_PARAMS", "0") == "1":
         return device_map

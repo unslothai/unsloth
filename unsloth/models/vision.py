@@ -206,8 +206,7 @@ __all__ = [
 
 
 def _infer_device_map_from_loaded_model(model, skip = ()):
-    """Build a compact device_map by inspecting actual parameter placements. Parameters
-    named in `skip` (full names) are left off the map."""
+    """Build a compact device_map from actual parameter placements, leaving `skip` names off."""
     device_map = {}
 
     def _assign(module, prefix):
@@ -433,10 +432,7 @@ def _align_root_hook_with_input_embeddings(model):
 
 
 def _hook_no_placement_ancestors(model):
-    """Hook ancestors of a CPU-kept `_no_placement_params` table on a split model.
-
-    Leaving the table off the map strips its ancestors' dispatch hooks, so inputs arrived on
-    the wrong card. Single-card ancestors get an input-aligning hook; the table stays unhooked."""
+    """Input-align hooks on single-card ancestors of a CPU-kept no-placement table (split model)."""
     from .loader_utils import no_placement_tensor_names
 
     unplaced = no_placement_tensor_names(model)
@@ -2441,7 +2437,6 @@ class FastBaseModel:
             ),
         )
 
-        # Parameters the model declares unplaceable (Qwen4Exp's ~102 GB n-gram table) stay on CPU.
         device_map = exclude_no_placement_params(device_map, model_class, auto_config)
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
