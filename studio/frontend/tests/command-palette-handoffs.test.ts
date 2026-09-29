@@ -53,3 +53,10 @@ test("chat search receives and restores the palette opener", () => {
   assert.match(chatSearchDialog, SEARCH_CLOSE_FOCUS);
   assert.match(chatSearchDialog, RESTORE_SEARCH_OPENER);
 });
+
+test("reopening during the exit animation clears the previous query", () => {
+  assert.match(
+    palette,
+    /if \(isOpen !== wasOpen\) \{\s*setWasOpen\(isOpen\);\s*if \(isOpen\) setQuery\(""\);/,
+  );
+});

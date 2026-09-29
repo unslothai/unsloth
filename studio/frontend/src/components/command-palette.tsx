@@ -191,6 +191,13 @@ function PaletteContent() {
   const isOwner = useIsAccountOwner();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const [query, setQuery] = useState("");
+  // Content stays mounted through the exit animation, so a quick reopen would keep the old filter.
+  const isOpen = useCommandPaletteStore((s) => s.isOpen);
+  const [wasOpen, setWasOpen] = useState(isOpen);
+  if (isOpen !== wasOpen) {
+    setWasOpen(isOpen);
+    if (isOpen) setQuery("");
+  }
   const hasQuery = query.trim().length > 0;
   const newChatAvailable = useShortcutAvailable("newChat", false);
   const newChatLabel = useShortcutLabel("newChat");
