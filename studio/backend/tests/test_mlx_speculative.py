@@ -25,7 +25,7 @@ def cache(tmp_path, monkeypatch):
     def fill(repos, builtin = False):
         for repo, config in {_TARGET: {"vocab_size": 10}, **repos}.items():
             snapshots[repo] = tmp_path / repo.replace("/", "--")
-            snapshots[repo].mkdir(parents = True)
+            snapshots[repo].mkdir(parents = True, exist_ok = True)
             (snapshots[repo] / "config.json").write_text(json.dumps(config))
         monkeypatch.setattr(spec, "has_builtin_head", lambda model_dir: builtin)
         return lambda mode, named = None: spec.resolve_speculation(
@@ -68,11 +68,13 @@ def test_an_explicit_kind_tries_the_named_drafter_then_the_head_then_cached_comp
     assert _resolve("dspark+ngram").speculative
 
 
-def test_auto_off_and_unknown_modes_leave_the_load_unspeculated(cache):
-    _resolve = cache({"a/Qwen3.5-4B-DFlash": _DFLASH}, builtin = True)
-    for mode in (None, "", "auto", "default", "bogus", "off", "disabled"):
-        resolution = _resolve(mode, "a/Qwen3.5-4B-DFlash")
-        assert not resolution.speculative and resolution.reason is None
+def test_auto_takes_heads_and_assistants_and_leaves_span_companions(cache):
+    _resolve = cache({"a/Qwen3.5-4B-DFlash": _DFLASH})
+    assert (_resolve("auto").reason, _resolve("off").speculative) == (spec.AUTO_SPAN_DRAFTER, False)
+    assert [spec.speculates_on_route("auto", vision) for vision in (False, True)] == [False, True]
+    _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    for mode in (None, "bogus", "auto"):
+        assert [s.builtin for s in _resolve(mode).sources] == [True, False]
     assert _resolve("ngram-mod").speculative
 
 
@@ -102,6 +104,9 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     )
     assert (draft.drafter, kind, reason) == (None, "ngram", spec.DRAFTER_NO_MEMORY)
     assert (draft.controller.max_depth, draft.controller.max_copy) == (0, 16)
+    auto = spec.SpecResolution("auto", sources[:1], copies = True)
+    unfit = [spec.build_draft(None, auto, fits = lambda _: (ok, None)) for ok in (False, None)]
+    assert unfit == [(None, None, spec.AUTO_CONTEXT_COST, None), (None,) * 4]
     capped = spec.build_draft(
         None, spec.SpecResolution("ngram", copies = True), fits = fits, draft_n_max = 5
     )

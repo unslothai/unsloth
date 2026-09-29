@@ -216,8 +216,9 @@ class LoadRequest(BaseModel):
             "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. MLX models read the explicit modes too, plus 'eagle3' and "
-            "'<kind>+ngram'; such a load serves replies one at a time. 'auto' leaves an "
-            "MLX load unspeculated. Ignored for other non-GGUF models."
+            "'<kind>+ngram'. On MLX, 'auto' attaches a built-in MTP head or a cached "
+            "assistant drafter when it costs no context, on loads served through "
+            "mlx-vlm. Ignored for other non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -1721,7 +1722,11 @@ class _InferenceRuntimeFields(BaseModel):
             "context that fits), 'kv_quant' (KV cache quantization is on) or "
             "'runtime_error' (the installed MLX packages cannot speculate, or cannot "
             "load this model the way speculation needs), also when a later drafter "
-            "or n-gram copies stood in for the one asked for. "
+            "or n-gram copies stood in for the one asked for. Under auto an MLX load "
+            "reports no refusal; it reports 'auto_context_cost' (a found drafter would "
+            "shrink the fitted context), 'auto_span_drafter' (a cached DFlash, DSpark or "
+            "EAGLE-3 companion is left to its explicit mode, since it slows concurrent "
+            "replies), or the drafter codes above for a named or unbuildable drafter. "
             "None when the requested strategy engaged or was not requested."
         ),
     )

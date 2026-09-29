@@ -1069,25 +1069,29 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 << 30)
         priced = []
 
-        def fit(pinned, outcome):
+        def fit(pinned, outcome, *bare):
             monkeypatch.setattr(
                 mlx_memory,
                 "mlx_fit_outcome",
-                lambda d, *, max_ctx, drafter, vision, **_: priced.append(
+                lambda d, *, max_ctx, vision, drafter = None, **_: priced.append(
                     (max_ctx, drafter, vision)
                 )
-                or (outcome, 4096),
+                or ((outcome, 4096) if drafter else ("fits", bare[0])),
             )
             source = DrafterSource("dflash", "/drafter", False)
-            return mlx_inference.mlx_drafter_fit("/m", 32768, pinned, source, load_in_4bit = False)
+            return mlx_inference.mlx_drafter_fit(
+                "/m", 32768, pinned, source, load_in_4bit = False, costless = bool(bare)
+            )
 
         attaches = [fit(None, o)[0] for o in ("fits", "fitted", "unsizable", "no_fit")]
-        assert attaches == [True, True, False, False]
+        assert attaches == [True, True, None, False]
         assert (fit(8192, "fits"), fit(8192, "fitted")) == ((True, 4096), (False, 4096))
         assert (
             priced
             == [(32768, ("/drafter", False), True)] * 4 + [(8192, ("/drafter", False), True)] * 2
         )
+        costless = [fit(None, *c) for c in (("fits", 4096), ("fits", 8192), ("unsizable", 4096))]
+        assert costless == [(True, 4096), (False, 4096), (None, 4096)]
 
     def test_mlx_model_not_on_disk_is_not_downloaded(self, monkeypatch):
         self._mlx_target(monkeypatch, None)

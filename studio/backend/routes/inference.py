@@ -14950,7 +14950,13 @@ def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in
     chosen as the load chooses it, else ``(None, None)``."""
     from core.inference import mlx_speculative
     from core.inference.mlx_inference import mlx_drafter_fit, parse_mlx_kv_quant
+    from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
 
+    mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
+    if not mlx_speculative.speculates_on_route(
+        mode, _loads_as_vision(_snapshot_config(model_dir) or {})
+    ):
+        return None, None
     resolution = mlx_speculative.resolve_speculation(
         request.speculative_type,
         request.spec_draft_model,
@@ -14970,6 +14976,7 @@ def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in
             request.max_seq_length or None,
             source,
             load_in_4bit = load_in_4bit,
+            costless = mode == "auto",
         )
         if attaches:
             return (source.path, source.builtin), fitted

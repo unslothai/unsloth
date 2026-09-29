@@ -5368,11 +5368,11 @@ def _drive_vlm_generation(
     return seen
 
 
-def test_a_speculative_load_drafts_eligible_single_replies_and_declines_batches(monkeypatch):
+def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     import sys
     import types
 
-    from core.inference.mlx_inference import MLXInferenceBackend
+    from core.inference import mlx_inference
 
     class _Ids(list):
         def tolist(self):
@@ -5384,7 +5384,7 @@ def test_a_speculative_load_drafts_eligible_single_replies_and_declines_batches(
     prepared = []
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
     draft.prepare = lambda ids, sampling: prepared.append((ids, sampling.temperature))
-    backend = MLXInferenceBackend()
+    backend = mlx_inference.MLXInferenceBackend()
     backend._speculative_draft = draft
 
     seen = _drive_vlm_generation(backend, monkeypatch, temperature = 0.5)
@@ -5401,8 +5401,16 @@ def test_a_speculative_load_drafts_eligible_single_replies_and_declines_batches(
         assert "max_tokens" in seen and "draft_model" not in seen
         assert "draft_n" not in backend.last_generation_stats["timings"]
     assert len(prepared) == 1
-    assert "speculatively" in backend.resident_unavailable_reason({})
-    assert "speculatively" in backend.batch_unavailable_reason([{}, {}])
+    opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r: None
+    backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
+    assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
+    monkeypatch.setattr(
+        _batch_engine(monkeypatch), "BatchStream", lambda *a, **k: opened.append(k["speculative"])
+    )
+    backend._generate_session_batch = lambda r, kind, **_: opened.append(kind) or ()
+    mlx_inference._VisionBatchSession(backend, width = 2)
+    list(backend.generate_chat_batch([{}, {}]))
+    assert opened == [draft, mlx_inference._VisionBatchSession]
 
 
 def _stub_prepare_inputs(monkeypatch, per_medium = 520):
@@ -6325,7 +6333,10 @@ class _TwoRowStream:
         self.withdrawn.append(row)
         if row in self._retired:
             return None
-        return SimpleNamespace(prompt_token_count = 3, token_ids = [1, 2])
+        return SimpleNamespace(prompt_token_count = 3, token_ids = [1, 2], **_DRAFTS)
+
+
+_DRAFTS = {"draft_tokens": 8, "accepted_draft_tokens": 3}
 
 
 def _open_vision_session(rows):
@@ -6335,6 +6346,7 @@ def _open_vision_session(rows):
     session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
+    session._speculative = None
     return session
 
 
@@ -6356,8 +6368,9 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
             for number, handle in enumerate(handles)
         ]
     )
-    other = 1 - stopping
+    other, session._speculative = 1 - stopping, "draft"
     result = SimpleNamespace(finish_reason = "length", prompt_token_count = 3, token_ids = [1, 2])
+    vars(result).update(_DRAFTS)
     session.stream = _TwoRowStream(
         [
             SimpleNamespace(
@@ -6372,6 +6385,8 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
 
     assert (handles[stopping], None) in reported, "the stopped row is reported finished"
     assert session._settled[handles[stopping]]["finish_reason"] == "stop"
+    timings = session._settled[handles[stopping]]["timings"]
+    assert (timings["draft_n"], timings["draft_n_accepted"]) == (8, 3)
     assert handles[stopping] not in session._rows, "and it has left the batch"
     assert handles[other] in session._rows, "its neighbour is still in the batch"
     assert (handles[other], "still going") in reported

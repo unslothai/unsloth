@@ -42,6 +42,8 @@ DRAFTER_INCOMPATIBLE = "drafter_incompatible"
 DRAFTER_NO_MEMORY = "drafter_no_memory"
 RUNTIME_ERROR = "runtime_error"
 KV_QUANT = "kv_quant"
+AUTO_CONTEXT_COST = "auto_context_cost"
+AUTO_SPAN_DRAFTER = "auto_span_drafter"
 
 
 def mlx_spec_mode(value) -> str:
@@ -192,34 +194,38 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
 def resolve_speculation(
     speculative_type, spec_draft_model: Optional[str], *, model_dir: Optional[str], target_name: str
 ) -> SpecResolution:
-    """The drafters an MLX load tries for an explicit mode, in order: a named ``spec_draft_model`` first,
-    then the target's built-in MTP head, then cached companions of that kind. Auto does not speculate
-    while batched replies cannot, since a lone chat is served by the batch."""
+    """The drafters an MLX load tries, in order: a named ``spec_draft_model``, the built-in MTP head, then
+    cached companions of the mode's kind. Auto skips span companions, which slow concurrent replies."""
     mode = mlx_spec_mode(speculative_type)
-    if mode in ("off", "auto"):
+    if mode == "off":
         return SpecResolution(mode)
     if mode == "ngram":
         return SpecResolution(mode, copies = True)
-    kind, copies = mode.split("+")[0], mode.endswith("+ngram")
+    auto = mode == "auto"
+    kind, copies = ("mtp", True) if auto else (mode.split("+")[0], mode.endswith("+ngram"))
     sources, reason = [], None
     if spec_draft_model:
         named = _named_companion(spec_draft_model)
         if named is None:
             reason = DRAFTER_NOT_FOUND
-        elif named.kind != kind:
+        elif named.kind != kind and not auto:
             reason = DRAFTER_INCOMPATIBLE
         else:
             sources.append(named)
     if kind == "mtp" and has_builtin_head(model_dir):
         sources.append(DrafterSource("mtp", str(model_dir), True))
-    sources += [
-        source
-        for source in discover_companions(target_name, _read_config(model_dir) if model_dir else {})
-        if source.kind == kind and source not in sources
-    ]
+    companions = discover_companions(target_name, _read_config(model_dir) if model_dir else {})
+    sources += [source for source in companions if source.kind == kind and source not in sources]
+    if not sources and auto:
+        return SpecResolution(mode, reason = reason or (AUTO_SPAN_DRAFTER if companions else None))
     if not sources and reason is None:
         reason = DRAFTER_NOT_FOUND
     return SpecResolution(mode, tuple(sources), copies = copies, reason = reason)
+
+
+def speculates_on_route(mode: str, vision: bool) -> bool:
+    """Whether a load in ``mode`` looks for a drafter: auto only where mlx-vlm serves it anyway."""
+    return mode != "off" and (mode != "auto" or vision)
 
 
 _MAX_DEPTH = (
@@ -281,18 +287,21 @@ def build_draft(
 ) -> tuple:
     """``(draft, kind, reason, context)``: the first source whose drafter-inclusive fit ``fits(source)``
     accepts and that builds against ``target``, else copies alone when the mode allows them. ``fits``
-    returns ``(ok, fitted context or None)``. The reason names why an earlier choice was passed over,
+    returns ``(ok, fitted context or None)``, ``ok`` None when nothing could be priced. The reason names why an earlier choice was passed over,
     so a substitute never attaches silently."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):
         logger.info("MLX speculative decoding: %s carries encoder state", type(target).__name__)
-        return None, None, RUNTIME_ERROR, None
+        return None, None, None if resolution.mode == "auto" else RUNTIME_ERROR, None
     reason = resolution.reason
     for source in resolution.sources:
         ok, context = fits(source)
         if not ok:
-            reason = DRAFTER_NO_MEMORY
+            if resolution.mode != "auto":
+                reason = DRAFTER_NO_MEMORY
+            elif ok is not None:  # priced, and the drafter would shrink it
+                reason = AUTO_CONTEXT_COST
             continue
         try:
             drafter = (native_mtp_drafter if source.builtin else companion_drafter)(
@@ -305,6 +314,6 @@ def build_draft(
             reason = DRAFTER_INCOMPATIBLE
             continue
         return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
-    if resolution.copies:
+    if resolution.copies and resolution.mode != "auto":  # auto copies only alongside a drafter
         return _draft(None, True, draft_n_max), "ngram", reason, None
     return None, None, reason, None

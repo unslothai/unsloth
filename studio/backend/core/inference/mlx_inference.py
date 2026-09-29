@@ -1722,10 +1722,10 @@ def _build_generation_stats(
     gen_tps,
     cached_n = 0,
     finish_reason = None,
-    draft = None,
+    drafts = None,
 ):
     """Map mlx stream stats onto the usage/timings shape llama-server emits, plus the reason
-    generation ended."""
+    generation ended. ``drafts`` is a speculative reply's (drafted, accepted) token counts."""
     prompt_n = int(prompt_n or 0)
     gen_n = int(gen_n or 0)
     cached_n = int(cached_n or 0)
@@ -1753,11 +1753,7 @@ def _build_generation_stats(
             "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
             "predicted_per_second": gen_tps,
             "cache_n": cached_n,
-            **(
-                {}
-                if draft is None
-                else {"draft_n": draft.draft_n, "draft_n_accepted": draft.draft_n_accepted}
-            ),
+            **({} if drafts is None else {"draft_n": drafts[0], "draft_n_accepted": drafts[1]}),
         },
         # Latched where generation exits, so a cancel arriving afterwards cannot rewrite the reason the completion
         # actually ended for.
@@ -2632,27 +2628,42 @@ def _fitted_context(
     return fitted, verdict
 
 
-def mlx_drafter_fit(model_dir, ceiling, pinned, source, *, load_in_4bit: bool):
+def mlx_drafter_fit(
+    model_dir,
+    ceiling,
+    pinned,
+    source,
+    *,
+    load_in_4bit: bool,
+    costless = False,
+):
     """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
-    only a priced fit reserves it, and a pinned context must fit whole."""
+    only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
+    the context the load fits without it. ``attaches`` is None when the fit could not be priced."""
     budget = mlx_memory_budget(retains_history = mlx_vlm_snapshot_store_available())
     ceiling = pinned or ceiling
     if budget is None or not ceiling or not model_dir:
-        return False, None
+        return None, None
     with mlx_rng_preserved():
         try:
             from core.inference.mlx_memory import mlx_fit_outcome
-            outcome, fitted = mlx_fit_outcome(
+
+            fit = functools.partial(
+                mlx_fit_outcome,
                 model_dir,
                 budget_bytes = budget,
                 max_ctx = int(ceiling),
                 load_in_4bit = load_in_4bit,
                 vision = True,
-                drafter = (source.path, source.builtin),
             )
+            outcome, fitted = fit(drafter = (source.path, source.builtin))
+            if outcome == "unsizable":
+                return None, fitted
+            if costless and (outcome, fitted) != fit():
+                return False, fitted
         except Exception as exc:
             logger.info("MLX drafter %s not priced: %s", source.path, exc)
-            return False, None
+            return None, None
     return outcome == "fits" or (outcome == "fitted" and not pinned), fitted
 
 
@@ -3816,6 +3827,7 @@ class _VisionBatchRow:
         "admitted_at",
         "ready_at",
         "cancelled",
+        "drafts",
     )
 
     def __init__(self, *, handle, plan, row):
@@ -3829,6 +3841,7 @@ class _VisionBatchRow:
         self.admitted_at = time.perf_counter()
         self.ready_at = None
         self.cancelled = False
+        self.drafts = None
 
 
 def _row_prompt_cache_gap():
@@ -3872,6 +3885,7 @@ class _VisionBatchSession:
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
             self._held.enter_context(backend._int8_prefill_scope(zoo_generation = True))
+            self._speculative = getattr(backend, "_speculative_draft", None)
             self.stream = BatchStream(
                 backend._model,
                 backend._processor,
@@ -3881,6 +3895,7 @@ class _VisionBatchSession:
                     # Rows quantize their own caches where the single path's decode does.
                     **backend._kv_runtime_quant_kwargs(),
                 ),
+                **({} if self._speculative is None else {"speculative": self._speculative}),
             )
         except BaseException:
             self._held.close()
@@ -3967,9 +3982,7 @@ class _VisionBatchSession:
                 result = event.result
                 if not row.cancelled:
                     row.reason = result.finish_reason
-                row.prompt_tokens = result.prompt_token_count
-                row.cached_tokens = getattr(result, "cached_token_count", 0)
-                row.generated = len(result.token_ids) + (result.finish_reason == "stop")
+                self._record(row, result, len(result.token_ids) + (result.finish_reason == "stop"))
                 yield from self._retire(row, cancelled = row.cancelled)
             elif row.cancelled:
                 yield from self._retake(row)
@@ -3986,10 +3999,14 @@ class _VisionBatchSession:
     def _retake(self, row):
         managed = self.stream.withdraw(row.row)
         if managed is not None:
-            row.prompt_tokens = managed.prompt_token_count
-            row.cached_tokens = getattr(managed, "cached_token_count", 0)
-            row.generated = len(managed.token_ids)
+            self._record(row, managed, len(managed.token_ids))
             yield from self._retire(row, cancelled = True)
+
+    def _record(self, row, result, generated):
+        row.prompt_tokens, row.generated = result.prompt_token_count, generated
+        row.cached_tokens = getattr(result, "cached_token_count", 0)
+        if self._speculative is not None:
+            row.drafts = (result.draft_tokens, result.accepted_draft_tokens)
 
     def _retire(self, row, *, cancelled):
         self._rows.pop(row.handle, None)
@@ -4008,6 +4025,7 @@ class _VisionBatchSession:
             row.generated / max(decoded, 1e-9),
             cached_n = row.cached_tokens,
             finish_reason = row.reason or "stop",
+            drafts = row.drafts,
         )
         yield row.handle, None
 
@@ -4632,7 +4650,7 @@ class MLXInferenceBackend:
         )
         spec_mode = mlx_speculative.mlx_spec_mode(speculative_type)
         spec_reason = None
-        speculates = spec_mode not in ("off", "auto")
+        speculates = mlx_speculative.speculates_on_route(spec_mode, bool(is_vision))
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
                 kv_quant = kv_bits is not None or self._turboquant,
@@ -4640,8 +4658,8 @@ class MLXInferenceBackend:
                 lora = is_lora,
             )
             speculates = spec_reason is None
-        elif spec_mode == "auto":
-            logger.info("MLX speculative decoding: auto does not speculate while batches cannot")
+            if spec_mode == "auto":  # not a request, so no refusal to report
+                spec_reason = None
         self._speculative_draft = None
         # mlx-lm cannot batch a quantized cache; mlx-vlm, which also ships text architectures, can.
         batches_quantized_text = (
@@ -4760,7 +4778,8 @@ class MLXInferenceBackend:
             _drain_generation_streams(mx)
             mx.clear_cache()
             if speculates:
-                speculates, spec_reason = False, mlx_speculative.RUNTIME_ERROR
+                speculates = False
+                spec_reason = None if spec_mode == "auto" else mlx_speculative.RUNTIME_ERROR
             elif self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
@@ -4809,13 +4828,14 @@ class MLXInferenceBackend:
 
             def _fits(source):
                 if not _priceable:
-                    return False, None
+                    return None, None
                 return mlx_drafter_fit(
                     model_dir,
                     _served_ctx,
                     _positive_int(max_seq_length),
                     source,
                     load_in_4bit = load_in_4bit,
+                    costless = spec_mode == "auto",
                 )
 
             (
@@ -6416,7 +6436,9 @@ class MLXInferenceBackend:
                                 getattr(final_response, "generation_tokens", 0),
                                 max_new_tokens,
                             ),
-                            draft = draft,
+                            drafts = None
+                            if draft is None
+                            else (draft.draft_n, draft.draft_n_accepted),
                         )
 
         if document_only:
@@ -6436,9 +6458,7 @@ class MLXInferenceBackend:
         if stopped:
             self._mark_stopped()
 
-    def _load_policy_batch_reason(self, resident = False):
-        if getattr(self, "_speculative_draft", None) is not None:
-            return "the load decodes speculatively, one reply at a time"
+    def _kv_policy_batch_reason(self, resident = False):
         if self._kv_quant_bits() is None and not getattr(self, "_kv_context_budget", None):
             return None
         # Only resident vision rows carry their own cache, where the quantization lives.
@@ -6453,13 +6473,15 @@ class MLXInferenceBackend:
             reason = _request_batch_gap(request)
             if reason is not None:
                 return reason
-        reason = self._load_policy_batch_reason()
+        reason = self._kv_policy_batch_reason()
         if reason is not None:
             return reason
         if len(requests) < 2:
             return "fewer than two replies were requested"
         if self._is_vlm:
             reason = self._vlm_batch_unavailable_reason(requests)
+            if reason is None and self._speculative_draft is not None:
+                reason = self._vlm_resident_unavailable_reason({})  # the resident session serves it
             if reason is not None:
                 return reason
             if any(_mlx_stop_sequences(request.get("stop")) for request in requests):
@@ -6473,7 +6495,7 @@ class MLXInferenceBackend:
         reason = _request_batch_gap(request)
         if reason is not None:
             return reason
-        reason = self._load_policy_batch_reason(resident = True)
+        reason = self._kv_policy_batch_reason(resident = True)
         if reason is not None:
             return reason
         if self._is_vlm:
@@ -6553,12 +6575,18 @@ class MLXInferenceBackend:
         self.last_batch_generation_stats = [None] * len(requests)
         self.last_generation_stats = None
 
-        run = self._generate_vlm_batch if self._is_vlm else self._generate_text_batch
-        yield from run(requests, cancel_event = cancel_event, _adapter_state = _adapter_state)
+        kwargs = {"cancel_event": cancel_event, "_adapter_state": _adapter_state}
+        if not self._is_vlm:
+            yield from self._generate_session_batch(requests, _TextBatchSession, **kwargs)
+        elif self._speculative_draft is not None:  # stream_batch has no speculative mode
+            yield from self._generate_session_batch(requests, _VisionBatchSession, **kwargs)
+        else:
+            yield from self._generate_vlm_batch(requests, **kwargs)
 
-    def _generate_text_batch(
+    def _generate_session_batch(
         self,
         requests,
+        session_type,
         *,
         cancel_event = None,
         _adapter_state = None,
@@ -6570,7 +6598,7 @@ class MLXInferenceBackend:
                 yield row, snapshot
 
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
-            session = _TextBatchSession(
+            session = session_type(
                 self,
                 width = len(requests),
                 adapter_state = _adapter_state,
