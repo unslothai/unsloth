@@ -11,6 +11,8 @@ export const SANDBOX_SETUP_POLL_MS = 2000;
 
 export type SandboxSetupView = {
   checking: boolean;
+  // The dialog's own check failed: say so and offer Retry, never an endless spinner.
+  loadFailed: boolean;
   // "linux": Install sandbox; "windows": Set up Windows sandbox behind the MXC consent.
   install: "linux" | "windows" | null;
   showConsent: boolean;
@@ -22,22 +24,29 @@ export type SandboxSetupView = {
   running: boolean;
   result: JobResult;
   outputLines: string[];
+  // The server's explanation for a declined or failed setup, e.g. "a password is required".
+  note: string;
 };
 
 export function sandboxSetupView({
   capability,
   job,
   consent,
+  loadFailed = false,
 }: {
   capability: SandboxCapability | null;
   job: SandboxSetupJob | null;
   consent: boolean;
+  loadFailed?: boolean;
 }): SandboxSetupView {
   const running = job?.state === "running";
   const result = jobResult(job);
+  const note =
+    (result === "failed" || result === "declined") && job?.note ? job.note : "";
   if (!capability) {
     return {
-      checking: true,
+      checking: !loadFailed,
+      loadFailed,
       install: null,
       showConsent: false,
       installDisabled: true,
@@ -46,6 +55,7 @@ export function sandboxSetupView({
       running,
       result,
       outputLines: jobOutputLines(job),
+      note,
     };
   }
   const action = capability.canRunSetup ? capability.setupAction : null;
@@ -55,7 +65,8 @@ export function sandboxSetupView({
       : action === "windows-setup"
         ? "windows"
         : null;
-  const showConsent = install === "windows";
+  // Only while the MXC opt-in is still off: after a reboot only the preparation is missing.
+  const showConsent = install === "windows" && capability.needsConsent;
   // A failed job names the command for the step it stopped at; otherwise the server's plan.
   const command =
     (result === "failed" || result === "declined") && job?.manualCommand
@@ -63,6 +74,7 @@ export function sandboxSetupView({
       : capability.manualCommand;
   return {
     checking: false,
+    loadFailed: false,
     install,
     showConsent,
     installDisabled: running || (showConsent && !consent),
@@ -71,5 +83,6 @@ export function sandboxSetupView({
     running,
     result,
     outputLines: jobOutputLines(job),
+    note,
   };
 }

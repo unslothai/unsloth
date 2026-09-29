@@ -23,6 +23,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.huggingFaceToken",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
+    "settings.general.permissions.sectionTitle",
+    "settings.general.permissions.bypassLabel",
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.notifications.showWhisperUpdates",
@@ -359,6 +361,13 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // The permission mode names live in the dropdown, not the row label, so searching
+  // "Auto-approve" or "Bypass" found nothing.
+  "settings.general.permissions.bypassLabel":
+    "settings.general.permissions.modeKeywords",
+  // The setup row only renders when the sandbox needs it, so its terms hang off the section
+  // that always renders.
+  "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":

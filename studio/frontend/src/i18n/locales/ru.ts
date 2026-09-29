@@ -50,6 +50,9 @@ export const ru = {
     declined: "Запрос пароля или администратора отклонён.",
     failed: "Не удалось выполнить настройку.",
     startError: "Не удалось запустить настройку песочницы",
+    checkFailed: "Не удалось проверить песочницу на этом компьютере.",
+    retry: "Повторить",
+    keepsRunning: "Закрытие не останавливает настройку. Результат появится в разделе Настройки > Песочница.",
   },
   composerSettings: {
     title: "Ввод сообщений",
@@ -778,6 +781,7 @@ export const ru = {
       setupCommandHint: "Выполните это на компьютере, где запущен Unsloth:",
       macosBuiltIn: "Seatbelt встроен в macOS, устанавливать ничего не нужно.",
       installRuntime: "Установить среду",
+      setupKeywords: "установить настроить bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "Файл журнала",
@@ -1285,6 +1289,7 @@ export const ru = {
       permissions: {
         sectionTitle: "Разрешения",
         bypassLabel: "Разрешения инструментов",
+        modeKeywords: "Спрашивать каждый раз Одобрять автоматически Полный доступ в песочнице Обход разрешений permission approval sandbox yolo",
         bypassDescription:
           "Как Unsloth подтверждает вызовы инструментов в чате (терминал, python, веб, MCP) перед запуском. Режим «Обход разрешений» отключает подтверждения и песочницу для кода.",
       },

@@ -93,6 +93,7 @@ export { PermissionModeDropdown } from "./permission-mode-select";
 export {
   type SandboxSetupAction,
   type SandboxSetupJob,
+  type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
   startSandboxSetup,

@@ -11,6 +11,8 @@ const SETUP_ROUTE = "/api/settings/sandbox/setup";
 const CAPABILITY_TTL_MS = 30_000;
 
 export type SandboxSetupAction = "linux-install" | "windows-setup";
+/** What the setup route can run: a named action, or the Windows runtime alone (no UAC). */
+export type SandboxSetupOperation = SandboxSetupAction | "windows-runtime";
 
 export type SandboxCapability = {
   pythonOsIsolated: boolean;
@@ -22,6 +24,8 @@ export type SandboxCapability = {
   setupAction: SandboxSetupAction | null;
   manualCommand: string;
   canRunSetup: boolean;
+  // Windows: the MXC opt-in is still off, so the setup needs the owner's consent first.
+  needsConsent: boolean;
 };
 
 export type SandboxSetupState =
@@ -41,6 +45,8 @@ export type SandboxSetupJob = {
   outputTail: string[];
   steps: string[];
   manualCommand: string;
+  // Why a declined or failed setup stopped, e.g. "a password is required".
+  note: string;
 };
 
 type ApiCapability = {
@@ -57,6 +63,8 @@ type ApiCapability = {
   manual_command?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   can_run_setup?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  needs_consent?: boolean;
 };
 
 type ApiSetupJob = {
@@ -74,6 +82,7 @@ type ApiSetupJob = {
   steps?: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
   manual_command?: string | null;
+  note?: string | null;
 };
 
 function setupActionFromApi(
@@ -84,6 +93,7 @@ function setupActionFromApi(
 
 export function capabilityFromApi(body: ApiCapability): SandboxCapability {
   const setupAction = setupActionFromApi(body.setup_action);
+  const canRunSetup = setupAction !== null && (body.can_run_setup ?? false);
   return {
     pythonOsIsolated: body.python_os_isolated ?? false,
     terminalOsIsolated: body.terminal_os_isolated ?? false,
@@ -93,7 +103,12 @@ export function capabilityFromApi(body: ApiCapability): SandboxCapability {
     setupAction,
     manualCommand: body.manual_command ?? "",
     // A setup the server did not name cannot be started, whatever the flag says.
-    canRunSetup: setupAction !== null && (body.can_run_setup ?? false),
+    canRunSetup,
+    // Only the Windows setup asks for consent, and only from someone who can start it.
+    needsConsent:
+      canRunSetup &&
+      setupAction === "windows-setup" &&
+      (body.needs_consent ?? false),
   };
 }
 
@@ -108,12 +123,18 @@ export function setupJobFromApi(job: ApiSetupJob): SandboxSetupJob {
     outputTail: job.output_tail ?? [],
     steps: job.steps ?? [],
     manualCommand: job.manual_command ?? "",
+    note: job.note ?? "",
   };
 }
 
 /** Both tools the OS sandbox covers must be isolated for "Full access in sandbox" to hold. */
 export function sandboxReady(capability: SandboxCapability): boolean {
   return capability.pythonOsIsolated && capability.terminalOsIsolated;
+}
+
+/** The server has no answer yet (its first check is still running), which is not a "no". */
+export function capabilityPending(capability: SandboxCapability): boolean {
+  return capability.backend === "unknown" && !sandboxReady(capability);
 }
 
 let cached: { at: number; value: SandboxCapability | null } | null = null;
@@ -147,6 +168,27 @@ export function loadSandboxCapability({
   return request;
 }
 
+const PENDING_RETRY_MS = 1500;
+
+/** A forced read that does not take "still checking" for an answer: an unknown backend (the
+ *  server's first check has not finished) is read again, a few times, before it is returned.
+ *  null still means the server could not say (older server, or the request failed). */
+export async function loadSettledSandboxCapability({
+  attempts = 3,
+  delayMs = PENDING_RETRY_MS,
+}: {
+  attempts?: number;
+  delayMs?: number;
+} = {}): Promise<SandboxCapability | null> {
+  let capability = await loadSandboxCapability({ force: true });
+  for (let left = attempts - 1; left > 0; left--) {
+    if (capability === null || !capabilityPending(capability)) break;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    capability = await loadSandboxCapability({ force: true });
+  }
+  return capability;
+}
+
 /** Last answer without a request, for rendering a hint synchronously. */
 export function cachedSandboxCapability(): SandboxCapability | null {
   return cached?.value ?? null;
@@ -168,7 +210,7 @@ async function checkedSetup(
 }
 
 export async function startSandboxSetup(
-  operation: SandboxSetupAction,
+  operation: SandboxSetupOperation,
   { consentDaclFallback = false }: { consentDaclFallback?: boolean },
   fallbackMessage: string,
 ): Promise<SandboxSetupJob> {

@@ -34,6 +34,7 @@ import {
   loadSandboxCapability,
   sandboxReady,
 } from "./api/sandbox-capability";
+import { pickSandboxedMode as pickSandboxedModeWith } from "./sandbox-pick";
 import {
   SandboxSetupDialog,
   useSandboxSetupDialogStore,
@@ -117,19 +118,17 @@ function useSandboxUnavailable(): boolean {
   return unavailable;
 }
 
-/** "Full access in sandbox" only holds with a working OS sandbox, so picking it without one
- *  offers the setup instead of applying it; nothing is installed until the owner asks. */
+/** Picking "Full access in sandbox" from any control: offers the setup when this computer has
+ *  no working OS sandbox (see sandbox-pick.ts). */
 export function pickSandboxedMode(
   setPermissionMode: (mode: PermissionMode) => void,
   onRequestSandboxSetup: () => void,
 ): Promise<void> {
-  return loadSandboxCapability().then((capability) => {
-    if (capability !== null && !sandboxReady(capability)) {
-      onRequestSandboxSetup();
-    } else {
-      setPermissionMode("off");
-    }
-  });
+  return pickSandboxedModeWith(
+    setPermissionMode,
+    onRequestSandboxSetup,
+    () => useChatRuntimeStore.getState().permissionMode,
+  );
 }
 
 export function PermissionModeMenuItems({

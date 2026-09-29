@@ -50,6 +50,9 @@ export const ptBR = {
     declined: "O pedido de senha ou de administrador foi recusado.",
     failed: "A configuração falhou.",
     startError: "Não foi possível iniciar a configuração do sandbox",
+    checkFailed: "Não foi possível verificar o sandbox neste computador.",
+    retry: "Tentar novamente",
+    keepsRunning: "Fechar isto não interrompe a configuração. O resultado aparece em Configurações > Sandbox.",
   },
   composerSettings: {
     title: "Composição de mensagens",
@@ -778,6 +781,7 @@ export const ptBR = {
       setupCommandHint: "Execute isto no computador onde o Unsloth roda:",
       macosBuiltIn: "O Seatbelt já vem no macOS, então não há nada para instalar.",
       installRuntime: "Instalar runtime",
+      setupKeywords: "instalar configurar bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "Arquivo de log",
@@ -1293,6 +1297,7 @@ export const ptBR = {
       permissions: {
         sectionTitle: "Permissões",
         bypassLabel: "Permissões de ferramentas",
+        modeKeywords: "Perguntar sempre Aprovar automaticamente Acesso total no sandbox Ignorar permissões permission approval sandbox yolo",
         bypassDescription:
           "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Ignorar permissões” desativa as aprovações e o sandbox de código.",
       },

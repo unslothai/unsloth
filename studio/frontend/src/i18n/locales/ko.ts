@@ -50,6 +50,9 @@ export const ko = {
     declined: "암호 또는 관리자 확인이 거부되었습니다.",
     failed: "설정하지 못했습니다.",
     startError: "샌드박스 설정을 시작하지 못했습니다",
+    checkFailed: "이 컴퓨터의 샌드박스를 확인하지 못했습니다.",
+    retry: "다시 시도",
+    keepsRunning: "닫아도 설정은 멈추지 않습니다. 결과는 설정 > 샌드박스에 표시됩니다.",
   },
   composerSettings: {
     title: "메시지 입력",
@@ -776,6 +779,7 @@ export const ko = {
       setupCommandHint: "Unsloth가 실행 중인 컴퓨터에서 이 명령을 실행하세요:",
       macosBuiltIn: "Seatbelt는 macOS에 내장되어 있어 설치할 것이 없습니다.",
       installRuntime: "런타임 설치",
+      setupKeywords: "설치 설정 bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "로그 파일",
@@ -1276,6 +1280,7 @@ export const ko = {
       permissions: {
         sectionTitle: "권한",
         bypassLabel: "도구 권한",
+        modeKeywords: "매번 묻기 자동 승인 샌드박스 안에서 전체 액세스 권한 우회 permission approval sandbox yolo",
         bypassDescription:
           "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “권한 우회”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
       },

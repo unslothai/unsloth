@@ -20,6 +20,11 @@ function permissionUi(
   capability: Capability = null,
 ) {
   const changes: string[] = [];
+  const capabilityStub = {
+    loadSandboxCapability: async () => capability,
+    sandboxReady: (value: NonNullable<Capability>) =>
+      value.pythonOsIsolated && value.terminalOsIsolated,
+  };
   const state = {
     permissionMode,
     setPermissionMode: (value: string) => {
@@ -59,11 +64,11 @@ function permissionUi(
         useFullAccessAllowed: () => loginMode !== "multi",
       },
       "@/i18n": { useT: () => (key: string) => key },
-      "./api/sandbox-capability": {
-        loadSandboxCapability: async () => capability,
-        sandboxReady: (value: NonNullable<Capability>) =>
-          value.pythonOsIsolated && value.terminalOsIsolated,
-      },
+      "./api/sandbox-capability": capabilityStub,
+      "./sandbox-pick": loadWithStubs(
+        new URL("../src/features/chat/sandbox-pick.ts", import.meta.url),
+        { "./api/sandbox-capability": capabilityStub },
+      ),
       "./sandbox-setup-dialog": {
         SandboxSetupDialog: "SandboxSetupDialog",
         useSandboxSetupDialogStore: () => () => {},
@@ -77,8 +82,10 @@ function permissionUi(
       "@/lib/utils": { cn: () => "" },
       "@hugeicons/react": {},
       "./stores/chat-runtime-store": {
-        useChatRuntimeStore: (selector: (state: unknown) => unknown) =>
-          selector(state),
+        useChatRuntimeStore: Object.assign(
+          (selector: (state: unknown) => unknown) => selector(state),
+          { getState: () => state },
+        ),
       },
     },
   );

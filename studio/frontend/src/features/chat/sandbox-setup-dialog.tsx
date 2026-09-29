@@ -22,8 +22,8 @@ import {
   type SandboxCapability,
   type SandboxSetupJob,
   forgetSandboxCapability,
-  loadSandboxCapability,
   loadSandboxSetup,
+  loadSettledSandboxCapability,
   sandboxReady,
   startSandboxSetup,
 } from "./api/sandbox-capability";
@@ -68,6 +68,7 @@ function SandboxSetupContent({
   const t = useT();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const [capability, setCapability] = useState<SandboxCapability | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [job, setJob] = useState<SandboxSetupJob | null>(null);
   const [consent, setConsent] = useState(false);
   const [stillUnavailable, setStillUnavailable] = useState(false);
@@ -81,13 +82,18 @@ function SandboxSetupContent({
     };
   }, []);
 
-  useEffect(() => {
-    void loadSandboxCapability({ force: true }).then((next) => {
+  const check = useCallback(() => {
+    void loadSettledSandboxCapability().then((next) => {
       if (!mounted.current) return;
+      if (next === null) {
+        // Never an endless spinner: say the check failed and offer Retry.
+        setLoadFailed(true);
+        return;
+      }
       setCapability(next);
       // A setup already running (another window, or before this dialog reopened) keeps
       // reporting here. Only the owner may read it.
-      if (next?.canRunSetup) {
+      if (next.canRunSetup) {
         void loadSandboxSetup(t("sandboxSetup.startError"))
           .then((current) => {
             if (mounted.current && current.state === "running") setJob(current);
@@ -97,13 +103,22 @@ function SandboxSetupContent({
     });
   }, [t]);
 
+  useEffect(() => {
+    check();
+  }, [check]);
+
+  const retry = () => {
+    setLoadFailed(false);
+    check();
+  };
+
   const finish = useCallback(
     (finished: SandboxSetupJob) => {
       if (finished.state !== "succeeded") return;
       forgetSandboxCapability();
-      void loadSandboxCapability({ force: true }).then((next) => {
+      void loadSettledSandboxCapability().then((next) => {
         if (!mounted.current) return;
-        setCapability(next);
+        if (next) setCapability(next);
         if (next && sandboxReady(next)) {
           setPermissionMode("off");
           toast.success(t("sandboxSetup.succeeded"));
@@ -138,7 +153,7 @@ function SandboxSetupContent({
     return () => window.clearTimeout(timer);
   }, [job, t, finish]);
 
-  const view = sandboxSetupView({ capability, job, consent });
+  const view = sandboxSetupView({ capability, job, consent, loadFailed });
 
   const install = async () => {
     const operation = capability?.setupAction;
@@ -148,7 +163,7 @@ function SandboxSetupContent({
     try {
       const started = await startSandboxSetup(
         operation,
-        { consentDaclFallback: operation === "windows-setup" && consent },
+        { consentDaclFallback: view.showConsent && consent },
         t("sandboxSetup.startError"),
       );
       if (!mounted.current) return;
@@ -182,6 +197,11 @@ function SandboxSetupContent({
       </AlertDialogHeader>
 
       <div className="flex min-w-0 flex-col gap-3">
+        {view.loadFailed ? (
+          <p className={`${NOTE_CLASS} text-destructive`}>
+            {t("sandboxSetup.checkFailed")}
+          </p>
+        ) : null}
         {view.checking ? (
           <p
             className={`${NOTE_CLASS} flex items-center gap-2 text-muted-foreground`}
@@ -218,6 +238,11 @@ function SandboxSetupContent({
             {t("sandboxSetup.running")}
           </p>
         ) : null}
+        {view.running ? (
+          <p className={`${NOTE_CLASS} text-muted-foreground`}>
+            {t("sandboxSetup.keepsRunning")}
+          </p>
+        ) : null}
         {stillUnavailable ? (
           <p className={`${NOTE_CLASS} text-destructive`}>
             {t("sandboxSetup.stillUnavailable")}
@@ -232,6 +257,9 @@ function SandboxSetupContent({
           <p className={`${NOTE_CLASS} text-destructive`}>
             {t("sandboxSetup.failed")}
           </p>
+        ) : null}
+        {view.note ? (
+          <p className={`${NOTE_CLASS} text-destructive`}>{view.note}</p>
         ) : null}
         {view.outputLines.length > 0 ? (
           <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
@@ -256,6 +284,11 @@ function SandboxSetupContent({
       </div>
 
       <AlertDialogFooter className="flex-wrap">
+        {view.loadFailed ? (
+          <Button size="sm" onClick={retry}>
+            {t("sandboxSetup.retry")}
+          </Button>
+        ) : null}
         {view.install ? (
           <Button
             size="sm"
@@ -285,7 +318,8 @@ function SandboxSetupContent({
           {t("sandboxSetup.useAnyway")}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>
-          {t("sandboxSetup.cancel")}
+          {/* Closing does not stop a running setup; its result shows in Settings > Sandbox. */}
+          {view.running ? t("sandboxSetup.close") : t("sandboxSetup.cancel")}
         </Button>
       </AlertDialogFooter>
     </AlertDialogContent>

@@ -75,7 +75,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
-import { PermissionModeDropdown } from "./permission-mode-select";
+import {
+  PermissionModeDropdown,
+  pickSandboxedMode,
+} from "./permission-mode-select";
+import { useSandboxSetupDialogStore } from "./sandbox-setup-dialog";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
@@ -1998,7 +2002,9 @@ function NudgeToolCallsToggle() {
 
 function ConfirmToolCallsToggle() {
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
 
   return (
     <div className="flex min-h-8 items-center justify-between gap-3">
@@ -2010,8 +2016,9 @@ function ConfirmToolCallsToggle() {
           <InfoHint>
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask every time" level). When off, tool calls
-            run without prompts in the OS sandbox (the "Full access in
-            sandbox" level).
+            run without prompts (the "Full access in sandbox" level); on a
+            computer without a working OS sandbox, risky Python and Terminal
+            calls still ask.
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
@@ -2024,7 +2031,17 @@ function ConfirmToolCallsToggle() {
       <Switch
         className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
-        onCheckedChange={setConfirmToolCalls}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            setConfirmToolCalls(true);
+          } else {
+            // Same path as picking "Full access in sandbox": offer the setup when there is no
+            // working OS sandbox instead of switching silently.
+            void pickSandboxedMode(setPermissionMode, () =>
+              setSandboxSetupOpen(true),
+            );
+          }
+        }}
         disabled={permissionMode === "full"}
       />
     </div>

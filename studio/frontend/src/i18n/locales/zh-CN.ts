@@ -50,6 +50,9 @@ export const zhCN = {
     declined: "密码或管理员提示被拒绝。",
     failed: "设置失败。",
     startError: "无法开始设置沙箱",
+    checkFailed: "无法检查这台电脑上的沙箱。",
+    retry: "重试",
+    keepsRunning: "关闭不会停止设置。结果会显示在 设置 > 沙盒 中。",
   },
   composerSettings: {
     title: "消息输入",
@@ -774,6 +777,7 @@ export const zhCN = {
       setupCommandHint: "在运行 Unsloth 的电脑上执行以下命令：",
       macosBuiltIn: "Seatbelt 内置于 macOS，无需安装。",
       installRuntime: "安装运行时",
+      setupKeywords: "安装 设置 bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "日志文件",
@@ -1258,6 +1262,7 @@ export const zhCN = {
       permissions: {
         sectionTitle: "权限",
         bypassLabel: "工具权限",
+        modeKeywords: "每次询问 自动批准 沙箱内完全访问 绕过权限 permission approval sandbox yolo",
         bypassDescription:
           "设置 Unsloth 执行聊天中的工具调用（终端、python、网页、MCP）前的审批方式。“绕过权限”会关闭审批和代码沙箱。",
       },
