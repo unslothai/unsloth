@@ -733,3 +733,17 @@ def test_a_request_without_tools_never_scans_the_skill_roots(monkeypatch):
     chunks = _run(inf, _payload(enable_tools = False))
     assert FakeExternalClient.last["passthrough"] is not None
     assert any("hi" in chunk for chunk in chunks)
+
+
+def test_the_conversation_id_reaches_the_provider_client(monkeypatch):
+    inf = _install(monkeypatch, "openrouter")
+    _run(inf, _payload(enable_tools = False, thread_id = "thread-7"))
+    assert FakeExternalClient.last["passthrough"]["thread_id"] == "thread-7"
+
+    def _loop_raiser(transport, **_):
+        raise LoopEntered(transport._request_kwargs)
+
+    monkeypatch.setattr(inf, "stream_with_studio_tools", _loop_raiser)
+    with pytest.raises(LoopEntered) as excinfo:
+        _run(inf, _payload(enable_tools = True, enabled_tools = ["python"], thread_id = "thread-7"))
+    assert excinfo.value.args[0]["thread_id"] == "thread-7"

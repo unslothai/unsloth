@@ -1469,6 +1469,7 @@ class ExternalProviderClient:
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
         preserve_thinking: Optional[bool] = None,
+        thread_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Yield OpenAI-format SSE lines from the external provider. OpenAI-compatible providers
         forward lines verbatim; for Anthropic the native Messages API SSE is translated.
@@ -1693,6 +1694,19 @@ class ExternalProviderClient:
                     body["reasoning"] = {"enabled": False}
             elif enable_thinking is True:
                 body["reasoning"] = {"enabled": True}
+
+            # Claude caches only behind cache_control; the top-level form advances the breakpoint every turn. Other
+            # families cache automatically and the field is documented for Claude's providers only.
+            if enable_prompt_caching is not False and normalized_or_model.lstrip("~").startswith(
+                "anthropic/"
+            ):
+                cache_control = {"type": "ephemeral"}
+                if prompt_cache_ttl == "1h":
+                    cache_control["ttl"] = "1h"
+                body["cache_control"] = cache_control
+            # Sticky routing keeps a conversation on the provider that holds its cache.
+            if thread_id:
+                body["session_id"] = str(thread_id)[:256]
 
             # OpenRouter web plugin works on every model id including meta-routers (unlike `:online`). Forced-function
             # tool_choice suppresses it, matching Gemini/Anthropic.
