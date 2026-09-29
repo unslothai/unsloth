@@ -673,7 +673,7 @@ export function SharedComposer({
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
   const compareRunsRef = useRef(
-    new CompareRunOwnership<CompareModelSelection>(),
+    new CompareRunOwnership<{ modelPath: string; requestId: string }>(),
   );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1686,8 +1686,10 @@ export function SharedComposer({
         }
         throwIfCompareCancelled(compareSignal);
         applyCompareStopDecision();
+        const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
           model_path: sel.id,
+          load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
@@ -1735,9 +1737,11 @@ export function SharedComposer({
             : {}),
         }, {
           signal: compareSignal,
-          // Only once the request is going out: Stop before this must not unload a resident model.
           onRequestStart: () => {
-            compareRunsRef.current.setLoadingModel(run, sel);
+            compareRunsRef.current.setLoadingModel(run, {
+              modelPath: sel.id,
+              requestId: loadRequestId,
+            });
           },
         });
         compareRunsRef.current.setLoadingModel(run, null);
@@ -2096,7 +2100,11 @@ export function SharedComposer({
     if (run?.loadingModel && !run.cleanup) {
       compareRunsRef.current.setCleanup(
         run,
-        unloadModel({ model_path: run.loadingModel.id }),
+        // Scoped to this attempt: never evicts a resident model or another tab's same-named load.
+        unloadModel({
+          model_path: run.loadingModel.modelPath,
+          cancel_load_request_id: run.loadingModel.requestId,
+        }),
       );
     }
     for (const handle of Object.values(handlesRef.current)) {

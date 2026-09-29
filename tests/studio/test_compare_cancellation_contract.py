@@ -22,11 +22,12 @@ def test_stop_unloads_only_a_load_already_sent():
     composer = _read("shared-composer.tsx")
     stop = _between(composer, "  function stop() {", "\n  }\n")
     assert "compareRunsRef.current.cancelCurrent()" in stop
-    assert "unloadModel({ model_path: run.loadingModel.id })" in stop
+    assert "cancel_load_request_id: run.loadingModel.requestId" in stop
     load = _between(composer, "const resp = await loadModel(", "saveSpeculativeType")
     assert "signal: compareSignal" in load
     start_hook = _between(load, "onRequestStart: () => {", "},")
-    assert "setLoadingModel(run, sel)" in start_hook
+    assert "requestId: loadRequestId" in start_hook
+    assert "load_request_id: loadRequestId" in load
     assert load.index("setLoadingModel(run, null)") > load.index("onRequestStart")
 
 
