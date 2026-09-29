@@ -132,3 +132,21 @@ def test_assistant_column_is_not_promoted_to_the_user_turn(heuristic, row, expec
 @pytest.mark.parametrize("row", _NO_USER_COLUMN_ROWS)
 def test_system_only_column_is_not_promoted_to_the_user_turn(heuristic, row):
     assert heuristic([row]) is None
+
+
+_ANSWER_LEFTOVER_CASES = [
+    (
+        {"problem": _MID, "generated_solution": _LONG, "expected_answer": "14"},
+        {"problem": "user", "generated_solution": "assistant"},
+    ),
+    (
+        {"question": _MID, "solution": _LONG, "final_answer": "42"},
+        {"question": "user", "solution": "assistant"},
+    ),
+]
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+@pytest.mark.parametrize("row, expected", _ANSWER_LEFTOVER_CASES)
+def test_answer_column_is_not_mapped_to_the_system_prompt(heuristic, row, expected):
+    assert heuristic([row]) == expected
