@@ -457,6 +457,14 @@ def test_capability_before_the_first_answer():
     assert body["setup_action"] is None and body["can_run_setup"] is False
 
 
+@pytest.mark.parametrize("known", ["python", "terminal"])
+def test_capability_stays_unknown_until_both_tools_have_an_answer(known):
+    os_sandbox.note_tool_isolation(known, True, backend = "bubblewrap", reason = "passed")
+    body = _capability_client().get("/api/sandbox/capability").json()
+    assert body["backend"] == "unknown"
+    assert body["setup_action"] is None and body["can_run_setup"] is False
+
+
 def test_capability_reports_the_cached_answers():
     os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap", reason = "passed")
     os_sandbox.note_tool_isolation("terminal", False, backend = "none", reason = "no bash")

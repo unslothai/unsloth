@@ -226,16 +226,18 @@ test("a settled read waits out a check that has not answered yet, but not a real
   assert.equal(stuck.calls.length, 2);
 });
 
-
 type PickModule = typeof import("../src/features/chat/sandbox-pick.ts");
 
 const pickModule = loadWithStubs<PickModule>(
   new URL("../src/features/chat/sandbox-pick.ts", import.meta.url),
   {
     "./api/sandbox-capability": {
-      loadSandboxCapability: async () => null,
+      loadSettledSandboxCapability: async () => null,
       sandboxReady: (c: SandboxCapability) =>
         c.pythonOsIsolated && c.terminalOsIsolated,
+      capabilityPending: (c: SandboxCapability) =>
+        c.backend === "unknown" &&
+        !(c.pythonOsIsolated && c.terminalOsIsolated),
     },
   },
 );
@@ -344,7 +346,6 @@ test("only the latest pick acts; a missing sandbox opens the setup instead of ap
   );
   assert.deepEqual(applied, ["off"]);
 });
-
 
 type SetupState = typeof import("../src/features/chat/sandbox-setup-state.ts");
 
@@ -575,7 +576,6 @@ test("the server's note shows for a declined or failed setup only", () => {
   }
 });
 
-
 const status = (overrides: Partial<SandboxStatus> = {}): SandboxStatus => ({
   platform: "linux",
   python: {
@@ -719,4 +719,30 @@ test("the Windows runtime install is offered only when missing and allowed", () 
     ),
     false,
   );
+});
+
+test("a capability still unknown applies the mode instead of offering an install", async () => {
+  let mode: string = "auto";
+  const applied: string[] = [];
+  let dialogs = 0;
+  const set = (next: string) => {
+    applied.push(next);
+    mode = next;
+  };
+  await pickModule.pickSandboxedMode(
+    set as never,
+    () => dialogs++,
+    () => mode as never,
+    async () => capability({ pythonOsIsolated: true, backend: "unknown" }),
+  );
+  assert.deepEqual(applied, ["off"]);
+  assert.equal(dialogs, 0);
+  mode = "auto";
+  await pickModule.pickSandboxedMode(
+    set as never,
+    () => dialogs++,
+    () => mode as never,
+    async () => capability({ pythonOsIsolated: true }),
+  );
+  assert.equal(dialogs, 1);
 });

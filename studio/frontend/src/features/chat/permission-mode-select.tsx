@@ -31,6 +31,7 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  capabilityPending,
   loadSandboxCapability,
   sandboxReady,
 } from "./api/sandbox-capability";
@@ -110,7 +111,13 @@ function useSandboxUnavailable(): boolean {
   useEffect(() => {
     let live = true;
     void loadSandboxCapability().then((capability) => {
-      if (live) setUnavailable(capability !== null && !sandboxReady(capability));
+      if (live) {
+        setUnavailable(
+          capability !== null &&
+            !capabilityPending(capability) &&
+            !sandboxReady(capability),
+        );
+      }
     });
     return () => {
       live = false;

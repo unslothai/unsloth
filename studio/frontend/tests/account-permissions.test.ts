@@ -22,8 +22,10 @@ function permissionUi(
   const changes: string[] = [];
   const capabilityStub = {
     loadSandboxCapability: async () => capability,
+    loadSettledSandboxCapability: async () => capability,
     sandboxReady: (value: NonNullable<Capability>) =>
       value.pythonOsIsolated && value.terminalOsIsolated,
+    capabilityPending: () => false,
   };
   const state = {
     permissionMode,

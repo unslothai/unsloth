@@ -53,12 +53,12 @@ def _capability() -> dict:
 
     python = cached_tool_capability("python")
     terminal = cached_tool_capability("terminal")
-    known = [item for item in (python, terminal) if item is not None]
-    isolated = [item for item in known if item[0]]
-    backend = (isolated or known or [(False, "unknown", "")])[0][1]
     if python is None or terminal is None:
-        reason = "The sandbox check has not finished yet."
+        # "unknown" keeps the client waiting: one tool's answer says nothing about the other.
+        backend, reason = "unknown", "The sandbox check has not finished yet."
     else:
+        isolated = [item for item in (python, terminal) if item[0]]
+        backend = (isolated or [python])[0][1]
         reason = python[2] if not python[0] else terminal[2]
     return {
         "platform": sys.platform,

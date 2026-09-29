@@ -3,7 +3,8 @@
 
 import {
   type SandboxCapability,
-  loadSandboxCapability,
+  capabilityPending,
+  loadSettledSandboxCapability,
   sandboxReady,
 } from "./api/sandbox-capability";
 import type { PermissionMode } from "./stores/chat-runtime-store";
@@ -24,7 +25,7 @@ export function pickSandboxedMode(
   setPermissionMode: (mode: PermissionMode) => void,
   onRequestSandboxSetup: () => void,
   currentMode: () => PermissionMode,
-  load: () => Promise<SandboxCapability | null> = loadSandboxCapability,
+  load: () => Promise<SandboxCapability | null> = loadSettledSandboxCapability,
   watchModeChanges?: (onChange: () => void) => () => void,
 ): Promise<void> {
   const pick = ++sandboxedPicks;
@@ -36,7 +37,12 @@ export function pickSandboxedMode(
   return load().then((capability) => {
     stopWatching?.();
     if (changed || pick !== sandboxedPicks || currentMode() !== before) return;
-    if (capability !== null && !sandboxReady(capability)) {
+    // Still unknown: apply it; the backend asks before risky calls until isolation is confirmed.
+    if (
+      capability !== null &&
+      !capabilityPending(capability) &&
+      !sandboxReady(capability)
+    ) {
       onRequestSandboxSetup();
     } else {
       setPermissionMode("off");
