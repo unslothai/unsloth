@@ -4,7 +4,7 @@
 """Refusals the media model auto-switch answers a generation request with.
 
 Every one of these is an ordinary outcome rather than a fault. The switch never downloads,
-never cuts a running generation short, and never outlives the ~100 second window Studio's
+never cuts a running generation short, and never outlives the ~100 second window Unsloth's
 secure-mode tunnel gives an origin response, so where it cannot serve the request it says which
 of those it hit and asks the caller to retry.
 
@@ -87,14 +87,19 @@ def slow_switch(kind: str, openai_errors: bool):
     )
 
 
-def busy(kind: str, openai_errors: bool):
+def busy(
+    kind: str,
+    openai_errors: bool,
+    *,
+    retry_after: int = RETRY_AFTER_S,
+):
     """The refusal for a backend that stayed busy for the whole drain."""
     return refuse(
         BUSY_MSG.format(kind = kind),
         status_code = 409,
         openai_errors = openai_errors,
         code = "model_busy",
-        retry_after = RETRY_AFTER_S,
+        retry_after = retry_after,
     )
 
 

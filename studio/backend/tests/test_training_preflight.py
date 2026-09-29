@@ -21,6 +21,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    from hub.utils import dataset_cache
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    return dataset_cache, trainer
+
+
 torch = pytest.importorskip("torch")
 
 
@@ -375,6 +384,23 @@ def test_shared_eval_split_is_bounded_and_deterministic(rows, expected_eval_rows
     assert dataset.calls == [(expected_eval_rows, 3407)]
 
 
+def test_shared_eval_split_carves_a_vision_list_like_train_test_split():
+    from datasets import Dataset
+
+    from core.training.eval_dataset import split_dataset_for_evaluation
+
+    rows = [{"messages": [{"role": "user", "content": f"row {i}"}]} for i in range(40)]
+    train, evaluation = split_dataset_for_evaluation(rows)
+
+    assert isinstance(train, list) and isinstance(evaluation, list)
+    assert len(train) == 24 and len(evaluation) == 16
+    assert sorted(train + evaluation, key = rows.index) == rows
+
+    expected = Dataset.from_dict({"i": list(range(40))}).train_test_split(test_size = 16, seed = 3407)
+    assert [rows.index(r) for r in train] == expected["train"]["i"]
+    assert [rows.index(r) for r in evaluation] == expected["test"]["i"]
+
+
 def test_torch_eval_split_warns_when_dataset_is_too_small():
     warnings: list[str] = []
     owner = SimpleNamespace(_record_warning = warnings.append)
@@ -388,10 +414,7 @@ def test_torch_eval_split_warns_when_dataset_is_too_small():
 
 
 def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[str] = []
     train = _SizedDataset(40, ("train", "validation"))
     validation = _SizedDataset(20, ("train", "validation"))
@@ -428,10 +451,7 @@ def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
 
 
 def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[tuple[str, int | None]] = []
     validation = _SizedDataset(20, ("train", "validation"))
 
@@ -537,11 +557,13 @@ def test_max_steps_bound_subsets_before_formatting(monkeypatch):
     assert len(bounded) == 1024
     # Shuffled: the head of a corpus ordered by source is not a sample of it.
     assert bounded.shuffle_seeds == [99]
+    assert trainer._kept_row_fraction == 1024 / 500_000
 
 
 def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
     train = _SizedDataset(40)
     trainer = _cached_only_loader(monkeypatch, train)
+    trainer._kept_row_fraction = 0.5  # left over from an earlier bounded load
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
@@ -553,6 +575,7 @@ def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
     assert result is not None
     # Untouched: no shuffle cost or reordering for a run that reads it all.
     assert result[0]["dataset"] is train
+    assert trainer._kept_row_fraction == 1.0
 
 
 def test_max_steps_bound_defers_to_an_explicit_slice(monkeypatch):
@@ -619,7 +642,7 @@ def test_max_steps_dataset_rows_survives_unusable_numbers():
 
 
 def _single_process_launch(monkeypatch):
-    """Clear every launcher variable, so a bound reads as Studio's own launch."""
+    """Clear every launcher variable, so a bound reads as Unsloth's own launch."""
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)
@@ -1363,10 +1386,7 @@ def test_mlx_adapter_keeps_one_source_of_truth_for_the_bound():
 
 
 def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[str] = []
     remote_calls: list[tuple[str, str | None]] = []
     train = _SizedDataset(40, ("train", "validation"))
@@ -1485,10 +1505,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
     ],
 )
 def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch, cached_eval_error):
-    from hub.utils import dataset_cache
-
-    _patch_dataset_formatting(monkeypatch)
-    trainer = _dataset_loader_self()
+    dataset_cache, trainer = _shared_setup_1(monkeypatch)
     cache_calls: list[str] = []
     remote_calls: list[str] = []
     cached_train = _SizedDataset(40, ("train", "validation"))

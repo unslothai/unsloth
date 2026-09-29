@@ -120,15 +120,12 @@ with sync_playwright() as p:
     console_errors: list[str] = []
     expected_probe_cancel_500s = [0]
 
-    # A send answers "does this thread / message row exist yet" with a GET that
-    # 404s until the row lands (#8136 replaced a full listing with that read),
-    # and the browser logs every 404 as a console.error with no URL in its text.
-    # Those two reads are expected traffic on a healthy send. The URL alone does
-    # not identify them: a persistence PUT or PATCH to the very same path 404s on
-    # exactly these patterns, and silently exempting that would hide a real
-    # failure to save. So the exemption is resolved against the response ledger
-    # below -- a console 404 is forgiven only if an actual GET 404 was observed
-    # at that URL, and each observed GET is spent by at most one console error.
+    # A send answers "does this thread / message row exist yet" with a GET that 404s until the row lands (#8136 replaced
+    # a full listing with that read), and the browser logs every 404 as a console.error with no URL in its text.
+    # The URL alone does not identify them: a persistence PUT or PATCH to the very same path 404s on exactly these
+    # patterns, and silently exempting that would hide a real failure to save. So the exemption is resolved against
+    # the response ledger below: a console 404 is forgiven only if an actual GET 404 was observed at that URL, and
+    # each observed GET is spent by at most one console error.
     EXPECTED_404_URL_RES = (
         re.compile(r"/api/chat/threads/[^/?#]+$"),
         re.compile(r"/api/chat/threads/[^/?#]+/messages/[^/?#]+$"),
@@ -202,7 +199,7 @@ with sync_playwright() as p:
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
-    # 1. Bootstrap auth via /change-password; retry absorbs React form-detach races.
+    # Bootstrap auth via /change-password; retry absorbs React form-detach races.
     step("change-password through UI (Setup your account)")
     form_err: Exception | None = None
     for _form_attempt in range(3):
@@ -250,7 +247,7 @@ with sync_playwright() as p:
     if form_err is not None:
         raise form_err
 
-    # 2. Wait for composer mount (no GGUF; the bug is React state, not inference).
+    # Wait for composer mount (no GGUF; the bug is React state, not inference).
     step("wait for composer to mount")
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -368,7 +365,6 @@ with sync_playwright() as p:
                 "Send button is unavailable for the next IME regression case."
             )
 
-    # 3. Baseline: ASCII keyboard typing works.
     step("baseline ASCII keyboard typing")
     clear()
     composer.click()
@@ -381,7 +377,7 @@ with sync_playwright() as p:
     shoot("03-baseline-ascii")
     clear()
 
-    # 4. Multilingual paste round-trip; byte-for-byte readback required.
+    # Multilingual paste round-trip; byte-for-byte readback required.
     step(f"multilingual paste round-trip ({len(I18N_SAMPLES)} samples)")
     paste_failures: list[tuple[str, str, str, str]] = []
     for code, label, text in I18N_SAMPLES:
@@ -405,7 +401,6 @@ with sync_playwright() as p:
     info(f"all {len(I18N_SAMPLES)} multilingual paste samples OK")
     shoot("04-paste-all-ok")
 
-    # 5. Healthy IME composition (compositionstart/update/end + insert events).
     step("normal IME composition (compose 你好)")
     clear()
     composer.click()
@@ -589,9 +584,9 @@ with sync_playwright() as p:
     info("keydown re-pin gate PASS")
     clear()
 
-    # 6d. Keydown re-pin must also re-arm the watchdog: on the WSL+Chrome
-    #     stuck-compositionend path no follow-up event arrives, so after re-pin
-    #     the watchdog must clear composingRef again or Send re-locks forever.
+    # Keydown re-pin must also re-arm the watchdog: on the WSL+Chrome
+    # stuck-compositionend path no follow-up event arrives, so after re-pin the
+    # watchdog must clear composingRef again or Send re-locks forever.
     step("BUG REPRO: keydown re-pin re-arms watchdog (#5546 follow-up regression)")
     clear()
     composer.click()
@@ -616,8 +611,8 @@ with sync_playwright() as p:
         expect(send_btn_rearm).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before re-arm test (first cycle)")
-    # IME-confirm keydown re-pins composingRef; without the re-arm fix the
-    # watchdog never runs again and Send stays blocked forever.
+    # IME-confirm keydown re-pins composingRef; without the re-arm fix the watchdog never runs again and Send stays
+    # blocked forever.
     composer.evaluate(
         """(el) => {
             el.focus();
@@ -627,19 +622,16 @@ with sync_playwright() as p:
             }));
         }"""
     )
-    # Second watchdog cycle: requestSubmit() after the re-armed window must be
-    # allowed; the buggy build stays gated forever.
+    # Second watchdog cycle: requestSubmit() after the re-armed window must be allowed; the buggy build stays gated
+    # forever.
     #
-    # The flush has to be read off the composer that is on screen when the
-    # submit settles, not off the node captured before it. A send in a new chat
-    # swaps the empty-thread view for the thread view, so React unmounts the
-    # textarea this step composed into and mounts a fresh one. Since #8136
-    # rendered the send without waiting on persistence, that swap lands inside
-    # the 250ms settle window, and the detached node keeps '你好' forever --
-    # which reads as "Send never unlocked" on a build that sent the message
-    # correctly. `sent` is the corroboration that the flush came from a real
-    # send and not from the composer being replaced: a blocked submit leaves
-    # the text in the live composer and adds no user message.
+    # The flush has to be read off the composer that is on screen when the submit settles, not off the node captured
+    # before it. A send in a new chat swaps the empty-thread view for the thread view, so React unmounts the textarea
+    # this step composed into and mounts a fresh one. Since #8136 rendered the send without waiting on persistence,
+    # that swap lands inside the 250ms settle window, and the detached node keeps '你好' forever -- which reads as
+    # "Send never unlocked" on a build that sent the message correctly. `sent` is the corroboration that the flush
+    # came from a real send and not from the composer being replaced: a blocked submit leaves the text in the live
+    # composer and adds no user message.
     rearm_probe = page.evaluate(
         """async (selector) => {
             const ta = document.querySelector(selector);
@@ -703,8 +695,8 @@ with sync_playwright() as p:
     step("BUG REPRO: Mac IME switch - onKeyDown immediate recovery")
     clear()
     composer.click()
-    # Seed sendable content so Send's state reflects composition only, not
-    # empty-content gating (insertFromPaste leaves composingRef false).
+    # Seed sendable content so Send's state reflects composition only, not empty-content gating (insertFromPaste leaves
+    # composingRef false).
     set_value_via_setter("hello")
     # Switch TO Chinese: compositionstart fires but compositionend never arrives.
     composer.evaluate(
@@ -716,8 +708,8 @@ with sync_playwright() as p:
     # Let React process compositionstart and update isComposing.
     page.wait_for_timeout(200)
     send_btn_mac_kd = page.locator('button[aria-label="Send message"]')
-    # Dispatch ONLY a keydown (no input event) so onChange never fires and the
-    # onKeyDown else-if branch is the only path that can clear composingRef.
+    # Dispatch ONLY a keydown (no input event) so onChange never fires and the onKeyDown else-if branch is the only path
+    # that can clear composingRef.
     # page.keyboard.type() would fire onChange too and mask a regression.
     composer.evaluate(
         """(el) => {
@@ -804,9 +796,6 @@ with sync_playwright() as p:
     clear()
 
     # 6g. Mac input-method switch - onBlur immediate recovery.
-    #     Some Mac IME switches steal textarea focus; onBlur resets composingRef
-    #     unconditionally. Safe because the OS commits/cancels composition before
-    #     surrendering focus, so blur is a reliable reset point.
     step("BUG REPRO: Mac IME switch - onBlur immediate recovery")
     clear()
     composer.click()
@@ -847,7 +836,7 @@ with sync_playwright() as p:
     info("Mac IME switch onBlur recovery PASS")
     clear()
 
-    # 7. Final state: filter benign 401 noise via is_benign_*; fail on real errors.
+    # Final state: filter benign 401 noise via is_benign_*; fail on real errors.
     shoot("07-final")
     _resolve_deferred_404s()
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]

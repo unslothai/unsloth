@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { stripTrailingTemplatePlaceholder } from "../src/features/chat/utils/trailing-template-placeholder.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /**
  * #9098. The trailing `${...}` strip is a statement about a FINISHED reply: a
@@ -300,10 +301,7 @@ test("randomised replies keep the two placements apart", () => {
 
 // ---------------------------------------------------------- the shipped placement ---
 
-const ADAPTER = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
 /**
  * Which of the two modes above the adapter is actually running.

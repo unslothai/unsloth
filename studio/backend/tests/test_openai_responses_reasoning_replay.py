@@ -5,7 +5,7 @@
 
 OpenAI's function-calling guide is explicit for manually managed history: "any
 reasoning items returned in model responses with tool calls must also be passed
-back with tool call outputs". The Studio tool loop rebuilds the conversation
+back with tool call outputs". The Unsloth tool loop rebuilds the conversation
 between turns by hand, so the provider has to hand the items out on the terminal
 chunk and take them back on the next request. The openai_codex client already
 does exactly this round trip for the same endpoint; this is the generic path

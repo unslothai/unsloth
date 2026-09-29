@@ -195,6 +195,40 @@ def test_an_explicit_empty_list_is_not_a_missing_one(status_route):
     assert status_route(backend).requested_llama_extra_args is None
 
 
+def test_status_publishes_mmproj_cpu_recovery(status_route):
+    backend = _StatusBackend("org/Vision-GGUF")
+    backend.is_vision = True
+    backend.mmproj_fallback_reason = "cpu_offload"
+
+    status = status_route(backend)
+
+    assert status.is_vision is True
+    assert status.mmproj_fallback_reason == "cpu_offload"
+
+
+def test_status_publishes_the_running_load_warning(status_route):
+    assert status_route(_StatusBackend("org/A-GGUF")).memory_warning is None
+
+    backend = _StatusBackend("org/A-GGUF")
+    backend.last_load_warning = (
+        "Not enough disk space to download BF16 (7.5 GB needed, 7.5 GB free), "
+        "so Q4_1 (2.4 GB) was loaded instead."
+    )
+
+    assert status_route(backend).memory_warning == backend.last_load_warning
+
+
+def test_status_publishes_an_explicit_text_only_mmproj_fallback(status_route):
+    backend = _StatusBackend("org/Vision-GGUF")
+    backend.is_vision = False
+    backend.mmproj_fallback_reason = "projector_startup_failure"
+
+    status = status_route(backend)
+
+    assert status.is_vision is False
+    assert status.mmproj_fallback_reason == "projector_startup_failure"
+
+
 def test_the_diffusion_runner_reports_none(status_route):
     # It appends none of them, so publishing a list would describe a command that
     # does not exist.

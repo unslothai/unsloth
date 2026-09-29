@@ -19,8 +19,10 @@ import {
 import {
   type ScanFolderInfo,
   addScanFolder,
+  formatBytes,
   listScanFolders,
   removeScanFolder,
+  scanFolderStatusCopy,
 } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
 import {
@@ -37,7 +39,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
-  DownloadCircle01Icon,
+  Download01Icon,
   FileSearchIcon,
   FolderAddIcon,
   FolderExportIcon,
@@ -60,8 +62,7 @@ function formatError(error: unknown): string {
 
 function formatFreeSpace(bytes: number | null): string | null {
   if (bytes === null || !Number.isFinite(bytes)) return null;
-  const gb = bytes / 1024 ** 3;
-  return gb >= 10 ? `${Math.round(gb)} GB free` : `${gb.toFixed(1)} GB free`;
+  return `${formatBytes(bytes)} free`;
 }
 
 export function OnDeviceFoldersDialog({
@@ -152,10 +153,9 @@ export function OnDeviceFoldersDialog({
     onInventoryChange?.();
   }, [onInventoryChange]);
 
-  // Relocating the cache changes which repos are on disk, but
-  // updateHuggingFaceCacheSettings already bumps the inventory version, which
-  // re-fetches every source. Refreshing here too would scan twice, since the
-  // two rounds carry different version keys and cannot be deduplicated.
+  // Relocating the cache changes which repos are on disk, but updateHuggingFaceCacheSettings
+  // already bumps the inventory version, which re-fetches every source. Refreshing here too would
+  // scan twice, since the two rounds carry different version keys and cannot be deduplicated.
   const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
     setDownloadSaving(true);
     try {
@@ -258,7 +258,7 @@ export function OnDeviceFoldersDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px] lg:max-w-[660px] xl:max-w-[680px] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
+          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(620px*var(--ui-space-scale,1))] lg:max-w-[calc(660px*var(--ui-space-scale,1))] xl:max-w-[calc(680px*var(--ui-space-scale,1))] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
           <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4">
@@ -275,7 +275,7 @@ export function OnDeviceFoldersDialog({
             <div className="rounded-[14px] border border-border/70 bg-muted/20 p-3">
               <div className="mb-2 flex items-center gap-2 text-ui-12 font-medium text-foreground">
                 <HugeiconsIcon
-                  icon={DownloadCircle01Icon}
+                  icon={Download01Icon}
                   strokeWidth={1.75}
                   className="size-3.5 text-muted-foreground"
                 />
@@ -468,6 +468,7 @@ export function OnDeviceFoldersDialog({
                 ) : (
                   sortedFolders.map((folder) => {
                     const removing = pending === `remove:${folder.id}`;
+                    const problem = scanFolderStatusCopy(folder.status);
                     return (
                       <div
                         key={folder.id}
@@ -505,6 +506,14 @@ export function OnDeviceFoldersDialog({
                               {folder.path}
                             </TooltipContent>
                           </Tooltip>
+                          {problem ? (
+                            <p
+                              data-testid={`scan-folder-problem-${folder.id}`}
+                              className="mt-1 text-ui-10p5 text-amber-600 dark:text-amber-500"
+                            >
+                              {problem.title}. {problem.hint}
+                            </p>
+                          ) : null}
                         </div>
                         {isTauri ? (
                           <Tooltip>

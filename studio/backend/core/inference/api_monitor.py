@@ -1,29 +1,48 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small in-memory monitor for OpenAI-compatible API traffic."""
+"""In-memory API monitor with an optional content-free terminal receipt sink."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import math
 import os
+import sys
 import threading
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from utils.account_context import current_account_id
+from storage.api_usage_db import (
+    MAX_ENDPOINT_CHARS,
+    MAX_STATUS_CHARS,
+    ApiUsageReceipt,
+    canonical_api_model,
+    canonical_api_subject,
+)
+
+
+logger = logging.getLogger(__name__)
+TerminalCallback = Callable[[ApiUsageReceipt], None]
 
 
 _MAX_ENTRIES = 50
-_MAX_PROMPT_CHARS = 12000
+_MAX_PROMPT_BYTES = 64 * 1024 * 1024
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+_MAX_STREAM_TOOL_CALLS = 64
+_MAX_STREAM_TOOL_FIELD_CHARS = 501
 _MAX_DECODE_MS = 24 * 60 * 60 * 1000
 # Far above any real context window; larger means a broken upstream payload.
 _MAX_TOKEN_COUNT = 1 << 40
 
-# Opt-in startup kill switch for Studio's in-memory API monitor.
+# Opt-in startup kill switch for Unsloth's in-memory API monitor.
 _DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -44,12 +63,17 @@ def _token_count_or_none(value: Any) -> Optional[int]:
 
 
 def _finite_float_or_none(value: Any) -> Optional[float]:
-    # float() on a huge upstream int raises OverflowError, not ValueError/TypeError.
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _advance_updated_at(entry: "ApiMonitorEntry", now: Optional[float] = None) -> None:
+    """Advance the row's freshness key even on a coarse or regressing wall clock."""
+    observed = time.time() if now is None else now
+    entry.updated_at = max(observed, math.nextafter(entry.updated_at, math.inf))
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -64,6 +88,90 @@ def _trim(text: Optional[str], limit: int) -> str:
 
 
 @dataclass
+class _OpenAIStreamToolCall:
+    choice_index: int
+    tool_index: int
+    call_id: Optional[str] = None
+    name: str = ""
+    arguments: str = ""
+
+
+def _stream_tool_fragment(fragment: Any, *, serialize_json: bool = False) -> Optional[str]:
+    if fragment is None:
+        return None
+    if isinstance(fragment, str):
+        return fragment
+    return json.dumps(fragment, default = str) if serialize_json else str(fragment)
+
+
+def _append_stream_tool_field(
+    current: str,
+    fragment: Any,
+    budget: int,
+    *,
+    serialize_json: bool = False,
+) -> str:
+    if fragment is None or budget <= 0 or len(current) >= _MAX_STREAM_TOOL_FIELD_CHARS:
+        return current
+    fragment = _stream_tool_fragment(fragment, serialize_json = serialize_json)
+    if fragment is None:
+        return current
+    remaining = min(_MAX_STREAM_TOOL_FIELD_CHARS - len(current), budget)
+    return current + fragment[:remaining]
+
+
+def _merge_stream_tool_name(current: str, fragment: Any, budget: int) -> str:
+    fragment = _stream_tool_fragment(fragment)
+    if fragment is None:
+        return current
+    if fragment.startswith(current):
+        limit = min(_MAX_STREAM_TOOL_FIELD_CHARS, len(current) + max(0, budget))
+        return fragment[:limit]
+    return _append_stream_tool_field(current, fragment, budget)
+
+
+def _stream_tool_call_is_complete(state: _OpenAIStreamToolCall) -> bool:
+    if not state.name or not state.arguments:
+        return False
+    try:
+        arguments = json.loads(state.arguments)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(arguments, (dict, list))
+
+
+def _stream_tool_call_preview(state: _OpenAIStreamToolCall) -> str:
+    name = state.name or "<unknown>"
+    if len(name) > 500:
+        name = name[:497] + "..."
+    if not state.arguments:
+        return f"Tool call: {name}"
+    arguments = state.arguments
+    if len(arguments) > 500:
+        arguments = arguments[:497] + "..."
+    return f"Tool call: {name}({arguments})"
+
+
+def _append_stream_tool_previews(
+    entry: ApiMonitorEntry, states: list[_OpenAIStreamToolCall]
+) -> None:
+    if not states:
+        return
+    text = "\n".join(_stream_tool_call_preview(state) for state in states)
+    if entry.reply and not entry.reply.endswith("\n"):
+        text = "\n" + text
+    entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
+
+
+def _stream_tool_call_id(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) <= _MAX_STREAM_TOOL_FIELD_CHARS:
+        return value
+    return "sha256:" + hashlib.sha256(value.encode("utf-8", errors = "replace")).hexdigest()
+
+
+@dataclass
 class ApiMonitorEntry:
     id: str
     endpoint: str
@@ -75,7 +183,9 @@ class ApiMonitorEntry:
     updated_at: float
     # Who this row is attributed to; on a shared row it does not restrict visibility.
     subject: Optional[str] = None
-    # True for sk-unsloth callers only: the panel auto-opens on these, not Studio's chat.
+    # Usernames are reusable and these in-memory rows outlive the account, so the immutable account id fences a replacement off its predecessor's traffic.
+    account_id: str = field(default_factory = current_account_id)
+    # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
@@ -88,7 +198,7 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
-    # "request" (HTTP call) or "lifecycle" (model load/unload: event/reason, not a prompt; shared).
+    # "request" (HTTP call) or "lifecycle" (model load/unload: event/reason, not a prompt; shared)
     kind: str = "request"
     event: Optional[str] = None
     reason: Optional[str] = None
@@ -97,9 +207,8 @@ class ApiMonitorEntry:
     progress: Optional[float] = None
     # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
-    # The same instant, but only for output the model decoded. A tool card is client
-    # output that TTFT should count and the token-rate clock must not: the tool run
-    # between it and the first token is not decoding.
+    # The same instant, but only for output the model decoded. A tool card is client output that TTFT should count and
+    # the token-rate clock must not: the tool run between it and the first token is not decoding.
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
@@ -107,14 +216,20 @@ class ApiMonitorEntry:
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
-    # Every finish reason seen so far. An n > 1 stream reports each choice in its own
-    # chunk, so agreement can only be judged across the whole request. Not serialized.
+    # Every finish reason seen so far. An n > 1 stream reports each choice in its own chunk, so agreement can only be
+    # judged across the whole request. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
+    # request-local preview state, omitted from snapshots and cleared on terminal paths.
+    openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
+    openai_stream_last_tool_indexes: dict[int, int] = field(default_factory = dict)
+    openai_stream_last_segment_was_tool: bool = False
+    prompt_complete: bool = True
 
     def snapshot(
         self,
         *,
         include_details: bool = True,
+        include_prompt: bool = True,
         attributed: bool = True,
     ) -> dict[str, Any]:
         duration_ms = None
@@ -130,8 +245,8 @@ class ApiMonitorEntry:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
         ttft_ms = None
         if self.first_token_monotonic is not None:
-            # Preferred over the prompt_ms fallback: that is prefill only, so it misses
-            # the admission-queue wait before llama-server sees the request.
+            # Preferred over the prompt_ms fallback: that is prefill only, so it misses the admission-queue wait before
+            # llama-server sees the request.
             ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
         elif self.prompt_ms is not None:
             ttft_ms = max(0, int(self.prompt_ms))
@@ -139,8 +254,8 @@ class ApiMonitorEntry:
         if (
             tok_per_sec is None
             and self.completion_tokens
-            # The clock starts at the first token, so it spans only the gaps that
-            # followed it: one token has no gap to measure, hence no rate at all.
+            # The clock starts at the first token, so it spans only the gaps that followed it: one token has no gap to
+            # measure, hence no rate at all.
             and self.completion_tokens > 1
             and self.finished_monotonic is not None
             and self.first_decode_monotonic is not None
@@ -153,12 +268,12 @@ class ApiMonitorEntry:
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
-            # A shared row reaches subjects with nothing to do with it, and the overlay
-            # auto-opens on this flag, so report it only to the attributed caller.
+            # A shared row reaches subjects with nothing to do with it, and the overlay auto-opens on this flag, so
+            # report it only to the attributed caller.
             "via_api_key": self.via_api_key and attributed,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
-            "prompt_truncated": len(self.prompt) > _PREVIEW_CHARS,
+            "prompt_truncated": not self.prompt_complete or len(self.prompt) > _PREVIEW_CHARS,
             "reply_truncated": len(self.reply) > _PREVIEW_CHARS,
             "status": self.status,
             "started_at": self.started_at,
@@ -180,13 +295,14 @@ class ApiMonitorEntry:
             "prompt_tok_per_sec": (
                 round(self.prompt_tok_per_sec, 2) if self.prompt_tok_per_sec is not None else None
             ),
-            # The engine's decode span, not the streamed window: an unknowable first-chunk token
-            # count and reasoning tokens both inflate a streamed rate. Absent rather than guessed.
+            # The engine's decode span, not the streamed window: an unknowable first-chunk token count and reasoning
+            # tokens both inflate a streamed rate. Absent rather than guessed.
             "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
             "stop_reason": self.stop_reason,
         }
         if include_details:
-            payload["prompt"] = self.prompt
+            if include_prompt and self.prompt_complete:
+                payload["prompt"] = self.prompt
             payload["reply"] = self.reply
         return payload
 
@@ -197,19 +313,56 @@ class ApiMonitor:
         max_entries: int = _MAX_ENTRIES,
         *,
         enabled: bool = True,
+        terminal_callback: Optional[TerminalCallback] = None,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
         # Shared rows one subject cleared: deleting would erase another caller's history.
-        self._hidden_shared: dict[str, set[str]] = {}
+        self._hidden_shared: dict[tuple[str, str], set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._callback_condition = threading.Condition(self._lock)
         self._enabled = enabled
+        self._terminal_callback = terminal_callback
+        self._terminal_callback_leases: dict[str, TerminalCallback] = {}
+        self._terminal_callbacks_inflight: dict[Optional[str], int] = {}
 
     @property
     def enabled(self) -> bool:
         """Whether rows are being recorded. Read-only: the kill switch is a
         startup env var, so nothing may flip it on a live monitor."""
         return self._enabled
+
+    def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
+        """Replace the unleased terminal sink used by tests and embedders."""
+        with self._lock:
+            self._terminal_callback = callback
+
+    def acquire_terminal_callback(self, callback: TerminalCallback) -> str:
+        """Register a callback owned by one lifespan and return its lease token.
+
+        Only the newest live lease is notified, so overlapping lifespans do not
+        duplicate durable receipts. Releasing an older lease cannot disable a
+        newer owner, while releasing the newer one falls back to the older.
+        """
+        lease = uuid.uuid4().hex
+        with self._lock:
+            self._terminal_callback_leases[lease] = callback
+        return lease
+
+    def release_terminal_callback(self, lease: str) -> None:
+        """Remove only the terminal callback registration owned by ``lease``."""
+        with self._callback_condition:
+            self._terminal_callback_leases.pop(lease, None)
+            # A notification may already have captured this callback. Let its fast enqueue finish before the owner
+            # drains/stops the writer.
+            while self._terminal_callbacks_inflight.get(lease, 0):
+                self._callback_condition.wait()
+
+    def _terminal_callback_locked(self) -> tuple[Optional[str], Optional[TerminalCallback]]:
+        if self._terminal_callback_leases:
+            lease = next(reversed(self._terminal_callback_leases))
+            return lease, self._terminal_callback_leases[lease]
+        return None, self._terminal_callback
 
     def start(
         self,
@@ -226,12 +379,12 @@ class ApiMonitor:
             return ""
         now = time.time()
         entry = ApiMonitorEntry(
-            id = f"apireq_{uuid.uuid4().hex[:12]}",
+            id = f"apireq_{uuid.uuid4().hex}",
             endpoint = endpoint,
             method = method,
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
-            prompt = _trim(prompt, _MAX_PROMPT_CHARS),
+            prompt = prompt or "",
             status = "running",
             started_at = now,
             updated_at = now,
@@ -243,6 +396,16 @@ class ApiMonitor:
         with self._lock:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            remaining = _MAX_PROMPT_BYTES
+            for retained in self._entries:
+                if not retained.prompt_complete or len(retained.prompt) <= _PREVIEW_CHARS:
+                    continue
+                prompt_bytes = sys.getsizeof(retained.prompt)
+                if prompt_bytes <= remaining:
+                    remaining -= prompt_bytes
+                else:
+                    retained.prompt = _trim(retained.prompt, _PREVIEW_CHARS)
+                    retained.prompt_complete = False
         return entry.id
 
     def record_lifecycle(
@@ -284,11 +447,10 @@ class ApiMonitor:
             event = event,
             reason = reason,
             shared = True,
-            # The overlay opens on API-key traffic only, and a refused switch never
-            # reaches api_monitor.start, so this row is its whole trace: without the
-            # attribution the monitor stayed shut on the failures it exists to surface.
+            # The overlay opens on API-key traffic only, and a refused switch never reaches api_monitor.start, so this
+            # row is its whole trace: without the attribution the monitor stayed shut on the failures it exists to
+            # surface.
             via_api_key = via_api_key,
-            # Shared rows reach every subject, so attribution needs an owner.
             subject = subject,
         )
         with self._lock:
@@ -305,7 +467,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is not None:
                 entry.model = model
-                entry.updated_at = time.time()
+                _advance_updated_at(entry)
 
     def set_progress(self, entry_id: Optional[str], progress: Optional[float]) -> None:
         """Update an open download row's percentage (clamped to 0-100)."""
@@ -315,7 +477,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is not None and entry.status == "running":
                 entry.progress = min(100.0, max(0.0, float(progress)))
-                entry.updated_at = time.time()
+                _advance_updated_at(entry)
 
     def discard(self, entry_id: Optional[str]) -> None:
         """Drop a row that turned out not to be an event (an already-satisfied load)."""
@@ -332,13 +494,18 @@ class ApiMonitor:
         text: str,
         *,
         stamp_first_token: bool = True,
+        separate_from_openai_tool: bool = False,
     ) -> None:
         if not entry_id or not text:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.finished_at is not None:
                 return
+            if separate_from_openai_tool and entry.openai_stream_last_segment_was_tool:
+                if entry.reply and not entry.reply.endswith("\n"):
+                    text = "\n" + text
+                entry.openai_stream_last_segment_was_tool = False
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 now = time.monotonic()
@@ -346,17 +513,157 @@ class ApiMonitor:
                     entry.first_token_monotonic = now
                 if entry.first_decode_monotonic is None:
                     entry.first_decode_monotonic = now
-            # Preview is capped: once the "..." marker is present the head is
-            # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
-            # generations). A reply that landed exactly on the cap has no marker
-            # yet, so let one more append record the truncation before freezing.
+            # Preview is capped: once the "..." marker is present the head is frozen, so skip the per-chunk re-concat
+            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let
+            # one more append record the truncation before freezing.
             if len(entry.reply) >= _MAX_REPLY_CHARS:
                 if not entry.reply.endswith("..."):
                     entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
-                entry.updated_at = time.time()
+                _advance_updated_at(entry)
                 return
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
+
+    def accumulate_openai_tool_call(
+        self,
+        entry_id: Optional[str],
+        *,
+        choice_index: int,
+        tool_index: Optional[int],
+        tool_index_explicit: bool = True,
+        call_id: Optional[str],
+        name_fragment: Any,
+        arguments_fragment: Any,
+    ) -> None:
+        """Merge one streamed OpenAI tool-call delta into its monitor row."""
+        if not entry_id:
+            return
+        call_id = _stream_tool_call_id(call_id)
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.finished_at is not None:
+                return
+            same_choice = [
+                state
+                for state in entry.openai_stream_tool_calls
+                if state.choice_index == choice_index
+            ]
+            if tool_index is None:
+                tool_index = entry.openai_stream_last_tool_indexes.get(choice_index, 0)
+            state = None
+            same_index = [
+                candidate for candidate in same_choice if candidate.tool_index == tool_index
+            ]
+            if tool_index_explicit:
+                state = next(
+                    (
+                        candidate
+                        for candidate in reversed(same_index)
+                        if candidate.call_id == call_id
+                    ),
+                    None,
+                )
+                if state is None and call_id is not None:
+                    state = next(
+                        (
+                            candidate
+                            for candidate in reversed(same_index)
+                            if candidate.call_id is None
+                        ),
+                        None,
+                    )
+            elif call_id is not None:
+                state = next(
+                    (
+                        candidate
+                        for candidate in reversed(same_choice)
+                        if candidate.call_id == call_id
+                    ),
+                    None,
+                )
+            if state is None and call_id is None:
+                state = same_index[-1] if same_index else None
+            if state is None:
+                pending_chars = sum(
+                    len(candidate.name) + len(candidate.arguments)
+                    for candidate in entry.openai_stream_tool_calls
+                )
+                if (
+                    len(entry.openai_stream_tool_calls) >= _MAX_STREAM_TOOL_CALLS
+                    or pending_chars >= _MAX_REPLY_CHARS
+                ):
+                    return
+                state = _OpenAIStreamToolCall(
+                    choice_index = choice_index,
+                    tool_index = tool_index,
+                    call_id = call_id,
+                )
+                entry.openai_stream_tool_calls.append(state)
+            elif call_id is not None and state.call_id is None:
+                state.call_id = call_id
+            entry.openai_stream_last_tool_indexes[choice_index] = tool_index
+            pending_chars = sum(
+                len(candidate.name) + len(candidate.arguments)
+                for candidate in entry.openai_stream_tool_calls
+            )
+            budget = _MAX_REPLY_CHARS - pending_chars
+            previous_name_length = len(state.name)
+            state.name = _merge_stream_tool_name(state.name, name_fragment, budget)
+            budget -= len(state.name) - previous_name_length
+            state.arguments = _append_stream_tool_field(
+                state.arguments,
+                arguments_fragment,
+                budget,
+                serialize_json = True,
+            )
+            now = time.monotonic()
+            if entry.first_token_monotonic is None:
+                entry.first_token_monotonic = now
+            if entry.first_decode_monotonic is None:
+                entry.first_decode_monotonic = now
+            _advance_updated_at(entry)
+
+    def take_openai_tool_calls(
+        self,
+        entry_id: Optional[str],
+        *,
+        choice_index: Optional[int] = None,
+        completed_only: bool = False,
+    ) -> tuple[list[tuple[str, str]], bool]:
+        """Remove and return completed preview calls in first-seen order."""
+        if not entry_id:
+            return [], False
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.finished_at is not None:
+                return [], False
+            selected = [
+                state
+                for state in entry.openai_stream_tool_calls
+                if (choice_index is None or state.choice_index == choice_index)
+                and (not completed_only or _stream_tool_call_is_complete(state))
+            ]
+            if not selected:
+                return [], False
+            separate = bool(entry.reply) and not entry.reply.endswith("\n")
+            entry.openai_stream_last_segment_was_tool = True
+            selected_ids = {id(state) for state in selected}
+            entry.openai_stream_tool_calls = [
+                state for state in entry.openai_stream_tool_calls if id(state) not in selected_ids
+            ]
+            remaining_indexes = {
+                state.choice_index: state.tool_index for state in entry.openai_stream_tool_calls
+            }
+            if choice_index is None:
+                entry.openai_stream_last_tool_indexes = remaining_indexes
+            elif choice_index not in remaining_indexes:
+                entry.openai_stream_last_tool_indexes.pop(choice_index, None)
+            else:
+                entry.openai_stream_last_tool_indexes[choice_index] = remaining_indexes[
+                    choice_index
+                ]
+            _advance_updated_at(entry)
+            return [(state.name, state.arguments) for state in selected], separate
 
     def mark_first_token(
         self,
@@ -389,7 +696,7 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def set_perf(
         self,
@@ -403,8 +710,8 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce before locking: arbitrary payloads, and a raise here (this runs inside
-        # streaming generators) would truncate the user's response.
+        # Coerce before locking: arbitrary payloads, and a raise here (this runs inside streaming generators) would
+        # truncate the user's response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
         prompt_tok_per_sec = _finite_float_or_none(prompt_tok_per_sec)
         prompt_ms = _finite_float_or_none(prompt_ms)
@@ -424,7 +731,7 @@ class ApiMonitor:
                 entry.decode_ms = decode_ms
             if stop_reason is not None:
                 entry.stop_reason = str(stop_reason)
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def note_stop_reason(self, entry_id: Optional[str], reason: Optional[str]) -> None:
         """Record one choice's finish reason, without publishing it yet.
@@ -441,7 +748,7 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.stop_reasons_seen.add(str(reason))
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     @staticmethod
     def _settle_stop_reason_locked(entry: ApiMonitorEntry, completed: bool) -> None:
@@ -477,7 +784,7 @@ class ApiMonitor:
         context_length = _token_count_or_none(context_length)
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.finished_at is not None:
                 return
             if prompt_tokens is not None:
                 entry.prompt_tokens = prompt_tokens
@@ -489,12 +796,12 @@ class ApiMonitor:
             elif not entry.total_tokens_authoritative and (
                 prompt_tokens is not None or completion_tokens is not None
             ):
-                # Derive only when no authoritative total has been set;
-                # a later partial chunk must not clobber a provider total.
+                # Derive only when no authoritative total has been set; a later partial chunk must not clobber a
+                # provider total.
                 entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
             if context_length is not None:
                 entry.context_length = context_length
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def finish(
         self,
@@ -503,39 +810,48 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            # Idempotent: second call (e.g. [DONE] after the finally block
-            # already ran) must not move finished_*.
+            # Idempotent: second call (e.g. [DONE] after the finally block already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
+            _append_stream_tool_previews(entry, entry.openai_stream_tool_calls)
+            entry.openai_stream_tool_calls.clear()
+            entry.openai_stream_last_tool_indexes.clear()
+            entry.openai_stream_last_segment_was_tool = False
             self._settle_stop_reason_locked(entry, status == "completed")
             now = time.time()
             entry.status = status
-            entry.updated_at = now
+            _advance_updated_at(entry, now)
             entry.finished_at = now
             entry.finished_monotonic = time.monotonic()
             self._entries.remove(entry)
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def fail_open(self, entry_id: Optional[str], error: str) -> None:
         """Fail only a still-open row: unlike :meth:`fail`, a catch-all in a
         ``finally`` cannot stamp an error onto a request that already succeeded."""
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
-            # Same lock as the check, so a finish() cannot land in between.
             self._fail_locked(entry, error)
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -544,20 +860,80 @@ class ApiMonitor:
                 # Already terminal; refresh error text only.
                 if error:
                     entry.error = _trim(error, 1000)
+                    _advance_updated_at(entry)
                 return
             self._fail_locked(entry, error)
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        _append_stream_tool_previews(entry, entry.openai_stream_tool_calls)
+        entry.openai_stream_tool_calls.clear()
+        entry.openai_stream_last_tool_indexes.clear()
+        entry.openai_stream_last_segment_was_tool = False
         self._settle_stop_reason_locked(entry, False)
         now = time.time()
         entry.status = "error"
         entry.error = _trim(error, 1000)
-        entry.updated_at = now
+        _advance_updated_at(entry, now)
         entry.finished_at = now
         entry.finished_monotonic = time.monotonic()
         self._entries.remove(entry)
         self._entries.appendleft(entry)
         self._trim_terminal_locked()
+
+    def _terminal_notification_locked(
+        self, entry: ApiMonitorEntry
+    ) -> Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]:
+        callback_owner, callback = self._terminal_callback_locked()
+        subject = canonical_api_subject(entry.subject)
+        if (
+            callback is None
+            or entry.kind != "request"
+            or entry.via_api_key is not True
+            or not subject
+            or entry.finished_at is None
+        ):
+            return None
+        self._terminal_callbacks_inflight[callback_owner] = (
+            self._terminal_callbacks_inflight.get(callback_owner, 0) + 1
+        )
+        return (
+            callback_owner,
+            callback,
+            ApiUsageReceipt(
+                id = entry.id,
+                subject = subject,
+                endpoint = str(entry.endpoint)[:MAX_ENDPOINT_CHARS],
+                model = canonical_api_model(entry.model),
+                status = str(entry.status)[:MAX_STATUS_CHARS],
+                prompt_tokens = entry.prompt_tokens or 0,
+                completion_tokens = entry.completion_tokens or 0,
+                total_tokens = entry.total_tokens or 0,
+                created_at = int(entry.finished_at * 1000),
+                kind = entry.kind,
+                via_api_key = entry.via_api_key,
+            ),
+        )
+
+    def _notify_terminal(
+        self, notification: Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]
+    ) -> None:
+        if notification is None:
+            return
+        callback_owner, callback, receipt = notification
+        try:
+            callback(receipt)
+        except Exception:  # noqa: BLE001 - monitoring must never break inference.
+            logger.warning("api_monitor.terminal_callback_failed", exc_info = True)
+        finally:
+            with self._callback_condition:
+                remaining = self._terminal_callbacks_inflight.get(callback_owner, 0) - 1
+                if remaining > 0:
+                    self._terminal_callbacks_inflight[callback_owner] = remaining
+                else:
+                    self._terminal_callbacks_inflight.pop(callback_owner, None)
+                self._callback_condition.notify_all()
 
     def snapshot(
         self,
@@ -580,6 +956,7 @@ class ApiMonitor:
         entry_id: str,
         *,
         subject: Optional[str] = None,
+        include_prompt: bool = True,
     ) -> Optional[dict[str, Any]]:
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -589,18 +966,18 @@ class ApiMonitor:
                 return None
             return entry.snapshot(
                 include_details = True,
+                include_prompt = include_prompt,
                 attributed = self._attributed(entry, subject),
             )
 
     def active_count(self, *, subject: Optional[str] = None) -> int:
-        # Lifecycle rows show as "running" while loading but are not in-flight API requests.
         with self._lock:
             return sum(
                 1
                 for entry in self._entries
                 if entry.status == "running"
                 and entry.kind != "lifecycle"
-                and (subject is None or entry.subject == subject)
+                and self._attributed(entry, subject)
             )
 
     def clear(self, *, subject: Optional[str] = None) -> None:
@@ -616,18 +993,17 @@ class ApiMonitor:
                 self._hidden_shared.clear()
                 return
             # A running shared row is a load in progress, not history, so it stays.
-            hidden = self._hidden_shared.setdefault(subject, set())
+            hidden = self._hidden_shared.setdefault((current_account_id(), subject), set())
             for entry in self._entries:
                 if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
-            # Shared rows are hidden, never dropped, even when owned: they are another
-            # caller's history too. An own running row is not history either, and dropping
-            # it loses the request outright: active_count falls to zero and the finish or
-            # fail that follows has no entry left to land on.
+            # Shared rows are hidden, never dropped, even when owned: they are another caller's history too. An own
+            # running row is not history either, and dropping it loses the request outright: active_count falls to zero
+            # and the finish or fail that follows has no entry left to land on.
             self._entries = deque(
                 entry
                 for entry in self._entries
-                if entry.shared or entry.subject != subject or entry.status == "running"
+                if entry.shared or not self._attributed(entry, subject) or entry.status == "running"
             )
 
     def _visible(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
@@ -635,8 +1011,10 @@ class ApiMonitor:
             return True
         if entry.shared:
             # Every subject minus the cleared ones. Before ownership, so a clear hides own rows.
-            return entry.id not in self._hidden_shared.get(subject, ())
-        return entry.subject == subject
+            if entry.id in self._hidden_shared.get((current_account_id(), subject), ()):
+                return False
+            return _lifecycle_row_visible_to_caller(entry, subject)
+        return entry.subject == subject and entry.account_id == current_account_id()
 
     def _attributed(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
         """Whether *subject* is the caller this row's API traffic belongs to.
@@ -646,7 +1024,7 @@ class ApiMonitor:
         """
         if subject is None:
             return True
-        return entry.subject == subject
+        return entry.subject == subject and entry.account_id == current_account_id()
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:
@@ -667,10 +1045,23 @@ class ApiMonitor:
         self._entries = kept
         # Keep hidden sets to live rows so they stay bounded by the ring buffer.
         live = {entry.id for entry in kept}
-        for subject, hidden in list(self._hidden_shared.items()):
+        for key, hidden in list(self._hidden_shared.items()):
             hidden &= live
             if not hidden:
-                del self._hidden_shared[subject]
+                del self._hidden_shared[key]
 
 
 api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())
+
+
+def _lifecycle_row_visible_to_caller(entry: "ApiMonitorEntry", subject: str) -> bool:
+    """Lifecycle rows name a model path that may sit inside the loading account's workspace, so only the owner and that account see them."""
+    if entry.kind != "lifecycle":
+        return True
+    if entry.account_id == current_account_id() and entry.subject in (None, subject):
+        return True
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return True
+    return False

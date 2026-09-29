@@ -7,43 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  FAIL: $_label (found '$_needle' but should not)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 # ── Extract version_ge function from install.sh ──
 _VGE_FILE=$(mktemp)
 sed -n '/^version_ge()/,/^}/p' "$INSTALL_SH" > "$_VGE_FILE"
@@ -574,6 +539,7 @@ _GUARD_FILE=$(mktemp)
 # The guard calls _python_is_skipped, _discard_venv_for_recreate and _uv_venv_arm64,
 # so the skip list, its reader, and the replacement helpers have to come along or the
 # version check silently never fires and the recreate loses the venv it was handed.
+# The awk anchors on the "independent Apple Silicon venv" substring; keep that wording in install.sh.
 {
     printf 'substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
@@ -582,7 +548,7 @@ _GUARD_FILE=$(mktemp)
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH"
-    awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+    awk '/independent Apple Silicon venv/{f=1} f{print} f&&/^fi$/{exit}' \
         "$INSTALL_SH"
 } > "$_GUARD_FILE"
 for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate _uv_venv_arm64; do
@@ -660,6 +626,4 @@ RUNNER_EOF
 fi
 rm -f "$_GUARD_FILE"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

@@ -385,6 +385,7 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
       request?.provider_type,
       request?.external_model,
       request?.provider_base_url,
+      request?.provider_api_type,
       request?.stream,
     ],
     [
@@ -393,9 +394,13 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
       "llama_cpp",
       "qwen3-30b",
       "http://127.0.0.1:8080/v1",
+      "chat_completions",
       true,
     ],
   );
+  stageConnection({ apiType: "responses" });
+  const responses = await buildTitleRequest("external::conn-1::m", "x");
+  assert.equal(responses?.provider_api_type, "responses");
   // No base url leaves the backend's default in charge, and an installation key
   // outranks a stale browser copy.
   stageConnection({ baseUrl: "", hasApiKey: true });
@@ -419,7 +424,8 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
   );
   const held = await buildTitleRequest("external::conn-1::gpt-5.4", "x");
   assert.notEqual(held?.encrypted_api_key, "sk-browser-held");
-  assert.equal(atob(held?.encrypted_api_key ?? "").length, 128);
+  // Envelope: version.wrappedKey.nonce.ciphertext; the RSA-1024 wrap is 128 bytes.
+  assert.equal(atob((held?.encrypted_api_key ?? "").split(".")[1] ?? "").length, 128);
   const local = await buildTitleRequest(
     "unsloth/gemma-4-E2B-it-GGUF",
     "User: hi",

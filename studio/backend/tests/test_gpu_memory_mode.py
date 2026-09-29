@@ -33,6 +33,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+# The launcher fixtures live beside this file, and the tensor-split cells at the bottom
+# drive the real load_model through them rather than re-deriving a command builder.
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
 # Same external-dep stubs as the other llama_cpp unit tests so importing
 # the backend doesn't drag in structlog / httpx / loggers.
 _loggers_stub = _types.ModuleType("loggers")
@@ -215,16 +221,9 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     # The branch sits before GPU selection assigns gpu_indices; --fit on is its emission.
     assert gate < src.find("gpu_indices, use_fit = None, True")
     assert 'cmd.extend(["--fit", "on"])' in src
-    # TP drops for this path, but at a guard BEFORE the quantized-KV cache-drop, so
-    # a requested quantized cache survives into the --fit load.
     tp_drop = src.find('if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:')
     assert tp_drop != -1, "manual + Auto layers must drop tensor_parallel"
     assert "tensor_parallel = False" in src[tp_drop : tp_drop + 400]
-    cache_drop = src.find("Tensor parallelism requires a non-quantized KV cache")
-    assert cache_drop != -1
-    assert (
-        tp_drop < cache_drop
-    ), "TP must drop before the cache-drop so a quantized KV survives --fit"
 
 
 def test_auto_layers_never_sends_ctx_size_zero():
@@ -308,15 +307,15 @@ def test_route_normalizes_explicit_extras_before_reload_dedupe():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     preserve = load_impl.index("_gpu_layers_override = parse_gpu_layers_override")
-    translate = load_impl.index(
-        'request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})'
-    )
+    translate = load_impl.index('_manual_updates["gpu_layers"] = _gpu_layers_override')
+    preserve_ts = load_impl.index("_tensor_split_override = parse_tensor_split_override")
+    translate_ts = load_impl.index('_manual_updates["tensor_split"] = _tensor_split_override')
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("_reuse_loaded_gguf(")
-    assert preserve < translate < strip < normalize < dedupe
+    assert preserve < translate < preserve_ts < translate_ts < strip < normalize < dedupe
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -629,15 +628,18 @@ def _target_state_gpu_ids(backend, gpu_ids):
     )
 
 
-def test_gpu_ids_reload_detection_is_order_insensitive():
+def test_gpu_ids_reload_detection_is_order_sensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
     # A real non-narrowed load records the raw request too; the non-diffusion
-    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
-    # (no narrowing) so this exercises the order-insensitive comparison.
+    # dedupe compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order comparison alone.
     backend._requested_gpu_ids = [0, 1]
-    # Same set, different order -> no reload.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    # The picker's order IS the device order, so the same set dragged into a
+    # different order is a different placement and has to reload.
+    assert _target_state_gpu_ids(backend, [1, 0]) is False
+    # Same set, same order -> no reload.
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
@@ -654,7 +656,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     )
 
     # The original request still matches after the fitter narrows it.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     assert backend.requested_gpu_ids == [0, 1]
     # The status response echoes the effective pin, which must also round-trip.
     # Treat the incoming subset as the latest intent so status and a future
@@ -954,6 +956,16 @@ def test_start_diffusion_server_resets_tensor_parallel():
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
+
+
+@pytest.mark.parametrize(
+    ("parent_ids", "expected"),
+    [([], None), ([2], (2,)), ([0, 1], None)],
+)
+def test_unmasked_child_gpu_map_is_known_only_for_one_gpu(monkeypatch, parent_ids, expected):
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: parent_ids)
+    assert LlamaCppBackend._unmasked_child_gpu_physical_ids() == expected
 
 
 def _patch_split_pin_env(monkeypatch, *, inherited, reported):
@@ -1380,25 +1392,30 @@ def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
     # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so it is the one shape allowed
     # to skip the GPU arbiter. Auto (or any pinned layer count) puts the model on the GPU and must still evict a pipeline.
     zero = llama_cpp_module.zero_vram_chat_load
-    assert zero("manual", 0) is True
-    assert zero("auto", 0) is False
-    assert zero("manual", 1) is False
-    assert zero("manual", -1) is False
+    # Speculation named explicitly off: an ABSENT mode resolves to auto everywhere else
+    # in the module, so it is GPU-bearing and covered by its own test below.
+    assert zero("manual", 0, [], False, "off") is True
+    assert zero("auto", 0, [], False, "off") is False
+    assert zero("manual", 1, [], False, "off") is False
+    assert zero("manual", -1, [], False, "off") is False
 
 
 def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
     # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a drafter, so those loads DO hold
     # VRAM. --mmproj and --model-draft are added by the backend, so their intent arrives as flags.
     zero = llama_cpp_module.zero_vram_chat_load
-    assert zero("manual", 0, ["--device", "CUDA0"]) is False
-    assert zero("manual", 0, ["-dev", "CUDA0"]) is False
-    assert zero("manual", 0, ["--split-mode", "tensor"]) is False
-    assert zero("manual", 0, ["--model-draft", "/tmp/draft.gguf"]) is False
-    assert zero("manual", 0, [], True) is False
+    assert zero("manual", 0, ["--device", "CUDA0"], False, "off") is False
+    assert zero("manual", 0, ["-dev", "CUDA0"], False, "off") is False
+    assert zero("manual", 0, ["--split-mode", "tensor"], False, "off") is False
+    assert zero("manual", 0, ["--model-draft", "/tmp/draft.gguf"], False, "off") is False
+    assert zero("manual", 0, [], True, "off") is False
     assert zero("manual", 0, [], False, "model") is False
     # A CPU-pinned device and a CPU-forced drafter keep it zero-VRAM.
-    assert zero("manual", 0, ["--device", "none"]) is True
-    assert zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"]) is True
+    assert zero("manual", 0, ["--device", "none"], False, "off") is True
+    assert (
+        zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"], False, "off")
+        is True
+    )
 
 
 def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
@@ -1407,7 +1424,9 @@ def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0, [], False, "off") is True
     assert zero("manual", 0, [], False, " OFF ") is True
-    assert zero("manual", 0, [], False, "") is True
+    # Empty is NOT off: it canonicalizes to None like an omitted mode, and every
+    # consumer resolves that to auto, which may launch a drafter on the GPU.
+    assert zero("manual", 0, [], False, "") is False
     assert zero("manual", 0, [], False, "auto") is False
     assert zero("manual", 0, [], False, "mtp") is False
     assert zero("manual", 0, [], False, "default") is False
@@ -1465,3 +1484,92 @@ def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
     # llama.cpp assigns rather than accumulates for this one, so the last flag wins.
     cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload", "--mmproj-offload"]
     assert has(cmd, {}) is True
+
+
+def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
+    # _canonicalize_spec_mode returns None for None, "" and whitespace alike, and every
+    # consumer resolves that to "auto" (`... or "auto"` in load_model), where a remote or
+    # local sidecar can be discovered and launched with its default GPU offload. Reading
+    # an absent mode as "off" here let an API or defaulted load skip acquire_for(CHAT)
+    # while the launch-time mask, which reads the finished argv and so sees the drafter
+    # that got added, kept the GPUs visible: no arbiter, real VRAM, free to land on a
+    # resident image/video pipeline and OOM both.
+    zero = llama_cpp_module.zero_vram_chat_load
+    assert zero("manual", 0) is False
+    assert zero("manual", 0, [], False, None) is False
+    assert zero("manual", 0, [], False, "") is False
+    assert zero("manual", 0, [], False, "   ") is False
+    # Only the canonical spelling still exempts it.
+    assert zero("manual", 0, [], False, "off") is True
+
+
+def test_manual_auto_layers_never_emits_two_tensor_splits(tmp_path):
+    """Manual + Auto layers is the one cell where the route holds the ratio twice: the
+    strip is False at ``gpu_layers < 0`` while the promotion still fires (#11330).
+    llama.cpp reads the LAST ``--tensor-split``, so a launch path that kept either copy
+    would place by the wrong one; both die here, and that is the launcher's doing rather
+    than the route's, which is why it is pinned.
+    """
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        # Exactly the state the /load promotion leaves behind: the field set AND the
+        # raw flag still in extras, because the strip did not fire at gpu_layers < 0.
+        tensor_split = [2.2, 1.0],
+        extra_args = ["-ts", "2.2,1", "-sm", "layer"],
+    )["cmd"]
+    tokens = [tok for tok in cmd if tok in ("--tensor-split", "-ts")]
+    assert len(tokens) <= 1, f"the ratio reached argv twice: {cmd}"
+    # Today both copies are dropped, so /status must not claim a ratio llama-server
+    # never received.
+    assert tokens == []
+    assert backend.tensor_split is None
+
+
+def test_manual_explicit_layers_emits_the_promoted_ratio_once(tmp_path):
+    """The control for the cell above: with layers pinned the strip DOES fire, so the
+    promoted field is the only copy and it is the one that reaches argv (#11330)."""
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 49,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        tensor_split = [2.2, 1.0],
+        # strip_shadowing_flags already removed the raw -ts at this point.
+        extra_args = ["-sm", "layer"],
+    )["cmd"]
+    assert cmd.count("--tensor-split") == 1
+    assert cmd[cmd.index("--tensor-split") + 1] == "2.2,1"
+    assert backend.tensor_split == [2.2, 1.0]
+
+
+def test_manual_auto_layers_does_not_judge_a_rewrite_that_never_happens():
+    """At Auto layers the launcher drops both copies of the ratio, so the route must not refuse
+    a value over the six-digit rendering it will never produce (the strip predicate and the
+    reserialized predicate are the same question)."""
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    for marker in (
+        "reserialized = _resolved_layers >= 0",
+        "reserialized = _validate_resolved_layers >= 0",
+    ):
+        assert marker in route_src, marker

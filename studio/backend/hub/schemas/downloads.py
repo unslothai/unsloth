@@ -71,19 +71,25 @@ class DownloadJobStatus(BaseModel):
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
+    attempt: int = Field(
+        1,
+        description = "Worker attempt within this generation; a retry that restarts the file bumps it so a client drops the old run's progress.",
+    )
 
 
 class DownloadStartResponse(BaseModel):
     job_key: str
     state: str
     accepted: bool
+    # True when this start attached to a job already running rather than starting one.
+    attached: bool = False
     generation: int
-    # The transport the job is really on: the one the backend resolved for a
-    # fresh start, or the running job's own when this start adopted one.
-    # Either can differ from what the client asked for.
+    # The transport the job is really on, which can differ from the one the client asked for.
     transport: Optional[str] = None
-    # Set only when an adopted job had fallen back from Xet to HTTP: stopping
-    # it still writes the original marker, so it is a restart, not a resume.
+    # Set only when an adopted job had fallen back from Xet to HTTP: stopping it still writes the
+    # original marker, so it is a restart, not a resume.
+    # Set only on a job that fell back from Xet to HTTP mid-flight: cancelling it still writes the original
+    # transport's marker, so the partial is restart-only even though the worker is on resumable HTTP.
     cancel_transport: Optional[str] = None
 
 
@@ -98,9 +104,6 @@ class ActiveDownload(BaseModel):
     repo_id: Optional[str] = None
     variant: Optional[str] = None
     transport: Optional[str] = None
-    # Set only on a job that fell back from Xet to HTTP mid-flight: cancelling
-    # it still writes the original transport's marker, so the partial is
-    # restart-only even though the worker is on resumable HTTP.
     cancel_transport: Optional[str] = None
     state: str
     files: Optional[List[str]] = Field(
@@ -132,6 +135,9 @@ class TransportCapabilities(BaseModel):
     xet: TransportCapability
     auto_resolves_to: Literal["xet", "http"] = "xet"
     auto_reason: Optional[str] = None
+    # False when the installed huggingface_hub refetches an interrupted file from zero, so no transport
+    # can offer a byte-resume and the UI must not label one.
+    partials_resumable: bool = True
 
 
 class TransportStatusResponse(BaseModel):
@@ -142,8 +148,8 @@ class TransportStatusResponse(BaseModel):
 
 class DownloadProgressResponse(BaseModel):
     downloaded_bytes: int
-    # Finalized-blob bytes only (no ``.incomplete``). Registry-loss completion
-    # fallbacks key off this so a partial isn't mistaken for a finished download.
+    # Finalized-blob bytes only: registry-loss completion fallbacks key off this, so a partial is not
+    # mistaken for a finished download.
     completed_bytes: int = 0
     complete_on_disk: bool = Field(
         False,
@@ -154,6 +160,9 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``. A redacted reading is an empty string, never null,
+    # so the discriminator above survives.
+    cache_ref: Optional[str] = None
     cache_measured: bool = Field(
         True,
         description = (
@@ -208,12 +217,18 @@ class DatasetDownloadJobStatus(BaseModel):
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
+    attempt: int = Field(
+        1,
+        description = "Worker attempt within this generation; a retry that restarts the file bumps it so a client drops the old run's progress.",
+    )
 
 
 class DatasetDownloadStartResponse(BaseModel):
     repo_id: str
     state: str
     accepted: bool
+    # Attached to a job already running, rather than starting one (see above).
+    attached: bool = False
     generation: int
     # The transport the job is really on, and its cancel marker (see above).
     transport: Optional[str] = None
