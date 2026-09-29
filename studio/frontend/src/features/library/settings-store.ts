@@ -16,7 +16,7 @@ export interface LibrarySettings {
   imageLayout: "masonry" | "square";
   showCardDates: boolean;
   sort: LibrarySort;
-  startTab: "last" | "suggested" | "favorites" | "folders" | "all";
+  startTab: "last" | "suggested" | "favorites" | "folders" | "all" | "chats";
   lastTab: LibraryTab;
   tabs: Record<LibraryTab, LibraryTabVisibility>;
   suggestedLimit: number;
@@ -38,11 +38,12 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
     suggested: "always",
     favorites: "always",
     folders: "always",
-    images: "auto",
+    images: "always",
     videos: "auto",
     audio: "auto",
     models: "auto",
     all: "always",
+    chats: "always",
   },
   suggestedLimit: 40,
   showChatAttachments: true,
@@ -55,9 +56,9 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
 
 export const CARD_COLUMNS: Record<LibrarySettings["cardSize"], { minWidth: number; max: number }> = {
-  small: { minWidth: 170, max: 6 },
-  medium: { minWidth: 200, max: 5 },
-  large: { minWidth: 240, max: 4 },
+  small: { minWidth: 140, max: 6 },
+  medium: { minWidth: 170, max: 5 },
+  large: { minWidth: 210, max: 4 },
 };
 
 export type LibraryView = "grid" | "list";
@@ -81,7 +82,7 @@ interface LibrarySettingsState extends LibrarySettings {
 }
 
 /** v1 had one mediaTabs switch for Images, Videos and Audio together; before v3, Fine-tunes
- * always showed. */
+ * always showed; before v4, Images showed only once there were images. */
 export function migrateLibrarySettings(persisted: unknown, version: number): Record<string, unknown> {
   const state = { ...(persisted as Record<string, unknown>) };
   if (version < 2) {
@@ -92,6 +93,10 @@ export function migrateLibrarySettings(persisted: unknown, version: number): Rec
   if (version < 3) {
     const tabs = state.tabs as Record<string, string> | undefined;
     if (tabs?.models === "always") state.tabs = { ...tabs, models: "auto" };
+  }
+  if (version < 4) {
+    const tabs = state.tabs as Record<string, string> | undefined;
+    if (tabs?.images === "auto") state.tabs = { ...tabs, images: "always" };
   }
   return state;
 }
@@ -105,7 +110,7 @@ export const useLibrarySettingsStore = create<LibrarySettingsState>()(
     }),
     {
       name: LIBRARY_SETTINGS_STORAGE_KEY,
-      version: 3,
+      version: 4,
       migrate: (persisted, version) =>
         migrateLibrarySettings(persisted, version) as unknown as LibrarySettingsState,
     },
