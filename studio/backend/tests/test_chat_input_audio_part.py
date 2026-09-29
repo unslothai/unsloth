@@ -651,10 +651,10 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     inference_route._prepare_audio_for_llama("QUFB")
     assert caps == [1000]  # one clip keeps the whole cap, exactly as before
 
+    # Clips that fit together keep their full size.
     caps.clear()
     inference_route._prepare_audio_clips_for_llama(["QUFB", "QUFB", "QUFB"])
-    wav = 44 + 100 * 2
-    assert caps == [1000 // 3, (1000 - wav) // 2, 1000 - 2 * wav]
+    assert caps == [44 + 100 * 2] * 3
 
     # Pass-through clips are forwarded at their upload size, so transcodes share what they leave.
     caps.clear()
@@ -666,50 +666,71 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     assert caps == [1000 - 4]
 
 
-def test_each_clip_decodes_within_what_the_earlier_ones_left(monkeypatch):
-    """A later clip may not decode a full cap's worth while earlier clips are held."""
+def test_the_wav_budget_does_not_depend_on_clip_order(monkeypatch):
+    """A long clip beside a short one fits by downsampling both to one shared rate.
+
+    An equal split starved the long clip below the minimum rate whenever it came first.
+    """
+    import base64
+    import io
+    import wave
+
     import numpy as np
 
-    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 10)
-    caps = []
-
-    def _decode(_b64):
-        caps.append(inference_route._audio_seconds_cap())
-        return np.zeros(4 * 16000, np.float32)
-
-    monkeypatch.setattr(inference_route, "_decode_audio_base64", _decode)
-    inference_route._decode_audio_clips(["a", "b"])
-    assert caps == [10, 6]
-    assert inference_route._audio_seconds_cap() == 10  # reset after the decode
-
-    caps.clear()
-    with pytest.raises(inference_route._DecodedAudioTooLongError):
-        inference_route._decode_audio_clips(["a", "b", "c"])
-    assert caps == [10, 6, 2]
-
-
-def test_multi_clip_mlx_target_is_refused_before_the_switch(monkeypatch):
-    import core.inference.local_model_resolver as resolver
-
-    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+    long_clip = np.zeros(10 * 16000, np.float32)
+    short_clip = np.zeros(16000, np.float32)
+    monkeypatch.setattr(inference_route, "_sniff_audio_container", lambda _raw: None)
     monkeypatch.setattr(
         inference_route,
-        "_decode_audio_base64",
-        lambda _b64: pytest.fail("decoded clips for a target that cannot take them"),
+        "_decode_audio_mono",
+        lambda raw: ((long_clip if raw == b"LNG" else short_clip), 16000),
     )
-    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route._preflight_audio_for_switch({"clips": ["a", "b"]}, False))
-    assert exc.value.status_code == 400
-    assert exc.value.detail == inference_route._MLX_MULTI_AUDIO_DETAIL
+    # Room for 11 seconds at 9 kHz, well under the 16 kHz the clips arrive at.
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", 2 * 44 + 2 * 11 * 9000)
 
-    # GGUF on the same host still takes several clips.
-    monkeypatch.setattr(
-        inference_route, "_prepare_audio_clips_for_llama", lambda clips: [("x", "wav")] * len(clips)
-    )
-    preflight = {"clips": ["a", "b"]}
-    asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
-    assert len(preflight["prepared"]) == 2
+    def rates(prepared):
+        out = []
+        for data, fmt in prepared:
+            assert fmt == "wav"
+            with wave.open(io.BytesIO(base64.b64decode(data))) as wav:
+                out.append(wav.getframerate())
+        return out
+
+    long_b64 = base64.b64encode(b"LNG").decode()
+    short_b64 = base64.b64encode(b"SHT").decode()
+    assert rates(inference_route._prepare_audio_clips_for_llama([long_b64, short_b64])) == [
+        9000,
+        9000,
+    ]
+    assert rates(inference_route._prepare_audio_clips_for_llama([short_b64, long_b64])) == [
+        9000,
+        9000,
+    ]
+
+
+def test_clips_below_the_shared_rate_are_left_alone():
+    n_low, n_high = 8000 * 1200, 48000 * 300
+    budget = 25 * 1024 * 1024
+    caps = inference_route._wav_caps_for_clips([(n_low, 8000), (n_high, 48000)], budget)
+    assert caps[0] == 44 + 2 * n_low
+    assert sum(caps) <= budget
+    # The high-rate clip still clears the 8 kHz floor, where an even split would not.
+    assert (caps[1] - 44) // 2 / 300 >= 8000
+
+
+def test_held_clips_count_against_the_sample_ceiling(monkeypatch):
+    """Decoded clips are held until the budget is split, so they share one sample ceiling."""
+    seen = []
+
+    def _decode(_raw):
+        seen.append(inference_route._decoded_samples_cap())
+        return inference_route._decoded_samples_cap
+
+    monkeypatch.setattr(inference_route, "_MAX_DECODED_SAMPLES", 1000)
+    inference_route._decode_within(0.0, _decode, b"", samples_used = 600)
+    assert seen == [400]
+    with pytest.raises(inference_route._DecodedAudioTooLongError):
+        inference_route._decode_within(0.0, _decode, b"", samples_used = 1000)
 
 
 class _CapturingAudioBackend:

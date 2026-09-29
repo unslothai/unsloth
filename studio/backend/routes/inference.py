@@ -22083,33 +22083,41 @@ class _DecodedAudioTooLongError(ValueError):
     """Decoded audio crossed the duration cap before it could be buffered."""
 
 
-# Seconds the current decode may use: what earlier clips in the request left over.
-_AUDIO_SECONDS_LEFT: "contextvars.ContextVar[Optional[int]]" = contextvars.ContextVar(
-    "_AUDIO_SECONDS_LEFT", default = None
+# (seconds, samples) the current decode may use: what earlier clips in the request left over.
+_AUDIO_BUDGET_LEFT: "contextvars.ContextVar[Optional[tuple[int, int]]]" = contextvars.ContextVar(
+    "_AUDIO_BUDGET_LEFT", default = None
 )
 
 
 def _audio_seconds_cap() -> int:
-    left = _AUDIO_SECONDS_LEFT.get()
-    return _MAX_AUDIO_SECONDS if left is None else min(left, _MAX_AUDIO_SECONDS)
+    left = _AUDIO_BUDGET_LEFT.get()
+    return _MAX_AUDIO_SECONDS if left is None else min(left[0], _MAX_AUDIO_SECONDS)
 
 
 def _decoded_samples_cap() -> int:
-    if _AUDIO_SECONDS_LEFT.get() is None or _MAX_AUDIO_SECONDS <= 0:
+    left = _AUDIO_BUDGET_LEFT.get()
+    if left is None or _MAX_AUDIO_SECONDS <= 0:
         return _MAX_DECODED_SAMPLES
-    return _MAX_DECODED_SAMPLES * _audio_seconds_cap() // _MAX_AUDIO_SECONDS
+    scaled = _MAX_DECODED_SAMPLES * _audio_seconds_cap() // _MAX_AUDIO_SECONDS
+    return min(scaled, left[1])
 
 
-def _decode_within(seconds_used: float, decode, *args):
-    """Run ``decode`` capped to the duration the earlier clips left."""
-    left = math.ceil(_MAX_AUDIO_SECONDS - seconds_used)
-    if left <= 0:
+def _decode_within(
+    seconds_used: float,
+    decode,
+    *args,
+    samples_used: int = 0,
+):
+    """Run ``decode`` capped to the duration and samples the earlier clips left."""
+    seconds_left = math.ceil(_MAX_AUDIO_SECONDS - seconds_used)
+    samples_left = _MAX_DECODED_SAMPLES - samples_used
+    if seconds_left <= 0 or samples_left <= 0:
         raise _DecodedAudioTooLongError("combined audio exceeds the duration cap")
-    token = _AUDIO_SECONDS_LEFT.set(left)
+    token = _AUDIO_BUDGET_LEFT.set((seconds_left, samples_left))
     try:
         return decode(*args)
     finally:
-        _AUDIO_SECONDS_LEFT.reset(token)
+        _AUDIO_BUDGET_LEFT.reset(token)
 
 
 def _request_audio_clips(payload) -> list[str]:
@@ -22772,7 +22780,8 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
 def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
     """Prepare clips for llama-server in order, under one shared byte and duration budget.
 
-    wav/mp3 pass through; other formats are transcoded to WAV and share the bytes left over.
+    wav/mp3 pass through; other formats are decoded first, then transcoded to WAV under one
+    shared rate ceiling, so the result does not depend on attachment order.
     Blocking; call via a thread from async paths.
     """
     stripped = [_strip_audio_data_uri(clip) for clip in clips]
@@ -22781,31 +22790,65 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
     wav_budget = _MAX_AUDIO_RAW_BYTES - sum(
         len(raw) for raw, kept in zip(raws, passthrough) if kept is not None
     )
-    transcodes_left = passthrough.count(None)
     total_seconds = 0.0
-    prepared: list[tuple[str, str]] = []
-    for clip, raw, kept in zip(stripped, raws, passthrough):
+    samples_held = 0
+    decoded: dict[int, tuple] = {}
+    for index, (raw, kept) in enumerate(zip(raws, passthrough)):
         if kept is not None:
-            container, seconds = kept
-            prepared.append((clip, container))
+            seconds = kept[1]
         else:
             arr, sr = (
-                _decode_within(total_seconds, _decode_audio_mono, raw)
-                if prepared
+                _decode_within(total_seconds, _decode_audio_mono, raw, samples_used = samples_held)
+                if index
                 else _decode_audio_mono(raw)
             )
-            arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr, cap = wav_budget // transcodes_left)
-            wav = _mono_f32_to_wav_bytes(arr, sr)
-            wav_budget -= len(wav)
-            transcodes_left -= 1
+            decoded[index] = (arr, sr)
+            samples_held += len(arr)
             seconds = len(arr) / float(sr) if sr else 0.0
-            prepared.append((base64.b64encode(wav).decode("ascii"), "wav"))
         total_seconds += seconds
         if total_seconds > _MAX_AUDIO_SECONDS:
             raise _DecodedAudioTooLongError(
                 f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
+    caps = (
+        {index: wav_budget for index in decoded}
+        if len(decoded) <= 1
+        else dict(
+            zip(
+                decoded,
+                _wav_caps_for_clips([(len(a), sr) for a, sr in decoded.values()], wav_budget),
+            )
+        )
+    )
+    prepared: list[tuple[str, str]] = []
+    for index, (clip, kept) in enumerate(zip(stripped, passthrough)):
+        if kept is not None:
+            prepared.append((clip, kept[0]))
+            continue
+        arr, sr = _fit_transcoded_audio_to_wav_cap(*decoded.pop(index), cap = caps[index])
+        prepared.append((base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"))
     return prepared
+
+
+def _wav_caps_for_clips(clips: list[tuple[int, int]], budget: int) -> list[int]:
+    """WAV byte caps for (samples, rate) clips under the highest shared rate that fits."""
+
+    def wav_bytes(n: int, sr: int, rate: int) -> int:
+        return _WAV_HEADER_BYTES + 2 * (n * min(sr, rate) // max(sr, 1))
+
+    def total(rate: int) -> int:
+        return sum(wav_bytes(n, sr, rate) for n, sr in clips)
+
+    low, high = 0, max(sr for _, sr in clips)
+    if total(high) <= budget:
+        return [wav_bytes(n, sr, high) for n, sr in clips]
+    while low < high:
+        mid = (low + high + 1) // 2
+        if total(mid) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return [wav_bytes(n, sr, low) for n, sr in clips]
 
 
 def _strip_audio_data_uri(b64: str) -> str:
