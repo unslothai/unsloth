@@ -21,7 +21,7 @@ export function DocumentView({
   name: string;
   contentType?: string;
   scale?: number;
-  /** Card thumbnail: first PDF page only, Office parses queued. */
+  /** Card thumbnail: first PDF page or slide only, Office parses queued. */
   thumbnail?: boolean;
 }) {
   return (
@@ -29,7 +29,7 @@ export function DocumentView({
       {kind === "pdf" ? (
         <PdfView file={file} scale={scale} firstPageOnly={thumbnail} />
       ) : (
-        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} queued={thumbnail} />
+        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} thumbnail={thumbnail} />
       )}
     </Suspense>
   );

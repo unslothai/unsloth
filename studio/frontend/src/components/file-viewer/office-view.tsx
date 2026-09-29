@@ -512,35 +512,42 @@ export default function OfficeView({
   name,
   contentType,
   scale,
-  queued = false,
+  thumbnail = false,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
   contentType: string;
   scale: number;
-  queued?: boolean;
+  /** Card thumbnail: parse queued, first slide only. */
+  thumbnail?: boolean;
 }) {
   const t = useT();
   const [state, setState] = useState<{ file: Blob; parsed?: Parsed; error?: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
     const run = () => parse(file, kind, name, contentType);
-    (queued ? queueParse(run, () => cancelled) : run()).then(
+    (thumbnail ? queueParse(run, () => cancelled) : run()).then(
       (parsed) => !cancelled && parsed && setState({ file, parsed }),
       () => !cancelled && setState({ file, error: true }),
     );
     return () => {
       cancelled = true;
     };
-  }, [file, kind, name, contentType, queued]);
+  }, [file, kind, name, contentType, thumbnail]);
   const current = state?.file === file ? state : null;
+  const parsed = current?.parsed;
+  // A thumbnail shows one slide; the rest would still mount through the overscan.
+  const deck = useMemo(() => {
+    if (parsed?.kind !== "slides") return null;
+    if (!thumbnail) return parsed.deck;
+    return { ...parsed.deck, slides: parsed.deck.slides.slice(0, 1), truncated: false };
+  }, [parsed, thumbnail]);
   if (current?.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
-  const parsed = current?.parsed;
   if (!parsed) return <Spinner className="m-auto size-6" />;
   if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
-  if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
+  if (parsed.kind === "slides") return <SlidesView deck={deck ?? parsed.deck} scale={scale} />;
   return <SheetView sheets={parsed.sheets} tabs={!sheetDelimiter(name, contentType)} scale={scale} />;
 }
