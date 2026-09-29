@@ -5300,12 +5300,9 @@ const Composer: FC<{
       // Saved-prompt Run-list calls this directly, so honour disableQueue here
       // too: queuing from the project new-chat composer misbinds the thread.
       if (disableQueue) return false;
-      return startHydratedPromptQueue(
-        items,
-        waitForCurrentRun,
-        undefined,
-        onAborted,
-      );
+      // false here only means an identical start is already pending and will run: not a refusal.
+      startHydratedPromptQueue(items, waitForCurrentRun, undefined, onAborted);
+      return true;
     },
     [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
