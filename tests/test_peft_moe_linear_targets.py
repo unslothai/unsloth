@@ -49,6 +49,8 @@ _MISSING = object()
 @pytest.fixture(autouse = True)
 def patched_peft():
     saved = {name: getattr(twc, name, _MISSING) for name in _PATCHED_ATTRS}
+    pattern_map = twc._MODEL_TO_CONVERSION_PATTERN
+    saved_patterns = dict(pattern_map)
     spec = importlib.util.spec_from_file_location("_unsloth_import_fixes_moe_linear", IMPORT_FIXES)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -60,6 +62,8 @@ def patched_peft():
                 delattr(twc, name)
         else:
             setattr(twc, name, value)
+    pattern_map.clear()
+    pattern_map.update(saved_patterns)
 
 
 def _deepseek_v3():
@@ -146,6 +150,48 @@ def test_dense_and_shared_expert_linears_keep_lora(target_modules):
         return  # peft 0.19 cannot resolve a string against the model: the experts stay unconverted
     experts = peft_model.base_model.model.model.layers[1].mlp.experts
     assert isinstance(experts, ParamWrapper)  # the fused experts are still converted
+
+
+def test_regex_keeps_its_scope():
+    model = _deepseek_v3()
+    # No literal dot: a dotted string skips the conversion altogether.
+    regex = r"model\Wlayers\W1\Wmlp\Wshared_experts\W(gate_proj|up_proj|down_proj)"
+    peft_model = get_peft_model(model, LoraConfig(r = 4, lora_alpha = 8, target_modules = regex))
+    lora_linears = _lora_linears(peft_model)
+    assert {
+        f"model.layers.1.mlp.shared_experts.{leaf}"
+        for leaf in ("gate_proj", "up_proj", "down_proj")
+    } <= lora_linears
+    assert not any(name.startswith("model.layers.0.mlp.") for name in lora_linears)
+
+
+def test_non_linear_namesake_does_not_veto_the_linears():
+    class Wrapped(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x):
+            return self.inner(x)
+
+    model = _deepseek_v3()
+    mlp0 = model.model.layers[0].mlp
+    mlp0.down_proj = Wrapped(mlp0.down_proj)
+    peft_model = get_peft_model(
+        model, LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj", "up_proj", "down_proj"])
+    )
+    lora_linears = _lora_linears(peft_model)
+    assert "model.layers.1.mlp.shared_experts.down_proj" in lora_linears
+    assert "model.layers.0.mlp.down_proj.inner" not in lora_linears
+    assert "model.layers.0.mlp.gate_proj" in lora_linears
+
+
+def test_qwen2_moe_lone_gate_proj_still_trains_the_shared_expert():
+    # PEFT refuses to convert gate_proj without up_proj; before qwen2_moe was mapped it simply was not converted.
+    model = _qwen2_moe()
+    peft_model = get_peft_model(model, LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj"]))
+    assert "model.layers.0.mlp.shared_expert.gate_proj" in _lora_linears(peft_model)
+    assert not isinstance(peft_model.base_model.model.model.layers[0].mlp.experts, ParamWrapper)
 
 
 def test_explicit_target_parameters_are_left_alone():

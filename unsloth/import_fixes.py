@@ -8231,6 +8231,26 @@ def _patch_peft_moe_target_conversion(twc):
     if original_convert_moe is None:
         return
 
+    self_mapped = set()
+
+    def _convert(peft_config, model_type):
+        # peft >= 0.20 passes the model, 0.19 the model type.
+        name = getattr(getattr(model_type, "config", None), "model_type", model_type)
+        if name not in self_mapped:
+            return original_convert_moe(peft_config, model_type)
+        import copy
+
+        saved = {
+            key: copy.copy(getattr(peft_config, key, None))
+            for key in ("target_modules", "target_parameters", "rank_pattern", "alpha_pattern")
+        }
+        try:
+            return original_convert_moe(peft_config, model_type)
+        except ValueError:
+            # A lone gate_proj / up_proj worked before we mapped this type; keep it working unconverted.
+            for key, value in saved.items():
+                setattr(peft_config, key, value)
+
     @functools.wraps(original_convert_moe)
     def _convert_peft_config_moe_unsloth(peft_config, model_type: str) -> None:
         if getattr(peft_config, "target_parameters", None):
@@ -8241,23 +8261,23 @@ def _patch_peft_moe_target_conversion(twc):
             # peft 0.19 turns the string into a set of characters and then fails to find any target.
             if "." in target_modules or not hasattr(twc, "_resolve_string_target_modules"):
                 return
-            return original_convert_moe(peft_config, model_type)
+            return _convert(peft_config, model_type)
 
         if not target_modules:
-            return original_convert_moe(peft_config, model_type)
+            return _convert(peft_config, model_type)
 
         explicit_targets = {
             target for target in target_modules if isinstance(target, str) and "." in target
         }
         if not explicit_targets:
-            return original_convert_moe(peft_config, model_type)
+            return _convert(peft_config, model_type)
 
         bare_targets = set(target_modules) - explicit_targets
         if not bare_targets:
             return
 
         peft_config.target_modules = bare_targets
-        original_convert_moe(peft_config, model_type)
+        _convert(peft_config, model_type)
         peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
 
     twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
@@ -8268,6 +8288,7 @@ def _patch_peft_moe_target_conversion(twc):
         for base_model_type in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}):
             if not dict.__contains__(pattern_map, base_model_type):
                 pattern_map[base_model_type] = base_model_type
+                self_mapped.add(base_model_type)
     _patch_peft_moe_keep_linear_targets(twc)
     twc._unsloth_moe_target_conversion_patch = True
 
@@ -8302,8 +8323,10 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
                 continue
             if module is output:
                 continue
-            if before.lower() == "all-linear" or re.fullmatch(before, name):
-                candidates.add(leaf)
+            if before.lower() == "all-linear":
+                candidates.add(leaf)  # peft resolves all-linear to leaf names too
+            elif re.fullmatch(before, name):
+                candidates.add(name)  # a regex may select one layer: keep exactly what it matched
     else:
         candidates = set(before) - after
 
@@ -8315,16 +8338,23 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
             for name, module in modules
             if name == target or name.endswith("." + target)
         ]
-        if not matched or not all(isinstance(module, nn.Linear) for _, module in matched):
-            continue  # the router (`gate`) or a real expert container: the conversion was right
-        # A Linear whose weight the conversion now targets as a parameter must not also get a module LoRA.
-        if any(
-            f"{name}.weight" == parameter or f"{name}.weight".endswith("." + parameter)
-            for name, _ in matched
-            for parameter in target_parameters
-        ):
+        # Linears only: the router (`gate`) and expert containers are what the conversion is for. A Linear
+        # whose weight the conversion now targets as a parameter must not also get a module LoRA.
+        linear = [
+            name
+            for name, module in matched
+            if isinstance(module, nn.Linear)
+            and not any(
+                f"{name}.weight" == parameter or f"{name}.weight".endswith("." + parameter)
+                for parameter in target_parameters
+            )
+        ]
+        if not linear:
             continue
-        restore.add(target)
+        if len(linear) == len(matched):
+            restore.add(target)
+        else:
+            restore.update(linear)  # a non-Linear namesake must not take the Linears down with it
     return restore
 
 
@@ -8345,7 +8375,7 @@ def _patch_peft_moe_keep_linear_targets(twc):
         try:
             restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
         except Exception as exc:
-            logger.debug("Unsloth: skipped restoring MoE Linear LoRA targets: %s", exc)
+            logger.warning("Unsloth: could not restore MoE Linear LoRA targets: %s", exc)
             return result
         if restore:
             peft_config.target_modules = set(peft_config.target_modules) | restore
