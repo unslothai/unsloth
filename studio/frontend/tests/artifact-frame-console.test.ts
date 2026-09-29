@@ -237,7 +237,10 @@ test("opening straight to the source view does not run the page", () => {
   );
   assert.match(surface, /\{frameMounted && \(\s*<div/);
   // Not effectiveViewMode: it is forced to "preview" while streaming, even for a Code open.
-  assert.match(surface, /const previewing = !isLoadingArtifact && viewMode === "preview";/);
+  assert.match(
+    surface,
+    /const previewing =\s*!isLoadingArtifact && viewMode === "preview" && requestedView === "preview";/,
+  );
   assert.match(surface, /const frameMounted = previewing \|\| previewedId === artifact\.id;/);
   // The badge only counts reports tagged with the artifact on screen.
   assert.match(surface, /outputCounts\.id === artifact\.id \? outputCounts\.errors : 0/);
