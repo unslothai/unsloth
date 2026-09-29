@@ -260,7 +260,14 @@ def _cache_as_legacy_tuple(past_key_values):
     layers = getattr(past_key_values, "layers", None)
     if layers is None:
         return past_key_values.to_legacy_cache()
-    # Static caches allocate max_cache_len positions; keep only the filled ones.
+    # Static caches allocate max_cache_len positions; keep only the filled ones. Quantized and
+    # sliding-window layers hold fewer than past_len positions and cannot be flattened.
+    for layer in layers:
+        if layer.keys is None or layer.keys.shape[-2] < past_len:
+            raise ValueError(
+                f"Unsloth: {type(layer).__name__} does not keep every cached position, so it cannot be "
+                "used as past_key_values. Pass a DynamicCache or the model's own past_key_values."
+            )
     return tuple(
         (layer.keys[..., :past_len, :], layer.values[..., :past_len, :]) for layer in layers
     )

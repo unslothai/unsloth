@@ -114,3 +114,12 @@ def test_static_cache_is_flattened_to_its_filled_length():
     out = _llama()._cache_as_legacy_tuple(cache)
     for (k, v), (k0, v0) in zip(out, legacy):
         assert torch.equal(k, k0) and torch.equal(v, v0)
+
+
+def test_cache_layers_missing_positions_are_rejected():
+    cache = _llama()._ensure_cache_is_dynamic(_kv(PAST_LEN))
+    # A QuantizedLayer counts every token but keeps only the unquantized tail in .keys.
+    cache.layers[0].keys = cache.layers[0].keys[..., 1:, :]
+    cache.get_seq_length = lambda layer_idx = 0: PAST_LEN
+    with pytest.raises(ValueError, match = "does not keep every cached position"):
+        _llama()._cache_as_legacy_tuple(cache)
