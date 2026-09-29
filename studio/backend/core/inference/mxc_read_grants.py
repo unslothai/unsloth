@@ -479,8 +479,75 @@ def ensure(roots: list[str]) -> tuple[str, ...]:
     return tuple(covered)
 
 
+def _leases_dir() -> Path:
+    return record_path().parent / "read-grant-users"
+
+
+def _lease_is_live(path: Path) -> bool:
+    """Windows refuses to delete a file a process still holds open, so a crashed holder's lease goes."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
+
+
+def _live_leases() -> int:
+    try:
+        entries = list(_leases_dir().iterdir())
+    except OSError:
+        return 0
+    return sum(_lease_is_live(entry) for entry in entries)
+
+
+class WorkloadLease:
+    """Held open for one MXC workload's lifetime: the ACEs it may have skipped stay until release."""
+
+    def __init__(self, path: Path, handle):
+        self._path, self._handle = path, handle
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        self._handle.close()
+        self._handle = None
+        with contextlib.suppress(OSError):
+            self._path.unlink()
+        _revoke_if_turned_off()
+
+
+def hold() -> WorkloadLease | None:
+    """Mark a launch as relying on the grants from spawn to exit, across Studio processes."""
+    if not _on_windows():
+        return None
+    path = _leases_dir() / f"{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        handle = open(path, "w", encoding = "utf-8")
+    except OSError as exc:
+        logger.warning("Could not record an MXC workload for the read grants: %s", exc)
+        return None
+    return WorkloadLease(path, handle)
+
+
+def _revoke_if_turned_off() -> None:
+    """Finish a revocation the settings switch or an earlier launch deferred for running workloads."""
+    try:
+        from . import mxc_policy
+        if not (mxc_policy.dacl_fallback_enabled() and enabled()):
+            revoke_recorded()
+    except Exception as exc:  # noqa: BLE001 - cleanup, the next launch or check retries
+        logger.warning("Deferred MXC read-grant cleanup failed: %s", exc)
+
+
 def revoke_recorded() -> tuple[str, ...]:
-    """Remove every grant Studio recorded; returns the roots that were restored."""
+    """Remove every grant Studio recorded; returns the roots that were restored.
+
+    Waits while an MXC workload holds a lease: its container may read through these ACEs, so the
+    last lease to release finishes the job.
+    """
     if not _on_windows() or not record_path().exists():
         return ()
     restored: list[str] = []
@@ -494,6 +561,12 @@ def revoke_recorded() -> tuple[str, ...]:
     with contextlib.ExitStack() as stack:
         stack.push(transaction)
         if not record:
+            return ()
+        running = _live_leases()
+        if running:
+            logger.info(
+                "Deferring the MXC read-grant cleanup until %d running call(s) exit", running
+            )
             return ()
         for key in list(record):
             if _revoke_recorded_root(record, key) == "revoked":
