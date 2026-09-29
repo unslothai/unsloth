@@ -26217,7 +26217,11 @@ async def produce_openai_chat_completions(
         # A remote image the model reads is decoded after its fetch; no older image stands in for it.
         _selected_image = _served_image_part(payload.messages)
         _selects_remote = _remote_image_part(_selected_image)
-        _image_b64 = None if _selects_remote else _pre_parsed[2] or payload.image_base64
+        _image_b64 = (
+            (payload.image_base64 if _legacy_image_distinct else None)
+            if _selects_remote
+            else _pre_parsed[2] or payload.image_base64
+        )
         if _image_b64 is None and _local_image_payloads and not _selects_remote:
             _image_b64 = _local_image_payloads[0]
         # Read as the render reads it after the fetch; b64s stays as sent for GGUF to validate.

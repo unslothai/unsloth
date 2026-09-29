@@ -11137,6 +11137,20 @@ def test_chat_leaves_an_unread_older_image_to_the_loaded_model(monkeypatch):
     assert len(recorder.calls) == 1
 
 
+def test_chat_validates_a_legacy_image_beside_a_remote_one_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    payload = _chat_image_request("https://example.com/0.png")
+    payload.image_base64 = "Zm9v"
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.detail == "Failed to decode image"
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
 def test_chat_refuses_a_remote_image_beside_a_legacy_one_before_non_gguf_switch(monkeypatch):
     backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
     reply = _chat_image_request("https://example.com/0.png").messages[0]
