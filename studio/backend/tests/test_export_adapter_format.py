@@ -150,34 +150,69 @@ def test_gguf_rejects(monkeypatch, tmp_path, cfg, fs_attr, reason):
         backend._convert_peft_dir_to_gguf(str(tmp_path), "q8_0", None)
 
 
-@pytest.mark.parametrize("token,expect", [(False, None), ("hf_x", "hf_x")])
-def test_gguf_converter_token_env(monkeypatch, tmp_path, token, expect):
+def _converter_harness(monkeypatch, tmp_path, with_converter):
+    import importlib.util
     import subprocess
     import sys
     import types
 
-    llama = tmp_path / "llama.cpp"
-    (llama / "gguf-py").mkdir(parents = True)
-    (llama / "convert_lora_to_gguf.py").write_text("")
-    monkeypatch.setitem(
-        sys.modules,
-        "unsloth_zoo.llama_cpp",
-        types.SimpleNamespace(LLAMA_CPP_DEFAULT_DIR = str(llama), install_llama_cpp = lambda **k: None),
-    )
-    seen = {}
+    llama = tmp_path / "home" / "llama.cpp"
+    llama.mkdir(parents = True)
+    if with_converter:
+        (llama / "gguf-py").mkdir()
+        (llama / "convert_lora_to_gguf.py").write_text("")
+    zoo = types.ModuleType("unsloth_zoo")
+    zoo.llama_cpp = types.SimpleNamespace(LLAMA_CPP_DEFAULT_DIR = str(llama))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", zoo)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", zoo.llama_cpp)
+    calls = []
 
-    def _run(cmd, env, **kwargs):
-        seen["env"] = env
+    def _run(
+        cmd,
+        env = None,
+        **kwargs,
+    ):
+        calls.append((cmd, env))
+        if cmd[:2] == ["git", "clone"]:
+            os.makedirs(os.path.join(cmd[-1], "gguf-py"))
+            open(os.path.join(cmd[-1], "convert_lora_to_gguf.py"), "w").close()
         return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
 
     monkeypatch.setattr(subprocess, "run", _run)
-    monkeypatch.setenv("HF_TOKEN", "host-token")
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: object() if name == "torch" else real_find_spec(name, *a),
+    )
     backend = _backend(monkeypatch, True, tmp_path)
     backend.current_model._unsloth_full_state_modules = None
-    (tmp_path / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "o/m"}))
-    backend._convert_peft_dir_to_gguf(str(tmp_path), "q8_0", token)
-    assert seen["env"].get("HF_TOKEN") == expect
-    assert (seen["env"].get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "1") is (token is False)
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "o/m"}))
+    return backend, str(adapter), calls
+
+
+@pytest.mark.parametrize("token,expect", [(False, None), ("hf_x", "hf_x")])
+def test_gguf_converter_token_env(monkeypatch, tmp_path, token, expect):
+    monkeypatch.setenv("HF_TOKEN", "host-token")
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, True)
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", token)
+    env = calls[-1][1]
+    assert env.get("HF_TOKEN") == expect
+    assert (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "1") is (token is False)
+
+
+def test_gguf_converter_cloned_without_package_manager(monkeypatch, tmp_path):
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[0][0][:2] == ["git", "clone"]
+    source = tmp_path / "home" / "llama.cpp-source"
+    assert calls[-1][0][1] == str(source / "convert_lora_to_gguf.py")
+    assert sorted(p.name for p in (tmp_path / "home").iterdir()) == [
+        "llama.cpp",
+        "llama.cpp-source",
+    ]
 
 
 def test_parse_adapter_features(tmp_path):

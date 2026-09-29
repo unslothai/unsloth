@@ -1753,23 +1753,51 @@ class ExportBackend:
                 "llama.cpp's converter; install it and retry."
             )
 
-        from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, install_llama_cpp
+        from unsloth_zoo import llama_cpp as _zoo_llama_cpp
 
-        install_llama_cpp(just_clone_repo = True)
-        converter = os.path.join(LLAMA_CPP_DEFAULT_DIR, "convert_lora_to_gguf.py")
-        if not os.path.exists(converter):
-            source_dir = os.path.join(
-                os.path.dirname(os.path.normpath(LLAMA_CPP_DEFAULT_DIR)),
-                "llama.cpp-source",
-            )
-            install_llama_cpp(llama_cpp_folder = source_dir, just_clone_repo = True)
+        default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
+        source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        converter = next(
+            (
+                path
+                for path in (
+                    os.path.join(d, "convert_lora_to_gguf.py") for d in (default_dir, source_dir)
+                )
+                if os.path.exists(path)
+            ),
+            None,
+        )
+        if converter is None:
+            if not getattr(_zoo_llama_cpp, "_auto_install_enabled", lambda: True)():
+                raise RuntimeError(
+                    "GGUF adapter export needs a llama.cpp source checkout and automatic "
+                    f"installation was declined (UNSLOTH_AUTO_INSTALL=0); clone llama.cpp into {source_dir}."
+                )
+            # A plain clone: install_llama_cpp probes apt-get for build deps even when only
+            # cloning, which fails on macOS, and a prebuilt install ships no convert_lora_to_gguf.py.
+            ensure_dir(Path(source_dir).parent)
+            with tempfile.TemporaryDirectory(dir = Path(source_dir).parent) as tmp_dir:
+                clone = os.path.join(tmp_dir, "llama.cpp")
+                subprocess.run(
+                    [
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "https://github.com/ggml-org/llama.cpp",
+                        clone,
+                    ],
+                    check = True,
+                    capture_output = True,
+                    text = True,
+                )
+                if not os.path.exists(source_dir):
+                    os.replace(clone, source_dir)
             converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-        if not os.path.exists(converter):
-            raise RuntimeError(
-                "convert_lora_to_gguf.py not found after installing a "
-                "llama.cpp source checkout; GGUF adapter export needs a full "
-                "llama.cpp source tree."
-            )
+            if not os.path.exists(converter):
+                raise RuntimeError(
+                    f"convert_lora_to_gguf.py is missing from the llama.cpp clone at {source_dir}."
+                )
         if importlib.util.find_spec("gguf") is None and not os.path.isdir(
             os.path.join(os.path.dirname(converter), "gguf-py")
         ):
