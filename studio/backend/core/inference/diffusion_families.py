@@ -1494,9 +1494,11 @@ def assert_pipeline_class_available(
     try:
         # diffusers' LTX-2 modules import a transformers class the pinned transformers lacks; see ltx2_import_compat.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
+
         if is_ltx2_pipeline_class(pipeline_class):
             ensure_ltx2_pipelines_importable()
         import diffusers
+
         present = hasattr(diffusers, pipeline_class)
         dummy_backends = _dummy_required_backends(getattr(diffusers, pipeline_class, None))
     except Exception as exc:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError

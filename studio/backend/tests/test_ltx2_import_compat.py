@@ -25,7 +25,7 @@ from core.inference import ltx2_import_compat as compat
 BACKEND = Path(__file__).resolve().parents[1]
 NAME = "Gemma4UnifiedForConditionalGeneration"
 
-_TRANSFORMERS_INIT = '''
+_TRANSFORMERS_INIT = """
 import sys
 import types
 
@@ -38,12 +38,12 @@ class ProcessorMixin:
     pass
 
 {extra}
-'''
+"""
 
 # transformers' processing_utils re-executes transformers/__init__.py and so replaces sys.modules["transformers"]
 # (direct_transformers_import). A name bound on the old module object is invisible to a later `from transformers
 # import ...`, which is exactly what broke the first version of the shim.
-_PROCESSING_UTILS = '''
+_PROCESSING_UTILS = """
 import importlib.util
 import os
 import sys
@@ -55,9 +55,9 @@ _spec = importlib.util.spec_from_file_location(
 _fresh = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fresh)
 sys.modules["transformers"] = _fresh
-'''
+"""
 
-_DIFFUSERS_INIT = '''
+_DIFFUSERS_INIT = """
 import importlib
 
 __version__ = "0.40.0"
@@ -78,11 +78,11 @@ def __getattr__(name):
             f"Failed to import {_LAZY[name]} because of the following error (look up to see its traceback):\\n{exc}"
         ) from exc
     return getattr(module, name)
-'''
+"""
 
 # In real transformers the swap fires while `from transformers import (...)` resolves Gemma3 (modeling_gemma3 ->
 # modeling_layers -> processing_utils), i.e. before Gemma4Unified is looked up; importing it first mirrors that.
-_PIPELINE = '''
+_PIPELINE = """
 from transformers import processing_utils  # noqa: F401
 from transformers import (
     Gemma3ForConditionalGeneration,
@@ -94,7 +94,7 @@ from transformers import (
 class {cls}:
     def __init__(self, text_encoder: Gemma3ForConditionalGeneration | Gemma4UnifiedForConditionalGeneration):
         self.text_encoder = text_encoder
-'''
+"""
 
 
 def _write(path: Path, text: str) -> None:
@@ -112,10 +112,15 @@ def fake_stack(tmp_path, monkeypatch):
         _write(root / "transformers" / "__init__.py", _TRANSFORMERS_INIT.format(extra = extra))
         _write(root / "transformers" / "processing_utils.py", _PROCESSING_UTILS)
         _write(root / "diffusers" / "__init__.py", _DIFFUSERS_INIT)
-        _write(root / "diffusers" / "models_stub.py", "class LTX2VideoTransformer3DModel:\n    pass\n")
+        _write(
+            root / "diffusers" / "models_stub.py", "class LTX2VideoTransformer3DModel:\n    pass\n"
+        )
         _write(root / "diffusers" / "pipelines" / "__init__.py", "")
         _write(root / "diffusers" / "pipelines" / "ltx2" / "__init__.py", "")
-        _write(root / "diffusers" / "pipelines" / "ltx2" / "connectors.py", "class LTX2TextConnectors:\n    pass\n")
+        _write(
+            root / "diffusers" / "pipelines" / "ltx2" / "connectors.py",
+            "class LTX2TextConnectors:\n    pass\n",
+        )
         _write(
             root / "diffusers" / "pipelines" / "ltx2" / "pipeline_ltx2.py",
             _PIPELINE.format(cls = "LTX2Pipeline"),
@@ -172,7 +177,9 @@ def test_ensure_makes_every_ltx2_pipeline_importable(fake_stack):
     assert NAME not in sys.modules["transformers"].__dict__
     assert NAME not in original.__dict__
     # A Gemma3 encoder still satisfies the annotation the pipeline carries.
-    pipe = diffusers.LTX2Pipeline(text_encoder = sys.modules["transformers"].Gemma3ForConditionalGeneration())
+    pipe = diffusers.LTX2Pipeline(
+        text_encoder = sys.modules["transformers"].Gemma3ForConditionalGeneration()
+    )
     assert pipe.text_encoder is not None
     # Idempotent.
     assert compat.ensure_ltx2_pipelines_importable() is True
@@ -264,7 +271,9 @@ def test_every_ltx2_pipeline_import_goes_through_the_shim(rel):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     for name in _functions_importing_ltx2_pipeline(path):
-        assert _calls_ensure_before(funcs[name]), f"{rel}:{name} imports an LTX-2 pipeline without the shim"
+        assert _calls_ensure_before(
+            funcs[name]
+        ), f"{rel}:{name} imports an LTX-2 pipeline without the shim"
 
 
 def test_video_backend_pipeline_getattr_goes_through_the_shim():

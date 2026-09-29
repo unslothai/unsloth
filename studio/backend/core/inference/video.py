@@ -4932,6 +4932,7 @@ class VideoBackend:
 
         # ── build the pipeline.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
+
         if is_ltx2_pipeline_class(fam.pipeline_class):
             ensure_ltx2_pipelines_importable(logger)
         pipeline_cls = getattr(diffusers, fam.pipeline_class)

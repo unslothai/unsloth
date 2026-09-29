@@ -140,7 +140,8 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             pass
 
         placeholders = {
-            name: _make_placeholder(name, LTX2_OPTIONAL_TRANSFORMERS_NAMES[name]) for name in missing
+            name: _make_placeholder(name, LTX2_OPTIONAL_TRANSFORMERS_NAMES[name])
+            for name in missing
         }
         touched: list[Any] = []
 
@@ -182,7 +183,9 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
                     len(targets) - len(failed),
                 )
                 for module_name, error in failed:
-                    logger.warning("ltx2_import_compat: %s still fails to import: %s", module_name, error)
+                    logger.warning(
+                        "ltx2_import_compat: %s still fails to import: %s", module_name, error
+                    )
             except Exception:  # noqa: BLE001, S110 -- logging must never turn this into a failure
                 pass
         _done = not failed
