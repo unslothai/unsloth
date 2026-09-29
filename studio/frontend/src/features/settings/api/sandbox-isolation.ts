@@ -15,7 +15,6 @@ export type SandboxToolStatus = {
   reason: string;
   limitations: string[];
   protectionState: string | null;
-  // What to run to get OS isolation here, when the server knows; empty otherwise.
   remediation: string;
 };
 
@@ -36,11 +35,9 @@ export type WindowsSandboxStatus = {
 
 export type SandboxSetupPlan = {
   action: "linux-install" | "windows-setup" | null;
-  // How the setup would elevate (e.g. sudo, pkexec, uac), for display only.
   elevation: string | null;
   manualCommand: string;
   reason: string;
-  // The server lets this browser start it: the owner, at the computer running Unsloth.
   canRun: boolean;
 };
 
@@ -50,7 +47,6 @@ export type SandboxStatus = {
   terminal: SandboxToolStatus;
   terminalShell: TerminalShell | null;
   windows: WindowsSandboxStatus | null;
-  // null: a server older than the setup flow.
   setup: SandboxSetupPlan | null;
   checkedAt: number;
   restored?: number;
@@ -169,7 +165,6 @@ function setupFromApi(setup: ApiSetupPlan | null | undefined): SandboxSetupPlan 
     elevation: setup.elevation ?? null,
     manualCommand: setup.manual_command ?? "",
     reason: setup.reason ?? "",
-    // Missing flag: the server named an action, which it only does when this request may run it.
     canRun: action !== null && (setup.can_run ?? true),
   };
 }

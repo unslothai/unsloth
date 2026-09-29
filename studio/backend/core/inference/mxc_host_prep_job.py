@@ -22,7 +22,7 @@ _PREPARED_PREFIX = "[mxc-prebuilt] host prepared:"
 _ALREADY_PREPARED = "[mxc-prebuilt] host already prepared"
 
 _lock = threading.Lock()
-# Held while either this job or the Settings setup job decides to start: never two elevated helpers.
+# Shared with the Settings setup job: never two elevated helpers.
 HOST_CHANGE_LOCK = threading.Lock()
 _current: "HostPrepJob | None" = None
 _on_finish: list[Callable[[], None]] = []
@@ -120,7 +120,6 @@ def start() -> HostPrepJob:
     global _current
     from . import mxc_probe, sandbox_setup_job
 
-    # One host change at a time: a Settings setup run (which may itself prepare) owns the host.
     with HOST_CHANGE_LOCK:
         setup = sandbox_setup_job.current()
         if setup is not None and setup.state == "running":

@@ -30,8 +30,7 @@ import {
 import { SANDBOX_SETUP_POLL_MS, sandboxSetupView } from "./sandbox-setup-state";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
-/** Open state for the copy mounted once at the chat-page root, which the composer pill and the
- *  dictation menu open: both unmount with their menu, and the dialog must outlive it. */
+/** Mounted once at the chat-page root so it outlives the menu that opened it. */
 export const useSandboxSetupDialogStore = create<{
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -42,9 +41,7 @@ export const useSandboxSetupDialogStore = create<{
 
 const NOTE_CLASS = "text-xs leading-relaxed";
 
-/** Shown when "Full access in sandbox" is picked on a computer whose OS sandbox does not work
- *  yet. Picking the mode never starts a setup; only the install button does. Cancel leaves the
- *  previous mode, "Use it anyway" keeps the pick with risky calls still asking. */
+/** Picking the mode never starts a setup; only the install button does. */
 export function SandboxSetupDialog({
   open,
   onOpenChange,
@@ -86,13 +83,10 @@ function SandboxSetupContent({
     void loadSettledSandboxCapability().then((next) => {
       if (!mounted.current) return;
       if (next === null) {
-        // Never an endless spinner: say the check failed and offer Retry.
         setLoadFailed(true);
         return;
       }
       setCapability(next);
-      // A setup already running (another window, or before this dialog reopened) keeps
-      // reporting here. Only the owner may read it.
       if (next.canRunSetup) {
         void loadSandboxSetup(t("sandboxSetup.startError"))
           .then((current) => {
@@ -333,7 +327,6 @@ function SandboxSetupContent({
   );
 }
 
-/** The copy mounted once at the chat-page root, beside the Bypass permissions confirmation. */
 export function RootSandboxSetupDialog() {
   const open = useSandboxSetupDialogStore((s) => s.open);
   const setOpen = useSandboxSetupDialogStore((s) => s.setOpen);

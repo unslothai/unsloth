@@ -24,7 +24,6 @@ def _fresh():
 
 @pytest.fixture
 def linux(monkeypatch, tmp_path):
-    """A Linux host whose PATH holds only the tools a test puts there."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     monkeypatch.setattr(sys, "platform", "linux")
@@ -43,7 +42,6 @@ def linux(monkeypatch, tmp_path):
         return state["sudo_ok"]
 
     monkeypatch.setattr(plan_mod, "_sudo_without_password", sudo_check)
-    # The fakes are not root-owned; trust is covered by its own test below.
     monkeypatch.setattr(plan_mod, "_trusted_tool", lambda name: plan_mod.shutil.which(name))
 
     def tool(*names):
@@ -87,7 +85,6 @@ def test_apt_host_with_the_apparmor_restriction_gets_bwrap_and_the_profile(linux
 
 
 def test_the_steps_install_what_install_sh_and_the_remediation_name():
-    # Only the non-interactive flags differ from os_sandbox's constants (mirrored by install.sh).
     for manager, command in os_sandbox._BWRAP_INSTALL_COMMANDS:
         assert plan_mod._INSTALL_STEPS[manager][-1][-1] == command.split()[-1] == "bubblewrap"
     fix = os_sandbox._BWRAP_APPARMOR_FIX
@@ -205,7 +202,6 @@ def test_elevated_steps_ignore_path_and_untrusted_folders(monkeypatch, tmp_path)
     (planted / "apt-get").write_text("#!/bin/sh\n")
     (planted / "apt-get").chmod(0o755)
     monkeypatch.setenv("PATH", str(planted))
-    # A folder that is not root-owned is never trusted, whatever it holds.
     monkeypatch.setattr(plan_mod, "SYSTEM_BIN_DIRS", (str(planted),))
     assert plan_mod.trusted_system_binary("apt-get") is None
     with pytest.raises(LookupError):
@@ -258,7 +254,6 @@ def windows(monkeypatch):
     from utils import mxc_isolation_settings
 
     monkeypatch.setattr(sys, "platform", "win32")
-    # An x64 Windows host whatever this test runs on (an Apple Silicon Mac reads as arm64).
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     state = {
         "installed": True,
@@ -379,7 +374,6 @@ def test_setup_fields_name_the_action_only_for_the_owner_here(linux, monkeypatch
 
 
 def test_windows_commands_paste_into_windows_powershell():
-    # Windows PowerShell 5.1 has no `&&`, and a quoted path needs the call operator.
     steps = (
         (
             r"C:\Users\Jane Doe\python.exe",

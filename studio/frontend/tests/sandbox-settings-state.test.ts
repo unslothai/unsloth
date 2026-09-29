@@ -80,7 +80,6 @@ test("tool rows name the OS backend when isolated and the reason when not", () =
   });
   assert.equal(fallback.isolated, false);
   assert.equal(fallback.reason, "bwrap: denied");
-  // The install command shows only while the tool is not isolated.
   assert.equal(
     toolRowView({ ...tool, available: false, remediation: "run this" })
       .remediation,

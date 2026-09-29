@@ -41,14 +41,12 @@ _CACHE_MAX_ENTRIES = 8
 # ``sun_path`` is 108 bytes and multiprocessing appends about 32.
 _MAX_PROBE_BASE_LEN = 59
 
-# A PASS past its TTL is still served for this long while one background re-probe runs, so a tool
-# call never waits on the 15-minute recheck. A FAIL is never served stale.
+# A stale PASS is served while one background re-probe runs; a FAIL never is.
 _STALE_GRACE_SECONDS = 3600.0
 
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, bool, str]] = {}
 _refreshing: set[tuple[str, str]] = set()
-# Bumped by reset_probe_cache: a re-probe that started before it must not republish.
 _generation = 0
 
 
@@ -107,7 +105,6 @@ def _background_probes_disabled() -> bool:
 
 
 def _refresh_in_background(backend: Any, key: tuple[str, str]) -> None:
-    """Start one re-probe for ``key`` unless one is already running."""
     with _cache_lock:
         if key in _refreshing:
             return
@@ -355,7 +352,7 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
             if not _background_probes_disabled():
                 _refresh_in_background(backend, key)
                 return available, reason
-            # Background probes are off (UNSLOTH_DISABLE_SANDBOX_WARMUP=1): re-probe here, as before.
+            # Background probes are off: re-probe here.
 
     with _cache_lock:
         generation = _generation

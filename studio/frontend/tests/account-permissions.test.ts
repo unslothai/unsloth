@@ -137,7 +137,6 @@ test("the stored values keep their order and get the new names", () => {
       ["full", "permissionModes.full.label"],
     ],
   );
-  // An unknown stored value still reads as the default, not as row 0.
   assert.equal(ui.component.permissionModeOption("bogus").value, "auto");
 });
 
@@ -173,7 +172,6 @@ for (const [name, capability, expected] of [
       assert.deepEqual(applied, ["off"]);
       assert.equal(setupRequested, 0);
     } else {
-      // The mode stays as it was until the dialog applies it; nothing installs by itself.
       assert.deepEqual(applied, []);
       assert.equal(setupRequested, 1);
     }

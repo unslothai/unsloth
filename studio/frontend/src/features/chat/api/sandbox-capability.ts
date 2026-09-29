@@ -6,12 +6,9 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 
 const CAPABILITY_ROUTE = "/api/sandbox/capability";
 const SETUP_ROUTE = "/api/settings/sandbox/setup";
-// Long enough that opening the picker twice does not probe twice, short enough that a sandbox
-// installed from a terminal shows up without a reload.
 const CAPABILITY_TTL_MS = 30_000;
 
 export type SandboxSetupAction = "linux-install" | "windows-setup";
-/** What the setup route can run: a named action, or the Windows runtime alone (no UAC). */
 export type SandboxSetupOperation = SandboxSetupAction | "windows-runtime";
 
 export type SandboxCapability = {
@@ -20,14 +17,11 @@ export type SandboxCapability = {
   backend: string;
   platform: string;
   reason: string;
-  // Only set for the installation owner on the computer running Unsloth.
   setupAction: SandboxSetupAction | null;
   manualCommand: string;
   canRunSetup: boolean;
-  // Why a setup exists but this caller cannot start it; "no_elevation" means the owner is at this
-  // computer but Unsloth has no way to ask for the password (no passwordless sudo, no desktop prompt).
+  // "no_elevation": owner is local but there is no passwordless sudo or desktop prompt.
   setupBlocked: "not_owner" | "not_local" | "no_elevation" | null;
-  // Windows: the MXC opt-in is still off, so the setup needs the owner's consent first.
   needsConsent: boolean;
 };
 
@@ -48,7 +42,6 @@ export type SandboxSetupJob = {
   outputTail: string[];
   steps: string[];
   manualCommand: string;
-  // Why a declined or failed setup stopped, e.g. "a password is required".
   note: string;
 };
 
@@ -107,7 +100,6 @@ export function capabilityFromApi(body: ApiCapability): SandboxCapability {
     reason: body.reason ?? "",
     setupAction,
     manualCommand: body.manual_command ?? "",
-    // A setup the server did not name cannot be started, whatever the flag says.
     canRunSetup,
     setupBlocked:
       body.setup_blocked === "not_owner" ||
@@ -115,7 +107,6 @@ export function capabilityFromApi(body: ApiCapability): SandboxCapability {
       body.setup_blocked === "no_elevation"
         ? body.setup_blocked
         : null,
-    // Only the Windows setup asks for consent, and only from someone who can start it.
     needsConsent:
       canRunSetup &&
       setupAction === "windows-setup" &&
@@ -138,12 +129,10 @@ export function setupJobFromApi(job: ApiSetupJob): SandboxSetupJob {
   };
 }
 
-/** Both tools the OS sandbox covers must be isolated for "Full access in sandbox" to hold. */
 export function sandboxReady(capability: SandboxCapability): boolean {
   return capability.pythonOsIsolated && capability.terminalOsIsolated;
 }
 
-/** The server has no answer yet (its first check is still running), which is not a "no". */
 export function capabilityPending(capability: SandboxCapability): boolean {
   return capability.backend === "unknown" && !sandboxReady(capability);
 }
@@ -151,8 +140,6 @@ export function capabilityPending(capability: SandboxCapability): boolean {
 let cached: { at: number; value: SandboxCapability | null } | null = null;
 let inFlight: Promise<SandboxCapability | null> | null = null;
 
-/** The sandbox this server can give Python and Terminal calls, or null when the server is too
- *  old to say (the picker then behaves exactly as before) or the check failed. */
 export function loadSandboxCapability({
   force = false,
 }: { force?: boolean } = {}): Promise<SandboxCapability | null> {
@@ -181,9 +168,7 @@ export function loadSandboxCapability({
 
 const PENDING_RETRY_MS = 1500;
 
-/** A forced read that does not take "still checking" for an answer: an unknown backend (the
- *  server's first check has not finished) is read again, a few times, before it is returned.
- *  null still means the server could not say (older server, or the request failed). */
+/** A forced read that retries a few times while the backend is still "unknown". */
 export async function loadSettledSandboxCapability({
   attempts = 3,
   delayMs = PENDING_RETRY_MS,
@@ -200,7 +185,6 @@ export async function loadSettledSandboxCapability({
   return capability;
 }
 
-/** Last answer without a request, for rendering a hint synchronously. */
 export function cachedSandboxCapability(): SandboxCapability | null {
   return cached?.value ?? null;
 }

@@ -45,7 +45,6 @@ def env(monkeypatch, tmp_path):
         calls["resets"] += 1
 
     monkeypatch.setattr(sandbox_probe, "reset_probe_cache", count)
-    # Pinning finds root-owned system binaries; the fakes live in tmp_path, so pin by name.
     monkeypatch.setattr(
         plan_mod,
         "elevated_steps",
@@ -65,7 +64,6 @@ def env(monkeypatch, tmp_path):
         output = "",
         gate = None,
     ):
-        """A script that appends its argv to calls.jsonl, prints `output`, and exits `code`."""
         path = tmp_path / name
         wait = f'while [ ! -e "{gate}" ]; do sleep 0.05; done\n' if gate else ""
         path.write_text(
@@ -188,7 +186,6 @@ def test_one_setup_at_a_time_across_both_jobs(monkeypatch, env, tmp_path):
     first = job_mod.start(plan_mod.LINUX_INSTALL)
     try:
         assert job_mod.start(plan_mod.LINUX_INSTALL) is first
-        # "Prepare this PC" does not start a second host change either.
         assert mxc_host_prep_job.start() is first
     finally:
         gate.write_text("")
@@ -335,7 +332,6 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
     prep_spawns = []
     monkeypatch.setattr(mxc_host_prep_job, "_spawn", lambda argv: prep_spawns.append(argv) or None)
     monkeypatch.setattr(mxc_probe, "host_prep_command", lambda: ["prepare"])
-    # Hold the prepare job's thread so it never touches the fake process.
     monkeypatch.setattr(mxc_host_prep_job, "_run", lambda job, proc: None)
     barrier = threading.Barrier(2)
     results = {}
@@ -356,7 +352,6 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
     try:
         started_setup = job_mod.current() is not None
         started_prep = bool(prep_spawns)
-        # Exactly one of the two elevated helpers started; the other answered with it.
         assert started_setup != started_prep
         assert results["setup"].id == results["prepare"].id
     finally:

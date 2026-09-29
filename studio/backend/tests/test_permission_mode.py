@@ -2866,8 +2866,6 @@ def test_unset_mode_behaves_as_auto():
 
 
 def test_off_mode_never_gates_under_os_isolation_and_keeps_sandbox():
-    # "Off" (Full access in sandbox): no prompts even for unsafe calls while the OS sandbox is on,
-    # and the sandbox stays on.
     from core.inference import os_sandbox
 
     os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
@@ -2884,7 +2882,6 @@ def test_off_mode_never_gates_under_os_isolation_and_keeps_sandbox():
 
 
 def test_off_mode_asks_for_a_risky_call_without_os_isolation():
-    # Without OS isolation "off" falls back to the auto rule for python/terminal.
     from core.inference import os_sandbox
 
     os_sandbox.note_tool_isolation("python", False, backend = "none")
@@ -2900,7 +2897,6 @@ def test_off_mode_asks_for_a_risky_call_without_os_isolation():
 
 
 def test_off_mode_without_an_armed_gate_never_asks():
-    # A caller that cannot be prompted (the route leaves confirm off) keeps running unprompted.
     events, exec_fn = _drive(
         [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
         [],

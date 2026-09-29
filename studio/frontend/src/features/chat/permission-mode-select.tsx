@@ -47,8 +47,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/** Permission levels for tool calls. The stored values never change; only what they are called.
- *  Bypass permissions stays last because it disables both approval prompts and the sandbox. */
+/** Stored values never change, only labels. Bypass permissions stays last. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   labelKey: TranslationKey;
@@ -105,8 +104,7 @@ function useAccountPermissionMode() {
   };
 }
 
-/** True when this computer's OS sandbox is known not to cover Python and Terminal. False while
- *  unknown or when the server is too old to say, so the picker then behaves as it always did. */
+/** False while unknown or when the server is too old to say. */
 function useSandboxUnavailable(): boolean {
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
@@ -121,8 +119,6 @@ function useSandboxUnavailable(): boolean {
   return unavailable;
 }
 
-/** Picking "Full access in sandbox" from any control: offers the setup when this computer has
- *  no working OS sandbox (see sandbox-pick.ts). */
 export function pickSandboxedMode(
   setPermissionMode: (mode: PermissionMode) => void,
   onRequestSandboxSetup: () => void,

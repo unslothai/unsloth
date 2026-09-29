@@ -2,11 +2,6 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """ "off" (Full access in sandbox) asks before a risky python/terminal call without OS isolation.
-
-The decision every tool loop shares (state.tool_policy.needs_tool_confirmation), the route
-arming that makes it reachable only where a prompt can be shown, the cached capability it
-reads (never waiting on a probe), the probe cache that serves a stale PASS while it re-probes,
-the startup warm-up, and GET /api/sandbox/capability.
 """
 
 import itertools
@@ -42,7 +37,6 @@ def _expected(mode, tool, isolated, risky):
         return True
     if mode == "auto":
         return risky
-    # off: only python/terminal, only without isolation, only when risky.
     return tool in ("python", "terminal") and isolated is not True and risky
 
 
@@ -98,8 +92,6 @@ def test_search_conversation_never_asks(isolation, mode):
 
 
 def test_default_classifiers_are_the_tools_module_ones(isolation):
-    # Without injected classifiers the real ones decide: a benign python call under "off" and
-    # no isolation does not ask, a credential read does.
     isolation["python"] = False
     common = dict(confirm_tool_calls = True, bypass_permissions = False, permission_mode = "off")
     assert not tool_policy.needs_tool_confirmation(
@@ -124,7 +116,6 @@ def test_may_prompt_before_arguments(isolation, isolated):
     )
 
 
-# --- route arming ------------------------------------------------------------------------
 
 
 class _Payload:
@@ -173,7 +164,6 @@ def test_an_explicit_confirm_opt_out_keeps_off_unprompted(body, armed):
         permission_mode = "off",
         **body,
     )
-    # The fold still hides confirm from the route guards either way.
     assert payload.confirm_tool_calls is False
     assert inference_route._off_mode_sandbox_gate(payload, True) is armed
 
@@ -234,7 +224,6 @@ def test_gguf_route_hands_the_loop_an_armed_gate_for_off(monkeypatch, stream, he
     assert captured["bypass_permissions"] is False
 
 
-# --- cached capability ---------------------------------------------------------------------
 
 
 def test_cached_isolation_never_blocks_and_refreshes_once(monkeypatch):
@@ -323,7 +312,6 @@ def test_no_startup_warmup_on_windows(monkeypatch):
     assert called == []
 
 
-# --- probe cache: stale-while-revalidate ---------------------------------------------------
 
 
 class _Clock:
@@ -336,7 +324,6 @@ class _Clock:
 
 @pytest.fixture
 def probe_env(monkeypatch):
-    # The re-probe runs in the background only while background probes are on (conftest turns them off).
     monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "0")
     sandbox_probe.reset_probe_cache()
     clock = _Clock()
@@ -380,7 +367,6 @@ def test_a_stale_pass_is_served_while_one_reprobe_runs(probe_env):
     assert sandbox_probe.probe(_Backend()) == (True, "first")
     clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
     gate.clear()
-    # Served at once, twice, with exactly one background re-probe.
     assert sandbox_probe.probe(_Backend()) == (True, "first")
     assert sandbox_probe.probe(_Backend()) == (True, "first")
     assert _wait_for(lambda: len(calls) == 2)
@@ -404,7 +390,6 @@ def test_a_fail_is_never_served_stale(probe_env):
     verdicts.extend([(False, "blocked"), (True, "fixed")])
     assert sandbox_probe.probe(_Backend()) == (False, "blocked")
     clock.now += sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS + 1
-    # Probed in the foreground, not served stale.
     assert sandbox_probe.probe(_Backend()) == (True, "fixed")
     assert all(name != "unsloth-sandbox-reprobe" for name in calls)
 
@@ -442,11 +427,9 @@ def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
     sandbox_probe.reset_probe_cache()
     gate.set()
     assert _wait_for(lambda: not sandbox_probe._refreshing)
-    # The pre-reset re-probe did not republish: the next read probes again.
     assert sandbox_probe.probe(_Backend()) == (False, "after")
 
 
-# --- GET /api/sandbox/capability -----------------------------------------------------------
 
 
 @pytest.fixture(autouse = True)
@@ -493,7 +476,6 @@ def test_capability_reports_the_cached_answers():
     assert body["reason"] == "no bash"
 
 
-# --- "off" skipped the prompt because the sandbox was on: that launch must not fall back ------
 
 
 @pytest.mark.parametrize(
@@ -517,8 +499,7 @@ def test_strict_launch_matrix(isolation, mode, tool, isolated, risky):
 
 
 def test_a_refresh_between_the_two_decisions_cannot_skip_both(isolation):
-    # The prompt was skipped on a cached PASS; a refresh then publishes a failure before the launch
-    # decision. That decision must follow the prompt decision, not re-read the cache.
+    # The launch must follow the prompt decision, not re-read a cache refreshed in between.
     isolation["python"] = True
     decision = dict(
         confirm_tool_calls = True,
@@ -625,7 +606,6 @@ def test_the_loop_launches_an_unasked_risky_call_strictly(mode, code, expected):
 def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch):
     from core.inference import tools
 
-    # The cache still says isolated; the launch-time check says the backend is gone.
     os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
     monkeypatch.setattr(
         os_sandbox,
@@ -650,7 +630,6 @@ def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch
     assert "OS_ISOLATION_UNAVAILABLE" in out and "RAN" not in out
     record = tools._last_tool_execution_record
     assert record is None or record.effective_mode != "software_safeguards"
-    # The same call in auto falls back, which is exactly what the strict launch prevents.
     auto = tools.execute_tool(
         "python", {"code": "print('RAN')"}, session_id = "__LOCALID_strict_refusal", timeout = 60
     )
@@ -658,7 +637,6 @@ def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch
 
 
 def test_every_loop_launches_strictly_through_the_mode_parameter():
-    # The GGUF and external-provider loops are driven elsewhere; the wiring must be the same.
     import inspect
 
     from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop

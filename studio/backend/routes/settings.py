@@ -4411,14 +4411,12 @@ class SandboxWindowsStatus(BaseModel):
 
 
 class SandboxSetupStatus(BaseModel):
-    # linux-install | windows-setup when Unsloth can run the setup itself; None otherwise.
     action: Optional[str] = None
     # sudo | pkexec | uac, or None.
     elevation: Optional[str] = None
     manual_command: str = ""
     reason: str = ""
     needs_consent: bool = False
-    # Whether this caller can start the setup: the prompt appears on the computer running Unsloth.
     can_run: bool = False
 
 
@@ -4443,9 +4441,7 @@ class SandboxSettingsPayload(BaseModel):
 class SandboxSetupPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    # windows-runtime: the MXC runtime alone (Settings > Sandbox "Install runtime"), no UAC.
     operation: Literal["linux-install", "windows-setup", "windows-runtime"]
-    # Windows: also turn on "Allow OS isolation on this Windows version" (the owner agreed in the dialog).
     consent_dacl_fallback: StrictBool = False
 
 
@@ -4552,7 +4548,6 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     terminal = os_sandbox.capability_snapshot(
         force = force, execution_kind = "terminal", selected_executable = terminal_exe
     )
-    # The chat's "Full access in sandbox" gate reads the same answer.
     for tool, capability in (("python", python), ("terminal", terminal)):
         os_sandbox.note_tool_isolation(
             tool,
@@ -4573,7 +4568,6 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
 
 
 def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
-    """Blocking. Never elevates: detection only. None when the plan cannot be read."""
     from core.inference import sandbox_setup_plan
 
     try:
@@ -4591,9 +4585,7 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
-    """Blocking. The cached status is shared; only a direct local request may be offered the setup
-    button, and only then does Linux check whether it can elevate (the owner router already
-    admitted the caller)."""
+    """Blocking. Only a direct local request may be offered the setup button."""
     from core.inference import sandbox_setup_plan
     from utils.client_ip import is_direct_local_request
 
@@ -4722,7 +4714,6 @@ async def update_sandbox_settings(
 
 @_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
 def get_sandbox_prepare(current_subject: str = Depends(get_current_subject)) -> SandboxPrepareJob:
-    # A Prepare click during a setup run is answered with that run, so report it here too.
     return _sandbox_job_response(_newest_host_job())
 
 
@@ -4775,7 +4766,6 @@ def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> Sa
 
 
 def _newest_host_job():
-    """The newer of the setup run and the "Prepare this PC" run; they never run at the same time."""
     from core.inference import mxc_host_prep_job, sandbox_setup_job
 
     job = sandbox_setup_job.current()
@@ -4838,8 +4828,7 @@ async def start_sandbox_setup(
     except sandbox_setup_job.SetupUnavailable as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     if consent:
-        # Only once the setup is accepted: turned on first, the Python check can pass before the
-        # host is prepared, the plan then reads "already works", and preparation never runs.
+        # Only once accepted: turned on first, the plan reads "already works" and never prepares.
         await asyncio.to_thread(_sandbox_apply, SandboxSettingsPayload(allow_dacl_fallback = True))
         sandbox_setup_plan.invalidate()
     _forget_sandbox_status()

@@ -4634,13 +4634,9 @@ def _permission_mode_confirm(payload) -> bool:
 
 
 def _off_mode_sandbox_gate(payload, ui_events: bool) -> bool:
-    """Whether an "off" (Full access in sandbox) request arms the loop's confirm gate.
+    """Whether an "off" request arms the confirm gate: only on a stream that can show a prompt.
 
-    Armed only where a prompt can reach the caller: a stream carrying the control frames. The
-    loop then asks only for a high-risk python/terminal call that would run without OS
-    isolation (state.tool_policy.needs_tool_confirmation). Everywhere else "off" keeps running
-    unprompted, as before, so no route guard or non-streaming client sees a change. A client's own
-    confirm_tool_calls=false still wins over the mode, as in _permission_mode_confirm.
+    Elsewhere "off" stays unprompted, so no route guard or non-streaming client sees a change.
     """
     return (
         getattr(payload, "permission_mode", None) == "off"
@@ -27209,8 +27205,7 @@ async def produce_openai_chat_completions(
                         param = "confirm_tool_calls",
                     ),
                 )
-            # After the channel check, which "off" never trips: its python/terminal calls can
-            # still ask while they would run without OS isolation.
+            # After the channel check, which "off" never trips.
             _effective_confirm = _effective_confirm or _off_mode_sandbox_gate(payload, _ui_events)
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")

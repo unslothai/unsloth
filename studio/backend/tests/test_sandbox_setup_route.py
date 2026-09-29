@@ -149,7 +149,6 @@ def test_status_offers_the_button_only_to_this_computer(host, linux, monkeypatch
         assert client.get("/sandbox").json()["setup"]["can_run"] is True
         monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
         setup = client.get("/sandbox").json()["setup"]
-    # The command still shows; only the button is local.
     assert setup["can_run"] is False and setup["manual_command"]
 
 
@@ -187,7 +186,6 @@ def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatc
     assert body["setup_action"] is None and body["can_run_setup"] is False
     assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
     assert body["setup_blocked"] == ("not_owner" if who == "other_account" else "not_local")
-    # Nobody but the owner on this computer makes Unsloth run the elevation check.
     assert calls["elevation_checks"] == 0
 
 
@@ -239,7 +237,6 @@ def test_the_capability_read_checks_a_tool_it_has_no_answer_for(host, linux, mon
     assert body["python_os_isolated"] is True and body["terminal_os_isolated"] is True
     assert refreshed == [("python", False), ("terminal", False)]
     refreshed.clear()
-    # Answered now: no check; refresh=1 from the owner re-checks both, forced.
     _capability_client(OWNER).get("/api/sandbox/capability")
     assert refreshed == []
     _capability_client(OWNER).get("/api/sandbox/capability", params = {"refresh": "1"})
@@ -315,8 +312,7 @@ def test_windows_consent_turns_the_opt_in_on_once_the_setup_is_accepted(host, wi
     seen = []
 
     def start(operation):
-        # Turned on first, the Python check could pass before preparation and the plan would
-        # read "already works": the opt-in must still be off while the job is decided.
+        # The opt-in must still be off while the job is decided, or the plan reads "already works".
         seen.append(saved["dacl"])
         return sandbox_setup_job.SetupJob(id = "job1", operation = operation)
 
@@ -350,7 +346,6 @@ def test_windows_runtime_only_is_a_windows_operation(host, windows):
             "/sandbox/setup", json = {"operation": "windows-runtime", "consent_dacl_fallback": True}
         )
     assert response.status_code == 200 and calls["start"] == ["windows-runtime"]
-    # Consent belongs to the full setup only.
     assert saved["dacl"] is False
 
 
@@ -385,7 +380,6 @@ def test_the_prepare_job_is_reported_by_the_setup_route(host, windows, monkeypat
 
 
 def test_a_setup_run_is_reported_by_the_prepare_route(host, windows, monkeypatch):
-    # A Prepare click while setup runs is answered with that run; polling must keep seeing it.
     setup = sandbox_setup_job.SetupJob(id = "setup1", operation = "windows-setup")
     monkeypatch.setattr(sandbox_setup_job, "current", lambda: setup)
     with _client(OWNER) as client:

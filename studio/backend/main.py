@@ -768,8 +768,7 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
-    # Probe the OS sandbox now, off the event loop, so the first Python or Terminal call does not
-    # wait on it and the "off" permission gate has an answer to read.
+    # Warm the OS sandbox probe so the "off" gate has an answer.
     try:
         from core.inference.os_sandbox import start_tool_isolation_warmup
         start_tool_isolation_warmup()

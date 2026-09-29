@@ -2,9 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """One-click OS sandbox setup from Unsloth: install bubblewrap on Linux, install and prepare MXC on Windows.
 
-Runs the fixed steps of `sandbox_setup_plan` as a background job. Nothing from a request reaches the
-command line: the operation name picks a plan, and the plan is built from constants on this host.
-One setup at a time, shared with the "Prepare this PC" job, and never killed mid-run.
+Nothing from a request reaches the command line: the operation name picks a constant plan.
 """
 
 from __future__ import annotations
@@ -105,7 +103,6 @@ def _invalidate() -> None:
             reset()
         except Exception as exc:  # noqa: BLE001 - a stale cache only delays the new verdict
             logger.warning("Sandbox setup: cache reset failed: %s", exc)
-    # Check again before the job reads as finished, so the next read reflects the new host state.
     try:
         if not os_sandbox._background_probes_disabled():
             os_sandbox.warm_tool_isolation()
@@ -114,16 +111,11 @@ def _invalidate() -> None:
 
 
 def pkexec_script(steps) -> str:
-    """One shell script for one polkit prompt, built only from the plan's fixed, pinned steps."""
     return "set -e\n" + "\n".join(shlex.join(list(step)) for step in steps) + "\n"
 
 
 def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict | None]:
-    """The argv lists the job runs, in order, and the environment they run with.
-
-    Linux steps run as root, so every program is pinned to a root-owned system binary (never looked
-    up on PATH, which starts with folders a tool call can write) and sees only a fixed environment.
-    """
+    """(argv list, env). Linux steps run as root: programs pinned to system binaries, never PATH."""
     if plan.action != sandbox_setup_plan.LINUX_INSTALL:
         return [list(step) for step in plan.steps], None
     kind, path = sandbox_setup_plan.linux_elevation(force = True)
@@ -138,7 +130,6 @@ def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict
         raise SetupUnavailable(f"{exc}; run the command in a terminal instead.") from exc
     env = dict(sandbox_setup_plan.ELEVATED_ENV)
     if kind == "sudo":
-        # -n: never ask for a password nobody can type here.
         return [[path, "-n", *step] for step in steps], env
     if shell is None:
         raise SetupUnavailable(
@@ -207,7 +198,6 @@ def _run(
     if state != "succeeded" and not job.note and code is not None:
         job.note = f"The setup step exited with code {code}."
     logger.info("Sandbox setup finished: operation=%s state=%s exit=%s", job.operation, state, code)
-    # Caches first: a poller that sees the end must not then read the pre-setup verdict.
     _invalidate()
     job.state = state
 
@@ -222,7 +212,6 @@ def start(operation: str) -> SetupJob:
     in_progress = current()
     if in_progress is not None and in_progress.state == "running":
         return in_progress
-    # Detection can run the live probe, so it stays outside the locks.
     if operation == sandbox_setup_plan.WINDOWS_RUNTIME:
         plan = sandbox_setup_plan.windows_runtime_plan()
     else:
@@ -230,7 +219,6 @@ def start(operation: str) -> SetupJob:
     if plan.action != operation:
         raise SetupUnavailable(plan.reason or "There is nothing to set up on this computer.")
     commands, env = _commands(plan)
-    # One host change at a time, across this job and "Prepare this PC".
     with HOST_CHANGE_LOCK:
         with _lock:
             if _current is not None and _current.state == "running":

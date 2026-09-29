@@ -228,9 +228,7 @@ def exercise_permission_mode_controls(page, shoot):
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
     expect(pill).to_be_visible()
 
-    # Picking "Full access in sandbox" asks the server whether the OS sandbox works on this host, and
-    # without one it offers the setup instead of switching. Answer for the host so the level checks
-    # below do not depend on the runner's user namespaces; the dialog is exercised on its own below.
+    # Stub the sandbox capability so level checks do not depend on the runner's user namespaces.
     sandbox_answer = {"ready": True}
 
     def answer_sandbox_capability(route):
@@ -394,7 +392,6 @@ def exercise_permission_mode_controls(page, shoot):
     set_legacy_confirm(None)
     reload_and_wait_for_pill()
 
-    # Fresh profiles default to Auto-approve.
     expect_mode("Auto-approve")
     menu = open_menu()
     for label in (
@@ -470,7 +467,6 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Full access in sandbox persisted {stored!r}, expected 'off'")
 
-    # Bypass permissions requires explicit consent and never overwrites persistence.
     choose("Bypass permissions")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
@@ -499,8 +495,7 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Full access in sandbox")
 
-    # Without a working OS sandbox the pick opens the setup dialog instead of switching: Cancel keeps
-    # the previous level, "Use it anyway" applies it. A reload drops the page's cached answer.
+    # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
     choose("Auto-approve")
     expect_mode("Auto-approve")
     sandbox_answer["ready"] = False

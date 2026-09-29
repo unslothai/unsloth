@@ -71,17 +71,11 @@ def normalize_tool_permissions(
     return permission_mode, False
 
 
-# The tools the OS sandbox wraps. "off" (Full access in sandbox) runs them unasked only while
-# that sandbox is really on; without it they ask before a risky call, as "auto" does.
 OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
 
 
 def off_mode_still_gates(name: str) -> bool:
-    """Whether "off" must still be able to ask for this tool: python/terminal without OS isolation.
-
-    Reads the cached capability and never waits on a probe; an unknown answer counts as not
-    isolated, so a first call before the warm-up finishes asks rather than running unprompted.
-    """
+    """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
     if name not in OS_SANDBOXED_TOOLS:
         return False
     from core.inference.os_sandbox import cached_tool_isolation
@@ -113,14 +107,6 @@ def needs_tool_confirmation(
     is_high_risk = None,
     never_needs = None,
 ) -> bool:
-    """The one per-call approval decision every Studio tool loop makes.
-
-    Bypass (and "full") never asks; ``search_conversation`` never asks; "ask" asks for every
-    call; "auto" asks only for a high-risk call; "off" asks only for a high-risk python or
-    terminal call that would run without OS isolation. ``confirm_tool_calls`` is armed by the
-    route only where a prompt can reach the caller. ``is_high_risk``/``never_needs`` default to
-    the classifiers in core.inference.tools; a loop passes its own module's names.
-    """
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
         is_high_risk = is_high_risk or tools.is_high_risk_tool_call
@@ -144,13 +130,9 @@ def requires_os_isolation(
     prompted: bool,
     is_high_risk = None,
 ) -> bool:
-    """Whether this call must launch with tool_execution_mode="required".
+    """Whether this call must launch with tool_execution_mode="required" (no software fallback).
 
-    "off" skips the prompt for a risky python/terminal call only because the cached capability
-    said the OS sandbox is on. If that sandbox stopped working since, the launch must refuse
-    rather than fall back to software safeguards and run the risky call unasked. ``prompted`` is
-    the decision needs_tool_confirmation already made for this call: reading the cache again
-    here could see a refresh that landed in between and skip both the prompt and the strict launch.
+    ``prompted`` is needs_tool_confirmation's decision; re-reading the cache here could race a refresh.
     """
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False

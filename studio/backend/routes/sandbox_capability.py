@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the Python and Terminal tools get on this computer, for any signed-in user.
-
-The chat permission picker reads it to say whether "Full access in sandbox" really has an OS
-sandbox behind it. It answers from the cached capability and never waits on a probe: before
-the first answer both tools read as not isolated, which is what the "off" gate assumes too.
-"""
+"""What OS sandbox the Python and Terminal tools get here, for any signed-in user."""
 
 import asyncio
 import sys
@@ -24,21 +19,16 @@ class SandboxCapabilityResponse(BaseModel):
     platform: str
     python_os_isolated: bool
     terminal_os_isolated: bool
-    # "unknown" until the first check has answered.
     backend: str
     reason: str
-    # linux-install | windows-setup, only for the owner on a direct local request; None otherwise.
     setup_action: Optional[str] = None
-    # The copyable command, for everyone; empty when there is nothing to set up.
     manual_command: str = ""
     can_run_setup: bool = False
-    # Why a setup exists but this caller gets no button: not_owner | not_local | no_elevation.
     setup_blocked: Optional[str] = None
     needs_consent: bool = False
 
 
 def _setup_fields_for(request: Request, isolated: bool) -> dict:
-    """Blocking (reads the setup plan). Nothing to offer once both tools are isolated."""
     from core.inference import sandbox_setup_plan
 
     try:
@@ -50,7 +40,6 @@ def _setup_fields_for(request: Request, isolated: bool) -> dict:
 
 
 def _refresh(force: bool) -> None:
-    """Blocking: check the tools that have no answer yet (all of them when forced)."""
     from core.inference import os_sandbox
 
     if os_sandbox._background_probes_disabled():
@@ -87,8 +76,7 @@ async def sandbox_capability(
     refresh: bool = False,
     current_subject: str = Depends(get_current_subject),
 ) -> SandboxCapabilityResponse:
-    """Right after a setup or at startup the cached answer may be missing: check before answering,
-    so "not isolated" is never a guess. A forced re-check is the owner's (it relaunches the probe)."""
+    """Probe when the cached answer is missing, so "not isolated" is never a guess. Force: owner only."""
     from utils.account_context import is_owner_context
 
     force = bool(refresh) and is_owner_context()

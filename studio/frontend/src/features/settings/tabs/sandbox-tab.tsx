@@ -154,7 +154,6 @@ export function SandboxTab() {
         if (mounted.current && current.state !== "idle") setJob(current);
       })
       .catch(() => undefined);
-    // Older servers have no setup route; nothing to show then.
     void loadSandboxSetup(t("sandboxSetup.startError"))
       .then((current) => {
         if (mounted.current && current.state !== "idle") setSetupJob(current);
@@ -308,7 +307,6 @@ export function SandboxTab() {
     : null;
   const setupResult = jobResult(setupJob);
   const setupOutput = jobOutputLines(setupJob);
-  // Why a declined or failed setup stopped, e.g. "a password is required".
   const setupNote =
     setupResult === "declined" || setupResult === "failed"
       ? (setupJob?.note ?? "")
@@ -486,7 +484,6 @@ export function SandboxTab() {
                         size="sm"
                         variant="outline"
                         disabled={setupRunning}
-                        // The runtime only, without the administrator prompt; the opt-in below stays as it is.
                         onClick={() => void runSetup("windows-runtime", false)}
                       >
                         {setupRunning ? <Spinner /> : null}

@@ -874,20 +874,16 @@ def capability_snapshot(
     )
 
 
-# The last answer per tool, for callers that must not wait on a probe: the "off" permission gate
-# reads it on every call. Refreshed off the caller's thread, and by every real launch.
+# Last answer per tool; the "off" permission gate reads it on every call without probing.
 _TOOL_ISOLATION_TTL_SECONDS = 60.0
 ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
-# tool -> (noted at, available, backend, reason)
 _tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
-# Bumped by forget_tool_isolation: a refresh that started before it must not republish.
 _tool_isolation_generation = 0
 
 
-# Set to 1: no probe at startup and none in the background; the answer then comes only from real
-# tool launches (tests set it so nothing probes behind their back).
+# Set to 1: no startup or background probes; only real launches update the answer.
 WARMUP_DISABLE_ENV = "UNSLOTH_DISABLE_SANDBOX_WARMUP"
 
 
@@ -896,7 +892,6 @@ def _background_probes_disabled() -> bool:
 
 
 def tool_isolation_target(tool: str) -> str | None:
-    """The executable a tool is qualified with, as its launch will see it (Settings > Sandbox too)."""
     if tool == "python":
         return sys.executable
     if sys.platform != "win32":
@@ -968,7 +963,6 @@ def _refresh_tool_isolation_in_background(tool: str) -> None:
 
 
 def has_tool_isolation_answer(tool: str) -> bool:
-    """Whether ``tool`` has any remembered answer; starts nothing."""
     with _tool_isolation_lock:
         return tool in _tool_isolation
 
@@ -980,8 +974,7 @@ def cached_tool_isolation(tool: str) -> bool | None:
 
 
 def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
-    """Never blocks: the last known (available, backend, reason), None before the first one; a
-    stale or missing answer starts a single background refresh."""
+    """Never blocks: last (available, backend, reason) or None; stale starts a background refresh."""
     now = time.monotonic()
     with _tool_isolation_lock:
         entry = _tool_isolation.get(tool)
@@ -1008,17 +1001,12 @@ def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
 
 
 def warm_tool_isolation() -> None:
-    """Blocking: probe both tools once so the first tool call does not wait on it."""
     for tool in ISOLATED_TOOLS:
         refresh_tool_isolation(tool)
 
 
 def start_tool_isolation_warmup() -> threading.Thread | None:
-    """Server start: warm_tool_isolation on a daemon thread. Off when UNSLOTH_DISABLE_SANDBOX_WARMUP=1.
-
-    Not on Windows: the MXC check launches a container and applies the runtime read grants, which
-    must not happen at every start of a server nobody has used a tool on yet.
-    """
+    """warm_tool_isolation on a daemon thread. Not on Windows: the MXC check launches a container."""
     if _background_probes_disabled() or sys.platform == "win32":
         return None
     thread = threading.Thread(

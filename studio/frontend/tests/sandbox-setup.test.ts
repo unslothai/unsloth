@@ -226,7 +226,6 @@ test("a settled read waits out a check that has not answered yet, but not a real
   assert.equal(stuck.calls.length, 2);
 });
 
-// ---- picking "Full access in sandbox" ----
 
 type PickModule = typeof import("../src/features/chat/sandbox-pick.ts");
 
@@ -346,7 +345,6 @@ test("only the latest pick acts; a missing sandbox opens the setup instead of ap
   assert.deepEqual(applied, ["off"]);
 });
 
-// ---- the dialog's pure view ----
 
 type SetupState = typeof import("../src/features/chat/sandbox-setup-state.ts");
 
@@ -444,7 +442,6 @@ test("someone who cannot run the setup gets the command and who can", () => {
   });
   assert.equal(view.install, null);
   assert.equal(view.showOwnerOnly, true);
-  // Nothing to install and nothing to run (e.g. macOS): no owner note either.
   const macos = setupState.sandboxSetupView({
     capability: capability({
       platform: "darwin",
@@ -578,7 +575,6 @@ test("the server's note shows for a declined or failed setup only", () => {
   }
 });
 
-// ---- the Settings tab setup row ----
 
 const status = (overrides: Partial<SandboxStatus> = {}): SandboxStatus => ({
   platform: "linux",

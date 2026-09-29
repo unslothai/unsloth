@@ -130,7 +130,6 @@ export function jobOutputLines(job: HostPrepJob | null, max = 6): string[] {
 
 export type SetupRowView = {
   show: boolean;
-  // macOS: Seatbelt ships with the OS, so the row explains instead of offering an install.
   builtIn: boolean;
   showInstall: boolean;
   installDisabled: boolean;
@@ -147,7 +146,6 @@ const HIDDEN_SETUP_ROW: SetupRowView = {
   reason: "",
 };
 
-/** The Linux and macOS setup row. Windows keeps its own section, so it never shows there. */
 export function setupRowView(
   status: SandboxStatus,
   job: HostPrepJob | null,
@@ -171,7 +169,6 @@ export function setupRowView(
   const failed = job?.state === "failed" || job?.state === "declined";
   const command =
     failed && manualCommandFromJob ? manualCommandFromJob : setup.manualCommand;
-  // A running job keeps the row so its progress stays where the owner clicked.
   if (!showInstall && command === "" && !running) return HIDDEN_SETUP_ROW;
   return {
     show: true,
@@ -183,7 +180,6 @@ export function setupRowView(
   };
 }
 
-/** Windows without the MXC runtime: the setup job can install it when the server allows it. */
 export function canInstallWindowsRuntime(status: SandboxStatus): boolean {
   return (
     status.windows !== null &&
