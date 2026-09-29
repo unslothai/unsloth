@@ -491,7 +491,9 @@ test("reasoning is asked off only where the connection's model allows it", async
     ["openai", "gpt-5", "minimal"],
     ["openai", "o3", "low"],
     ["openai_codex", "gpt-5", "minimal"],
-    ["openai", "gpt-4o", "none"],
+    // No reasoning at all: either field would reach OpenAI as reasoning.effort, a 400.
+    ["openai", "gpt-4o", undefined],
+    ["openai", "gpt-5-chat-latest", undefined],
     ["gemini", "gemini-2.5-pro", "none"],
     ["llama_cpp", "qwen3-30b", "none"],
     // Its own levels would floor "none" at "medium" if clamped like OpenAI.
@@ -631,8 +633,13 @@ test("the title is assembled from the deltas, unless it was cut short or reasone
     ]),
     null,
   );
+  // A closed reasoning summary (a model that cannot turn reasoning off) is dropped, the title kept.
+  assert.equal(
+    await title(deltas("<think>The user asks about gardens.</think>Spring Garden Plan")),
+    "Spring Garden Plan",
+  );
   for (const raw of [
-    "<think>hmm</think> Ok",
+    "<think>hmm</think>",
     "<THINK>hmm Ok",
     "hmm</ThInK> Ok",
     "",

@@ -324,12 +324,18 @@ export function titleCheckpoint(
 
 const VERBATIM_EFFORT_PROVIDER_TYPES = new Set(["openai", "openai_codex"]);
 
-/** Only the OpenAI line forwards reasoning_effort verbatim, so it must be clamped (else 400). */
-function titleReasoningEffort(
+type TitleReasoningFields = Pick<
+  OpenAIChatCompletionsRequest,
+  "enable_thinking" | "reasoning_effort"
+>;
+
+/** The Responses translator (OpenAI line, or apiType "responses") turns either field into
+ *  reasoning.effort, which a model without reasoning 400s on, and forwards reasoning_effort
+ *  verbatim, so it is omitted or clamped there. Elsewhere the backend translates "none". */
+function titleReasoningFields(
   connection: ResolvedExternalConnection,
-): NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]> {
+): TitleReasoningFields {
   const { provider, modelId } = connection;
-  if (!VERBATIM_EFFORT_PROVIDER_TYPES.has(provider.providerType)) return "none";
   const caps = getExternalReasoningCapabilities(
     provider.providerType,
     modelId,
@@ -338,8 +344,17 @@ function titleReasoningEffort(
       baseUrl: provider.baseUrl ?? null,
     },
   );
-  if (caps.reasoningStyle !== "reasoning_effort") return "none";
-  return clampReasoningEffortToLevels("none", caps.reasoningEffortLevels);
+  const responsesRoute =
+    VERBATIM_EFFORT_PROVIDER_TYPES.has(provider.providerType) ||
+    provider.apiType === "responses";
+  if (responsesRoute && !caps.supportsReasoning) return {};
+  const clamp = responsesRoute && caps.reasoningStyle === "reasoning_effort";
+  return {
+    enable_thinking: false,
+    reasoning_effort: clamp
+      ? clampReasoningEffortToLevels("none", caps.reasoningEffortLevels)
+      : "none",
+  };
 }
 
 const TITLE_SYSTEM_PROMPT =
@@ -373,9 +388,9 @@ export async function buildTitleRequest(
     max_tokens: 24,
     ...(local || caps?.topK ? { top_k: 20 } : {}),
     ...(local || caps?.repetitionPenalty ? { repetition_penalty: 1.0 } : {}),
-    enable_thinking: false,
-    reasoning_effort:
-      routing.kind === "external" ? titleReasoningEffort(routing) : "none",
+    ...(routing.kind === "external"
+      ? titleReasoningFields(routing)
+      : { enable_thinking: false, reasoning_effort: "none" as const }),
     // Else the server's tools-on default adds tool schemas.
     enable_tools: false,
     messages: [
@@ -402,8 +417,10 @@ export async function titleFromStream(
   }
 
   if (finishReason === "length") return null;
-  if (!content || /<\/?think>/i.test(content)) return null;
-  return normalizeTitle(content);
+  // A model that cannot turn reasoning off streams its summary as a closed think block first.
+  const visible = content.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  if (!visible || /<\/?think>/i.test(visible)) return null;
+  return normalizeTitle(visible);
 }
 
 export function normalizeTitle(raw: string): string | null {
