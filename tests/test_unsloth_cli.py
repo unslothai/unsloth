@@ -36,7 +36,7 @@ def test_cli_defaults_asft():
 
     assert args.asft is False
     assert args.asft_mode == "asft"
-    assert args.kl_weight == 0.0
+    assert args.kl_weight == pytest.approx(0.03)
     assert args.reference_policy == "disable_adapter"
     assert args.asft_streaming == "off"
     assert args.ref_microbatch_size is None

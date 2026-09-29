@@ -1081,7 +1081,7 @@ class ASFTTrainer(UnslothTrainer):
         *args,
         asft_enabled: bool = False,
         asft_mode: Literal["sft", "dft", "sft+kl", "asft"] = "asft",
-        kl_weight: float = 0.0,
+        kl_weight: float = 0.03,
         kl_direction: Literal["forward", "reverse"] = "forward",
         reference_policy: Literal["disable_adapter", "frozen_copy"] = "disable_adapter",
         asft_streaming: Optional[ASFTStreamingConfig] = None,

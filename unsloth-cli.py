@@ -588,8 +588,11 @@ def build_parser():
     asft_group.add_argument(
         "--kl_weight",
         type = float,
-        default = 0.0,
-        help = "Weight for the KL term in sft+kl and asft modes; 0 skips the reference forward. Default: 0.0",
+        default = 0.03,
+        help = (
+            "Weight for the KL term in sft+kl and asft modes; 0 skips the reference forward. "
+            "Default: 0.03 (the ASFT authors' recommendation for bf16 / fp16)"
+        ),
     )
     asft_group.add_argument(
         "--reference_policy",

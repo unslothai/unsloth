@@ -209,7 +209,7 @@ def compute_asft_loss(
     inputs: Dict[str, Any],
     *,
     asft_mode: Literal["sft", "dft", "sft+kl", "asft"] = "asft",
-    kl_weight: float = 0.0,
+    kl_weight: float = 0.03,
     kl_direction: Literal["forward", "reverse"] = "forward",
     reference_policy: Literal["disable_adapter", "frozen_copy"] = "disable_adapter",
     streaming_config: Optional[ASFTStreamingConfig] = None,
