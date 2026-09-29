@@ -102,7 +102,6 @@ def pin_installer_torch_vendor(request, monkeypatch):
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
     # A file's own copy outlives a later file re-registering the sys.modules key.
     for module in [*sys.modules.values(), *vars(request.module).values()]:
-        # __dict__, not hasattr: a lazy module's __getattr__ would import on the probe.
-        # Keyed on _rocm_torch_preferred: _torchao_stub has its own _installed_torch_is_rocm.
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
         if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
             monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)

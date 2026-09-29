@@ -365,7 +365,6 @@ def test_explicit_rocm_reprobes_and_suppresses_cuda_on_a_mixed_host(monkeypatch)
     assert route.host.rocm_gfx_target == "gfx1100"
 
 
-# The Discord report: RTX 3080 beside an R9700, ROCm torch in the venv.
 _NVIDIA_ONLY_PROFILE = ilp.HostInfo(
     system = "Linux",
     machine = "x86_64",
@@ -491,7 +490,6 @@ def test_auto_follows_rocm_torch_on_the_operators_arch_when_the_probe_misses(mon
     ],
 )
 def test_auto_keeps_cuda_when_only_the_old_marker_names_an_amd_gpu(monkeypatch, stale):
-    """The updater replays the marker's arch; the AMD card may be gone."""
     host = _route_auto_with(monkeypatch, **stale)
 
     assert host.has_usable_nvidia is True

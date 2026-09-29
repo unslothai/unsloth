@@ -10907,8 +10907,7 @@ def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
     if not host.has_usable_nvidia:
         return host
     probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
-    # Marker-derived --rocm-gfx / --has-rocm / UNSLOTH_ROCM_GFX_REMEMBERED can outlive a removed
-    # AMD card, and setup.sh forwards no gfx when NVIDIA is usable: only the operator's arch counts.
+    # Marker-replayed arches outlive a removed card; setup.sh forwards none while NVIDIA is usable.
     if not (probed.has_rocm or _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))):
         return host
     log(
