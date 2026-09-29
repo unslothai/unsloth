@@ -41,7 +41,6 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     monkeypatch.setattr(
         _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
-    # Same for the diffusers capability that lets a quantised denoiser stream: the tests that need it absent say so.
     monkeypatch.setattr(_pq, "torchao_group_offload_supported", lambda: True)
 
 
@@ -958,15 +957,13 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
     assert ask() is None
 
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
-    # Memory is not one of the questions any more: the denoiser streams wherever it cannot be pinned, so an unreadable
-    # card or an unanswerable size estimate still takes the hosted checkpoint ...
+    # Unanswerable memory still takes the hosted checkpoint (it streams) ...
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
     assert ask() == vid.H3_AUTO_FALLBACK_SCHEME
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     monkeypatch.setattr(vid, "_h3_planned_denoiser_bytes", lambda *a, **k: None)
     assert ask() == vid.H3_AUTO_FALLBACK_SCHEME
-    # ... unless this diffusers cannot stream a torchao module, where pinning is the only placement and the pinned fit
-    # has to be answerable again.
+    # ... unless this diffusers cannot stream torchao, leaving only the pin.
     import core.inference.diffusion_prequant as pq
 
     monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: False)
@@ -1127,7 +1124,6 @@ def test_a_pinned_denoiser_is_sized_beside_the_larger_rotating_component_not_the
         whole = sizer()[1]
         rotating = sizer(rotating = True)[1]
         assert whole - rotating == int((te_gb + vae_gb) * 1000**3) - int(max(te_gb, vae_gb) * 1000**3)
-    # With a dense conditioner the VAEs are the smaller term too, so the difference is again the VAE bytes.
     whole = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16)[1]
     rotating = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16, rotating = True)[1]
     assert abs((whole - rotating) - vae_gb * 1000**3) < 1000
@@ -1872,12 +1868,10 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     fired.clear()
     assert ask(speed_mode = "off") is None and fired == []
     assert ask(base_repo = "someone/MiniMax-H3") is None and fired == []
-    # A card too small to pin it does not keep bfloat16 any more (the denoiser would stream), so there the unreadable
-    # checkpoint is again the reason.
+    # A too-small card now streams, so the unreadable checkpoint is the reason again.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 10 * 1000**3)
     assert ask() is None and fired == [True]
     fired.clear()
-    # Without group offloading the too-small card is the reason, and the unreadable checkpoint is not reported.
     monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: False)
     assert ask() is None and fired == []
     monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: True)
