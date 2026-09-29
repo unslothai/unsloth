@@ -37,7 +37,6 @@ def _no_ambient_backend_env(monkeypatch):
     """A backend exported in the developer's shell would override every case here."""
     for name in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN", "UNSLOTH_FORCE_ROCM_TORCH"):
         monkeypatch.delenv(name, raising = False)
-    # The runner's own torch would otherwise decide how "auto" treats a mixed host.
     monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: None)
 
 
@@ -436,7 +435,6 @@ def test_auto_keeps_cuda_on_a_mixed_host_with_cuda_torch(monkeypatch):
 
 
 def test_auto_keeps_cuda_when_rocm_torch_finds_no_amd_gpu(monkeypatch):
-    """A stale ROCm torch must not cost a working CUDA box its GPU build."""
     monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
     probes = _stub_amd_probe(monkeypatch, amd_present = False)
 

@@ -10862,13 +10862,11 @@ class BackendRoute:
     rocm_fallback_host: HostInfo | None = None
 
 
-# Quoted values only, so the `hip: Optional[str] = None` a non-ROCm build writes is negative.
-# Mirrors install_python_stack._TORCH_VERSION_PY_HIP_RE; this module is vendored standalone.
+# Quoted values only: non-ROCm builds write `hip: Optional[str] = None`. Mirrors install_python_stack.
 _TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
 
 
 def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
-    """Whether a torch/version.py names a HIP build; None when it cannot be read."""
     try:
         text = version_py.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
@@ -10878,7 +10876,7 @@ def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
 
 
 def _installed_torch_is_rocm() -> bool | None:
-    """torch.version.hip of this interpreter's torch, read off disk without importing it."""
+    """Read off disk: importing torch here is slow and can fail."""
     try:
         spec = importlib.util.find_spec("torch")
         if spec is None or not spec.origin:
@@ -10889,7 +10887,6 @@ def _installed_torch_is_rocm() -> bool | None:
 
 
 def _rocm_torch_preferred() -> bool:
-    """ROCm torch installed, or asked for with UNSLOTH_FORCE_ROCM_TORCH (install_python_stack)."""
     if (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
         "1",
         "true",
@@ -10901,12 +10898,7 @@ def _rocm_torch_preferred() -> bool:
 
 
 def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
-    """Automatic selection on a mixed NVIDIA+AMD host whose torch is ROCm.
-
-    NVIDIA precedence would put llama.cpp on the card training does not use. Only moves
-    when the AMD probe finds a usable ROCm GPU, so a stale ROCm torch on a box with no
-    AMD card keeps its CUDA build.
-    """
+    """Only moves off CUDA when the AMD probe finds a ROCm GPU (stale ROCm torch keeps CUDA)."""
     if not host.has_usable_nvidia:
         return host
     probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
