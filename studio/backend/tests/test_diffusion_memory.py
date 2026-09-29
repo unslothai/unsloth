@@ -2390,6 +2390,30 @@ def test_a_first_encoder_refusal_is_unhooked_before_whole_module_offload(monkeyp
     assert unhooked == ["text_encoder"]
 
 
+def test_an_encoder_kept_resident_after_a_partial_leaf_apply_is_unhooked(monkeypatch):
+    """A refusal that raised after hooking part of the encoder must not leave those hooks on the resident encoder."""
+    import core.inference.diffusion_memory as mem
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder":
+            raise RuntimeError("leaf offload failed part way")
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    unhooked: list[str] = []
+    monkeypatch.setattr(
+        mem, "_remove_group_offload_hooks", lambda m: unhooked.append(m.name), raising = False
+    )
+
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = True
+        )
+        is True
+    )
+    assert unhooked == ["text_encoder"]
+
+
 def test_pinned_memory_cap_detection(monkeypatch, tmp_path):
     import builtins
 

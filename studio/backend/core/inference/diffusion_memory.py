@@ -1827,6 +1827,9 @@ def _apply_group_offload(
                         name,
                         exc,
                     )
+                # a leaf-level apply can raise after hooking part of the encoder; resident means no hooks at all, or
+                # the applied VRAM floor reads the whole encoder as streamed while its unhooked layers stay on the card
+                _remove_group_offload_hooks(module)
                 module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
