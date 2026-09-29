@@ -425,9 +425,10 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
     assert "closeButton: true" in model_load
     assert "icon: createLoadingToastIcon()" in model_load
     assert "onDismiss:" in model_load
-    assert "description: undefined" in model_load
+    # A plain success clears the loading description and lasts 2 s; only a layer split says more.
+    assert "description: offloadNotice?.description" in model_load
     assert "icon: undefined" in model_load
-    assert "duration: 2000" in model_load
+    assert "duration: offloadNotice ? 8000 : 2000" in model_load
 
     toast_lib = _read("lib/toast.ts")
     assert "createElement(Spinner" in toast_lib
@@ -1318,8 +1319,8 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
     assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
-    # The resident model's window, else this model's; request bounds would shorten it.
-    assert "(targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??" in page
+    assert "const mlxServedWindow = resolveMlxServedWindow(" in page
+    assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
     assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")

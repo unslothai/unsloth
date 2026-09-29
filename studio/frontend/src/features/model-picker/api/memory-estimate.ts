@@ -18,7 +18,6 @@ export type MemoryEstimateReason =
 export interface MemoryEstimate {
   available: boolean;
   reason: MemoryEstimateReason | null;
-  /** Files that become resident: weights, projector, drafter. */
   weightsBytes: number;
   /** KV cache at the priced context and slot count. Meaningless unless `kvEstimable`. */
   kvBytes: number;
@@ -50,6 +49,7 @@ export interface MemoryEstimate {
   kvOnGpu: boolean;
   /** What was actually priced, after overrides and clamps resolve. */
   nCtx: number;
+  contextFitted: number | null;
   cacheTypeKv: string | null;
   nParallel: number;
   layerCount: number | null;
@@ -67,6 +67,8 @@ export interface MemoryEstimateRequest {
   nativePathToken?: string | null;
   nCtx?: number | null;
   cacheTypeKv?: string | null;
+  maxSeqLength?: number | null;
+  mlxKvQuant?: string | null;
   nParallel?: number | null;
   nBatch?: number | null;
   nUbatch?: number | null;
@@ -100,6 +102,7 @@ const UNAVAILABLE: MemoryEstimate = {
   kvEstimable: false,
   kvOnGpu: true,
   nCtx: 0,
+  contextFitted: null,
   cacheTypeKv: null,
   nParallel: 1,
   layerCount: null,
@@ -124,6 +127,7 @@ interface ApiEstimateResponse {
   kv_estimable: boolean;
   kv_on_gpu: boolean;
   n_ctx: number;
+  context_fitted?: number | null;
   cache_type_kv: string | null;
   n_parallel: number;
   layer_count: number | null;
@@ -142,6 +146,8 @@ function estimateRequestBody(
     native_path_lease: nativePathLease,
     n_ctx: payload.nCtx ?? null,
     cache_type_kv: payload.cacheTypeKv ?? null,
+    max_seq_length: payload.maxSeqLength ?? null,
+    mlx_kv_quant: payload.mlxKvQuant ?? null,
     n_parallel: payload.nParallel ?? null,
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,
@@ -235,6 +241,7 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     kvEstimable: flag(body.kv_estimable, false),
     kvOnGpu: flag(body.kv_on_gpu, true),
     nCtx: finiteCount(body.n_ctx, 0),
+    contextFitted: nullableCount(body.context_fitted),
     cacheTypeKv:
       typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,
     nParallel: finiteCount(body.n_parallel, 1),
@@ -266,10 +273,6 @@ export function resetMemoryEstimateRouteMemo(): void {
   routeAbsentAt = null;
 }
 
-/** Price a prospective GGUF load from its header. Allocates nothing, loads nothing. Never
- *  throws for a backend answer: an absent route, an auth expiry, a 500, an HTML error page
- *  served as 200 or a truncated body all come back as an unavailable estimate, so the panel
- *  hides the row. The statuses are told apart only to decide whether the miss is memoable. */
 export async function fetchMemoryEstimate(
   payload: MemoryEstimateRequest,
   signal?: AbortSignal,

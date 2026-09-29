@@ -719,3 +719,38 @@ def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
         cached_during_build
     ), "the previous mask was still alive while its replacement was allocated"
     attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or not attention_dispatch.HAS_XFORMERS, reason = "needs xformers on CUDA"
+)
+def test_real_xformers_without_mask_is_causal():
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.XFORMERS, n_kv_heads = 2, n_groups = 2
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 2,
+        q_len = 8,
+        kv_seq_len = 8,
+        n_heads = 4,
+        head_dim = 64,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    dtype = torch.bfloat16 if attention_dispatch.SUPPORTS_BFLOAT16 else torch.float16
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(2, 4, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    K = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    V = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    got = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    keep = torch.ones(8, 8, dtype = torch.bool, device = "cuda").tril()
+    want = torch.nn.functional.scaled_dot_product_attention(
+        Q.float(),
+        K.float().repeat_interleave(2, 1),
+        V.float().repeat_interleave(2, 1),
+        attn_mask = keep,
+    ).transpose(1, 2)
+    torch.testing.assert_close(got.float().reshape(want.shape), want, atol = 2e-2, rtol = 2e-2)

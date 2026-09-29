@@ -48,7 +48,14 @@ def test_every_control_type_is_dropped(frame_type):
 
 
 @pytest.mark.parametrize(
-    "key", ["_toolEvent", "_toolStatus", "_diffusionFrame", "_reasoningDurationMs"]
+    "key",
+    [
+        "_toolEvent",
+        "_toolStatus",
+        "_diffusionFrame",
+        "_reasoningDurationMs",
+        "_mcp_provenance",
+    ],
 )
 def test_every_studio_private_key_is_stripped(key):
     line = "data: " + json.dumps(
