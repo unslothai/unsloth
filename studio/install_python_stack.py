@@ -1026,8 +1026,7 @@ def _installed_torch_is_windows_rocm() -> bool:
 
     This is a belt-and-suspenders guard for the torchao override step: if the
     earlier ROCm install path failed to set _rocm_windows_torch_installed but the
-    venv already contains a ROCm torch wheel, still skip torchao because it
-    crashes on import on Windows ROCm.
+    venv already contains a ROCm torch wheel, torchao still comes from PyPI.
     """
     if not IS_WINDOWS:
         return False
@@ -5153,8 +5152,9 @@ def _resident_xformers_build_torch() -> "str | None":
     return recorded.strip() if isinstance(recorded, str) and recorded.strip() else None
 
 
-def _install_torchao_for_torch(torch_version: "str | None") -> None:
-    """Select the torchao matching torch_version and install it from its own index.
+def _install_torchao_for_torch(torch_version: "str | None", default_index: bool = False) -> None:
+    """Select the torchao matching torch_version and install it from its own index (PyPI's with
+    default_index: download.pytorch.org's rocm leaves serve Linux only, so not Windows ROCm).
 
     Called twice: as step 4, and again after the Linux torch repair, which can move torch
     across families and releases underneath the first call.
@@ -5162,7 +5162,7 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     spec = _select_torchao_spec(torch_version)
     # See _TORCHAO_DEFAULT_SPEC. rocm is included here, unlike torchcodec: the rocm leaves
     # really do publish torchao.
-    index = _torch_accelerator_index_url(torch_version)
+    index = None if default_index else _torch_accelerator_index_url(torch_version)
     # --no-deps skips nothing today (no torchao release declares a runtime torch dependency)
     # and guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
@@ -5183,6 +5183,11 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
         # Redacted for display only; the installer below still gets the exact URL.
         + (f" from {_strip_index_url_credentials(index)}" if index else "")
     )
+    if default_index:
+        # Optional on Windows ROCm: only export uses it, and hides its formats without it.
+        if not pip_install_try("Installing dependency overrides", *args, spec):
+            _note(f"could not install {spec}; torchao export stays unavailable")
+        return
     if not index:
         pip_install("Installing dependency overrides", *args, spec)
         return
@@ -9745,6 +9750,8 @@ def _has_working_git() -> bool:
 # _MLX_INSTALL_SPECS.
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.2", "mlx-metal==0.32.2", "mlx-lm==0.31.3")
 _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
+# Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
+_LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
 
 
@@ -11383,6 +11390,8 @@ def install_python_stack() -> int:
         # declared mlx-vlm range the step above honoured. Same gate, so the slot is spent on
         # every Apple Silicon run with torch, including the no-wheel branch.
         base_total += 1  # MLX stack re-resolve
+    if IS_MAC_ARM:
+        base_total += 1  # MLX grammar engine (step 11d), same gate as the step itself
     if NO_TORCH and not skip_base:
         # no-torch runtime deps, which this build announces on its own slot inside the core
         # step rather than folding into it. Same gate as the step itself.
@@ -11751,13 +11760,13 @@ def install_python_stack() -> int:
 
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
     #    changes, since Windows can remove shared files during replacement.
-    #    Skip when torch is unavailable or Windows ROCm has no working build.
+    #    Skip when torch is unavailable.
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
-        # No working Windows ROCm torchao build (crashes on import; stubbed at runtime).
-        _progress("dependency overrides (skipped, Windows ROCm)")
-        _note("Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
+        # Stock torchao dies on import here; only the export worker loads it (unsloth/_torchao_nodist.py).
+        _progress("dependency overrides (Windows ROCm)")
+        _install_torchao_for_torch(_probe_installed_torch_version(), default_index = True)
     else:
         _progress("dependency overrides")
         _install_torchao_for_torch(_probe_installed_torch_version())
@@ -11902,6 +11911,21 @@ def install_python_stack() -> int:
     #      already resident, so no git and a failed source build both degrade to a working install
     #      rather than no install.
     _diffusers_main_step()
+
+    # 11d. Apple Silicon grammar engine, outside skip_base (install.sh always skips base); failure only loses MLX response_format.
+    if IS_MAC_ARM:
+        if not _full_deps_requested() and _exact_distribution_spec_is_installed(_LLGUIDANCE_PIN):
+            _progress("MLX grammar engine (satisfied, skipped)")
+        else:
+            _progress("MLX grammar engine")
+            try:
+                pip_install(
+                    "Installing the MLX grammar engine (llguidance)",
+                    "--no-cache-dir",
+                    _LLGUIDANCE_PIN,
+                )
+            except SystemExit:
+                _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()

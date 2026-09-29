@@ -232,6 +232,7 @@ export function ExportPage() {
   const hardware = useHardwareInfo();
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const torchaoUnavailable = !hardware.torchaoExportSupported;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
@@ -246,19 +247,27 @@ export function ExportPage() {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
         // Portable torchao is the fallback for hosts without the NVIDIA compressed path. Hidden on
-        // NVIDIA (use compressed-tensors) and on macOS/MLX (the backend rejects quantized export).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // NVIDIA (use compressed-tensors), macOS/MLX (rejected) and where torchao cannot load.
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !torchaoUnavailable;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, torchaoUnavailable],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop picks the gate removed, only once hardware is loaded: before that hasNvidia reads false.
+  useEffect(() => {
+    if (!hardware.loaded) return;
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
@@ -1523,11 +1532,19 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {torchaoUnavailable && (
+                      <div className="text-ui-11 text-muted-foreground">
+                        Portable FP8/INT8 (torchao) export needs torchao, which
+                        is not installed here. Update Unsloth, or use
+                        16-bit or GGUF.
                       </div>
                     )}
                   </div>

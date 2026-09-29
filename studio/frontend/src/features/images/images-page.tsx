@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import {
   type ReactNode,
@@ -218,6 +219,7 @@ import {
   fetchGalleryBlob,
   fetchGalleryResponse,
   fetchGalleryObjectUrl,
+  galleryThumbnailUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
   getDiffusionStatus,
@@ -235,6 +237,7 @@ import {
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "./lib/generation-stop";
 import {
   ALLOW_OVERSIZED_HINT,
@@ -426,6 +429,9 @@ const galleryCache: {
   srcById: BlobUrlCache;
   // Ids with a fetch in flight, so concurrent ensureSrc calls do not double-fetch and leak a duplicate object URL.
   inflight: Set<string>;
+  // Keep thumbnails separate from originals used for viewing and downloads.
+  thumbById: BlobUrlCache;
+  thumbInflight: Set<string>;
   // Ids deleted while their PNG was still downloading: a fetch landing afterwards must throw its blob away.
   deleted: Set<string>;
 } = {
@@ -435,6 +441,8 @@ const galleryCache: {
   quant: null,
   srcById: new BlobUrlCache(IMAGE_BLOB_BUDGET_BYTES),
   inflight: new Set(),
+  thumbById: new BlobUrlCache(32 * 1024 * 1024),
+  thumbInflight: new Set(),
   deleted: new Set(),
 };
 
@@ -546,6 +554,7 @@ function formatTimestamp(epochSeconds: number): string {
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
+  if (p.phase === "decode") return "Decoding…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -704,6 +713,9 @@ function SliderField({
 }
 
 // Matches the field-label style used across Unsloth.
+// Prompt boxes: smaller radius, scrollbar inset from the corners.
+const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
+
 function Field({
   label,
   hint,
@@ -1470,6 +1482,7 @@ export function ImagesPage({
 
   const [busy, setBusy] = useState<Busy>(null);
   const [genDone, setGenDone] = useState<number | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -1491,9 +1504,12 @@ export function ImagesPage({
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );
+  const [thumbById, setThumbById] = useState<Record<string, string>>(() =>
+    galleryCache.thumbById.toRecord(),
+  );
   // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
-  // The gallery strip, used as the IntersectionObserver root so a tile PNG is fetched as it nears view.
+  // Observer root for loading thumbnails near the visible strip.
   const stripRef = useRef<HTMLDivElement | null>(null);
   // Ids currently intersecting the strip; the blob cache never evicts these.
   const visibleIds = useRef<Set<string>>(new Set());
@@ -1800,6 +1816,7 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -1845,6 +1862,37 @@ export function ImagesPage({
     }
   }, []);
 
+  // Fetch a thumbnail unless the tile already has a cached image or pending request.
+  const ensureThumb = useCallback(async (image: GalleryImage) => {
+    if (
+      galleryCache.thumbById.has(image.id) ||
+      galleryCache.srcById.has(image.id) ||
+      galleryCache.thumbInflight.has(image.id)
+    )
+      return;
+    galleryCache.thumbInflight.add(image.id);
+    try {
+      const { url, bytes } = await fetchGalleryObjectUrl(galleryThumbnailUrl(image.url));
+      if (galleryCache.deleted.has(image.id)) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      galleryCache.thumbById.set(image.id, url, bytes);
+      const evicted = galleryCache.thumbById.prune(
+        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+      );
+      setThumbById((prev) => {
+        const next = { ...prev, [image.id]: url };
+        for (const id of evicted) delete next[id];
+        return next;
+      });
+    } catch {
+      // Leave it without a src; the tile shows a placeholder.
+    } finally {
+      galleryCache.thumbInflight.delete(image.id);
+    }
+  }, []);
+
   // Bumped by every LOCAL change to the strip. A resync started before one holds a snapshot the
   // listing cannot reconcile with what the user just did.
   const stripEpoch = useRef(0);
@@ -1873,12 +1921,12 @@ export function ImagesPage({
       setHasMore(page.has_more);
       // No visibility signal without IntersectionObserver (jsdom / old webview), so keep the eager fetch there.
       if (typeof IntersectionObserver === "undefined") {
-        page.images.forEach((image) => void ensureSrc(image));
+        page.images.forEach((image) => void ensureThumb(image));
       }
     } catch {
       // Best-effort: a failed gallery load should not block the page.
     }
-  }, [ensureSrc]);
+  }, [ensureThumb]);
 
   // Load the next older page. offset = how many are loaded so far; a new image sorts to the front on the backend too.
   const loadMore = useCallback(async () => {
@@ -1905,17 +1953,16 @@ export function ImagesPage({
       galleryCache.hasMore = page.has_more;
       setHasMore(page.has_more);
       if (typeof IntersectionObserver === "undefined") {
-        page.images.forEach((image) => void ensureSrc(image));
+        page.images.forEach((image) => void ensureThumb(image));
       }
     } catch {
       // transient; the user can scroll again to retry
     } finally {
       loadingMore.current = false;
     }
-  }, [ensureSrc]);
+  }, [ensureThumb]);
 
-  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page
-  // closes, so fetch a tile as it nears the strip edge instead. Mirrors Video.
+  // Load thumbnails as tiles approach the visible strip.
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
@@ -1931,8 +1978,9 @@ export function ImagesPage({
           }
           visibleIds.current.add(id);
           galleryCache.srcById.touch(id);
+          galleryCache.thumbById.touch(id);
           const image = images.find((i) => i.id === id);
-          if (image) void ensureSrc(image);
+          if (image) void ensureThumb(image);
         }
       },
       // rootMargin applies to the ROOT box only, so the root must be the scrolling strip; the
@@ -1941,7 +1989,7 @@ export function ImagesPage({
     );
     for (const tile of root.querySelectorAll("[data-image-id]")) io.observe(tile);
     return () => io.disconnect();
-  }, [images, ensureSrc]);
+  }, [images, ensureThumb]);
 
   // The preview is what the user looks at, so the selected image is fetched whether or not its tile is on screen.
   useEffect(() => {
@@ -1956,8 +2004,14 @@ export function ImagesPage({
   const dropFromStrip = useCallback((id: string, discardBlob: boolean) => {
     if (discardBlob) {
       galleryCache.srcById.delete(id); // revokes the URL with the entry
+      galleryCache.thumbById.delete(id);
       galleryCache.deleted.add(id);
       setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setThumbById((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -2028,12 +2082,12 @@ export function ImagesPage({
         setImages(collected);
         setHasMore(more);
         if (typeof IntersectionObserver === "undefined") {
-          collected.forEach((image) => void ensureSrc(image));
+          collected.forEach((image) => void ensureThumb(image));
         }
         return;
       }
     },
-    [ensureSrc],
+    [ensureThumb],
   );
 
   // This page stays mounted across route changes, so an archive restore would not reach the
@@ -2525,7 +2579,7 @@ export function ImagesPage({
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4068,6 +4122,7 @@ export function ImagesPage({
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
+    setStopping(false);
     cancelAcked.current = false;
     // Per-run, like the two above: a cancel POST still outstanding from the PREVIOUS run would
     // leave the guard set and swallow this run's own Stop.
@@ -4087,7 +4142,7 @@ export function ImagesPage({
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4212,7 +4267,8 @@ export function ImagesPage({
             onClick: () => setOversizedRetryQueued(true),
           },
         });
-      } else if (report) toast.error(msg);
+      } else if (report)
+        toast.error(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -4229,6 +4285,7 @@ export function ImagesPage({
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
+      setStopping(false);
     }
   }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
@@ -4236,6 +4293,7 @@ export function ImagesPage({
   // races the run that is already finishing.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
+    setStopping(true);
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
     // second POST would target whatever is active when IT arrives.
     const token = runToken.current;
@@ -4246,11 +4304,13 @@ export function ImagesPage({
     try {
       const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
+      if (!cancelled) setStopping(false);
     } catch {
       // An abort means the next run dropped this one on purpose, so there is nothing to report.
       // Otherwise the request never landed and the denoise runs on, so the click is not handled.
       if (!abort.signal.aborted) {
         cancelAcked.current = false;
+        setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
       }
     } finally {
@@ -4540,24 +4600,6 @@ export function ImagesPage({
         />
       </div>
       <LoadedBuildSummary status={status} />
-      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
-          user-initiated load; GGUF/single_file residents hide the button. */}
-      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy !== null}
-              onClick={handleReapply}
-            >
-              <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
-              Reapply to loaded model
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
-        </Tooltip>
-      )}
     </>
   );
 
@@ -4578,7 +4620,7 @@ export function ImagesPage({
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
-            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
               ? "pl-12"
               : !pinned && isTauri
@@ -4625,7 +4667,7 @@ export function ImagesPage({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] shrink-0 rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -5121,6 +5163,7 @@ export function ImagesPage({
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
                 rows={4}
+                className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
                 placeholder={
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
@@ -5139,6 +5182,7 @@ export function ImagesPage({
               open={negativeOpen}
               onOpenChange={setNegativeOpen}
               hint="What to steer the image away from. Only used when guidance is above 0."
+              textareaClassName={IMAGE_PROMPT_BOX}
             />
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
@@ -5336,7 +5380,7 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -5346,16 +5390,34 @@ export function ImagesPage({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+                {stopButtonLabel({ stopping, done: genDone, count })}
               </Button>
             ) : (
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerateWithRecall}
-                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
-              >
-                Generate
-              </Button>
+              <>
+                <Button
+                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleGenerateWithRecall}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                >
+                  Generate
+                </Button>
+                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        className="relative z-10 h-11 px-5"
+                        variant="secondary"
+                        disabled={busy !== null}
+                        onClick={handleReapply}
+                      >
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        Reapply
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reload the current model with the advanced options</TooltipContent>
+                  </Tooltip>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -5480,6 +5542,18 @@ export function ImagesPage({
                   />
                 </div>
               </>
+            ) : selected && selectedThumb ? (
+              // Match the original's display size while loading; actions require the original.
+              // Leave the box unpainted because object-contain can leave empty space.
+              <>
+                <img
+                  src={selectedThumb}
+                  alt={selected.prompt}
+                  style={{ maxWidth: selected.width, maxHeight: selected.height }}
+                  className="size-full object-contain"
+                />
+                <Spinner className="absolute size-8 text-muted-foreground" />
+              </>
             ) : selected ? (
               // The selected record's blob is still loading; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
@@ -5565,9 +5639,9 @@ export function ImagesPage({
                     onClick={() => setSelectedId(image.id)}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {srcById[image.id] ? (
+                    {(thumbById[image.id] ?? srcById[image.id]) ? (
                       <img
-                        src={srcById[image.id]}
+                        src={thumbById[image.id] ?? srcById[image.id]}
                         alt={image.prompt}
                         draggable={false}
                         className="size-full object-cover"

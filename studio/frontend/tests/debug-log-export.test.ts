@@ -26,6 +26,18 @@ import { en } from "../src/i18n/locales/en.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+type DialogState = {
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+  consumeLogFamilyRequest: () => void;
+};
+
+const IDLE_DIALOG_STATE: DialogState = {
+  logFamilyRequested: null,
+  logSourcePathRequested: null,
+  consumeLogFamilyRequest: () => {},
+};
+
 const API_URL = new URL(
   "../src/features/settings/api/debug-logs.ts",
   import.meta.url,
@@ -208,6 +220,15 @@ function makeWorld(options: {
     },
     "../lib/debug-log-buffer": debugLogBuffer,
     "../lib/debug-log-error": debugLogError,
+    "../stores/settings-dialog-store": {
+      useSettingsDialogStore: Object.assign(
+        (selector?: (state: DialogState) => unknown) =>
+          selector ? selector(IDLE_DIALOG_STATE) : IDLE_DIALOG_STATE,
+        { getState: () => IDLE_DIALOG_STATE },
+      ),
+      pendingLogRequestKey: () => "|",
+      NO_PENDING_LOG_REQUEST: "|",
+    },
   });
 
   function render(): string {
@@ -366,7 +387,11 @@ test("a failure that is not a 401 never reaches for the refresh token", async ()
   });
 
   await assert.rejects(() => world.api.exportAllLogs());
-  assert.equal(world.refreshes.length, 0, "a 500 is not an authentication problem");
+  assert.equal(
+    world.refreshes.length,
+    0,
+    "a 500 is not an authentication problem",
+  );
   assert.equal(world.invokes.length, 1);
 });
 
