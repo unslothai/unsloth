@@ -2934,7 +2934,6 @@ def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module
     assert stripped == "Intro.\n\n###### Deeply nested announcement\n\n- a real change"
 
 
-# Process-wide: a refusal answered in one test would silence the next one's fetch.
 @pytest.fixture(autouse=True)
 def github_lockout(notes_module):
     from utils.prebuilt import freshness_flow
@@ -2977,7 +2976,6 @@ def test_where_the_release_notes_token_may_travel(
         monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
     notes_module._fetch_latest_release()
     assert seen[0].get_header("Authorization") == expected
-    # Unredirected, so a redirect off the API host cannot carry it.
     assert "Authorization" not in seen[0].headers
 
 

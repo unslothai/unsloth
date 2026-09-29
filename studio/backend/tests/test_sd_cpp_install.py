@@ -3331,7 +3331,6 @@ def test_a_rate_limit_stops_the_fallback_ladder(
     monkeypatch.delenv("GITHUB_TOKEN", raising = False)
     monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
     if not throttled:
-        # A permission 403 is not the shared quota, so the next rung is still tried.
         assert sdmod._resolve_with_fallback("auto", None)[2] is None
         assert len(seen) > 1
         return

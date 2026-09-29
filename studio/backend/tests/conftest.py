@@ -1333,7 +1333,6 @@ def pin_installer_torch_vendor(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _clear_github_rate_limit_lockout():
-    # The lockout is process-wide: a 403 answered here would silence later fetches.
     from utils.prebuilt import freshness_flow
 
     freshness_flow._api_rate_limited_until = 0.0

@@ -823,7 +823,6 @@ def test_a_rate_limit_parks_every_github_fetch_until_it_resets(monkeypatch):
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
     assert fr._fetch_latest_release_assets("unslothai/llama.cpp") is None
     assert len(calls) == 1
-    # A later, shorter Retry-After must not release the lockout early.
     fr._flow.hold_github_api(60)
     assert fr._flow.github_rate_limit_remaining() == 1800
     mono[0] += 1801
