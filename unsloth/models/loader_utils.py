@@ -264,7 +264,10 @@ def _single_device_index(device_map):
     if isinstance(device_map, int):
         return device_map
     if isinstance(device_map, torch.device):
-        return device_map.index or 0 if device_map.type == "cuda" else None
+        if device_map.type != "cuda":
+            return None
+        # An unindexed torch.device means the current device (set_device(local_rank)), not 0.
+        return device_map.index if device_map.index is not None else torch.cuda.current_device()
     if not isinstance(device_map, str):
         return None
     if device_map.startswith("cuda:"):

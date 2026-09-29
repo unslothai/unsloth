@@ -188,3 +188,12 @@ def test_split_ancestors_get_input_hooks():
     out = table(ids)
     assert out.device == torch.device("cuda:1")
     assert _hook_no_placement_ancestors(model) == 0  # idempotent
+
+
+def test_unindexed_torch_device_uses_current_device(monkeypatch):
+    from unsloth.models.loader_utils import _single_device_index
+
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    assert _single_device_index(torch.device("cuda")) == 1
+    assert _single_device_index(torch.device("cuda", 0)) == 0
+    assert _single_device_index(torch.device("cpu")) is None
