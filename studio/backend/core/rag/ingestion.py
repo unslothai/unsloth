@@ -502,7 +502,7 @@ def start_ingestion(
     if account_is_retired():
         raise RuntimeError("Account is retired")
     ext = os.path.splitext(stored_path)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
+    if ext not in config.ALL_UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
 
     # Reclaim queues for finished jobs so the registry stays bounded.

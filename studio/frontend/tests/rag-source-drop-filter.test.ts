@@ -67,3 +67,9 @@ test("an empty drop yields nothing to upload and nothing to report", () => {
   assert.equal(supported.length, 0);
   assert.equal(unsupported.length, 0);
 });
+
+test("source code files are accepted from a drop (#10300)", () => {
+  for (const ext of [".php", ".cs", ".js", ".py", ".ts", ".json", ".yaml", ".rs", ".go"]) {
+    assert.equal(isSupportedSourceName(`app${ext}`), true, ext);
+  }
+});
