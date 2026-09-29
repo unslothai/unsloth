@@ -187,7 +187,10 @@ export function ArtifactHtmlFrame({
       // The canvas can post here directly, past the shell's cap, and a hidden tab never flushes.
       pendingEntries.current.push(entry);
       if (pendingEntries.current.length > CANVAS_CONSOLE_ENTRIES_TRACKED) {
-        pendingEntries.current.shift();
+        const oldestLog = pendingEntries.current.findIndex(
+          (queued) => queued.kind === "console",
+        );
+        pendingEntries.current.splice(oldestLog < 0 ? 0 : oldestLog, 1);
         pendingDropped.current = true;
       }
       if (flushHandle.current !== null) return;

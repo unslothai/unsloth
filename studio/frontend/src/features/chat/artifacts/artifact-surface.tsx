@@ -26,6 +26,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -116,7 +117,14 @@ export function ArtifactSurface({
   const t = useT();
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [outputCounts, setOutputCounts] = useState({ errors: 0, total: 0 });
+  // Tagged with the artifact they came from: a panel switched to one with no frame yet keeps no badge.
+  const [outputCounts, setOutputCounts] = useState({ id: "", errors: 0 });
+  const reportOutputCounts = useCallback(
+    ({ errors }: { errors: number; total: number }) =>
+      setOutputCounts({ id: artifact.id, errors }),
+    [artifact.id],
+  );
+  const errorCount = outputCounts.id === artifact.id ? outputCounts.errors : 0;
   const consoleLabel = t("settings.chat.artifacts.consoleTitle");
   const reloadLabel = t("settings.chat.artifacts.reloadCanvas");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -131,13 +139,13 @@ export function ArtifactSurface({
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
   const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
-  // Mounted from the first preview on, so opening straight to Code never runs the page.
+  // Mounted from the first finished preview on, so a canvas opened to Code, even mid-stream, never runs.
   const [previewedId, setPreviewedId] = useState<string | null>(null);
-  if (effectiveViewMode === "preview" && previewedId !== artifact.id) {
+  const previewing = !isLoadingArtifact && viewMode === "preview";
+  if (previewing && previewedId !== artifact.id) {
     setPreviewedId(artifact.id);
   }
-  const frameMounted =
-    effectiveViewMode === "preview" || previewedId === artifact.id;
+  const frameMounted = previewing || previewedId === artifact.id;
 
   useEffect(() => {
     return () => {
@@ -324,9 +332,9 @@ export function ArtifactSurface({
           )}
         >
           <TerminalIcon className="size-4" />
-          {outputCounts.errors > 0 ? (
+          {errorCount > 0 ? (
             <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
-              {outputCounts.errors}
+              {errorCount}
             </span>
           ) : null}
         </button>
@@ -429,7 +437,7 @@ export function ArtifactSurface({
                 consoleOpen={consoleOpen}
                 reloadNonce={reloadNonce}
                 onConsoleOpenChange={setConsoleOpen}
-                onOutputCountChange={setOutputCounts}
+                onOutputCountChange={reportOutputCounts}
                 onFixWithModel={variant === "overlay" ? onClose : undefined}
               />
             </div>

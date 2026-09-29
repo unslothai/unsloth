@@ -134,6 +134,8 @@ test("a burst of reports costs one render, not one per report", () => {
     frameSource,
     /pendingEntries\.current\.length > CANVAS_CONSOLE_ENTRIES_TRACKED/,
   );
+  // The queue evicts like the console: a log line before an error.
+  assert.match(frameSource, /pendingEntries\.current\.splice\(oldestLog < 0 \? 0 : oldestLog, 1\)/);
 });
 
 test("only throws and rejections count as errors", () => {
@@ -223,7 +225,11 @@ test("opening straight to the source view does not run the page", () => {
     "utf8",
   );
   assert.match(surface, /\{frameMounted && \(\s*<div/);
-  assert.match(surface, /effectiveViewMode === "preview" \|\| previewedId === artifact\.id/);
+  // Not effectiveViewMode: it is forced to "preview" while streaming, even for a Code open.
+  assert.match(surface, /const previewing = !isLoadingArtifact && viewMode === "preview";/);
+  assert.match(surface, /const frameMounted = previewing \|\| previewedId === artifact\.id;/);
+  // The badge only counts reports tagged with the artifact on screen.
+  assert.match(surface, /outputCounts\.id === artifact\.id \? outputCounts\.errors : 0/);
 });
 
 test("the source view hides the frame instead of unmounting it", () => {
