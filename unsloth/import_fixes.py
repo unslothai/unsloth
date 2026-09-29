@@ -8275,8 +8275,7 @@ def _patch_peft_moe_target_conversion(twc):
 def _is_lora_linear_target(module):
     from torch import nn
 
-    # nn.Linear and bnb, plus the quantized linears PEFT dispatches that are not nn.Linear: by the shapes
-    # tuners_utils._get_in_out_features reads (GPTQ, AWQ, HQQ, Megatron) or by name (EetqLinear, AQLM, ...).
+    # Quantized linears PEFT wraps that are not nn.Linear: GPTQ / AWQ / HQQ / Megatron shapes, EETQ / AQLM names.
     if isinstance(module, nn.Linear):
         return True
     if isinstance(module, (nn.Embedding, nn.modules.conv._ConvNd)):
@@ -8331,8 +8330,7 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
             for name, module in modules
             if name == target or name.endswith("." + target)
         ]
-        # Linears only: the router (`gate`) and expert containers are what the conversion is for. A Linear
-        # whose weight the conversion now targets as a parameter must not also get a module LoRA.
+        # Not the router or experts, and never a Linear whose weight is now a parameter target.
         linear = [
             name
             for name, module in matched
