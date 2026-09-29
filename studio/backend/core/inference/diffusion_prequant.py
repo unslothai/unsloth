@@ -1987,7 +1987,8 @@ def stream_prequantized_module(
 ) -> Optional[str]:
     """Stream a torchao module block by block via group offloading, outside the ComponentsManager rotation.
 
-    Returns ``"stream"`` (pinned, async copies), ``"sync"`` (unpinnable weights) or None (nothing changed).
+    Returns ``"stream"`` (fully pinned, async copies), ``"stream_lazy"`` (pinned one group at a time), ``"sync"``
+    (unpinnable weights) or None (nothing changed).
     Raises once the module is unhooked: the caller only streams what does not fit pinned, so a resident
     fallback would OOM or be refused on every render."""
     if not torchao_group_offload_supported():
@@ -2048,7 +2049,8 @@ def stream_prequantized_module(
     except Exception as exc:
         _remove_group_offload_hooks(module)
         raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
-    mode = "stream" if use_stream else "sync"
+    # Only a full up-front pin keeps a second host copy; lazy pinning holds one group at a time.
+    mode = ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
     if logger is not None:
         logger.info(
             "diffusion.prequant: %s streamed block by block on %s (%s copies)",
