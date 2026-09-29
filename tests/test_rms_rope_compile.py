@@ -221,6 +221,17 @@ def test_rope_matches_the_rotation_formula():
     torch.testing.assert_close(Q_out, q * cos[:16] + rot * sin[:16], rtol = 1e-5, atol = 1e-5)
 
 
+def test_bf16_tracing_needs_native_bf16_on_every_gpu(monkeypatch):
+    """A pre-Ampere GPU anywhere in the process keeps bf16 untraced (a layer can land on it)."""
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    for caps, expected in (({0: (8, 0), 1: (8, 9)}, True), ({0: (8, 0), 1: (7, 5)}, False)):
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i, caps = caps: caps[i])
+        assert rms_layernorm._bf16_traceable() is expected, caps
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    assert rms_layernorm._bf16_traceable() is True
+
+
 def test_bf16_without_native_support_stays_untraced(monkeypatch):
     """Where bf16 cannot be traced, bf16 inputs keep the old graph break and match eager."""
     if not TRACEABLE:

@@ -246,9 +246,13 @@ _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wra
 
 def _bf16_traceable():
     # Dynamo cannot trace a bf16 Triton kernel on GPUs without native bf16 (pre-Ampere, e.g. T4),
-    # where Unsloth runs fp16 anyway; bf16 there keeps the graph break.
+    # where Unsloth runs fp16 anyway; bf16 there keeps the graph break. Every visible GPU must
+    # qualify, since a model split across GPUs can put a layer on any of them.
     try:
-        return bool(torch.version.hip) or torch.cuda.is_bf16_supported(including_emulation = False)
+        if torch.version.hip:
+            return True
+        n = torch.cuda.device_count()
+        return n > 0 and all(torch.cuda.get_device_capability(i)[0] >= 8 for i in range(n))
     except Exception:
         return False
 
