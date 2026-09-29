@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The declared typer floor has to admit the annotations unsloth_cli actually uses.
-
-unsloth_cli annotates typer options with ``typing.Literal`` (the speculative decoding
-kind, the gpu memory mode, the reasoning switch). typer only grew Literal support in
-0.19.0; below that every command dies before it parses a single argument with
-``RuntimeError: Type not yet supported: typing.Literal[...]``. A floor below 0.19.0
-is therefore not merely lax: pip honours it, keeps a preinstalled 0.12 to 0.18, and
-the CLI is dead on arrival.
-
-The floor is declared twice, in pyproject.toml and in the no-torch requirements file
-that the studio installer applies with --no-deps. Both are checked, because the second
-one is what an updating Studio user actually gets.
-
-Runs under the GPU-free tests/conftest.py.
-"""
+"""A typer floor below 0.19.0 lets pip keep a typer that dies on unsloth_cli's Literal options."""
 
 from __future__ import annotations
 
@@ -31,10 +17,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 NO_TORCH_RUNTIME = REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 CLI_ROOT = REPO_ROOT / "unsloth_cli"
 
-# typer 0.19.0, "Support typing.Literal to define a set of predefined choices"
-# (fastapi/typer#429, docs/release-notes.md). Raise this only alongside evidence
-# from typer's own release notes; do not lower it while the CLI annotates options
-# with Literal, which the first test below proves it does.
+# typing.Literal support landed in typer 0.19.0 (fastapi/typer#429).
 LITERAL_SUPPORTED_FROM = (0, 19, 0)
 
 
@@ -43,25 +26,20 @@ def _version_tuple(text):
 
 
 def _declared_floor(text):
-    """The lower bound of the first bare ``typer>=X`` requirement in *text*."""
     match = re.search(r"^\s*[\"']?typer\s*>=\s*([0-9]+(?:\.[0-9]+)*)", text, re.MULTILINE)
     assert match is not None, "no `typer>=` requirement found to check"
     return _version_tuple(match.group(1))
 
 
 def _literal_annotated_typer_options():
-    """Every ``name: ...Literal[...] = <default>`` parameter in a typer command module.
-
-    Structural, via ast: a grep would also match Literal in pydantic models and in
-    plain helper functions, which typer never sees.
-    """
+    """AST, not grep: Literal in pydantic models and helpers never reaches typer."""
     found = []
     for path in sorted(CLI_ROOT.rglob("*.py")):
         if "tests" in path.parts:
             continue
         try:
             tree = ast.parse(path.read_text(encoding = "utf-8"))
-        except SyntaxError:  # pragma: no cover - a parse error is another test's problem
+        except SyntaxError:  # pragma: no cover
             continue
         decorated = [
             node
@@ -80,7 +58,7 @@ def _literal_annotated_typer_options():
 
 
 def test_the_cli_really_does_annotate_typer_options_with_literal():
-    """The premise of the floor. Without this the next test would pass vacuously."""
+    """Premise of the floor; without it the next test passes vacuously."""
     annotated = _literal_annotated_typer_options()
     assert annotated, (
         "no typer command annotates an option with Literal any more; if that is "
