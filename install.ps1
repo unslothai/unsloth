@@ -7,13 +7,36 @@
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
-# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
-# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
+# UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the
+# equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
+# --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+# Remove-Item's -ErrorAction does not cover every failure. For a path the FileSystem provider
+# cannot resolve it raises a terminating PSArgumentException ("An object at the specified path
+# ... does not exist"), which -ErrorAction SilentlyContinue cannot suppress, so an unguarded
+# removal during a rollback aborts the rest of the cleanup it belongs to (#11290). Guard on
+# existence and catch everything, so a missing or unresolvable temp path is never fatal. Used
+# for the temp files whose names can come from an 8.3 alias.
+#
+# Top level, NOT inside Install-UnslothStudio: a nested function lives in its parent's local
+# scope and is gone once the parent returns, and the outer finally below runs after exactly
+# that. Defined there, the finally's two calls raise CommandNotFoundException and leave the
+# overrides file -- which carries the caller's UV_OVERRIDE lines -- on disk.
+# tests/studio/test_unsloth_torch_override.ps1 pins the placement.
+function Remove-UnslothTempFileQuietly {
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return }
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch { }
+}
+
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
@@ -395,7 +418,9 @@ function Install-UnslothStudio {
             } else {
                 $fso.GetFile($Path).ShortPath
             }
-            if ($short -and -not $short.Contains(" ")) { return $short }
+            # A space-free alias is not necessarily a name that resolves (#11290). This value
+            # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
+            if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
         } catch {}
         return $Path
     }
@@ -712,12 +737,69 @@ function Install-UnslothStudio {
         return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
     }
 
+    # uv's own boolish set, for every UV_* switch this script reads out of the caller's
+    # environment. Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+    # parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+    # y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+    # anything else aborts uv rather than being guessed at.
+    #
+    # `-notin @("", "0", "false")`, which each of these sites used to spell inline, read
+    # off, no, n and f as TRUE, the exact opposite of uv's answer for them.
+    #
+    # Trimmed where uv is not: uv aborts on a padded value, so the resolve fails whatever
+    # this returns, and trimming keeps the answer identical to setup.sh's
+    # _uv_offline_requested and install_python_stack.py's _uv_env_flag, which is the
+    # property worth having. ToLowerInvariant, not ToLower: a Turkish-locale host
+    # lowercases "I" to a dotless i and would stop matching.
+    function Test-UvEnvFlag {
+        param([string]$Name)
+        $value = [string][Environment]::GetEnvironmentVariable($Name)
+        return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+    }
+
+    # pip's rule, kept separate on purpose: PIP_NO_INDEX is pip's variable and uv never
+    # reads it, so uv's parser has no authority over it. pip routes it through
+    # ConfigOptionParser._update_defaults -> strtobool (pip/_internal/utils/misc.py): true
+    # is y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive and
+    # untrimmed, with anything else exiting pip on "is not a valid value". An empty value
+    # never reaches strtobool, because _get_ordered_configuration_items drops falsy values
+    # first, so PIP_NO_INDEX="" is simply not set.
+    #
+    # The literals coincide with uv's today. They are restated rather than shared anyway,
+    # so that the day either project changes its mind this is a one-function edit instead
+    # of a silent behaviour change in the other resolver.
+    function Test-PipEnvFlag {
+        param([string]$Name)
+        $value = [string][Environment]::GetEnvironmentVariable($Name)
+        return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+    }
+
+    # UV_NO_INDEX is OURS, not uv's, and the distinction is not pedantic: uv 0.10.7 defines
+    # no such environment variable. `--no-index` exists only as a command-line flag, it is
+    # absent from `uv pip install --help`'s environment list beside UV_OFFLINE and
+    # UV_NO_CONFIG, and grepping the 0.10.7 tree for the name returns nothing. uv will
+    # ignore it however it is spelled. So this is not "what uv was told"; it is the
+    # operator telling US they want no registry index, and what we do about it is shape the
+    # arguments we pass.
+    #
+    # Read with uv's boolish set deliberately, not by inheritance. A caller sets this
+    # beside UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling
+    # across all three is the entire point. It is a choice, and the test says so.
+    #
+    # Deliberately NOT turned into a `--no-index` argument. That would make our behaviour
+    # and uv's actually agree, which is the honest long-term answer, but it would also turn
+    # a resolve that works today into one with no index at all. That is a behaviour change
+    # for existing users and belongs in its own change, not riding along with a truthiness
+    # fix.
+    function Test-NoIndexRequested {
+        return (Test-UvEnvFlag "UV_NO_INDEX")
+    }
+
     function Get-WoaUvConfigIndexPolicy {
         $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false; UnreadablePath = $null; ExtraIndexes = @() }
-        $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
-        if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
+        if (Test-UvEnvFlag "UV_NO_CONFIG") { return $result }
         $files = @()
-        $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
+        $cfgFile = [string][Environment]::GetEnvironmentVariable("UV_CONFIG_FILE")
         if ($cfgFile) {
             $files += @{ Path = $cfgFile; Top = "" }
         } else {
@@ -761,21 +843,22 @@ function Install-UnslothStudio {
         return ($u.Host.ToLowerInvariant() -eq "pypi.org")
     }
 
-    # This script resolves with uv, so uv's policy is the one that counts: UV_* and its configuration files. pip's PIP_* variables are pip's alone; uv never reads them.
+    # This script resolves with uv, so uv's policy is the one that counts: the UV_* variables uv actually defines, and its configuration files. pip's PIP_* variables are pip's alone; uv never reads them. UV_NO_INDEX is neither -- see Test-NoIndexRequested.
     function Test-WoaResolveReachesPyPI {
-        foreach ($name in @("UV_OFFLINE", "UV_NO_INDEX")) {
-            $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $false }
-        }
+        # Two different questions, kept apart. UV_OFFLINE really does stop uv reaching a
+        # network. UV_NO_INDEX is our own convention and uv ignores it, so this arm is us
+        # honouring an operator's stated intent, not a prediction about uv.
+        if (Test-UvEnvFlag "UV_OFFLINE") { return $false }
+        if (Test-NoIndexRequested) { return $false }
         $extraIsPyPI = $false
         foreach ($name in @("UV_INDEX", "UV_EXTRA_INDEX_URL")) {
-            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $list = [string][Environment]::GetEnvironmentVariable($name)
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) {
                 if (Test-WoaUrlIsPublicPyPI $u) { $extraIsPyPI = $true }
             }
         }
         foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $url = [string][Environment]::GetEnvironmentVariable($name)
             if ($url -and ($url.Trim())) { return ($extraIsPyPI -or (Test-WoaUrlIsPublicPyPI $url)) }
         }
         # Doubt resolves to "not PyPI": that answer keeps a wheel, the other loses the package.
@@ -789,7 +872,7 @@ function Install-UnslothStudio {
     # True when uv's own config decides the indexes and we could not read it: fatal where the caller scrubs UV_* and sets UV_NO_CONFIG, because the trio index would be the only source left.
     function Test-WoaUvIndexPolicyUnreadable {
         foreach ($name in @("UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL")) {
-            $v = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $v = [string][Environment]::GetEnvironmentVariable($name)
             if ($v -and $v.Trim()) { return $false }
         }
         return [bool](Get-WoaUvConfigIndexPolicy).Unreadable
@@ -799,21 +882,21 @@ function Install-UnslothStudio {
     function Get-WoaDependencyIndexArgs {
         param([string]$Resolver = "uv")
         $pip = ($Resolver -eq "pip")
-        $noIndexNames = if ($pip) { @("PIP_NO_INDEX") } else { @("UV_NO_INDEX") }
         $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
         $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-        foreach ($name in $noIndexNames) {
-            $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return @() }
-        }
+        # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+        # pip's and pip really reads it, so naming no index here matches what pip will
+        # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+        $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
+        if ($noIndexRequested) { return @() }
         $default = $null
         foreach ($name in $defaultNames) {
-            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $url = [string][Environment]::GetEnvironmentVariable($name)
             if ($url -and $url.Trim()) { $default = $url.Trim(); break }
         }
         $extras = @()
         foreach ($name in $extraNames) {
-            $list = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            $list = [string][Environment]::GetEnvironmentVariable($name)
             foreach ($u in ($list -split '\s+' | Where-Object { $_ })) { $extras += $u }
         }
         if (-not $pip -and (-not $default -or -not $extras)) {
@@ -1076,18 +1159,149 @@ function Install-UnslothStudio {
         }
     }
 
+    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+    # Every directory nvidia-smi might be in, in the order worth trying, filtered to the ones that
+    # actually hold the binary. Callers still run their own Test-NvidiaSmiHasGpu over the result:
+    # existing is not the same as answering.
+    #
+    # Only two locations were searched before, and each addition below is a host where a real NVIDIA
+    # GPU was reported absent, which sends the installer to CPU-only PyTorch:
+    #
+    #   SysNative       From a 32-bit process "System32" is redirected to SysWOW64, which has no
+    #                   nvidia-smi. SysNative is the alias that reaches the real System32.
+    #   ProgramW64      In that same process $env:ProgramFiles is "Program Files (x86)".
+    #                   ProgramW6432 is the 64-bit Program Files whatever the process bitness.
+    #   x86             Not the driver's own location, but a machine that once had a 32-bit
+    #                   toolkit can carry a working copy there.
+    #   DriverStore     Where the driver package itself lives. Present on hosts where the copy
+    #                   into System32 did not happen, which is the #9255 population.
+    #
+    # Nothing is removed. One ordering does change, and deliberately: the two call sites disagreed
+    # with each other before, one trying System32 first and the other the NVSMI directory first, and
+    # a single list cannot keep both. System32 wins, because that is where the current driver puts
+    # its copy; NVSMI is the legacy location and a machine carrying both can have an older binary
+    # there reporting an older CUDA version. This only affects a host that has both, and only in
+    # which of two working binaries answers.
+    function Get-NvidiaSmiCandidatePaths {
+        $dirs = @()
+        # Current driver locations first, in BOTH process bitnesses, before any legacy one.
+        # Both bitness spellings before $env:ProgramFiles, which in a 32-bit process is the x86 tree
+        # where a stale toolkit copy can sit and answer first.
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "SysNative") }
+        if ($env:ProgramW6432) { $dirs += (Join-Path $env:ProgramW6432 "NVIDIA Corporation\NVSMI") }
+        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+        $pfx86 = ${env:ProgramFiles(x86)}
+        if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
+        # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+        #
+        # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+        # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+        # the network service), so a host with eight of those newer than the display driver would
+        # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+        # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+        # bound that matters is on the candidates handed back, since each of those costs a probe.
+        try {
+            $repos = @()
+            if ($env:SystemRoot) {
+                # Both spellings, same WOW64 reason as above. At most one resolves in any given process, so
+                # this is not a doubled scan.
+                $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
+                $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
+            }
+            $packages = @()
+            foreach ($repo in $repos) {
+                if (-not (Test-Path -LiteralPath $repo -PathType Container)) { continue }
+                $packages += @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
+                    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf })
+            }
+            # The bound is on the whole DriverStore contribution rather than per root, so adding
+            # the second spelling cannot double the number of probes this hands back.
+            foreach ($dir in @($packages | Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
+                $dirs += $dir.FullName
+            }
+        } catch {}
+        $paths = @()
+        $seen = @{}
+        foreach ($dir in $dirs) {
+            if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+            $candidate = Join-Path $dir "nvidia-smi.exe"
+            # Case-insensitive, because the same directory reached two ways must not be probed twice:
+            # each probe is a bounded process spawn with a wall-clock timeout behind it.
+            $key = $candidate.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths += $candidate }
+        }
+        return $paths
+    }
+    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+
     # One list, because the presence probe and the driver-version probe must agree: a host only the first finds reports a GPU with no driver version, and the CUDA-major guard is then skipped.
+    # Reset per run: under `irm | iex` the script scope IS the caller's session, so a second
+    # invocation in one shell would otherwise reuse the first run's answer.
+    $script:WoaNvidiaSmiProbed = $false
+    $script:WoaNvidiaSmiPath = $null
+
     function Get-WoaNvidiaSmiPath {
+        # Memoised because the two callers each probe, and without this the whole candidate list
+        # would be walked twice with a bounded process spawn per entry.
+        if ($script:WoaNvidiaSmiProbed) { return $script:WoaNvidiaSmiPath }
+        $script:WoaNvidiaSmiProbed = $true
         $exe = $null
         try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
-        if ($exe) { return $exe }
-        foreach ($candidate in @(
-            "$env:SystemRoot\System32\nvidia-smi.exe",
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
-        )) {
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        if ($exe) { $script:WoaNvidiaSmiPath = $exe; return $exe }
+        $found = @(Get-NvidiaSmiCandidatePaths)
+        if ($found.Count -eq 0) { return $null }
+        # The first candidate that ANSWERS, not the first that exists.
+        #
+        # Both callers immediately probe what this returns, and treat a non-answer as "no NVIDIA
+        # here": Test-WoaNvidiaPresent returns false and Get-WoaDriverCudaVersion returns null,
+        # which between them decide whether the native ARM64 CUDA stack is installed at all. So
+        # handing back a broken copy does not cost a retry, it declines the whole route.
+        #
+        # That was survivable when two locations were searched and is not now that the list is
+        # longer: every location added is another chance that the first entry is a stale copy
+        # sitting in front of a working one. Same reason the main detection loop stopped taking
+        # the first listing candidate.
+        # Same two-budget shape as the main detection loop, and for the same reasons. Each probe
+        # below is a bounded process spawn, and the list can now be eleven entries, so a wedged
+        # driver would otherwise hold Initialize-WoaNativeCudaTorch for minutes before the
+        # install even starts. The soft budget only applies once something has answered; only the
+        # hard one may end the scan with nothing, because that decides the whole ARM64 route.
+        $woaDeadline = (Get-Date).AddSeconds(30)
+        $woaHardDeadline = (Get-Date).AddSeconds(60)
+        $woaListing = $null
+        foreach ($p in $found) {
+            if ($null -ne $woaListing -and (Get-Date) -gt $woaDeadline) { break }
+            if ((Get-Date) -gt $woaHardDeadline) { break }
+            try {
+                $listing = Invoke-NvidiaSmiBounded $p @('-L')
+                if (-not ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+')) { continue }
+                if (-not $woaListing) { $woaListing = $p }
+                # Two passes, because listing a GPU is not enough here. Get-WoaDriverCudaVersion
+                # asks this same binary for the CUDA banner, and a null answer does not merely
+                # lose a version: it skips the CUDA-major compatibility guard in
+                # Initialize-WoaNativeCudaTorch, which is what stops a native wheel newer than
+                # the installed driver being chosen. So prefer a candidate that answers BOTH.
+                if ((Get-Date) -gt $woaDeadline) { break }
+                $banner = Invoke-NvidiaSmiBounded $p
+                if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                    $script:WoaNvidiaSmiPath = $p
+                    return $p
+                }
+            } catch {}
         }
-        return $null
+        # One that listed a GPU but never named a version is still better than one that did not
+        # answer at all: the callers' presence check works, and the version check declines.
+        if ($woaListing) {
+            $script:WoaNvidiaSmiPath = $woaListing
+            return $woaListing
+        }
+        # Nothing answered. Hand back the first that exists, which is what this did before, so a
+        # host where the probe cannot run is no worse off than it was.
+        $script:WoaNvidiaSmiPath = $found[0]
+        return $found[0]
     }
 
     function Test-WoaNvidiaPresent {
@@ -1389,6 +1603,46 @@ function Install-UnslothStudio {
             [int]$Code = 1
         )
         if ($Code -eq 0) { $Code = 1 }
+        # Here rather than at any one failure site: the largest writes are the venv and the torch
+        # install, and both exit through this function long before studio setup is reached, so a
+        # disk that filled during them used to surface as a bare exit code (#11313). Below 64 MB
+        # nothing useful unpacks, which makes it the cause rather than a coincidence. Folded into
+        # $Message as well as printed, because under --tauri nothing reaches the UI except the
+        # single line handed to Write-TauriLog.
+        $_diskSuffix = ""
+        try {
+            # Probed, not called outright: the early exits above happen before this file has
+            # defined the helper, and a command-not-found here would replace the real failure
+            # with a confusing one.
+            if ($StudioHome -and (Get-Command Get-StudioFreeSpaceBytes -CommandType Function -ErrorAction SilentlyContinue)) {
+                $_diskFree = Get-StudioFreeSpaceBytes -Path $StudioHome
+                if ($null -ne $_diskFree -and $_diskFree -lt 64MB) {
+                    $_diskMb = [math]::Round($_diskFree / 1MB)
+                    # What to advise depends on what actually happened to the old environment,
+                    # not on what was asked for. A discard that failed left a tree behind, and
+                    # deleting it is very likely what makes the retry fit; telling that user
+                    # there is nothing left to reclaim sends them away from the one thing that
+                    # would help. install.sh chooses between the same four.
+                    $_diskRemedy = if ($script:StudioVenvDiscardLeftover) {
+                        "Free some space and re-run. The previous environment could not be removed and is still at $($script:StudioVenvDiscardLeftover); deleting it will reclaim that space."
+                    } elseif ($script:StudioVenvDiscardSucceeded) {
+                        "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+                    } elseif ($script:StudioNoRollback) {
+                        # Asked for, but nothing was there to discard: a first install, or a
+                        # failure before the replacement began.
+                        "Free some space and re-run."
+                    } else {
+                        "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+                    }
+                    $_diskSuffix = ": $StudioHome has only $_diskMb MB free, so the disk is full, which is very likely the cause. $_diskRemedy"
+                    if (-not $TauriMode) {
+                        Write-StudioLine "        $StudioHome has only $_diskMb MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
+                        Write-StudioLine "        $_diskRemedy" -ForegroundColor Red
+                    }
+                }
+            }
+        } catch { $_diskSuffix = "" }
+        $Message = "$Message$_diskSuffix"
         Write-TauriLog "ERROR_DEFAULT" $Message
         # Under `irm | iex` the session survives a failure; a leaked handoff would re-pin it.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
@@ -1735,6 +1989,19 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $IsolateUvCache = $false
+    # Script-scoped: Start-StudioVenvRollback reads it, and tests/studio/test_install_rollback_lifecycle.ps1
+    # extracts that function on its own.
+    $script:StudioNoRollback = $false
+    # Set later by the cross-volume cache notice and read later still by Start-StudioVenvRollback.
+    # Initialised here rather than beside the other rollback state, which is reset AFTER that
+    # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
+    # session, so a stale value from a previous run has to be cleared somewhere.
+    # Bounded WMI answer, taken at most once per run. Reset here for the same reason as the rest
+    # of this block: under `irm | iex` the script scope IS the caller's session.
+    $script:StudioVolumeList = $null
+    # Set by the --no-rollback discard when the environment it is about to delete reports XPU,
+    # read by the Intel scan once that tree is gone.
+    $script:StudioPreservedXpuVerdict = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -1744,6 +2011,7 @@ function Install-UnslothStudio {
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
             "--isolated-uv-cache" { $IsolateUvCache = $true }
+            "--no-rollback" { $script:StudioNoRollback = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -1770,6 +2038,7 @@ function Install-UnslothStudio {
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
     if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
+    if ($env:UNSLOTH_INSTALL_NO_ROLLBACK -in @('1', 'true', 'yes', 'on')) { $script:StudioNoRollback = $true }
 
     if ($script:UnslothVerbose) {
         $env:UNSLOTH_VERBOSE = '1'
@@ -1899,438 +2168,28 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    # Every native declaration in this script goes through here, never Add-Type.
-    #
-    # Add-Type on Windows PowerShell 5.1 (the interpreter the desktop app spawns) has
-    # no in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to
-    # %TEMP% and run csc.exe, which security software blocks and which failed outright
-    # with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit builds the
-    # same interop stubs in memory: no compiler process, no source, no DLL, empty
-    # assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7 take
-    # the same path. Which product blocked what:
     # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-    #
-    # Throws rather than reporting: each caller wants a different answer to "the native
-    # side is unavailable", and the two cosmetic ones must not print the resolver's
-    # warning.
-    #
-    # Test-StudioCanDefineNativeTypes is the gate every caller checks first, rather than
-    # a try/catch, because App Control's Dynamic Code Security (policy option 19) blocks
-    # loading unsigned System.Reflection.Emit assemblies by usually stopping or crashing
-    # the parent instead of raising:
-    # learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/appcontrol-and-dotnet
-    # Such a machine puts PowerShell in Constrained Language, the first check and the one
-    # that fires in practice; the Device Guard probe covers a policy that left the
-    # language mode alone. When one IS active, a child process tries the emit rather than
-    # guessing which options the policy set.
-    $script:StudioCanDefineNativeTypes = $null
-    # Why the last probe answered as it did, so a caller can tell "the child ran and
-    # said no" (a policy) from "the child never answered" (failed to start, killed
-    # at the deadline, or lost its output). Same boolean, different facts.
-    $script:StudioEmitProbeOutcome = $null
-    function Test-StudioCanDefineNativeTypes {
-        if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
-        $languageMode = "FullLanguage"
-        try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
-        if ($languageMode -ne "FullLanguage") {
-            $script:StudioCanDefineNativeTypes = $false
-            return $false
-        }
-        # Three outcomes, not two. Only a status that was READ and says 0 skips the
-        # probe; a query that threw, returned nothing, or lacked the property is
-        # UNKNOWN, and unknown must not mean unrestricted. Treating it as such lets
-        # through option 19 enforced on a host whose CIM query fails, costing a
-        # stopped installer; probing unnecessarily costs one short-lived process.
-        $known = $false
-        $active = $false
-        try {
-            # -OperationTimeoutSec bounds the CIM operation on a responsive target
-            # only: it does not interrupt DCOM connection setup, and a wedged
-            # provider's own timeout wins. Good for the slow case, not a hang guard.
-            # The installer already depends on CIM for adapter and process queries,
-            # so this adds no exposure; the child probe below carries the real
-            # deadline.
-            $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
-                -ClassName "Win32_DeviceGuard" -OperationTimeoutSec 10 -ErrorAction Stop
-            # 0 off, 1 audit, 2 enforced. A null property is not a zero.
-            if ($guard -and $null -ne $guard.UsermodeCodeIntegrityPolicyEnforcementStatus) {
-                $known = $true
-                if ([int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
-                    $active = $true
-                }
-            }
-        } catch {}
-        if ($known -and -not $active) {
-            $script:StudioCanDefineNativeTypes = $true
-            return $true
-        }
-        # A policy is active or unreadable, and WHICH policy decides this. Option 19
-        # Dynamic Code Security always blocks unsigned System.Reflection.Emit
-        # assemblies, with no audit mode on Windows 10 or Windows 11 before 24H2
-        # (enforced even in an audit policy); an audit policy WITHOUT that option
-        # emits fine. Win32_DeviceGuard does not report the option bit, so either
-        # guess costs a population: refusing sends every audit-mode machine down the
-        # lexical path, allowing risks the process. Ask the machine instead.
-        $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-        # One retry, only when the first attempt never reached an answer (the
-        # compiled version this replaces also tried twice before caching a
-        # negative). Otherwise one transient process failure is cached for the whole
-        # run as if it were a policy, sending the installer down the lexical path
-        # where two unequal roots compare as unknown and a second lock gets taken. A
-        # child that RAN and said no is not retried, so a blocked machine pays for
-        # one probe.
-        if (-not $script:StudioCanDefineNativeTypes -and
-            $script:StudioEmitProbeOutcome -eq "indeterminate") {
-            $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-        }
-        return $script:StudioCanDefineNativeTypes
-    }
 
-    # The same emit, in a process that is allowed to die. A blocked dynamic load
-    # usually stops or crashes the parent, so doing this in-process would be the
-    # installer vanishing; a child that vanishes is just an answer. Silence is
-    # refusal, so an unspawnable probe lands on the lexical path.
-    function Test-StudioEmitInChildProcess {
-        # HostPath is for the tests, which have no policy to trigger the real path and
-        # cannot shadow the read-only $PSHOME. Production never passes it.
-        param([string]$HostPath)
-        # Until something below establishes otherwise.
-        $script:StudioEmitProbeOutcome = "indeterminate"
-        $probe = @'
-try {
-    $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
-    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-    $assembly = $null
-    try { $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, $access) }
-    catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
-    $module = $assembly.DefineDynamicModule('UnslothStudioEmitProbe')
-    $builder = $module.DefineType('UnslothStudioEmitProbe', 'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-    $method = $builder.DefinePInvokeMethod('CloseHandle', 'kernel32.dll', 'CloseHandle',
-        'Public, Static, HideBySig, PinvokeImpl',
-        [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
-        [System.Runtime.InteropServices.CallingConvention]::Winapi,
-        [System.Runtime.InteropServices.CharSet]::Ansi)
-    $method.SetImplementationFlags(
-        $method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
-    $null = $builder.CreateType()
-} catch {}
-# Outside the try, because CreateType can publish the type and then throw on the way
-# back, and a published type works. The parent recovers from exactly that; a check
-# inside the try answered no for a machine that had just succeeded.
-# One line, and no closing brace in column 0: this body sits inside a here-string that
-# starts at column 0 in both entrypoints, and the tests extract a function by finding the
-# first line that is exactly its closing brace. A block here ends the extraction early.
-if ('UnslothStudioEmitProbe' -as [type]) { Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode); exit 0 }
-exit 1
-'@
-        # This host, not a guessed one: a 5.1 answer does not carry to pwsh or back.
-        # Both spellings of the leaf, so a non-Windows lane can execute this function
-        # end to end rather than leaving a Windows-only path untested.
-        $hostExe = $HostPath
-        if (-not $hostExe) {
-            try {
-                $leaves = if ($PSVersionTable.PSEdition -eq "Core") { @("pwsh.exe", "pwsh") }
-                          else { @("powershell.exe", "powershell") }
-                foreach ($leaf in $leaves) {
-                    $candidate = Join-Path $PSHOME $leaf
-                    if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate; break }
-                }
-            } catch {}
-        }
-        if (-not $hostExe) { return $false }
-        # A Process object rather than the call operator, for a deadline: the call
-        # operator waits forever, and forever is reachable (a security product
-        # inspecting a fresh interpreter, a wedged runtime start, a child blocking on
-        # shutdown). A probe meant to keep the installer alive must not hang it.
-        #
-        # BOTH streams are redirected and drained asynchronously. Draining stops a
-        # chatty child filling a pipe and deadlocking against the wait. Redirecting
-        # stderr keeps the probe out of the installer's own stderr, which the desktop
-        # app reads and anything the child spawns would inherit and hold open.
-        #
-        # The body is embedded in double quotes, safe only because it contains none,
-        # asserted by a test. See the note above.
-        $info = New-Object System.Diagnostics.ProcessStartInfo
-        $info.FileName = $hostExe
-        $info.Arguments = "-NoProfile -NonInteractive -Command `"$probe`""
-        $info.UseShellExecute = $false
-        $info.RedirectStandardOutput = $true
-        $info.RedirectStandardError = $true
-        $info.CreateNoWindow = $true
-        $child = $null
-        try {
-            $child = [System.Diagnostics.Process]::Start($info)
-            $reader = $child.StandardOutput.ReadToEndAsync()
-            $null = $child.StandardError.ReadToEndAsync()
-            if (-not $child.WaitForExit(20000)) {
-                try { $child.Kill() } catch {}
-                return $false
-            }
-            # Exit code AND an exact record. A marker followed by a crash is a crash:
-            # the question is whether this machine can emit and live. FullLanguage
-            # because an approved script can run in FullLanguage while a fresh inline
-            # command does not, and a child restricted differently from its parent
-            # has measured a different machine.
-            if ($child.ExitCode -ne 0) {
-                $script:StudioEmitProbeOutcome = "blocked"
-                return $false
-            }
-            $lines = ($reader.GetAwaiter().GetResult() -split "`r?`n")
-            foreach ($line in $lines) {
-                if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") {
-                    $script:StudioEmitProbeOutcome = "ok"
-                    return $true
-                }
-                # Emitted, but in a language mode this parent is not in: the child
-                # measured a different machine, which is an answer, not a miss.
-                if ($line.Trim() -like "STUDIO_EMIT_OK *") {
-                    $script:StudioEmitProbeOutcome = "blocked"
-                    return $false
-                }
-            }
-            # Exit 0 with no marker: the child cannot have emitted and reported
-            # nothing, so its output was lost rather than negative.
-            return $false
-        } catch {
-            return $false
-        } finally {
-            if ($child) {
-                # The read end goes first: a killed child can leave a grandchild
-                # holding the write end, and the pending async read would then keep
-                # this process alive past the deadline it just enforced.
-                try { $child.StandardOutput.Close() } catch {}
-                try { $child.StandardError.Close() } catch {}
-                try { $child.Dispose() } catch {}
-            }
-        }
-    }
-
-    function New-StudioDynamicAssembly {
-        <#
-        Both spellings of "define a dynamic assembly", because the two PowerShell
-        hosts that run this file are on different runtimes. The static
-        AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework
-        4.5 through 4.8.1 as well as .NET Core, so 5.1 should take the first
-        branch; it is tried rather than assumed because nothing here can test a
-        .NET Framework host and getting it wrong is invisible: the catch would
-        cache the resolver as unavailable and every desktop install would use the
-        lexical fallback, which can give a long path and its 8.3 alias different
-        mutex names.
-
-        AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework
-        spelling and is absent on .NET Core, so it is the fallback; pwsh would
-        fail on it.
-        #>
-        param([Parameter(Mandatory = $true)][System.Reflection.AssemblyName]$AssemblyName)
-        $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-        try {
-            return [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
-                $AssemblyName, $access)
-        } catch [System.Management.Automation.MethodException] {
-            return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
-        } catch [System.Management.Automation.RuntimeException] {
-            # Some hosts surface a missing static as RuntimeException, not
-            # MethodException. Both mean "no such method here", and a real emit
-            # failure (Dynamic Code Security, Constrained Language) throws from the
-            # AppDomain call too, so the caller still sees it.
-            return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
-        }
-    }
-
-    function New-StudioEmittedNativeType {
-        param(
-            [Parameter(Mandatory = $true)][string]$TypeName,
-            # @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]
-            #    Args = @([IntPtr]) }
-            [Parameter(Mandatory = $true)][object[]]$Imports
-        )
-        $assemblyName = New-Object System.Reflection.AssemblyName $TypeName
-        $assembly = New-StudioDynamicAssembly -AssemblyName $assemblyName
-        $module = $assembly.DefineDynamicModule($TypeName)
-        $builder = $module.DefineType(
-            $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
-
-        $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-        # Per import, because CharSet selects name mangling as well as marshalling:
-        # Unicode probes <Name>W before <Name>, Ansi probes <Name> before <Name>A.
-        # Every import names an export that exists exactly as written, so both
-        # orders arrive; matching the C# these replace keeps the metadata honest and
-        # tries the existing export first. Unicode is the default, since the calls
-        # carrying text are already spelled W.
-        $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
-        $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
-        $standard = [System.Reflection.CallingConventions]::Standard
-        $attributes = "Public, Static, HideBySig, PinvokeImpl"
-        $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
-
-        foreach ($import in $Imports) {
-            $charSet = if ($import.ContainsKey("Ansi") -and $import.Ansi) { $ansi } else { $unicode }
-            $method = $builder.DefinePInvokeMethod(
-                $import.Name, $import.Library, $import.Name, $attributes,
-                $standard, $import.Return, $import.Args, $winapi, $charSet)
-            $method.SetImplementationFlags(
-                $method.GetMethodImplementationFlags() -bor $preserveSig)
-            # `out uint` in the C# this replaces; DefinePInvokeMethod cannot say so,
-            # since a by-ref type alone emits `ref` (In and Out unset). The value is
-            # blittable and every caller initialises it, so marshalling works either
-            # way, but the metadata is what a reader and any future marshalling
-            # change go by.
-            # ContainsKey, not a bare property read: most imports have no Out key and
-            # reading a missing one is fatal under Set-StrictMode. install.ps1 turns
-            # strict mode off for itself, studio/setup.ps1 inherits the caller's, so
-            # the guard is mirrored rather than left to one of them.
-            if ($import.ContainsKey("Out")) {
-                foreach ($position in @($import.Out)) {
-                    if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
-                }
-            }
-        }
-        $null = $builder.CreateType()
-        return $null -ne ($TypeName -as [type])
-    }
-
-    # GetFinalPathNameByHandleW is the only exact answer for a path: it follows
-    # junctions, symlinks and SUBST drives, expands 8.3 aliases and reports the
-    # on-disk spelling, none of which GetFullPath does. Cached, since callers
-    # resolve dozens of paths; where unavailable, Get-StudioLexicalPath carries the
-    # run.
-    $script:StudioFinalPathNativeState = $null
-    # Reset with the rest: under `irm | iex` these are the caller's own.
-    $script:StudioNativeResolveWarned = $false
     $script:StudioFinalPathWarned = $false
+    $script:StudioInstallIsFresh = $null
     function Write-StudioFinalPathDegraded {
         param([string]$Reason)
         if ($script:StudioFinalPathWarned) { return }
         $script:StudioFinalPathWarned = $true
+        if ($script:StudioInstallIsFresh -eq $true) {
+            Write-Verbose "Unsloth: path identity is inexact ($Reason); first install, taking every runtime lock."
+            return
+        }
         # This used to promise "installation is unaffected", which it cannot know:
         # the same security software that blocks a type can be acting on the rest of
         # the run. Only the narrower claim is true, that the installer can continue.
-        Write-StudioLine "[WARN] Could not load the native path resolver ($Reason)." -ForegroundColor Yellow
-        Write-StudioLine "       Continuing with the PowerShell resolver, which cannot recover a path's" -ForegroundColor Yellow
+        Write-StudioLine "[WARN] Could not resolve a path exactly ($Reason)." -ForegroundColor Yellow
+        Write-StudioLine "       Continuing with the lexical resolver, which cannot recover a path's" -ForegroundColor Yellow
         Write-StudioLine "       stored casing or expand an 8.3 name, so paths are compared as written." -ForegroundColor Yellow
+        Write-StudioLine "       Unsloth will take every runtime lock it might need rather than assume" -ForegroundColor Yellow
+        Write-StudioLine "       two spellings are different directories." -ForegroundColor Yellow
     }
 
-    function Initialize-StudioFinalPathNativeType {
-        if ("UnslothStudioFinalPathV3" -as [type]) {
-            $script:StudioFinalPathNativeState = $true
-            return $true
-        }
-        if ($null -ne $script:StudioFinalPathNativeState) { return $script:StudioFinalPathNativeState }
-        # Constrained Language Mode forbids defining types at all, by emit as by
-        # Add-Type, so compiling would only produce a second, less honest error.
-        if (-not (Test-StudioCanDefineNativeTypes)) {
-            $script:StudioFinalPathNativeState = $false
-            $languageMode = "FullLanguage"
-            try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
-            # Three reasons, because the gate has three ways to say no and only one
-            # is a policy. Blaming code integrity for a probe that could not be
-            # spawned, or was killed at its deadline, writes a machine setting into
-            # the support log that the user would go looking for and not find.
-            $reason = if ($languageMode -ne "FullLanguage") { "PowerShell is in $languageMode" }
-                      elseif ($script:StudioEmitProbeOutcome -eq "blocked") {
-                          "this host enforces user-mode code integrity"
-                      } else { "a probe process could not confirm native type support" }
-            Write-StudioFinalPathDegraded -Reason $reason
-            return $false
-        }
-        # Everything below the capability check is unchanged, so a host where the
-        # emit fails degrades exactly as one that could not compile already did.
-        #
-        # DefinePInvokeMethod cannot ask for SetLastError, so nothing below reads
-        # GetLastWin32Error. The C# it replaces threw a Win32Exception that callers
-        # only turned back into "use the lexical answer", so returning null loses a
-        # code nothing acted on.
-        try {
-            $null = New-StudioEmittedNativeType -TypeName "UnslothStudioFinalPathV3" -Imports @(
-                @{ Name = "CreateFileW"; Library = "kernel32.dll"; Return = [IntPtr]
-                   Args = @([string], [uint32], [uint32], [IntPtr], [uint32], [uint32], [IntPtr]) },
-                @{ Name = "GetFinalPathNameByHandleW"; Library = "kernel32.dll"; Return = [uint32]
-                   Args = @([IntPtr], [System.Text.StringBuilder], [uint32], [uint32]) },
-                @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr])
-                   Ansi = $true }
-            )
-        } catch {
-            # A throw does not mean nothing was defined: CreateType can publish the
-            # type and then fail on the way back, and the compiled version this
-            # replaces checked for that too. A published type is usable, so ask
-            # before caching the negative.
-            if ("UnslothStudioFinalPathV3" -as [type]) {
-                $script:StudioFinalPathNativeState = $true
-                return $true
-            }
-            $script:StudioFinalPathNativeState = $false
-            Write-StudioFinalPathDegraded -Reason (($_.Exception.Message -split "`r?`n")[0].Trim())
-            return $false
-        }
-        if ("UnslothStudioFinalPathV3" -as [type]) {
-            $script:StudioFinalPathNativeState = $true
-            return $true
-        }
-        $script:StudioFinalPathNativeState = $false
-        Write-StudioFinalPathDegraded -Reason "the native path resolver could not be defined"
-        return $false
-    }
-
-    # GetFinalPathNameByHandleW is the only exact answer: it follows junctions,
-    # symlinks and SUBST drives, expands 8.3 aliases and reports the on-disk
-    # spelling, none of which GetFullPath does.
-    #
-    # What the compiled Resolve() did, moved out of C# so the imports above are all
-    # the native code there is. Same flags, same two-pass buffer growth. Null rather
-    # than an exception on failure: every caller already treats "no exact answer" as
-    # "use the lexical one".
-    function Get-StudioNativeFinalPath {
-        param([Parameter(Mandatory = $true)][string]$Path)
-
-        $invalidHandle = [IntPtr](-1)
-        $fileShareAll = [uint32]7          # READ | WRITE | DELETE
-        $openExisting = [uint32]3
-        $backupSemantics = [uint32]0x02000000   # required to open a DIRECTORY
-
-        # Every native call is guarded: an emitted stub binds its import on first CALL,
-        # not at definition, so a host missing the export raises here rather than above,
-        # and the caller must see the same null "no exact answer" a failed open gives.
-        # Acquisition sits INSIDE the region that closes the handle, because the
-        # SafeFileHandle the C# returned had a finalizer as a backstop and an IntPtr has
-        # none. What is left is the instant between the native return and the assignment,
-        # which no PowerShell arrangement can close and which costs nothing: opened with
-        # desired access 0 and FILE_SHARE_READ|WRITE|DELETE, even a leaked handle blocks
-        # no other opener and dies with the process.
-        $handle = $invalidHandle
-        try {
-            try {
-                $handle = [UnslothStudioFinalPathV3]::CreateFileW(
-                    $Path, [uint32]0, $fileShareAll, [IntPtr]::Zero,
-                    $openExisting, $backupSemantics, [IntPtr]::Zero)
-            } catch {
-                return $null
-            }
-            if ($handle -eq $invalidHandle -or $handle -eq [IntPtr]::Zero) { return $null }
-            $buffer = New-Object System.Text.StringBuilder 512
-            $length = [UnslothStudioFinalPathV3]::GetFinalPathNameByHandleW(
-                $handle, $buffer, [uint32]$buffer.Capacity, [uint32]0)
-            if ($length -eq 0) { return $null }
-            if ($length -ge $buffer.Capacity) {
-                $buffer = New-Object System.Text.StringBuilder ([int]$length + 1)
-                $length = [UnslothStudioFinalPathV3]::GetFinalPathNameByHandleW(
-                    $handle, $buffer, [uint32]$buffer.Capacity, [uint32]0)
-                if ($length -eq 0) { return $null }
-            }
-            # Still short is the only answer worth trusting.
-            if ($length -ge $buffer.Capacity) { return $null }
-            return $buffer.ToString()
-        } catch {
-            return $null
-        } finally {
-            # Guarded now that the open is inside this region: failure paths reach
-            # here with the sentinel, which there is no reason to ask Windows to
-            # close.
-            if ($handle -ne $invalidHandle -and $handle -ne [IntPtr]::Zero) {
-                try { [void][UnslothStudioFinalPathV3]::CloseHandle($handle) } catch {}
-            }
-        }
-    }
 
     function Resolve-StudioLinkTarget {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -2484,6 +2343,598 @@ exit 1
         return $current
     }
 
+    # Runs before the install lock: find an existing Python only. Path.resolve matches what
+    # unsloth_cli/_studio_runtime_gate.py hashes, so both sides name the same lock.
+    $script:StudioEarlyPythonProbed = $false
+    $script:StudioEarlyPython = $null
+    $script:StudioEarlyPythonProbedWithoutVenv = $false
+
+    function Test-StudioSddlRightsAreWrite {
+        param([string]$Rights)
+        if ([string]::IsNullOrWhiteSpace($Rights)) { return $true }
+        $text = "$Rights".Trim().ToUpper()
+        if ($text -like "0X*") {
+            $mask = [long]0
+            foreach ($ch in $text.Substring(2).ToCharArray()) {
+                $digit = "0123456789ABCDEF".IndexOf($ch)
+                if ($digit -lt 0) { return $true }
+                $mask = ($mask * 16) + $digit
+            }
+            return (($mask -band 0x500D0156) -ne 0)
+        }
+        foreach ($alias in @("GA", "GW", "WD", "WO", "SD", "DT", "FA", "FW", "KA", "KW",
+                             "CC", "DC", "WP", "SW")) {
+            if ($text.Contains($alias)) { return $true }
+        }
+        return $false
+    }
+
+    function Test-StudioSddlPrincipalIsAdminOnly {
+        param([string]$Principal)
+        if ([string]::IsNullOrWhiteSpace($Principal)) { return $false }
+        $who = "$Principal".Trim().ToUpper()
+        return (@(
+            "BA", "SY", "S-1-5-32-544", "S-1-5-18",
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+        ) -contains $who)
+    }
+
+    function Test-StudioSddlWritableByNonAdmin {
+        param([string]$Sddl)
+        if ([string]::IsNullOrWhiteSpace($Sddl)) { return $true }
+        $text = "$Sddl".Trim()
+        if (-not ($text -match '^O:([A-Za-z0-9\-]+?)(?:G:|D:|S:|$)')) { return $true }
+        if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $Matches[1])) { return $true }
+        $daclAt = $text.IndexOf("D:")
+        if ($daclAt -lt 0) { return $true }
+        $dacl = $text.Substring($daclAt)
+        $saclAt = $dacl.IndexOf("S:")
+        if ($saclAt -ge 0) { $dacl = $dacl.Substring(0, $saclAt) }
+        $seen = 0
+        foreach ($chunk in ($dacl -split '\)')) {
+            $open = $chunk.IndexOf("(")
+            if ($open -lt 0) { continue }
+            $seen++
+            $fields = $chunk.Substring($open + 1) -split ';'
+            if ($fields.Count -lt 6) { return $true }
+            $type = "$($fields[0])".Trim().ToUpper()
+            $flags = "$($fields[1])".Trim().ToUpper()
+            if (@("D", "OD", "XD") -contains $type) { continue }
+            if ($flags.Contains("IO")) { continue }
+            if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
+            if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
+        }
+        # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+        # manage to split.
+        if ($seen -eq 0) { return $true }
+        return $false
+    }
+
+    function Test-StudioDirectoryIsAdminOnly {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        $sddl = ""
+        try {
+            # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+            # property access on types outside its allowed list, and the security descriptor is one.
+            $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
+                Select-Object -ExpandProperty Sddl)"
+        } catch { return $false }
+        if ([string]::IsNullOrWhiteSpace($sddl)) { return $false }
+        return (-not (Test-StudioSddlWritableByNonAdmin -Sddl $sddl))
+    }
+
+    function Get-StudioLexicalParent {
+        param([string]$Path)
+        $trimmed = "$Path".TrimEnd('\', '/')
+        $cut = $trimmed.LastIndexOfAny(@([char]92, [char]47))
+        if ($cut -lt 0) { return "" }
+        return $trimmed.Substring(0, $cut)
+    }
+
+    function Test-StudioPathUnderAdminRoot {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        # $env: rather than [Environment]::GetEnvironmentVariable: System.Environment is not on
+        # Constrained Language Mode's allowed type list, and this helper runs on hosts under it.
+        $roots = @()
+        foreach ($value in @($env:SystemRoot, $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += "$value".TrimEnd('\', '/') }
+        }
+        $matchedRoot = ""
+        foreach ($root in $roots) {
+            $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
+            if (("$Path" -like ($escapedRoot + "\*")) -or ("$Path" -like ($escapedRoot + "/*"))) {
+                $matchedRoot = $root
+                break
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($matchedRoot)) { return $false }
+        $windowsRoot = "$($env:SystemRoot)".TrimEnd('\', '/')
+        if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
+            foreach ($leaf in @(
+                "Temp", "Tasks", "Tracing", "Registration\CRMLog", "debug\WIA",
+                "System32\Tasks", "System32\spool\drivers\color", "System32\spool\PRINTERS",
+                "System32\spool\SERVERS", "System32\com\dmp", "System32\FxsTmp",
+                "SysWOW64\Tasks", "SysWOW64\com\dmp", "SysWOW64\FxsTmp"
+            )) {
+                $writable = $windowsRoot + "\" + $leaf
+                $escapedWritable = $writable -replace '([\[\]\*\?])', '`$1'
+                if (("$Path" -like ($escapedWritable + "\*")) -or
+                    ("$Path" -like ($escapedWritable + "/*"))) { return $false }
+            }
+        }
+        $current = Get-StudioLexicalParent -Path "$Path"
+        $guard = 0
+        while (-not [string]::IsNullOrWhiteSpace($current)) {
+            $guard++
+            if ($guard -gt 64) { return $false }
+            if (-not (Test-StudioDirectoryIsAdminOnly -Path $current)) { return $false }
+            if ("$current".TrimEnd('\', '/') -eq $matchedRoot) { return $true }
+            $next = Get-StudioLexicalParent -Path "$current"
+            if ("$next" -eq "$current") { return $false }
+            $current = $next
+        }
+        return $false
+    }
+
+    function Test-StudioInterpreterFileIsAdminOnly {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop |
+                Select-Object -Property Attributes, LinkType
+            if ($null -eq $item) { return $false }
+            if ("$($item.Attributes)" -match 'ReparsePoint') { return $false }
+            if (-not [string]::IsNullOrWhiteSpace("$($item.LinkType)")) { return $false }
+        } catch { return $false }
+        return (Test-StudioDirectoryIsAdminOnly -Path $Path)
+    }
+
+    function Get-StudioEarlyPython {
+        # A miss taken before $VenvDir existed (--tauri) is re-probed once it does.
+        $venvDirValue = $null
+        try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
+        $venvKnown = -not [string]::IsNullOrWhiteSpace($venvDirValue)
+        if ($script:StudioEarlyPythonProbed) {
+            if (-not ($script:StudioEarlyPythonProbedWithoutVenv -and $venvKnown -and
+                      [string]::IsNullOrWhiteSpace($script:StudioEarlyPython))) {
+                return $script:StudioEarlyPython
+            }
+        }
+        $script:StudioEarlyPythonProbed = $true
+        $script:StudioEarlyPythonProbedWithoutVenv = (-not $venvKnown)
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
+        $candidates = @()
+        $venvCandidates = @()
+        if ($venvKnown) {
+            $venvCandidates = @((Join-Path $venvDirValue "Scripts\python.exe"), (Join-Path $venvDirValue "bin/python3"))
+            $candidates += $venvCandidates
+        }
+        foreach ($name in @("python3", "python")) {
+            try {
+                foreach ($cmd in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
+                }
+            } catch {}
+        }
+        $requireAdminRoot = $false
+        if ($env:OS -eq "Windows_NT") {
+            try { $requireAdminRoot = Test-StudioChildScriptDirectoryElevated } catch { $requireAdminRoot = $true }
+        }
+        $rejectedForWritability = $false
+        foreach ($candidate in $candidates) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            # Test-Path throws on an unreadable dir under Stop: skip this candidate only.
+            $isFile = $false
+            try { $isFile = Test-Path -LiteralPath $candidate -PathType Leaf } catch {}
+            if (-not $isFile) { continue }
+            # The venv interpreter runs here before the destination guard does, so only where that
+            # guard would let it run: the default layout, or a custom home that is already Unsloth's.
+            if ($venvCandidates -contains $candidate) {
+                $ours = $false
+                try {
+                    $mode = Get-Variable -Name StudioRedirectMode -ValueOnly -ErrorAction Stop
+                    $studioHomeValue = Get-Variable -Name StudioHome -ValueOnly -ErrorAction Stop
+                    # The guard's own predicates; one not yet defined this early throws, which declines.
+                    $ours = ($mode -ne 'env') -or
+                        (Test-Path -LiteralPath (Join-Path $venvDirValue ".unsloth-studio-owned") -PathType Leaf) -or
+                        (Test-Path -LiteralPath (Join-Path $studioHomeValue "share\studio.conf") -PathType Leaf) -or
+                        (Test-Path -LiteralPath (Join-Path $studioHomeValue "bin\unsloth.exe") -PathType Leaf) -or
+                        (Test-StudioPlainFile -Path (Join-Path $studioHomeValue ".unsloth-studio-owned")) -or
+                        (Test-UnslothCmdShimFile (Join-Path $studioHomeValue "bin\unsloth.cmd"))
+                } catch { $ours = $false }
+                if (-not $ours) {
+                    if ($requireAdminRoot) { $rejectedForWritability = $true }
+                    continue
+                }
+            }
+            if ($requireAdminRoot -and ($venvCandidates -notcontains $candidate)) {
+                $adminOnly = $false
+                try {
+                    $adminOnly = (Test-StudioPathUnderAdminRoot -Path $candidate) -and
+                                 (Test-StudioInterpreterFileIsAdminOnly -Path $candidate)
+                } catch { $adminOnly = $false }
+                if (-not $adminOnly) {
+                    $rejectedForWritability = $true
+                    continue
+                }
+            }
+            if ("$candidate" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
+            # Probe the interpreter's own directory: $PSScriptRoot is empty when the script runs from memory.
+            $probeDir = $null
+            try { $probeDir = [System.IO.Path]::GetDirectoryName($candidate) } catch {}
+            if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
+            $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
+            if (-not [string]::IsNullOrWhiteSpace($probe)) {
+                $script:StudioEarlyPython = $candidate
+                return $candidate
+            }
+        }
+        if ($rejectedForWritability) {
+            Write-StudioFinalPathDegraded -Reason ("this run is elevated and the only interpreters found " +
+                "are in directories a standard user can write, which an elevated run must not launch")
+        }
+        return $null
+    }
+
+    function Invoke-StudioEarlyPython {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Path,
+            [int]$TimeoutMs = 10000
+        )
+        # The gate's _resolved_windows_path, strict so loops/dangling links raise. <3.8 does not follow links.
+        $script = "import pathlib,sys" + [char]10 +
+                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        # Any error, incl. from Test-Path, returns $null (lexical rung).
+        try {
+            # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+            $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+            if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+            if (-not (Test-Path -LiteralPath $answer)) { return $null }
+            return $answer
+        } catch {
+            return $null
+        }
+    }
+
+    function Invoke-StudioEarlyPythonScript {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Script,
+            [string[]]$ScriptArgs = @(),
+            [int]$TimeoutMs = 10000
+        )
+        $proc = $null
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            # -S as well as -I: -I still imports site, so a sitecustomize could print or hang.
+            # -B: these probes can run before the install lock, so they must write no .pyc.
+            # ArgumentList is .NET Core only; Windows PowerShell 5.1 lacks it.
+            $argv = @("-I", "-S", "-B", "-c", $Script) + $ScriptArgs
+            if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
+                foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
+            } else {
+                # Quote for CommandLineToArgvW, doubling trailing backslashes so "C:\dir\" keeps its quote.
+                $psi.Arguments = (@($argv | ForEach-Object {
+                    '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+                }) -join ' ')
+            }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            # Otherwise 5.1 decodes with the console codepage and corrupts non-ASCII paths.
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $proc.StandardOutput.ReadToEndAsync()
+            $null = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutMs)) {
+                try { $proc.Kill() } catch {}
+                return $null
+            }
+            if ($proc.ExitCode -ne 0) { return $null }
+            # A leftover child can hold stdout open, so the deadline bounds the read too.
+            $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+            if (-not $stdout.Wait($left)) { return $null }
+            return "$($stdout.Result)"
+        } catch {
+            return $null
+        } finally {
+            if ($proc) { try { $proc.Dispose() } catch {} }
+        }
+    }
+
+
+    function Get-StudioSystem32Tool {
+        param([Parameter(Mandatory = $true)][string]$Name)
+        if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { return "" }
+        $candidate = Join-Path (Join-Path $env:SystemRoot "System32") $Name
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return "" }
+        return $candidate
+    }
+
+    function Invoke-StudioSystem32ToolBounded {
+        param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutMs = 3000)
+        # CLM cannot construct ProcessStartInfo. A job captures the trusted system tool's
+        # output through PowerShell's pipes, without redirect files in an unlabelled directory.
+        if ("$($ExecutionContext.SessionState.LanguageMode)" -ne "FullLanguage") {
+            $job = $null
+            try {
+                $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+                if (($TimeoutMs % 1000) -ne 0) { $seconds++ }
+                if ($seconds -lt 1) { $seconds = 1 }
+                $job = Start-Job -ScriptBlock {
+                    param($tool, $toolArgs)
+                    $lines = @(& $tool @toolArgs 2>$null)
+                    return @{ Output = ($lines -join "`n"); ExitCode = $LASTEXITCODE }
+                } -ArgumentList $Exe, (,$Arguments)
+                if (Wait-Job -Job $job -Timeout $seconds) {
+                    return (Receive-Job -Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1)
+                }
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            } catch { return $null }
+            finally { if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } }
+            return $null
+        }
+        $proc = $null
+        try {
+            # If policy forbids these types, decline. The caller treats an unreadable
+            # token as elevated and uses the inline probe when no private directory is safe.
+            $clock = [System.Diagnostics.Stopwatch]::StartNew()
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            if ($null -ne $psi.PSObject.Properties['ArgumentList']) {
+                foreach ($arg in $Arguments) { $null = $psi.ArgumentList.Add($arg) }
+            } else {
+                # The arguments here are paths and fixed switches; paths cannot contain quotes.
+                $psi.Arguments = (@($Arguments | ForEach-Object {
+                    '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+                }) -join ' ')
+            }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $proc.StandardOutput.ReadToEndAsync()
+            $null = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutMs)) {
+                try { $proc.Kill() } catch { }
+                return $null
+            }
+            $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+            if (-not $stdout.Wait($left)) { return $null }
+            return @{ Output = "$($stdout.Result)"; ExitCode = $proc.ExitCode }
+        } catch { return $null }
+        finally { if ($proc) { try { $proc.Dispose() } catch { } } }
+    }
+
+    function Test-StudioChildScriptDirectoryElevated {
+        $groups = ""
+        $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
+        if (-not $whoami) { return $true }
+        try {
+            $result = Invoke-StudioSystem32ToolBounded -Exe $whoami -Arguments @('/groups')
+            if ($null -eq $result) { return $true }
+            $groups = "$($result.Output)"
+        } catch { return $true }
+        if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
+        if ($groups -match "S-1-16-(12288|16384)") { return $true }
+        if ($groups -match "S-1-16-\d+") { return $false }
+        return $true
+    }
+
+    function New-StudioChildScriptDirectory {
+        $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+        # Join-Path throws on a TEMP naming a missing drive: decline, like any other unusable root.
+        try { $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N")) -ErrorAction Stop } catch { return "" }
+        $made = $false
+        try {
+            $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
+                Select-Object -ExpandProperty FullName)"
+            $made = (Test-Path -LiteralPath $dir -PathType Container)
+            if ((-not $made) -and $createdPath) {
+                Remove-Item -LiteralPath $createdPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        if ((-not $made) -and $dir -match '[\[\]]') {
+            $escaped = $dir -replace '([\[\]])', '`$1'
+            try {
+                $null = New-Item -ItemType Directory -Path $escaped -ErrorAction Stop
+                $made = (Test-Path -LiteralPath $dir -PathType Container)
+            } catch { }
+        }
+        # Created by THIS call. New-Item without -Force throws on a directory that already exists,
+        # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
+        if (-not $made) { return "" }
+        if ($env:OS -eq "Windows_NT") {
+            # Until it is labelled a standard user can swap this directory for a junction: a link is
+            # never adopted, and cleanup never recurses through one into its target.
+            $isLink = { try { "$((Get-Item -LiteralPath $dir -Force -ErrorAction Stop).Attributes)" -match 'ReparsePoint' } catch { $true } }
+            $labelled = $false
+            $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
+            if (-not $icacls) {
+                if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+                return ""
+            }
+            try {
+                $result = Invoke-StudioSystem32ToolBounded -Exe $icacls -Arguments @($dir, '/setintegritylevel', '(OI)(CI)H')
+                $labelled = ($null -ne $result -and $result.ExitCode -eq 0)
+                if (-not $labelled -and $null -ne $result) {
+                    $readback = Invoke-StudioSystem32ToolBounded -Exe $icacls -Arguments @($dir)
+                    $labelled = ($null -ne $readback -and "$($readback.Output)" -match "S-1-16-12288|High Mandatory Level")
+                }
+            } catch { $labelled = $false }
+            if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
+                if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+                return ""
+            }
+            if (& $isLink) { return "" }
+            if ($labelled) {
+                $planted = $true
+                try {
+                    $planted = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -ne 0
+                } catch { $planted = $true }
+                if ($planted) {
+                    if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+                    return ""
+                }
+            }
+        }
+        return $dir
+    }
+
+    # One child per distinct path: the process scan asks for the same image paths repeatedly.
+    $script:StudioPythonFinalPathCache = $null
+
+    function Get-StudioPythonFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
+            return $script:StudioPythonFinalPathCache[$Path]
+        }
+        $exe = $null
+        try { $exe = Get-StudioEarlyPython } catch {}
+        # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
+        if (-not $exe) { return $null }
+        $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
+        $script:StudioPythonFinalPathCache[$Path] = $answer
+        return $answer
+    }
+
+    function Resolve-StudioFinalPathsInOneChild {
+        param([string[]]$Paths = @())
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        $wanted = @()
+        foreach ($candidate in $Paths) {
+            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+            if ($script:StudioPythonFinalPathCache.ContainsKey($candidate)) { continue }
+            if ($wanted -notcontains $candidate) { $wanted += $candidate }
+        }
+        if ($wanted.Count -eq 0) { return }
+        $exe = $null
+        try { $exe = Get-StudioEarlyPython } catch {}
+        if (-not $exe) { return }
+        $listDir = New-StudioChildScriptDirectory
+        $listFile = $null
+        if ($listDir) {
+            $listFile = Join-Path $listDir "paths.txt"
+            try { Set-Content -LiteralPath $listFile -Value $wanted -Encoding UTF8 -ErrorAction Stop }
+            catch { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue; $listDir = $null; $listFile = $null }
+        }
+        # Without a private directory the list rides the environment, in chunks under its 32767-character
+        # block, so a declined directory does not fall back to one child per process.
+        $batches = @()
+        if ($listFile) { $batches += ,@{ Args = @($listFile); Env = $null } }
+        else {
+            $chunk = ""
+            foreach ($candidate in $wanted) {
+                if ($chunk -and ($chunk.Length + $candidate.Length + 1) -gt 30000) { $batches += ,@{ Args = @(); Env = $chunk }; $chunk = "" }
+                $chunk = if ($chunk) { $chunk + "`n" + $candidate } else { $candidate }
+            }
+            if ($chunk) { $batches += ,@{ Args = @(); Env = $chunk } }
+        }
+        $probe = "import os,pathlib,sys" + [char]10 +
+            "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+            "out=[]" + [char]10 +
+            "if len(sys.argv)>1:" + [char]10 +
+            "    with open(sys.argv[1],'r',encoding='utf-8-sig') as fh: lines=fh.read().split('\n')" + [char]10 +
+            "else:" + [char]10 +
+            "    lines=os.environ.get('UNSLOTH_FINAL_PATHS','').split('\n')" + [char]10 +
+            "for line in lines:" + [char]10 +
+            "    p=line.rstrip('\r\n')" + [char]10 +
+            "    if not p: continue" + [char]10 +
+            "    try:" + [char]10 +
+            "        out.append(p+'|'+str(pathlib.Path(p).resolve(strict=True)))" + [char]10 +
+            "    except Exception:" + [char]10 +
+            "        out.append(p+'|')" + [char]10 +
+            "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
+        $raw = ""
+        $savedPaths = $env:UNSLOTH_FINAL_PATHS
+        try {
+            foreach ($batch in $batches) {
+                if ($null -ne $batch.Env) { $env:UNSLOTH_FINAL_PATHS = $batch.Env }
+                try { $raw += "`n" + (Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -ScriptArgs $batch.Args -TimeoutMs 30000) } catch { }
+            }
+        } finally {
+            if ($null -eq $savedPaths) { Remove-Item Env:UNSLOTH_FINAL_PATHS -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_FINAL_PATHS = $savedPaths }
+            if ($listDir) { Remove-Item -LiteralPath $listDir -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        $answers = @{}
+        $reported = @{}
+        foreach ($line in ("$raw" -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            # The first separator, because the pipe is not legal in a Windows path so the left
+            # half cannot contain one. $requested, not $input: $input is an automatic variable.
+            $split = $line.IndexOf('|')
+            if ($split -lt 1) { continue }
+            $requested = $line.Substring(0, $split)
+            $answer = $line.Substring($split + 1)
+            $reported[$requested] = $true
+            if ([string]::IsNullOrWhiteSpace($answer)) { continue }
+            if (-not (Split-Path -IsAbsolute $answer)) { continue }
+            if (-not (Test-Path -LiteralPath $answer)) { continue }
+            $answers[$requested] = $answer
+        }
+        foreach ($candidate in $wanted) {
+            if ($answers.ContainsKey($candidate)) {
+                $script:StudioPythonFinalPathCache[$candidate] = $answers[$candidate]
+            } elseif ($reported.ContainsKey($candidate)) {
+                # Asked, and the child said it cannot be resolved. Recorded as $null rather than
+                # left absent, so the miss is not re-asked once per protected root.
+                $script:StudioPythonFinalPathCache[$candidate] = $null
+            }
+            # Neither: the child answered, but not about this path. Left uncached, so the
+            # single-path rung still gets its turn.
+        }
+    }
+
+    # Tell Explorer a shortcut was rewritten, through a child interpreter. Used only where the
+    # type cannot be defined in this shell, which is where the refresh silently did not happen
+    # before. Returns $true when the child reported success.
+    #
+    # Cosmetic either way: the worst case is a stale icon on a shortcut that works. Nothing here
+    # may fail the install, so every path returns rather than throws.
+    function Invoke-StudioPythonShellIconRefresh {
+        param([string[]]$Paths = @(), [string]$Exe = "", [switch]$DestinationValidated)
+        if (-not ($env:OS -eq "Windows_NT")) { return $false }
+        # Elevated, a venv interpreter runs only after the destination guard; --shortcuts-only never reaches it.
+        if (-not $DestinationValidated) {
+            try { if ((Get-ElevationState) -ne "false") { return $false } } catch { return $false }
+        }
+        # Kill switch before $Exe too: it forbids any child on this host, however the path was found.
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
+        $exe = $Exe
+        if ([string]::IsNullOrWhiteSpace($exe)) {
+            try {
+                $exe = Get-StudioEarlyPython
+            } catch { return $false }
+        }
+        if (-not $exe) { return $false }
+        # Per-item SHCNE_UPDATEITEM is required: the global broadcast misses in-place .lnk rewrites.
+        # SHCNF_FLUSH (0x1000) because the child exits at once and a queued notification is lost.
+        $script = "import ctypes,sys" + [char]10 +
+            "from ctypes import wintypes" + [char]10 +
+            "s32=ctypes.WinDLL('shell32',use_last_error=True)" + [char]10 +
+            "s32.SHChangeNotify.restype=None" + [char]10 +
+            "s32.SHChangeNotify.argtypes=[wintypes.LONG,wintypes.UINT,wintypes.LPCWSTR,wintypes.LPCWSTR]" + [char]10 +
+            "for p in sys.argv[1:]:" + [char]10 +
+            "    s32.SHChangeNotify(0x00002000,0x1005,p,None)" + [char]10 +
+            "s32.SHChangeNotify(0x08000000,0x1000,None,None)" + [char]10 +
+            "sys.stdout.write('ok')"
+        try {
+            $answer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $script -ScriptArgs $Paths -TimeoutMs 10000
+        } catch { return $false }
+        return ("$answer".Trim() -eq "ok")
+    }
+
     # Exact = $true means the native resolver answered, so the string is what it
     # always was. Callers keying a lock on it use that to judge an inequality.
     function Resolve-StudioFinalPathInfo {
@@ -2501,34 +2952,23 @@ exit 1
             if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
                 return [pscustomobject]@{ Path = $fullPath; Exact = $false }
             }
+            # A dangling link/loop reads as missing; a reparse point in the stripped tail must stay inexact.
+            $strippedAttributes = $null
+            try { $strippedAttributes = [System.IO.File]::GetAttributes($existingPath) } catch { }
+            if ($null -ne $strippedAttributes -and
+                ($strippedAttributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                return [pscustomobject]@{ Path = $fullPath; Exact = $false }
+            }
             $missingSegments = @($leaf) + $missingSegments
             $existingPath = $parent
         }
         $exact = $false
-        $resolved = $null
-        if (Initialize-StudioFinalPathNativeType) {
-            try {
-                $resolved = Get-StudioNativeFinalPath -Path $existingPath
-                if ([string]::IsNullOrWhiteSpace($resolved)) { throw "no exact answer" }
-                $exact = $true
-            } catch {
-                # The helper was DEFINED and still could not answer: a path renamed
-                # between the Test-Path walk and CreateFileW, an access denial on a
-                # component, a volume with no drive letter. Falling back keeps the
-                # install alive and Exact = $false makes the runtime lock fail
-                # closed, but say so: the degraded warning below only fires when the
-                # type itself could not be built, leaving an operator with a
-                # silently inexact identity on a host that looks fine.
-                $resolved = $null
-                if (-not $script:StudioNativeResolveWarned) {
-                    $script:StudioNativeResolveWarned = $true
-                    Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
-                }
-            }
-        }
+        $resolved = Get-StudioPythonFinalPath -Path $existingPath
+        if (-not [string]::IsNullOrWhiteSpace($resolved)) { $exact = $true }
         if ([string]::IsNullOrEmpty($resolved)) {
             $resolved = Get-StudioLexicalPath -Path $existingPath
             $exact = $false
+            Write-StudioFinalPathDegraded -Reason "no Python interpreter was available to resolve it"
         }
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
@@ -2558,6 +2998,145 @@ exit 1
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
+    function Test-StudioSameDirectoryByProbe {
+        param([string]$Left, [string]$Right)
+        if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+        if (-not (Test-Path -LiteralPath $Left -PathType Container)) { return $false }
+        if (-not (Test-Path -LiteralPath $Right -PathType Container)) { return $false }
+        $name = ".unsloth-path-probe-" + [guid]::NewGuid().ToString("N")
+        $probe = Join-Path $Left $name
+        try { Set-Content -LiteralPath $probe -Value "" -ErrorAction Stop } catch { return $false }
+        try {
+            return (Test-Path -LiteralPath (Join-Path $Right $name))
+        } finally {
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function Split-StudioExistingAncestor {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $current = $Path
+        $tail = ""
+        # Bounded: a malformed path can leave Split-Path returning something that never shortens.
+        for ($hop = 0; $hop -lt 64; $hop++) {
+            if ([string]::IsNullOrWhiteSpace($current)) { break }
+            if (Test-Path -LiteralPath $current -PathType Container) {
+                return [pscustomobject]@{ Root = $current; Tail = $tail }
+            }
+            $leaf = Split-Path -Leaf $current
+            $parent = Split-Path -Parent $current
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) { break }
+            if ([string]::IsNullOrWhiteSpace($leaf)) { break }
+            $tail = if ($tail) { Join-Path $leaf $tail } else { $leaf }
+            $current = $parent
+        }
+        return $null
+    }
+
+    # Free space for the disk-full diagnosis (#11313), answering $null rather than guessing: a
+    # number this cannot produce is a diagnosis it does not print.
+    # A Windows volume can be mounted at a DIRECTORY, and then the drive root is the wrong answer:
+    # GetPathRoot reduces C:\studio to C:\, so two paths on different volumes compare equal.
+    # Win32_Volume lists mount points by the path they are mounted at, so the longest Name that
+    # prefixes a path names the volume really holding it; anywhere CIM cannot answer, callers fall
+    # back to the drive-root logic, which is right for a lettered volume.
+    # Known limit: Name exposes ONE access path, so a volume reached through a second one falls
+    # back to the drive root, the pre-existing answer. Closing it needs a Win32_MountPoint join on
+    # every install, for a diagnostic. Split out so the matching is testable without a mount point.
+    function Select-StudioVolumeForPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Volumes)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        # Unrooted means GetFullPath would anchor it to the current directory and invent a match
+        # on whichever volume that happens to be. No answer is the honest one.
+        if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
+        $full = [System.IO.Path]::GetFullPath($Path)
+        # Name carries a trailing separator and GetFullPath does not, so a path that IS the mount
+        # point would miss its own volume. Appending one also keeps C:\studiofoo from matching a
+        # volume mounted at C:\studio.
+        if (-not $full.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+            $full += [System.IO.Path]::DirectorySeparatorChar
+        }
+        $best = $null
+        foreach ($vol in $Volumes) {
+            if (-not $vol -or -not $vol.Name) { continue }
+            if (-not $full.StartsWith($vol.Name, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ((-not $best) -or $vol.Name.Length -gt $best.Name.Length) { $best = $vol }
+        }
+        return $best
+    }
+
+    # Junctions and symlinks lie about which volume a path is on, so a studio home behind one is
+    # otherwise measured on the link's host drive. The lexical fallback keeps a resolver that
+    # cannot answer from costing the caller its measurement entirely.
+    function Resolve-StudioVolumeQueryPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try {
+            $final = Get-StudioFinalPath -Path $Path
+            # Get-StudioFinalPath strips \\?\ deliberately, so a volume with no drive letter comes
+            # back as Volume{GUID}\..., which is NOT rooted: GetFullPath would then anchor it to
+            # the current directory and name an unrelated volume. Keep the caller's own path.
+            if ($final -and [System.IO.Path]::IsPathRooted($final)) { return $final }
+            return $Path
+        } catch { return $Path }
+    }
+
+    # Bounded out of process, as Invoke-BoundedVideoControllerScan documents: a degraded WMI
+    # repository blocks a CIM query indefinitely, and neither -ErrorAction nor try/catch bounds a
+    # query that never returns. Cached, timeouts included, so a broken repository costs once, and
+    # -Fresh for the free-space caller, whose cached FreeSpace would be a pre-failure snapshot.
+    function Get-StudioVolumeList {
+        param([switch]$Fresh)
+        if (-not $Fresh -and $null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
+        $script:StudioVolumeList = @()
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance -ClassName Win32_Volume -ErrorAction SilentlyContinue |
+                    Select-Object Name, DeviceID, FreeSpace
+            }
+            if (Wait-Job -Job $job -Timeout 15) {
+                $script:StudioVolumeList = @(Receive-Job -Job $job -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -and $_.Name })
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return $script:StudioVolumeList
+    }
+
+    function Get-StudioMountedVolume {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [switch]$Fresh)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
+        try {
+            return (Select-StudioVolumeForPath -Path (Resolve-StudioVolumeQueryPath -Path $Path) `
+                -Volumes (Get-StudioVolumeList -Fresh:$Fresh))
+        } catch { return $null }
+    }
+
+    # GetPathRoot on a path that does not exist yet still names the volume it would be created on.
+    function Get-StudioFreeSpaceBytes {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $queryPath = Resolve-StudioVolumeQueryPath -Path $Path
+        # -Fresh: this is the caller that wants a number, and a stale one is worse than none.
+        $mounted = Get-StudioMountedVolume -Path $queryPath -Fresh
+        if ($mounted -and $null -ne $mounted.FreeSpace) { return [int64]$mounted.FreeSpace }
+        try {
+            # The fallback needs the resolved path too: DriveInfo on the lexical one answers for
+            # the drive the junction lives on, not the drive it points at.
+            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($queryPath))
+            if (-not $root) { return $null }
+            return ([System.IO.DriveInfo]::new($root)).AvailableFreeSpace
+        } catch { return $null }
+    }
+
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root.
     if ($TauriMode -and $envOverride) {
@@ -2579,7 +3158,21 @@ exit 1
         )
         $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
-        if ($_tauriOverride -ne $_legacyTauriRoot) {
+        $_tauriSameRoot = $false
+        if ($_tauriOverride -eq $_legacyTauriRoot) {
+            $_tauriSameRoot = $true
+        } else {
+            $_tauriSameRoot = Test-StudioSameDirectoryByProbe -Left $_tauriOverride -Right $_legacyTauriRoot
+        }
+        if (-not $_tauriSameRoot) {
+            $_tauriLeft = Split-StudioExistingAncestor -Path $_tauriOverride
+            $_tauriRight = Split-StudioExistingAncestor -Path $_legacyTauriRoot
+            if ($_tauriLeft -and $_tauriRight -and [string]::Equals(
+                    $_tauriLeft.Tail, $_tauriRight.Tail, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $_tauriSameRoot = Test-StudioSameDirectoryByProbe -Left $_tauriLeft.Root -Right $_tauriRight.Root
+            }
+        }
+        if (-not $_tauriSameRoot) {
             Write-StudioLine "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
             Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
@@ -2600,15 +3193,28 @@ exit 1
         Join-Path $env:LOCALAPPDATA "Unsloth Studio"
     } else { $null }
 
+    # Cleared per invocation: script scope outlives a run, and under `irm | iex` one session can
+    # install twice. A stale $true makes the lock skip claiming a root it just created.
+    $script:StudioEnvRootPath = $null
+    $script:StudioEnvRootExisted = $false
+
     if ($envOverride) {
         # Tilde expansion: env vars aren't subject to it when quoted on assignment.
         if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
             $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
         }
         try {
+            # BEFORE the create: this is the only moment anyone can still tell. The lock runs
+            # thousands of lines below and asks whether the root existed, which by then is yes for
+            # every env-mode root, so its ownership branch would never fire for the roots it was
+            # written for.
+            $script:StudioEnvRootPath = $envOverride
+            $script:StudioEnvRootExisted = [System.IO.Directory]::Exists($envOverride)
             # .NET API: New-Item -Path treats brackets as wildcards (no -LiteralPath on PS 5.1).
             [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
+            # Re-recorded against the resolved spelling, which is what the lock is handed.
+            $script:StudioEnvRootPath = $StudioHome
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
             # Same as the --tauri rejection above: still before the lock finally.
@@ -2636,6 +3242,13 @@ exit 1
         $StudioRedirectMode = 'default'
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
+    # Read before anything below creates them; see Write-StudioFinalPathDegraded. Every root
+    # the process scan protects counts, so a legacy-layout install is not taken for a fresh one.
+    $script:StudioInstallIsFresh = -not (
+        (Test-Path -LiteralPath $VenvDir) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe")) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome ".venv")) -or
+        ($env:USERPROFILE -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio"))))
 
     # Records which cache this install used, so an update reuses it rather than guessing:
     # Set-StudioUvCacheForLaunch repoints the backend at the Studio cache even in shared
@@ -2699,6 +3312,10 @@ exit 1
     # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
     # function's first caller: the name error would land in the catch and skip the claim in
     # silence. An unreadable root counts as occupied, so failure means "do not claim".
+    # Above its earliest reader, not beside the lock helpers: Write-StudioRootOwnerMarker filters
+    # this name out of its emptiness test thousands of lines earlier, and a $null filters nothing.
+    $script:StudioInstallLockFileName = ".unsloth-install.lock"
+
     function Write-StudioRootOwnerMarker {
         param([Parameter(Mandatory = $true)][string]$Root)
         try {
@@ -2709,7 +3326,10 @@ exit 1
             if (Test-Path -LiteralPath $Root) {
                 $occupied = $true
                 try {
+                    # The lock's own file is not occupancy: it is created in this root before
+                    # anything else, so counting it makes a fresh root look like somebody else's.
                     $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -ne $script:StudioInstallLockFileName } |
                         Select-Object -First 1).Count -gt 0
                 } catch { $occupied = $true }
                 $claimable = (
@@ -2731,8 +3351,23 @@ exit 1
             # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
             # false, after which WriteAllText follows the link and writes outside the root.
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
-            [System.IO.File]::WriteAllText($marker, "")
+            # CreateNew, not check-then-write: the pair left a window to plant a link at the name
+            # and have the write truncate its target. Residual, stated rather than implied away: a
+            # DANGLING link is still followed and creates a zero-byte file at its target, which
+            # cannot destroy an existing one. FILE_FLAG_OPEN_REPARSE_POINT is the complete answer
+            # and .NET does not expose it here.
+            $markerStream = $null
+            try {
+                $markerStream = [System.IO.File]::Open($marker,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None)
+            } catch {
+                # No marker is fine; the venv writes its own later.
+                return
+            } finally {
+                if ($markerStream) { try { $markerStream.Dispose() } catch {} }
+            }
         } catch { }
     }
 
@@ -2987,7 +3622,7 @@ exit 1
             if (-not (Test-StudioUvNoCache)) {
                 Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
             }
-            step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
+            step "uv cache" "forced Unsloth Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
             return
         }
 
@@ -3114,19 +3749,19 @@ exit 1
             }
             "studio" {
                 if ($chosenCache) {
-                    step "uv cache" "reusing this install's Studio cache ($selectedCache)"
+                    step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
                 # Never about the directory we are falling back TO: the Studio cache is itself
                 # a candidate now, so it can be the one refused, and naming it claims a fallback
                 # that did not happen.
                 } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
                 } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
                 # Warm and still here means the write probe refused it.
                 } elseif ($warnCache -and $warnCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
                 } else {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache)"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache)"
                 }
             }
         }
@@ -3230,12 +3865,83 @@ exit 1
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
     # Dedup compares both raw and expanded forms (%VAR% vs literal).
+    # Every prefix an active conda session has put on PATH, deepest first: CONDA_PREFIX is
+    # the active environment, CONDA_PREFIX_1.. the ones it was stacked on, and CONDA_EXE
+    # names the installation root, which is on PATH for the whole session.
+    function Get-ActiveCondaPrefixes {
+        $prefixes = New-Object System.Collections.Generic.List[string]
+        if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) { $prefixes.Add($env:CONDA_PREFIX) }
+        # Enumerated from CONDA_SHLVL, not a fixed list: a hard-coded tail of three dropped
+        # everything past the fourth stacked environment, which sorted its PATH entries
+        # after Machine and User and inverted the ordering the stack established. The
+        # ceiling stops a bad value spinning.
+        $levels = 0
+        if (-not [string]::IsNullOrWhiteSpace($env:CONDA_SHLVL)) {
+            [void][int]::TryParse($env:CONDA_SHLVL, [ref]$levels)
+        }
+        if ($levels -lt 1) { $levels = 1 }
+        if ($levels -gt 64) { $levels = 64 }
+        for ($level = 1; $level -le $levels; $level++) {
+            $value = [Environment]::GetEnvironmentVariable("CONDA_PREFIX_$level")
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $prefixes.Add($value) }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:_CONDA_ROOT)) { $prefixes.Add($env:_CONDA_ROOT) }
+        if (-not [string]::IsNullOrWhiteSpace($env:CONDA_EXE)) {
+            # ...\<root>\Scripts\conda.exe -> ...\<root>. Regex rather than Split-Path, which
+            # is provider-aware and does not treat a backslash as a separator on the
+            # non-Windows PowerShell the tests run under.
+            $scripts = $env:CONDA_EXE -replace '[\\/][^\\/]*$', ''
+            $root = $scripts -replace '[\\/][^\\/]*$', ''
+            if ($root -and $root -ne $env:CONDA_EXE) { $prefixes.Add($root) }
+        }
+        return $prefixes
+    }
+
+    # Is $Path inside one of $Prefixes? On a directory boundary, so "C:\conda-backup" is not
+    # dragged to the front along with "C:\conda".
+    function Test-PathUnderCondaPrefix {
+        param([string]$Path, $Prefixes)
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not $Prefixes) { return $false }
+        $candidate = [Environment]::ExpandEnvironmentVariables($Path).Trim().Trim('"').TrimEnd('\')
+        if (-not $candidate) { return $false }
+        foreach ($prefix in $Prefixes) {
+            $normalized = [Environment]::ExpandEnvironmentVariables($prefix).Trim().Trim('"').TrimEnd('\')
+            if (-not $normalized) { continue }
+            if ($candidate -ieq $normalized) { return $true }
+            if ($candidate.StartsWith($normalized + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
     function Refresh-SessionPath {
         $machine = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
         $user    = [System.Environment]::GetEnvironmentVariable("Path", "User")
         $venvScripts = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts" } else { $null }
+        # An activated conda environment lives ONLY in the process PATH, so rebuilding as
+        # machine + user + previous demotes it, and under `irm | iex` that PATH is the
+        # caller's own prompt. Restored by position; the dedup below drops the copies.
+        $condaFront = @()
+        if (Test-ActiveCondaEnvironment) {
+            $prefixes = Get-ActiveCondaPrefixes
+            if ($prefixes) {
+                foreach ($entry in ($env:Path -split ";")) {
+                    if (Test-PathUnderCondaPrefix -Path $entry -Prefixes $prefixes) {
+                        $condaFront += $entry
+                    }
+                }
+            } else {
+                # A hook exporting CONDA_DEFAULT_ENV and no directory: nothing names which
+                # entries are conda's, and guessing from the name would promote a stranger,
+                # so the caller's PATH is kept whole and in front.
+                $condaFront = @($env:Path)
+            }
+        }
         $sources = @()
+        # Still first: this is the environment the installer is driving, and it is ours.
         if ($venvScripts) { $sources += $venvScripts }
+        $sources += $condaFront
         $sources += @($machine, $user, $env:Path)
         $merged = ($sources | Where-Object { $_ }) -join ";"
         $seen    = @{}
@@ -3252,6 +3958,30 @@ exit 1
         $env:Path = $unique -join ";"
     }
 
+    # ── Helper: is a conda environment ACTIVE in this session? ──
+    # CONDA_PREFIX separates "conda is installed" from "we are inside one of its
+    # environments". CONDA_DEFAULT_ENV is read too: a hook that exports only that one still
+    # leaves the caller inside conda's PATH ordering.
+    function Test-ActiveCondaEnvironment {
+        foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
+            if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
+        }
+        return $false
+    }
+
+    # The position a PERSISTENT PATH write may actually use. A prepend outlives the conda
+    # activation it was made under, so conda ends up resolving binaries and DLLs out of our
+    # directory, which is what corrupts an Anaconda base on its next `conda update` (#5871).
+    # An append registers the same directory without demoting anything.
+    function Resolve-UserPathPosition {
+        param(
+            [ValidateSet('Append','Prepend')]
+            [string]$Position = 'Append'
+        )
+        if ($Position -eq 'Prepend' -and (Test-ActiveCondaEnvironment)) { return 'Append' }
+        return $Position
+    }
+
     # ── Helper: safely add a directory to the persistent User PATH ──
     # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
     function Add-ToUserPath {
@@ -3260,6 +3990,23 @@ exit 1
             [ValidateSet('Append','Prepend')]
             [string]$Position = 'Append'
         )
+        # Every persistent PATH write goes through Resolve-UserPathPosition, so an active
+        # conda environment cannot be demoted by any call site. Announced once per run: the
+        # installer makes several of these writes and one note is information, five is noise.
+        $resolvedPosition = Resolve-UserPathPosition -Position $Position
+        # A downgraded request has to be able to MOVE an entry, not just decline to add one. After a
+        # previous non-conda run our directory is already at the FRONT of the User PATH, and the
+        # append-idempotent early return below would leave that ordering in place while this very
+        # substep announced that conda keeps priority -- the #5871 demotion, still armed, reported as
+        # fixed. Only a genuine Append request keeps the cheap no-op.
+        $positionDowngraded = ($resolvedPosition -ne $Position)
+        if ($positionDowngraded) {
+            if (-not $script:CondaPathPositionNoted) {
+                $script:CondaPathPositionNoted = $true
+                substep "conda environment active ($env:CONDA_PREFIX) -- appending to PATH instead of prepending, so conda keeps priority." "Yellow"
+            }
+            $Position = $resolvedPosition
+        }
         try {
             $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
             try {
@@ -3282,7 +4029,9 @@ exit 1
                     $kept.Add($entries[$i])
                 }
                 $alreadyPresent = $matchIndices.Count -gt 0
-                if ($alreadyPresent -and $Position -eq 'Append') { # Append: idempotent no-op
+                # Not $positionDowngraded: that request has to reposition an existing front entry.
+                # Already at the back is still a no-op, caught by the $newPath -ceq $rawPath check.
+                if ($alreadyPresent -and $Position -eq 'Append' -and -not $positionDowngraded) {
                     return $false
                 }
                 if ($alreadyPresent -and $Position -eq 'Prepend' -and # Prepend: no-op if already at front
@@ -3457,16 +4206,103 @@ exit 1
         param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if (-not $item) { return "" }
-        # Non-filesystem providers do not expose FileSystemInfo attributes.
-        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-        $target = $null
-        try { $target = $item.Target } catch { $target = $null }
-        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-        return " (it is a link)"
+
+        # Read attributes through the filesystem API rather than Get-Item. Getting
+        # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+        # deny reading the directory itself, so Get-Item returns nothing in exactly
+        # the case this detail is meant to describe and the caller silently loses
+        # every hint below.
+        $attrs = $null
+        try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+        if ($null -eq $attrs) { return "" }
+
+        # Ordered by how much each one changes the fix. takeown/icacls cannot help
+        # with any of the first three, so name them before falling back to ACLs.
+        # On a directory this attribute only means new descendants are encrypted
+        # by default, so listing it never needs the key and a denial there is an
+        # ACL. Only a file's own streams are unreadable without the certificate.
+        $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+        if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
+            return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+        }
+        # Offline plus either recall attribute is a cloud placeholder, typically
+        # OneDrive Files On-Demand that cannot hydrate.
+        # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+        # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+        $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+        $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+        if ($offline -or $recall) {
+            return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+        }
+        if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+            $target = $null
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+            } catch { $target = $null }
+            # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+            if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+            return " (it is a link)"
+        }
+        return ""
+    }
+
+    # Which security software could be denying this path, as a possibility.
+    #
+    # Worth naming because takeown and icacls cannot clear a filter-driver block
+    # and elevation does not either, so a user whose antivirus is holding the
+    # folder is otherwise sent round the takeown loop for as long as they are
+    # willing. Nothing readable from here attributes the specific denial though,
+    # so this names the candidate and the log that settles it and never
+    # contradicts the ACL advice it follows.
+    #
+    # Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+    # 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+    # 1 gates file access; 3 and 4 are direct disk-sector writes rather than
+    # files, so neither explains a denied folder.
+    #
+    # When Defender is not it, name whichever antivirus is registered and running
+    # instead: third-party suites ship the same protected-folders feature under
+    # their own product names, and the user cannot act on advice that does not say
+    # which product to open. Which suite ships what is recorded in
+    # tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+    # because this file is scanned in full before a line of it runs and a comment
+    # listing security products raises the score of the very file explaining it.
+    # Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
+    #
+    # Answers "" whenever it cannot tell, so a machine with no Defender module
+    # and no SecurityCenter registration reads the same as one that says no.
+    function Get-SecuritySoftwareNote {
+        $mode = $null
+        try {
+            if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+                $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+            }
+        } catch { $mode = $null }
+        if ($mode -eq 1) {
+            return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
+        }
+        # SecurityCenter2 is the registration every consumer antivirus makes, and
+        # it is absent on Server SKUs, so this stays best-effort. productState
+        # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+        # A product that is not running cannot be holding the folder and naming it
+        # sends the user to the wrong console; a state we cannot read proves
+        # nothing either way, so it is kept.
+        $others = @()
+        try {
+            $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+                Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
+                ForEach-Object { [string]$_.displayName } |
+                Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+        } catch { $others = @() }
+        if ($others.Count -gt 0) {
+            $names = ($others | Select-Object -Unique) -join ", "
+            return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
+        }
+        if ($mode -eq 2) {
+            return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+        }
+        return ""
     }
 
     # Print guidance; returns the failure reason as its only pipeline output.
@@ -3495,6 +4331,10 @@ exit 1
         substep "takeown /F `"$Path`" /R /D Y" "Yellow"
         substep "icacls `"$Path`" /reset /T" "Yellow"
         substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        # After the generic line, since this one either confirms it or rules it
+        # out, and an empty answer must leave the generic advice standing.
+        $securitySoftware = Get-SecuritySoftwareNote
+        if ($securitySoftware) { substep $securitySoftware "Yellow" }
         if ($UserSupplied) {
             return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
         }
@@ -3537,12 +4377,31 @@ exit 1
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Explicit staging root, shared default cache, or the custom Unsloth home's tree.
+    # The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit
+    # BESIDE studio\ under it, so deriving them from $StudioHome would put them one level below
+    # where every runtime resolver looks.
+    function Get-MasterRootOverride {
+        if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+        $value = $env:UNSLOTH_HOME.Trim()
+        if ($value -eq "~") {
+            $value = $env:USERPROFILE
+        } elseif ($value -like "~/*" -or $value -like "~\*") {
+            $value = (Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\'))
+        }
+        return (Get-CanonicalDir -Path $value)
+    }
+
+    # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
+    # home's tree.
     function Get-ManagedLlamaCppDir {
         param([AllowNull()][string]$StagingRoot = $null)
 
         if ($StagingRoot) {
             return (Join-Path $StagingRoot "llama.cpp")
+        }
+        $masterRoot = Get-MasterRootOverride
+        if ($masterRoot) {
+            return (Join-Path $masterRoot "llama.cpp")
         }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -3559,18 +4418,334 @@ exit 1
         $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
         if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         Write-StudioLine ""
-        # A denied custom home cannot be claimed as an Unsloth-managed cache.
-        $homeIsCustom = Test-StudioHomeIsCustom
-        # Preserve user-supplied wording when either override names this tree.
+        # A denied custom home cannot be claimed as an Unsloth-managed cache. Computed rather
+        # than read off $RuntimeRootIsCustom: this runs beside the line that defines it.
+        $homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)
+        # Preserve user-supplied wording when either override names this tree, or
+        # names a build inside it: moving or deleting this folder takes that build
+        # with it, and the later --with-llama-cpp-dir check then aborts on a path
+        # we made disappear.
         $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        # Walking the ancestors beats comparing the two canonical strings: an
+        # override that does not exist yet cannot be resolved, so a prefix test
+        # would compare a resolved path against an unresolved one and miss.
+        $userSupplied = $false
+        if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+            $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+            $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+            while (-not [string]::IsNullOrWhiteSpace($probe)) {
+                if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                    $userSupplied = $true
+                    break
+                }
+                $parent = ""
+                try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+                if ($parent -eq $probe) { break }
+                $probe = $parent
+            }
+        }
+
+        # Only the default branch below tells the user to delete this folder, so
+        # only that case may move it. A user-supplied build is not ours to touch,
+        # and an unreadable custom home cannot be confirmed as a managed cache.
+        # Renaming needs DELETE on the folder plus write on its parent, neither of
+        # which is read access, so this recovers denials that takeown and icacls
+        # do not: the folder is a managed cache that setup reinstalls anyway.
+        # Setup never makes this a link, so a link here is something the user
+        # arranged, pointing at a build we were not told about. Moving it would
+        # silently change which tree they run without touching the one they were
+        # protecting, so it is left alone and named in the guidance instead.
+        $isLink = $false
+        try {
+            $linkAttrs = [System.IO.File]::GetAttributes($dir)
+            $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+        } catch {
+            # Unreadable attributes prove nothing, and "proves nothing" must not
+            # mean "movable": fall through to the guidance rather than guess.
+            $isLink = $true
+        }
+        if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
+            $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $moved = $false
+            try {
+                # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+                # copy-then-delete when the rename fails, which creates $asideDir and then
+                # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+                # beside the original on every run. Directory.Move is a bare rename: it
+                # either moves the tree or throws having created nothing.
+                # Measured on windows-latest, denying each shape on the folder itself:
+                #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+                #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+                #   (RX)          rename refused, Move-Item left a stray folder
+                #   (DE)          rename SUCCEEDED, both ways
+                # So on Windows a read denial always refuses the rename (the open asks for
+                # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+                # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+                # the rename needs only write+execute on the parent, so the recovery is real
+                # there and is why this stays rather than being deleted.
+                [System.IO.Directory]::Move($dir, $asideDir)
+                $moved = $true
+            } catch {
+                # Expected when the denial covers the rename; fall through to guidance.
+                # Nothing to clean up: Directory.Move creates nothing when it throws.
+            }
+            if ($moved) {
+                step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+                substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+                substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+                Write-StudioLine ""
+                return $null
+            }
+            # This runs before the install lock, so a second run can have moved
+            # the folder in between. Re-probe rather than report a denial for a
+            # path that is no longer there and stop an install that can proceed.
+            if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+        }
+
         $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
             -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
         substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
         substep "Fix access, then run the same install, setup, or update command again" "Yellow"
         Write-StudioLine ""
         return "$reason Nothing was installed."
+    }
+
+    function Test-MirrorConfigured {
+        param([ValidateSet('uv', 'pip')][string]$Tool)
+        if ($Tool -eq 'uv') {
+            if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
+            $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+            $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
+            $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+            while ($dir) {
+                $pyproject = Join-Path $dir 'pyproject.toml'
+                if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
+                if ((Test-Path -LiteralPath $pyproject -PathType Leaf) -and
+                    (Select-String -LiteralPath $pyproject -Pattern '^\s*\[+tool\.uv(\.|\])' -Quiet -ErrorAction SilentlyContinue)) { $files += $pyproject; break }
+                $dir = Split-Path -Parent $dir
+            }
+        } else {
+            if ("$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_NO_INDEX") { return $true }
+            $pattern = '^\s*(index[-_]url|extra[-_]index[-_]url|no[-_]index)\s*[=:]'
+            $files = @($env:PIP_CONFIG_FILE, $(if ($venv = Get-Variable VenvDir -ValueOnly -ErrorAction SilentlyContinue) { Join-Path $venv 'pip.ini' }), "$env:APPDATA\pip\pip.ini", "$env:USERPROFILE\pip\pip.ini", "$env:ProgramData\pip\pip.ini")
+        }
+        foreach ($file in $files) {
+            if ($file -and (Test-Path -LiteralPath $file -PathType Leaf) -and
+                (Select-String -LiteralPath $file -Pattern $pattern -Quiet -ErrorAction SilentlyContinue)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    function Start-MirrorProbe {
+        param([string[]]$Urls, [double]$Seconds, [long]$LastByte)
+        $state = @{ Urls = $Urls; Seconds = $Seconds; LastByte = $LastByte; Clock = [System.Diagnostics.Stopwatch]::StartNew(); Requests = @{}; Heads = @{}; InTime = @{}; Bodies = @{}; Buffers = @{} }
+        $deadline = [System.Threading.Tasks.Task]::Delay([int]($Seconds * 1000))
+        foreach ($url in $Urls) {
+            $state.Requests[$url] = [System.Net.WebRequest]::Create($url)
+            # The CERNET mirrors answer 403 to a request without a User-Agent; a fresh connection keeps every probe cold, as curl's are.
+            $state.Requests[$url].UserAgent = 'unsloth-installer'
+            $state.Requests[$url].KeepAlive = $false
+            $state.Requests[$url].AddRange(0, $LastByte)
+            $state.Heads[$url] = $state.Requests[$url].GetResponseAsync()
+            $state.InTime[$url] = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($state.Heads[$url], $deadline))
+        }
+        return $state
+    }
+
+    function Wait-MirrorProbe {
+        param($Probe)
+        $results = @{}
+        $measure = { param($url) @([int]$Probe.Heads[$url].Result.StatusCode, [long]($Probe.Buffers[$url].Position / $Probe.Clock.Elapsed.TotalSeconds)) }
+        try {
+            while ($true) {
+                foreach ($url in $Probe.Urls) {
+                    if ($results.ContainsKey($url) -or -not $Probe.InTime[$url].IsCompleted) { continue }
+                    if (-not [object]::ReferenceEquals($Probe.InTime[$url].Result, $Probe.Heads[$url])) {
+                        $results[$url] = @(0, [long]0)
+                    } elseif ($Probe.Heads[$url].Status -ne 'RanToCompletion') {
+                        $failure = $Probe.Heads[$url].Exception.InnerException -as [System.Net.WebException]
+                        $results[$url] = @($(if ($failure -and $failure.Response) { [int]$failure.Response.StatusCode } else { 0 }), [long]0)
+                    } elseif (-not $Probe.Bodies.ContainsKey($url)) {
+                        $Probe.Buffers[$url] = [System.IO.MemoryStream]::new([byte[]]::new($Probe.LastByte + 65537))
+                        $Probe.Bodies[$url] = $Probe.Heads[$url].Result.GetResponseStream().CopyToAsync($Probe.Buffers[$url], 65536)
+                    } elseif ($Probe.Bodies[$url].IsCompleted) {
+                        $results[$url] = & $measure $url
+                    }
+                }
+                $pending = @($Probe.Urls | Where-Object { -not $results.ContainsKey($_) } | ForEach-Object { if ($Probe.Bodies.ContainsKey($_)) { $Probe.Bodies[$_] } else { $Probe.InTime[$_] } })
+                $left = [int](($Probe.Seconds - $Probe.Clock.Elapsed.TotalSeconds) * 1000)
+                if ($pending.Count -eq 0 -or $left -le 0) { break }
+                [void][System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$pending, $left)
+            }
+            foreach ($url in $Probe.Urls) {
+                if ($results.ContainsKey($url)) { continue }
+                $results[$url] = if ($Probe.Buffers.ContainsKey($url)) { & $measure $url } else { @(0, [long]0) }
+            }
+        } finally {
+            foreach ($url in @($Probe.Requests.Keys)) {
+                $Probe.Requests[$url].Abort()
+                if ($Probe.Heads[$url].Status -eq 'RanToCompletion') { $Probe.Heads[$url].Result.Dispose() }
+            }
+        }
+        return $results
+    }
+
+    function Get-MirrorDnsServers {
+        try {
+            [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' } |
+                ForEach-Object { $_.GetIPProperties().DnsAddresses } | ForEach-Object { "$_" }
+        } catch {}
+    }
+
+    # No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud, as _mirror_in_china in install.sh.
+    function Test-MirrorInChina {
+        try { if ((Get-TimeZone).Id -in 'China Standard Time', 'Asia/Shanghai', 'Asia/Chongqing', 'Asia/Chungking', 'Asia/Harbin', 'Asia/Urumqi', 'Asia/Kashgar', 'PRC') { return $true } } catch {}
+        return [bool](@(Get-MirrorDnsServers) -match '^(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))$')
+    }
+
+    function Invoke-MirrorFallback {
+        param([switch]$SpareOnly)
+        $optIn = "$env:UNSLOTH_MIRROR_FALLBACK".Trim()
+        # When off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+        if ($optIn -match '^(0|false|no|off)$' -or ($optIn -notmatch '^(1|true|yes|on)$' -and -not (Test-MirrorInChina))) {
+            Remove-Item Env:_UNSLOTH_MIRROR_SPARE -ErrorAction SilentlyContinue
+            return
+        }
+        if ($env:_UNSLOTH_MIRROR_PROBED) { return }
+        if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
+        $cernet = 'https://tuna.mirrors.cernet.edu.cn'
+        $npmMirror = 'https://registry.npmmirror.com'
+        $pypiMirror = "$cernet/pypi/web/simple"
+        $minBps = 1MB
+        $useUv = -not (Test-MirrorConfigured -Tool uv)
+        $usePip = -not (Test-MirrorConfigured -Tool pip)
+        $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+        $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
+        $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
+        $artifact = @{
+            'pypi' = "https://files.pythonhosted.org/$uvWheel"; 'cernet-pypi' = "$cernet/pypi/web/$uvWheel"
+            'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
+            'node' = "https://nodejs.org/dist/$nodeTarball"; 'npmmirror-node' = "$npmMirror/-/binary/node/$nodeTarball"
+            'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
+            'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
+        }
+        $hosts = [ordered]@{}
+        if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
+        if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
+            $hosts['torch'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
+        }
+        if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
+        if (-not "$env:UNSLOTH_NPM_REGISTRY$env:NPM_CONFIG_REGISTRY") { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+        if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
+            $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
+        }
+        if ($hosts.Count -eq 0) { return }
+        $varsOf = {
+            param($name)
+            $to = if ($hosts.Contains($name)) { $hosts[$name][2] }
+            switch ($name) {
+                'pypi' {
+                    if ($useUv) { "UV_DEFAULT_INDEX=$to" }
+                    if ($usePip) { "PIP_INDEX_URL=$to" }
+                }
+                'unsynced' {
+                    # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+                    if ($useUv) {
+                        'UV_DEFAULT_INDEX=https://pypi.org/simple'; "UV_INDEX=$pypiMirror"
+                        "UV_INDEX_STRATEGY=$(if ($env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY } else { 'unsafe-first-match' })"
+                    }
+                    if ($usePip) { 'PIP_EXTRA_INDEX_URL=https://pypi.org/simple'; "PIP_INDEX_URL=$pypiMirror" }
+                }
+                'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
+                'node' { "UNSLOTH_NODE_MIRROR=$to" }
+                'npm' { "UNSLOTH_NPM_REGISTRY=$to" }
+                'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
+            }
+        }
+        $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
+        if ($SpareOnly -or (Test-UvEnvFlag 'UV_OFFLINE')) { return }
+        $answered = @{}
+        $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
+        # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
+        $savedProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+        $savedLimit = [System.Net.ServicePointManager]::DefaultConnectionLimit
+        if ([int]$savedProtocol -ne 0) { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 }
+        [System.Net.ServicePointManager]::DefaultConnectionLimit = [Math]::Max($savedLimit, 16)
+        try {
+            $defaults = @($hosts.Values | ForEach-Object { $_[0] } | Select-Object -Unique)
+            $indexes = Start-MirrorProbe -Urls @($hosts.Values | ForEach-Object { $_[3] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+            $timed = @{}
+            foreach ($name in $defaults) { $timed[$name] = (Wait-MirrorProbe (Start-MirrorProbe -Urls $artifact[$name] -Seconds 1.5 -LastByte 1048575))[$artifact[$name]] }
+            $answered = Wait-MirrorProbe $indexes
+            $slow = @($hosts.Keys | Where-Object {
+                $code = & $codeOf $hosts[$_][3] $timed[$hosts[$_][0]]
+                $code -eq 0 -or ($code -ge 300 -and $code -lt 400) -or ($code -ge 200 -and $code -lt 300 -and $timed[$hosts[$_][0]][1] -lt $minBps)
+            })
+            if ($slow.Count -eq 0) { return }
+            $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
+            $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+            $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
+            $sourceIndexes = Wait-MirrorProbe $indexes
+            foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }
+        } finally {
+            [System.Net.ServicePointManager]::SecurityProtocol = $savedProtocol
+            [System.Net.ServicePointManager]::DefaultConnectionLimit = $savedLimit
+        }
+        $used = $false
+        foreach ($name in $slow) {
+            $default = $race[$artifact[$hosts[$name][0]]]
+            $mirror = $race[$artifact[$hosts[$name][1]]]
+            $how = if ("$(& $codeOf $hosts[$name][3] $default)" -match '^2\d\d$') { 'slow' } else { 'blocked' }
+            $defaultBps = if ($how -eq 'slow') { $default[1] } else { [long]0 }
+            if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
+            Set-MirrorEnv @(& $varsOf $name)
+            $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$name|*" }) -join ' '
+            if ($name -eq 'pypi' -and $how -eq 'slow') { $env:_UNSLOTH_MIRROR_SPARE = (@(-split $env:_UNSLOTH_MIRROR_SPARE) + ((@('unsynced') + @(& $varsOf 'unsynced')) -join '|')) -join ' ' }
+            step "mirror" "$(Get-MirrorName $name) is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $($hosts[$name][2])" "Yellow"
+            $used = $true
+        }
+        if ($used) { substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts." }
+    }
+
+    function Get-MirrorName {
+        param([string]$Name)
+        @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+    }
+
+    function Set-MirrorEnv {
+        param([string[]]$Pairs)
+        foreach ($pair in $Pairs) { Set-Item "Env:$($pair.Split('=', 2)[0])" $pair.Split('=', 2)[1] }
+    }
+
+    function Pop-MirrorSpare {
+        param([string]$Name)
+        $entry = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -like "$Name|*" })
+        if (-not $entry) { return }
+        $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$Name|*" }) -join ' '
+        $pairs = @($entry[0].Split('|') | Select-Object -Skip 1)
+        step "mirror" "$(Get-MirrorName $Name) failed; retrying through $($pairs[0].Split('=', 2)[1])" "Yellow"
+        return $pairs
+    }
+
+    function Use-MirrorSpare {
+        param([string]$Name)
+        $pairs = @(Pop-MirrorSpare $Name)
+        Set-MirrorEnv $pairs
+        return $pairs.Count -gt 0
+    }
+
+    function Get-MirrorFailedHost {
+        param([string]$Output, [string]$Ran)
+        if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') {
+            if ($Output -match 'only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found') { 'unsynced' }
+            return
+        }
+        if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
+        elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
+        elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
+        elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
     }
 
     # ── END SHARED WITH studio/setup.ps1 ──
@@ -3589,8 +4764,17 @@ exit 1
     function Invoke-InstallCommand {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,
-            [string]$Label = "install command"
+            [string]$Label = "install command",
+            [switch]$NoMirror
         )
+        if ($script:InstallTorchMirror) {
+            foreach ($v in $Command.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.IsUnqualified }, $true)) {
+                $value = $ExecutionContext.SessionState.PSVariable.GetValue($v.VariablePath.UserPath)
+                if (@($value) -like 'https://download.pytorch.org/whl*') {
+                    Set-Variable -Name $v.VariablePath.UserPath -Value ($value -replace '^https://download\.pytorch\.org/whl', $script:InstallTorchMirror.TrimEnd('/'))
+                }
+            }
+        }
         # A pinned index must beat an inherited uv mirror (#6898); UV_NO_CONFIG=1 blocks uv.toml.
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
@@ -3607,6 +4791,7 @@ exit 1
             # Reset to avoid stale values from prior native commands.
             $global:LASTEXITCODE = 0
             Write-TauriLog "OUTPUT_CLEAR" $Label
+            $collected = [System.Text.StringBuilder]::new()
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout so progress/warning output stays visible
                 # without flipping $? on successful native commands (PS 5.1 treats
@@ -3614,13 +4799,20 @@ exit 1
                 # Redact per record: uv echoes index URLs (credentials and all) in
                 # its errors, and verbose mode must not bypass the quiet path's
                 # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
-                & $Command 2>&1 | ForEach-Object {
-                    Write-UvDownloadMarker "$_"
-                    Redact-InstallOutput "$_"
-                } | Out-Host
+                if ($NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) {
+                    & $Command 2>&1 | ForEach-Object {
+                        Write-UvDownloadMarker "$_"
+                        Redact-InstallOutput "$_"
+                    } | Out-Host
+                } else {
+                    & $Command 2>&1 | ForEach-Object {
+                        [void]$collected.AppendLine("$_")
+                        Write-UvDownloadMarker "$_"
+                        Redact-InstallOutput "$_"
+                    } | Out-Host
+                }
             } else {
                 # Streamed, not collected, so a marker reaches the app mid-download.
-                $collected = [System.Text.StringBuilder]::new()
                 & $Command 2>&1 | ForEach-Object {
                     $line = "$_"
                     [void]$collected.AppendLine($line)
@@ -3637,7 +4829,6 @@ exit 1
             } else {
                 Write-TauriLog "ERROR_OUTPUT" "$Label failed (exit code $exitCode)"
             }
-            return $exitCode
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
@@ -3645,6 +4836,34 @@ exit 1
                 foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
             }
         }
+        if ($exitCode -eq 0 -or $NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) { return $exitCode }
+        return (Invoke-InstallMirrorRetry -Code $exitCode -Command $Command -Label $Label -Output $collected.ToString())
+    }
+
+    function Invoke-InstallMirrorRetry {
+        param([int]$Code, [ScriptBlock]$Command, [string]$Label, [string]$Output)
+        $words = @(foreach ($n in $Command.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+            if ($n -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $n.Value } else { $ExecutionContext.SessionState.PSVariable.GetValue($n.VariablePath.UserPath) }
+        }) | ForEach-Object { "$_" }
+        $torchArg = [bool](@($words) -like 'https://download.pytorch.org/whl*')
+        $pinned = [bool](@($words) -match '^--(index-url|default-index)$')
+        $ran = if ($torchArg) { 'torch' } elseif ($pinned -or @($words) -match '^(--find-links|--no-index|--torch-backend.*|venv)$|://') { '' } else { 'pypi' }
+        $failed = Get-MirrorFailedHost -Output $Output -Ran $ran
+        $ownIndex = $pinned -or @($words) -contains '--no-index'
+        if (-not (($failed -eq 'torch' -and $torchArg) -or ($failed -eq 'pypi' -and -not $pinned) -or ($failed -eq 'unsynced' -and -not $ownIndex))) { return $Code }
+        $pairs = @(Pop-MirrorSpare $failed)
+        if (-not $pairs) { return $Code }
+        $saved = @{}
+        foreach ($pair in $pairs) { $saved[$pair.Split('=', 2)[0]] = [Environment]::GetEnvironmentVariable($pair.Split('=', 2)[0]) }
+        $savedTorch = $script:InstallTorchMirror
+        Set-MirrorEnv $pairs
+        if ($failed -eq 'torch') { $script:InstallTorchMirror = $env:UNSLOTH_PYTORCH_MIRROR }
+        $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror
+        if ($code -ne 0) {
+            foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) }
+            $script:InstallTorchMirror = $savedTorch
+        }
+        return $code
     }
 
     function Invoke-InstallCommandRetry {
@@ -3664,7 +4883,7 @@ exit 1
         }
         $attempt = 1
         while ($true) {
-            $code = Invoke-InstallCommand -Command $Command -Label $Label
+            $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror:($attempt -lt $maxAttempts)
             if ($code -eq 0) { return 0 }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
@@ -4001,7 +5220,8 @@ exit 1
 
     function New-StudioShortcuts {
         param(
-            [Parameter(Mandatory = $true)][string]$ManagedPythonPath
+            [Parameter(Mandatory = $true)][string]$ManagedPythonPath,
+            [switch]$DestinationValidated
         )
 
         if (-not (Test-Path -LiteralPath $ManagedPythonPath)) {
@@ -4138,6 +5358,35 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$_StudioInstallIdFile = '$($_studioIdFile -replace "'", "''")'
+
+# A missing or malformed id makes /api/health report "", which the baked id never matches: restore ours no-clobber (the desktop app mints it too), leaving a different valid id or an unreadable file alone.
+function Repair-StudioInstallId {
+    `$idTmp = `$null
+    try {
+        if (Test-Path -LiteralPath `$_StudioInstallIdFile -PathType Container) { return }
+        if (Test-Path -LiteralPath `$_StudioInstallIdFile -PathType Leaf) {
+            `$current = ([System.IO.File]::ReadAllText(`$_StudioInstallIdFile)).Trim()
+            if (`$current -cmatch '^[0-9a-f]{64}$') { return }
+        }
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent `$_StudioInstallIdFile)) | Out-Null
+        `$idTmp = "`$_StudioInstallIdFile.`$([System.IO.Path]::GetRandomFileName()).tmp"
+        [System.IO.File]::WriteAllText(`$idTmp, `$_ExpectedStudioRootId)
+        try {
+            [System.IO.File]::Move(`$idTmp, `$_StudioInstallIdFile)
+        } catch [System.IO.IOException] {
+            `$incumbent = ''
+            try { `$incumbent = ([System.IO.File]::ReadAllText(`$_StudioInstallIdFile)).Trim() } catch { return }
+            if (`$incumbent -cnotmatch '^[0-9a-f]{64}$') {
+                Move-Item -LiteralPath `$idTmp -Destination `$_StudioInstallIdFile -Force
+            }
+        }
+    } catch {
+    } finally {
+        if (`$idTmp) { Remove-Item -LiteralPath `$idTmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+Repair-StudioInstallId
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -4530,27 +5779,8 @@ exit 0
                     substep "Created Unsloth Studio shortcut"
                     # Per-item SHChangeNotify: the global broadcast misses a rewritten same-name .lnk.
                     try {
-                        # Emitted, not compiled: -MemberDefinition runs csc.exe too.
-                        # Tauri returns before here, so this was only ever on the
-                        # console path, which deserves the same treatment. A failure
-                        # leaves stale icons and the enclosing catch absorbs it.
-                        # Same order as everywhere else: a published type settles it,
-                        # and only an absent one asks the gate.
-                        if (-not ("UnslothShellIconRefresh" -as [type])) {
-                            if (-not (Test-StudioCanDefineNativeTypes)) {
-                                throw "native types are unavailable on this host"
-                            }
-                            $null = New-StudioEmittedNativeType -TypeName "UnslothShellIconRefresh" -Imports @(
-                                @{ Name = "SHChangeNotify"; Library = "shell32.dll"; Return = [System.Void]
-                                   Args = @([int], [uint32], [string], [IntPtr]) }
-                            )
-                        }
-                        # SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005) per shortcut
-                        foreach ($scPath in $createdShortcutPaths) {
-                            try { [UnslothShellIconRefresh]::SHChangeNotify(0x00002000, 0x0005, $scPath, [System.IntPtr]::Zero) } catch {}
-                        }
-                        # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
-                        [UnslothShellIconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
+                        $null = Invoke-StudioPythonShellIconRefresh `
+                            -Paths $createdShortcutPaths -Exe $ManagedPythonPath -DestinationValidated:$DestinationValidated
                     } catch {}
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
@@ -4802,7 +6032,9 @@ exit 0
         # exactly; otherwise they may be aliases of one. $null is the caller's
         # "identity unresolved" signal and makes it take both runtime locks.
         if (-not $leftInfo.Exact -or -not $rightInfo.Exact) {
-            Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
+            if ($script:StudioInstallIsFresh -ne $true) {
+                Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
+            }
             return $null
         }
         return $false
@@ -4885,6 +6117,183 @@ exit 0
         try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
     }
 
+    # Mutex AND file, because they exclude different things. The mutex is named from a hash of the
+    # resolved path, so two spellings of one directory fail to exclude each other whenever the
+    # resolver is inexact; a file inside the destination has no such problem, because the
+    # filesystem resolves the alias. Both are kept: a released installer only knows the mutex, so
+    # dropping it would stop an old run and a new one seeing each other during an upgrade.
+
+    function Enter-StudioInstallLock {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $mutex = Enter-StudioInstallMutex -Path $Path
+        if ($null -eq $mutex) { return $null }
+        $stream = $null
+        try {
+            # Race-safe: concurrent creators both succeed, and only one opens the file exclusively
+            # below. A throw here surfaces as the caller's install-lock error.
+            $existedBefore = [System.IO.Directory]::Exists($Path)
+            # An env-mode root is created thousands of lines above, so the check just above answers
+            # yes for every one of them; that site recorded what it found, so prefer its answer for
+            # this same directory.
+            #
+            # One direction only. It may say "I created this root, so treat it as new", never the
+            # opposite: a record claiming the root existed cannot be true while the root is absent
+            # now, so it is a leftover from an earlier run in the same session.
+            if ($script:StudioEnvRootPath -and
+                $script:StudioEnvRootPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase) -and
+                -not $script:StudioEnvRootExisted) {
+                $existedBefore = $false
+            }
+            $null = [System.IO.Directory]::CreateDirectory($Path)
+            $lockPath = Join-Path $Path $script:StudioInstallLockFileName
+            # A link planted at the lock path is not a lock, it is a way to point our exclusive
+            # handle at somebody else's file: File.Open follows it, so the target would be held
+            # open with FileShare.None for the whole install even though nothing is written to it.
+            # Remove the link itself, never its target, then let the open below create a real
+            # file. Get-Item -Force rather than Test-Path, which follows a dangling link and
+            # answers false; Write-StudioRootOwnerMarker guards the same hazard the same way.
+            $existingLock = $null
+            try {
+                $existingLock = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+            } catch { $existingLock = $null }
+            if ($existingLock -and
+                ($existingLock.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                # A detected link that will NOT go must stop the install, not be shrugged off.
+                #
+                # Not an empty catch: a link that can be inspected but not deleted would carry on
+                # into File.Open, which follows it, and a zero-byte target passes the length check
+                # too. The throw reaches the outer handler, which drops the mutex and reports a
+                # lock-creation failure rather than a phantom second installer.
+                try {
+                    Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+                } catch {
+                    throw "A link is planted at the install lock path $lockPath and cannot be removed."
+                }
+            }
+            # A HARD link carries no reparse attribute, so the check above cannot see it and
+            # File.Open follows it. The discriminator is the opened stream's Length: nothing is
+            # ever written here, so ours is always zero bytes and a planted alias worth denying
+            # access to is not. Read from the handle, which also closes the check-to-open window.
+            #
+            # At most one repair, and CreateNew rather than OpenOrCreate: the mutex only serialises
+            # identical spellings, so if somebody re-created the entry in between, this must fail
+            # rather than hand out a second lock.
+            $repaired = $false
+            while ($true) {
+                if ($repaired) { $mode = [System.IO.FileMode]::CreateNew }
+                else { $mode = [System.IO.FileMode]::OpenOrCreate }
+                try {
+                    $stream = [System.IO.File]::Open(
+                        $lockPath,
+                        $mode,
+                        [System.IO.FileAccess]::ReadWrite,
+                        [System.IO.FileShare]::None)
+                } catch [System.IO.IOException] {
+                    # Only a sharing or lock violation means "another installer holds it"; a
+                    # storage fault reported that way would send the user hunting a second
+                    # installer that does not exist. HResult's low 16 bits carry the Win32 code: 32
+                    # ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION. Off Windows .NET implements
+                    # FileShare with flock and reports errno 11 (EAGAIN) instead, measured rather
+                    # than assumed. 80, 183 and 17 are how the CreateNew reopen reports losing the
+                    # race, which means the same thing to the caller.
+                    $code = $_.Exception.HResult -band 0xFFFF
+                    $lost = $repaired -and ($code -eq 80 -or $code -eq 183 -or $code -eq 17)
+                    if (-not $lost -and $code -ne 32 -and $code -ne 33 -and $code -ne 11) { throw }
+                    if ($stream) { $stream.Dispose() }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    return $null
+                }
+                # The reparse test above ran on the PATHNAME, so a link can be swapped in before
+                # this open, and a zero-byte target slips past the Length test below. Re-read now
+                # the handle is held. This narrows the window rather than closing it: closing it
+                # needs FILE_FLAG_OPEN_REPARSE_POINT, and removing native imports is the point of
+                # this workstream. The residual needs a root another user can already write to.
+                if ($stream.Length -eq 0) {
+                    $entry = $null
+                    try { $entry = Get-Item -LiteralPath $lockPath -Force -ErrorAction Stop } catch { $entry = $null }
+                    if ($entry -and (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                        $stream.Dispose()
+                        $stream = $null
+                        throw "A link was planted at the install lock path $lockPath while it was being opened."
+                    }
+                    break
+                }
+                if ($repaired) {
+                    # A file this run just created cannot be non-empty. Fail loudly, not in a loop.
+                    throw "The install lock file at $lockPath is not empty after being replaced."
+                }
+                # Move the entry ASIDE rather than delete it, and let the reopen create a real file
+                # at the freed name.
+                #
+                # Deleting a planted hard link costs only its own directory entry, which is why it
+                # looked safe, but an ORDINARY non-empty file at this name loses its contents
+                # merely because somebody started the installer. Refusing instead lets a planted
+                # hard link block every install. The discriminator is the link count and .NET does
+                # not expose it here, so there is no cheap way to tell them apart. A rename needs
+                # no discrimination: the planted link leaves the lock
+                # path either way, and the ordinary file keeps its bytes under a name that says
+                # what happened to it.
+                $stream.Dispose()
+                $stream = $null
+                $displaced = "$lockPath.displaced-" + (Get-Date -Format "yyyyMMddHHmmss") +
+                    "-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+                try {
+                    Move-Item -LiteralPath $lockPath -Destination $displaced -Force -ErrorAction Stop
+                } catch {
+                    # Same discrimination and the same codes as the open below: only a sharing or
+                    # lock violation is a concurrent install. The code is dug out of the exception
+                    # chain because a cmdlet failure arrives wrapped.
+                    $mvCode = 0
+                    $mvEx = $_.Exception
+                    while ($mvEx) {
+                        if ($mvEx -is [System.IO.IOException]) {
+                            $mvCode = $mvEx.HResult -band 0xFFFF
+                            break
+                        }
+                        $mvEx = $mvEx.InnerException
+                    }
+                    Exit-StudioInstallMutex -Mutex $mutex
+                    if ($mvCode -ne 32 -and $mvCode -ne 33 -and $mvCode -ne 11) { throw }
+                    return $null
+                }
+                $repaired = $true
+            }
+            # Residual, stated plainly: a hard link to a genuinely EMPTY file is indistinguishable
+            # from our own and is used as the lock. Nothing is written to it, so the only thing
+            # denied for the install is access to a zero-byte file.
+            # Nothing is written to the handle on purpose: holding it open exclusively IS the
+            # lock, and File.Open follows a link, so a planted lock file would have its TARGET
+            # truncated merely by starting the installer.
+            # The lock is now the first thing that can create the root, so without this marker a
+            # run that died before the first real write leaves a root scripts/uninstall.ps1's
+            # _IsStudioRoot refuses to remove as somebody else's.
+            #
+            # Only when this call created the directory: a UNSLOTH_STUDIO_HOME pointed at one the
+            # user already had must never be claimed, or uninstall would delete it.
+            #
+            # Through the helper, not a bare WriteAllText, which follows a planted link just as
+            # File.Open does. The helper removes the entry and confirms its absence first, with
+            # Get-Item -Force so a dangling link is not mistaken for nothing there.
+            if (-not $existedBefore) {
+                Write-StudioRootOwnerMarker -Root $Path
+            }
+            return [pscustomobject]@{ Mutex = $mutex; Stream = $stream; Path = $lockPath }
+        } catch {
+            if ($stream) { try { $stream.Dispose() } catch {} }
+            Exit-StudioInstallMutex -Mutex $mutex
+            throw
+        }
+    }
+
+    function Exit-StudioInstallLock {
+        param($Lock)
+        if ($null -eq $Lock) { return }
+        # Closing the handle IS the release, so a dead process leaves nothing to clean up. The
+        # file stays: deleting it would race another installer that has just opened it.
+        if ($Lock.Stream) { try { $Lock.Stream.Dispose() } catch {} }
+        Exit-StudioInstallMutex -Mutex $Lock.Mutex
+    }
+
     function Test-StudioProtectedPathMatch {
         param(
             [Parameter(Mandatory = $true)][string]$Candidate,
@@ -4939,97 +6348,85 @@ exit 0
     # has open, so the ladder still ends at Get-Process and Win32_Process. Every
     # rung reports a real executable image; a command line or working directory
     # mentioning the path is never proof.
-    #
-    # Emitted rather than compiled, like every other native declaration here; the
-    # ladder itself is unchanged.
-    $script:StudioProcessImageNativeState = $null
-    function Initialize-StudioProcessImageNativeType {
-        if ("UnslothStudioProcessImageV1" -as [type]) {
-            $script:StudioProcessImageNativeState = $true
-            return $true
-        }
-        if ($null -ne $script:StudioProcessImageNativeState) { return $script:StudioProcessImageNativeState }
-        # A type this session already emitted outranks any probe. The compiled
-        # version carried the path helper and this one in a single type and so could
-        # not disagree with itself; two types can, when a session emits the path type
-        # and then meets a probe that now fails. Do not ask a child whether emit
-        # works in a process where emit demonstrably worked.
-        $alreadyEmitted = $null -ne ("UnslothStudioFinalPathV3" -as [type])
-        if (-not $alreadyEmitted -and -not (Test-StudioCanDefineNativeTypes)) {
-            $script:StudioProcessImageNativeState = $false
-            return $false
-        }
-        try {
-            $null = New-StudioEmittedNativeType -TypeName "UnslothStudioProcessImageV1" -Imports @(
-                @{ Name = "OpenProcess"; Library = "kernel32.dll"; Return = [IntPtr]
-                   Args = @([uint32], [bool], [int])
-                   Ansi = $true },
-                @{ Name = "QueryFullProcessImageNameW"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr], [uint32], [System.Text.StringBuilder], [uint32].MakeByRefType()) },
-                @{ Name = "CloseHandle"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr])
-                   Ansi = $true }
-            )
-        } catch {
-            # Same reason as the path helper: a throw on the way out of CreateType
-            # can still leave the type published, and a published type works.
-            if ("UnslothStudioProcessImageV1" -as [type]) {
-                $script:StudioProcessImageNativeState = $true
-                return $true
-            }
-            $script:StudioProcessImageNativeState = $false
-            return $false
-        }
-        $script:StudioProcessImageNativeState = $null -ne ("UnslothStudioProcessImageV1" -as [type])
-        return $script:StudioProcessImageNativeState
-    }
-
-    # The body of the compiled GetProcessImagePath, moved out of C# so the imports
-    # above are all the native code there is. Same flags, same buffer. Null on any
-    # failure, as the compiled one returned and as the caller below skips on.
-    function Get-StudioNativeProcessImagePath {
-        param([Parameter(Mandatory = $true)][int]$ProcessId)
-        $queryLimitedInformation = [uint32]0x1000
-        # Same shape as Get-StudioNativeFinalPath: the open is inside the region
-        # that closes it, because an IntPtr has no finalizer to fall back on.
-        $handle = [IntPtr]::Zero
-        try {
-            try {
-                $handle = [UnslothStudioProcessImageV1]::OpenProcess(
-                    $queryLimitedInformation, $false, $ProcessId)
-            } catch {
-                return $null
-            }
-            if ($handle -eq [IntPtr]::Zero) { return $null }
-            $buffer = New-Object System.Text.StringBuilder 32768
-            [uint32]$length = $buffer.Capacity
-            if (-not [UnslothStudioProcessImageV1]::QueryFullProcessImageNameW(
-                    $handle, [uint32]0, $buffer, [ref]$length)) {
-                return $null
-            }
-            return $buffer.ToString()
-        } catch {
-            return $null
-        } finally {
-            if ($handle -ne [IntPtr]::Zero) {
-                try { [void][UnslothStudioProcessImageV1]::CloseHandle($handle) } catch {}
-            }
-        }
-    }
-
     $script:StudioProcessImageTable = $null
+    # PID -> image path for every visible process, via ctypes in one child, so no type is defined
+    # in this script. $null leaves the WMI rung exactly as it was.
+    $script:StudioPythonProcessImageTable = $null
+    $script:StudioPythonProcessImageProbed = $false
     $script:StudioProcessImageWarned = $false
+
+    function Get-StudioPythonProcessImageTable {
+        $exe = Get-StudioEarlyPython
+        if (-not $exe) { return $null }
+        if (-not ($env:OS -eq "Windows_NT")) { return $null }
+        $probe = "import ctypes,sys" + [char]10 +
+            "from ctypes import wintypes" + [char]10 +
+            "k32=ctypes.WinDLL('kernel32',use_last_error=True)" + [char]10 +
+            "psapi=ctypes.WinDLL('psapi',use_last_error=True)" + [char]10 +
+            "k32.OpenProcess.restype=wintypes.HANDLE" + [char]10 +
+            "k32.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]" + [char]10 +
+            "k32.CloseHandle.argtypes=[wintypes.HANDLE]" + [char]10 +
+            "k32.QueryFullProcessImageNameW.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD)]" + [char]10 +
+            "n=1024" + [char]10 +
+            "while True:" + [char]10 +
+            "    a=(wintypes.DWORD*n)();b=wintypes.DWORD()" + [char]10 +
+            "    if not psapi.EnumProcesses(ctypes.byref(a),ctypes.sizeof(a),ctypes.byref(b)): sys.exit(3)" + [char]10 +
+            "    if b.value < ctypes.sizeof(a): break" + [char]10 +
+            "    n*=2" + [char]10 +
+            "out=[]" + [char]10 +
+            "for pid in a[:b.value//ctypes.sizeof(wintypes.DWORD)]:" + [char]10 +
+            "    if not pid: continue" + [char]10 +
+            "    h=k32.OpenProcess(0x1000,False,pid)" + [char]10 +
+            "    if not h: continue" + [char]10 +
+            "    try:" + [char]10 +
+            "        buf=ctypes.create_unicode_buffer(32768);sz=wintypes.DWORD(32768)" + [char]10 +
+            "        if k32.QueryFullProcessImageNameW(h,0,buf,ctypes.byref(sz)): out.append(str(pid)+'|'+buf.value)" + [char]10 +
+            "    finally:" + [char]10 +
+            "        k32.CloseHandle(h)" + [char]10 +
+            "sys.stdout.buffer.write('\n'.join(out).encode('utf-8'))"
+        $raw = Invoke-StudioEarlyPythonScript -Exe $exe -Script $probe -TimeoutMs 20000
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $table = @{}
+        foreach ($line in ($raw -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $split = $line.IndexOf('|')
+            if ($split -lt 1) { continue }
+            $pidText = $line.Substring(0, $split)
+            $path = $line.Substring($split + 1)
+            $parsed = 0
+            if (-not [int]::TryParse($pidText, [ref]$parsed)) { continue }
+            if ($parsed -le 0) { continue }
+            if (-not [string]::IsNullOrWhiteSpace($path)) { $table[$parsed] = $path }
+        }
+        if ($table.Count -eq 0) { return $null }
+        return $table
+    }
+
+    # Bounded out of process like Get-StudioVolumeList: without Python this rung is the common one,
+    # and a degraded WMI repository never returns.
+    function Get-StudioWmiProcessImageRows {
+        param(
+            [scriptblock]$Query = {
+                Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Select-Object ProcessId, ExecutablePath
+            },
+            [int]$TimeoutSeconds = 15
+        )
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock $Query
+            if (Wait-Job -Job $job -Timeout $TimeoutSeconds) {
+                return @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            }
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return @()
+    }
+
     function Get-StudioProcessImagePath {
         param([Parameter(Mandatory = $true)][int]$ProcessId)
-        if (Initialize-StudioProcessImageNativeType) {
-            $native = Get-StudioNativeProcessImagePath -ProcessId $ProcessId
-            if (-not [string]::IsNullOrWhiteSpace($native)) { return $native }
-            return $null
-        }
-        if (-not $script:StudioProcessImageWarned) {
-            $script:StudioProcessImageWarned = $true
-            Write-StudioLine "[WARN] Scanning for running Unsloth processes without the native helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
-        }
         $process = $null
         try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
         if ($process) {
@@ -5039,16 +6436,32 @@ exit 0
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
         }
+        # PROCESS_QUERY_LIMITED_INFORMATION works where PROCESS_VM_READ does not; one child per run.
+        if (-not $script:StudioPythonProcessImageProbed) {
+            $script:StudioPythonProcessImageProbed = $true
+            # A failure falls through to the WMI rung, never past it.
+            try { $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable } catch {
+                $script:StudioPythonProcessImageTable = $null
+            }
+            if ($env:OS -eq "Windows_NT" -and $null -eq $script:StudioPythonProcessImageTable -and
+                -not $script:StudioProcessImageWarned) {
+                $script:StudioProcessImageWarned = $true
+                Write-StudioLine "[WARN] Scanning for running Unsloth processes without the process-image helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
+            }
+        }
+        if ($script:StudioPythonProcessImageTable -and
+            $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
+            return $script:StudioPythonProcessImageTable[$ProcessId]
+        }
+        # Per-run PID snapshots: a reused PID reads stale; accepted.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
-            try {
-                foreach ($row in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
-                    if (-not [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
-                        $script:StudioProcessImageTable[[int]$row.ProcessId] = [string]$row.ExecutablePath
-                    }
+            foreach ($row in @(Get-StudioWmiProcessImageRows)) {
+                if ($row -and -not [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
+                    $script:StudioProcessImageTable[[int]$row.ProcessId] = [string]$row.ExecutablePath
                 }
-            } catch {}
+            }
         }
         if ($script:StudioProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioProcessImageTable[$ProcessId]
@@ -5075,9 +6488,18 @@ exit 0
 
         # Block only confirmed executable identities: a command line or working
         # directory that merely mentions the path is not proof of an open file.
-        foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
-            $executable = $null
-            try { $executable = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
+        $studioScanProcesses = @(Get-Process -ErrorAction SilentlyContinue |
+            Select-Object -Property Id, ProcessName)
+        $studioScanImages = @{}
+        foreach ($process in $studioScanProcesses) {
+            $image = $null
+            try { $image = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
+            if ([string]::IsNullOrWhiteSpace($image)) { continue }
+            $studioScanImages[[string]$process.Id] = $image
+        }
+        try { Resolve-StudioFinalPathsInOneChild -Paths @($studioScanImages.Values) } catch { }
+        foreach ($process in $studioScanProcesses) {
+            $executable = $studioScanImages[[string]$process.Id]
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
@@ -5090,12 +6512,12 @@ exit 0
         }
     }
     try {
-        $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
+        $studioInstallLock = Enter-StudioInstallLock -Path $StudioHome
     } catch {
         Write-StudioLine "[ERROR] Could not create the Unsloth install lock: $($_.Exception.Message)" -ForegroundColor Red
         return (Exit-InstallFailure "Could not create the Unsloth install lock")
     }
-    if ($null -eq $studioInstallMutex) {
+    if ($null -eq $studioInstallLock) {
         Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
         Write-StudioLine "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
@@ -5233,7 +6655,14 @@ exit 0
         # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
         # there is, and the caller then bootstraps x64 or warns.
         # ARM64 first on a native host, so a leftover x64 interpreter does not capture the venv.
-        $preferArm64 = $script:WoaNativeCudaTorch -and -not $X64Only
+        # And when UNSLOTH_ALLOW_ARM64_PYTHON is set: the opt-out has to reach the SELECTION,
+        # not only the swap after it. On a machine that already has x64 the swap never runs,
+        # so the variable would do nothing at all. -X64Only is Install-X64Python's own lookup
+        # and is never the place to honour it.
+        $preferArm64 = (-not $X64Only) -and (
+            $script:WoaNativeCudaTorch -or
+            ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut))
+        )
         $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64" -and -not $preferArm64)
         $rankByArch = $preferX64 -or $preferArm64
         $candidates = @()
@@ -5324,6 +6753,17 @@ exit 0
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
         }
+        # The per-minor loop answers the VERSION preference first, so with x64 3.13 and
+        # ARM64 3.12 installed the opt-out still produced an x64 environment. Sweep every
+        # supported minor for an ARM64 build first, then fall through.
+        if ($preferArm64) {
+            foreach ($minor in $minors) {
+                $arm = $candidates |
+                    Where-Object { $_.Version -eq $minor -and $_.Arch -eq "arm64" } |
+                    Select-Object -First 1
+                if ($arm) { return $arm }
+            }
+        }
         foreach ($minor in $minors) {
             $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
             if ($sameMinor.Count -eq 0) { continue }
@@ -5339,6 +6779,14 @@ exit 0
         }
         if (-not $X64Only -and $candidates.Count -gt 0) { return $candidates[0] }
         return $null
+    }
+
+    # Which PATH switch the python.org installer gets. PrependPath=1 puts the interpreter at
+    # the FRONT of the User PATH, which inside an active conda environment permanently
+    # demotes conda's own entries (#5871). AppendPath registers it just as well.
+    function Get-PythonInstallerPathSwitch {
+        if (Test-ActiveCondaEnvironment) { return "AppendPath=1" }
+        return "PrependPath=1"
     }
 
     # ── Fallback when winget fails (msstore 0x8a15005e): silent per-user python.org, no UAC. ──
@@ -5396,13 +6844,13 @@ exit 0
             return $null
         }
 
-        # Per-user install => no UAC. PrependPath puts python + py on PATH;
+        # Per-user install => no UAC. The PATH switch puts python + py on PATH;
         # Include_launcher installs py.exe (preferred by Find-CompatiblePython).
         substep "installing Python $full (silent, per-user)..."
         $installArgs = @(
             "/quiet",
             "InstallAllUsers=0",
-            "PrependPath=1",
+            (Get-PythonInstallerPathSwitch),
             "Include_launcher=1",
             # Launcher per-user too: Include_launcher defaults to all-users, which needs admin.
             "InstallLauncherAllUsers=0",
@@ -5448,6 +6896,19 @@ exit 0
     # ── Windows on ARM: get an x64 CPython ──
     # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
     function Install-X64Python {
+        # python.org first inside conda, same as the generic bootstrap below: winget's Python
+        # package hard-codes PrependPath=1 and offers no switch to ask otherwise, so a winget
+        # install recreates #5871. winget stays the fallback: no x64 Python at all is a STOP.
+        $pythonOrgTried = $false
+        if (Test-ActiveCondaEnvironment) {
+            substep "conda environment active ($env:CONDA_PREFIX) -- installing x64 Python from python.org, which can be installed without taking PATH priority." "Yellow"
+            $pythonOrgTried = $true
+            $found = Install-PythonFromPythonOrg -Arch "x86_64"
+            if ($found -and $found.Arch -eq "x86_64") { return $found }
+            if ($script:WingetAvailable) {
+                substep "python.org could not provide an x64 Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
+            }
+        }
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5460,11 +6921,135 @@ exit 0
             if ($found -and $found.Arch -eq "x86_64") { return $found }
             substep "winget could not provide an x64 Python -- trying python.org..." "Yellow"
         }
-        $found = Install-PythonFromPythonOrg -Arch "x86_64"
-        if ($found -and $found.Arch -eq "x86_64") { return $found }
+        # $pythonOrgTried, so an offline box inside conda does not sit through the same
+        # failing download twice.
+        if (-not $pythonOrgTried) {
+            $found = Install-PythonFromPythonOrg -Arch "x86_64"
+            if ($found -and $found.Arch -eq "x86_64") { return $found }
+        }
         # Nothing installable (offline / no winget): an x64 build of another supported minor
         # still runs the wheels ARM64 cannot, so take it over the native interpreter.
         return (Find-CompatiblePython -X64Only)
+    }
+
+    # "I want the native ARM64 interpreter." One reader, because both places that would
+    # otherwise replace an ARM64 environment have to agree: the fresh selection and the
+    # mismatch re-check on a migrated venv. Read at each site, not captured.
+    function Test-Arm64PythonOptOut {
+        return ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on'))
+    }
+
+    # ── Windows on ARM: the interpreter handed to uv has to be x64 ──
+    # PyPI has no win_arm64 pyarrow (via datasets) or hf-transfer, so a native ARM64
+    # interpreter source-builds both and dies minutes in (#8495). $null means this host
+    # cannot be served, which is a STOP rather than a warning (#10875).
+    # UNSLOTH_ALLOW_ARM64_PYTHON=1 opts out.
+    function Resolve-WindowsOnArmX64Python {
+        param($SelectedPython)
+        if (-not $SelectedPython) { return $null }
+        # Read BEFORE the x64 install is attempted, or the variable does nothing on the
+        # machines where that install succeeds. ARM64 only: discovery reports 32-bit `win32`
+        # and probe-failed "unknown" interpreters as "not x64" too.
+        if ((Test-Arm64PythonOptOut) -and ($SelectedPython.Arch -eq "arm64")) {
+            Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so keeping native ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
+            Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
+            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            Write-StudioLine "       Unset UNSLOTH_ALLOW_ARM64_PYTHON to have x64 Python installed and used instead." -ForegroundColor Yellow
+            return $SelectedPython
+        }
+        substep "windows on arm: only a native ARM64 Python $($SelectedPython.Version) was found." "Yellow"
+        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
+        $X64Python = Install-X64Python
+        if ($X64Python) {
+            step "python" "using x64 Python $($X64Python.Version) under emulation"
+            return $X64Python
+        }
+        Write-StudioLine "[ERROR] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Red
+        Write-StudioLine "        pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels, so an install" -ForegroundColor Yellow
+        Write-StudioLine "        on ARM64 Python $($SelectedPython.Version) fails while building them from source." -ForegroundColor Yellow
+        Write-StudioLine "        Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+        Write-StudioLine "        (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+        Write-StudioLine "        To attempt the install on ARM64 Python anyway, with CMake, MSVC and Rust" -ForegroundColor Yellow
+        Write-StudioLine "        already installed, set UNSLOTH_ALLOW_ARM64_PYTHON=1." -ForegroundColor Yellow
+        return $null
+    }
+
+    function Get-StudioVenvBasePython {
+        param([Parameter(Mandatory = $true)][string]$VenvDir)
+        # The ARM64 interpreter the EXISTING environment was built from, for when the machine
+        # registers none of its own: the selection can only prefer what discovery sees, so
+        # the opt-out would rebuild on x64 anyway. pyvenv.cfg still names it. Read before the
+        # reinstall moves the environment aside.
+        $cfg = Join-Path $VenvDir "pyvenv.cfg"
+        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $null }
+        $venvHome = $null
+        $baseExe = $null
+        foreach ($line in @(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
+            if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $venvHome = $Matches[1] }
+            elseif ($line -match '^\s*base-executable\s*=\s*(.+?)\s*$') { $baseExe = $Matches[1] }
+        }
+        # base-executable names the interpreter exactly; home is its directory, which is what
+        # a venv built by an older Python records on its own.
+        $candidates = @()
+        if ($baseExe) { $candidates += $baseExe }
+        if ($venvHome) { $candidates += (Join-Path $venvHome "python.exe") }
+        foreach ($exe in $candidates) {
+            if (-not $exe) { continue }
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+            if (Test-IsCondaPython $exe) { continue }
+            # ARM64 and a supported minor only: anything not provably native is no better
+            # than the x64 selection it would replace.
+            if ((Get-PythonPlatformTag $exe) -ne "win-arm64") { continue }
+            $out = (& $exe --version 2>&1 | Out-String)
+            if ($out -notmatch "Python ((3\.1[1-3])\.\d+)") { continue }
+            $full = $Matches[1]
+            $ver = $Matches[2]
+            if ($PythonSkip -contains $full) { continue }
+            return @{ Version = $ver; Path = $exe; Arch = "arm64" }
+        }
+        return $null
+    }
+
+    # Does an environment we are about to REUSE still match the interpreter we chose? The
+    # swap above only changes a FRESH selection, so a migrated venv keeps whatever built it,
+    # which on Windows on ARM is native ARM64 CPython (#8495, #10875). True only with an x64
+    # interpreter in hand, so a host served by native ARM64 wheels is left alone.
+    function Test-StudioVenvArchMismatch {
+        param(
+            [Parameter(Mandatory = $true)][string]$VenvPython,
+            $SelectedPython,
+            [string]$RecordedTag = $null
+        )
+        if ((Get-HostMachineArch) -ne "arm64") { return $false }
+        # The interpreter may be gone: a reinstall moves the environment to its rollback path
+        # BEFORE the x64 Python is chosen, so probing $VenvPython here would answer "no
+        # mismatch" for every existing install. $RecordedTag is the tag read before that move.
+        $tag = $null
+        if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+            $tag = Get-PythonPlatformTag $VenvPython
+        } elseif ($RecordedTag) {
+            $tag = $RecordedTag
+        }
+        # Asked before the opt-out, so the message below is only printed when there really is
+        # a native ARM64 environment to keep.
+        if ($tag -ne "win-arm64") { return $false }
+        # Honoured HERE too: Resolve-WindowsOnArmX64Python never runs when the ordinary probe
+        # already found x64, so on a host with both interpreters this branch would otherwise
+        # replace the very ARM64 environment the user asked to keep.
+        if (Test-Arm64PythonOptOut) {
+            # Two outcomes, so two sentences: with an ARM64 interpreter the environment is
+            # really not rebuilt on x64, and with none the reinstall has already moved the
+            # tree aside and the new one IS on x64.
+            if ($SelectedPython -and $SelectedPython.Arch -eq "x86_64") {
+                substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, but no ARM64 Python is left on" "Yellow"
+                substep "this machine, so the new environment is built on x64; the ARM64 one is kept." "Yellow"
+            } else {
+                substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, so the environment is not rebuilt on x64." "Yellow"
+            }
+            return $false
+        }
+        if (-not $SelectedPython -or $SelectedPython.Arch -ne "x86_64") { return $false }
+        return $true
     }
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
@@ -5484,7 +7069,20 @@ exit 0
         $pythonPackageId = "Python.Python.$PythonVersion"
         $wingetExit = $null
 
-        if ($script:WingetAvailable) {
+        # winget's Python package hard-codes PrependPath=1 with no switch to ask otherwise,
+        # so inside conda take the python.org route first, where we choose the switch. winget
+        # stays the fallback: a failed install is worse than a PATH we warn about.
+        $pythonOrgTried = $false
+        if (Test-ActiveCondaEnvironment) {
+            substep "conda environment active ($env:CONDA_PREFIX) -- installing Python from python.org, which can be installed without taking PATH priority." "Yellow"
+            $pythonOrgTried = $true
+            $DetectedPython = Install-PythonFromPythonOrg
+            if (-not $DetectedPython -and $script:WingetAvailable) {
+                substep "python.org could not provide Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
+            }
+        }
+
+        if ($script:WingetAvailable -and -not $DetectedPython) {
             # --source winget avoids msstore, whose cert-pinning (0x8a15005e) can abort the install.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5512,7 +7110,10 @@ exit 0
             }
         }
 
-        if (-not $DetectedPython) {
+        # $pythonOrgTried, so an offline box inside conda does not sit through the same
+        # failing download twice and then read "falling back to python.org" for a fallback
+        # that already ran.
+        if (-not $DetectedPython -and -not $pythonOrgTried) {
             if ($script:WingetAvailable) {
                 substep "winget could not install Python -- falling back to python.org..." "Yellow"
             } else {
@@ -5602,24 +7203,30 @@ exit 0
             $script:WoaTorchIndexUrl = $null
         }
     }
+    # ── Windows on ARM: the opt-out's last ARM64 interpreter ──
+    # The selection prefers ARM64 under UNSLOTH_ALLOW_ARM64_PYTHON, but only among the
+    # interpreters discovery can see. With none left, an x64 one is selected and the native
+    # environment is rebuilt on it -- exactly what the variable asks against -- so the
+    # environment's own base interpreter, which pyvenv.cfg still names, is tried first.
+    if ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut) -and
+            (-not $DetectedPython -or $DetectedPython.Arch -ne "arm64")) {
+        $ArmBasePython = Get-StudioVenvBasePython -VenvDir $VenvDir
+        if ($ArmBasePython) {
+            step "python" "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set and no other ARM64 Python is registered; using the ARM64 Python $($ArmBasePython.Version) the existing environment was built from"
+            $DetectedPython = $ArmBasePython
+        }
+    }
+
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
-    # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
-    # both and fails deep into the run. Warn up front if x64 is unobtainable. Not on native.
+    # No x64 interpreter means no install, so this stops rather than warning: see
+    # Resolve-WindowsOnArmX64Python.
+    # Not on a native CUDA torch host: there an ARM64 interpreter is the correct one
+    # and swapping it away would break sm_121.
     if (-not $script:WoaNativeCudaTorch -and
-        $DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
-        substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
-        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
-        $X64Python = Install-X64Python
-        if ($X64Python) {
-            $DetectedPython = $X64Python
-            step "python" "using x64 Python $($DetectedPython.Version) under emulation"
-        } else {
-            Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-StudioLine "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
-            Write-StudioLine "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
-            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-StudioLine "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
-            Write-StudioLine "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+            $DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
+        $DetectedPython = Resolve-WindowsOnArmX64Python -SelectedPython $DetectedPython
+        if (-not $DetectedPython) {
+            return (Exit-InstallFailure "windows on arm: no x64 Python could be installed, and ARM64 Python cannot resolve pyarrow or hf-transfer")
         }
     }
 
@@ -5628,6 +7235,11 @@ exit 0
     $InitialGpuBranch = "unknown"
     if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
     Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
+
+    foreach ($_mirrorEnvName in @('_UNSLOTH_MIRROR_PROBED', '_UNSLOTH_MIRROR_SPARE', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UNSLOTH_UV_WHEEL_MIRROR')) {
+        $script:MirrorEnvSaved[$_mirrorEnvName] = [Environment]::GetEnvironmentVariable($_mirrorEnvName)
+    }
+    Invoke-MirrorFallback
 
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
@@ -5765,16 +7377,20 @@ exit 0
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
     # SHA-256 instead of running remote script text in-process.
     # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-    # Bumping the version means bumping all 3 hashes:
+    # Bumping the version means bumping all 3 hashes, and each Wheel/WheelSha256 from https://pypi.org/pypi/uv/<ver>/json:
     #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
     $UvPinnedVersion = "0.12.1"
     $UvPinnedAssets = @{
-        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
-        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
-        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A"
+                      Wheel = "packages/0d/a4/467c99c76fefa8b1259a1d382a5e49f73068f38a2d58db401504a783ed2c/uv-0.12.1-py3-none-win_amd64.whl"; WheelSha256 = "BD02F2DA212E6A983115DC64A6FC94E9256C2D60E056D6B669DE0A6025AAEC05" }
+        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568"
+                      Wheel = "packages/68/80/ec1acbf8e22dc4866f9070c30b064728cc0da73bedc30f2fbfdc0c5901a7/uv-0.12.1-py3-none-win_arm64.whl"; WheelSha256 = "EAD7AD064F291A5DF358C3FFA8FFAB347A32BD5A75A6A068CA22254C2539A829" }
+        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97"
+                      Wheel = "packages/fd/02/f73e4867c0748eaa3dea90cdfeb73d15bab0f04802c5c20bb37fc14918fe/uv-0.12.1-py3-none-win32.whl"; WheelSha256 = "173EE216F17D89FC39F65339D311A53584FC7DE4918D27C0F3C7EDAFABC6B54D" }
     }
 
     function Install-UvFromRelease {
+        $script:UvReleaseUnfetched = $false
         $arch = Get-HostMachineArch
         if (-not $UvPinnedAssets.ContainsKey($arch)) {
             substep "No uv build is published for this architecture ($arch)." "Yellow"
@@ -5782,6 +7398,8 @@ exit 0
         }
         $asset  = $UvPinnedAssets[$arch].Asset
         $wanted = $UvPinnedAssets[$arch].Sha256
+        $remote = $asset
+        $wheelDir = $null
 
         # Same destination priority as astral's installer, so an existing uv is
         # replaced in place and the PATH probe further below still finds it.
@@ -5810,6 +7428,11 @@ exit 0
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
             @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+        } elseif ($env:UNSLOTH_UV_WHEEL_MIRROR) {
+            $remote = $UvPinnedAssets[$arch].Wheel
+            $wanted = $UvPinnedAssets[$arch].WheelSha256
+            $wheelDir = "uv-$UvPinnedVersion.data/scripts"
+            @("$($env:UNSLOTH_UV_WHEEL_MIRROR.TrimEnd('/'))")
         } else {
             @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
               "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -5823,14 +7446,16 @@ exit 0
             # body is a successful download by every measure Invoke-WebRequest has, and checking
             # afterwards spends the only attempt on it.
             $downloaded = $false
+            $script:UvReleaseUnfetched = $true
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
                 try {
-                    Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+                    Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$remote"
                 } catch {
                     substep "uv download failed: $($_.Exception.Message)" "Yellow"
                     continue
                 }
+                $script:UvReleaseUnfetched = $false
                 $actual = ""
                 try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
                 if ($actual -eq $wanted) {
@@ -5843,11 +7468,11 @@ exit 0
             }
             if (-not $downloaded) { return $false }
 
-            # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
             Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
             [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
+            $srcRoot = if ($wheelDir) { Join-Path $work $wheelDir } else { $work }
 
-            $stagedUv = Join-Path $work "uv.exe"
+            $stagedUv = Join-Path $srcRoot "uv.exe"
             if (-not (Test-Path -LiteralPath $stagedUv)) {
                 substep "uv.exe was not present in $asset." "Yellow"
                 return $false
@@ -5867,7 +7492,7 @@ exit 0
             # install rather than leaving half a set behind quietly.
             $ok = $true
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
-                $src = Join-Path $work $exe
+                $src = Join-Path $srcRoot $exe
                 if (-not (Test-Path -LiteralPath $src)) { continue }
                 $dst = Join-Path $destDir $exe
                 try {
@@ -5929,7 +7554,7 @@ exit 0
         # winget unavailable or it didn't put uv on PATH: install the pinned
         # release directly (ARM64 runners, machines without the Store).
         if (-not (Test-UvVersionOk)) {
-            Install-UvFromRelease | Out-Null
+            if (@(Install-UvFromRelease)[-1] -ne $true -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) { Install-UvFromRelease | Out-Null }
             Refresh-SessionPath
         }
     }
@@ -5961,7 +7586,6 @@ exit 0
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
-
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
@@ -5982,7 +7606,20 @@ exit 0
     $_Migrated = $false
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
+    # Set only by the Windows-on-ARM architecture rebuild, which promises the user the old
+    # environment survives the run. Every other rollback is deleted once the replacement
+    # commits, which is right: it is the same architecture and the same packages.
+    $script:StudioVenvRollbackPreserve = $false
+    # The existing interpreter's platform tag, read before any rollback move takes it away.
+    $script:PrevVenvPlatformTag = $null
     $script:StudioVenvRollbackActive = $false
+    # Set only by --no-rollback, so a branch that needs the previous tree can tell
+    # "already deleted on purpose" from "not moved aside yet".
+    $script:StudioVenvRollbackDiscarded = $false
+    # Set by the discard itself, so the disk-full remedy describes what happened rather than what
+    # was requested.
+    $script:StudioVenvDiscardSucceeded = $false
+    $script:StudioVenvDiscardLeftover = $null
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
@@ -6080,6 +7717,46 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
+    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
+    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
+    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
+    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
+    function Invoke-BoundedPythonProbe {
+        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+        if (-not $PythonExe -or -not $Code) { return $result }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = "-c `"$Code`""
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
+                return $result
+            }
+            $result.Output = $outTask.GetAwaiter().GetResult()
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
+            $result.Ok = ($proc.ExitCode -eq 0)
+            return $result
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -6126,13 +7803,56 @@ exit 0
             }
             throw
         }
+        # --no-rollback / UNSLOTH_INSTALL_NO_ROLLBACK: drop the old environment now instead of at
+        # commit, for the disk-constrained cross-volume case. The rename still happens first, so
+        # uv never builds into an occupied path. Clearing the state before the delete is what the
+        # commit path does too: an interrupt must not restore a half-deleted backup.
+        if ($script:StudioNoRollback) {
+            $discard = $script:StudioVenvRollbackDir
+            # The Intel scan rescues an adapter WMI cannot classify by asking the PREVIOUS
+            # environment's torch whether XPU works, and deleting that tree takes the only
+            # interpreter that can answer. Opting out must cost disk, never hardware, so the
+            # verdict is taken first and the scan reads it. Wrapped, because a probe that cannot
+            # run must not cost the rename.
+            try {
+                $_discardPy = Join-Path $discard "Scripts\python.exe"
+                if (Test-Path -LiteralPath $_discardPy -ErrorAction SilentlyContinue) {
+                    $_discardXpu = Invoke-BoundedPythonProbe -PythonExe $_discardPy `
+                        -Code 'import torch; print(torch.xpu.is_available())'
+                    if ($_discardXpu.Ok -and $_discardXpu.Output -match '(?m)^\s*True\s*$') {
+                        $script:StudioPreservedXpuVerdict = $true
+                    }
+                }
+            } catch { }
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+            # Distinct from "never started". Inactive alone cannot tell the two apart, and the
+            # ARM64 migration below reads it to decide whether it still has a tree to move.
+            $script:StudioVenvRollbackDiscarded = $true
+            # The helper already names the reason it could not delete. What it must not do is
+            # report success anyway: a tree left behind by an open handle, a reparse point or a
+            # long path frees none of the space this flag exists to free.
+            if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" -LinkAware) {
+                $script:StudioVenvDiscardSucceeded = $true
+                substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+            } else {
+                $script:StudioVenvDiscardLeftover = $discard
+                substep "it is no longer used for rollback; remove $discard by hand to reclaim the space." "Yellow"
+            }
+            return
+        }
         substep "previous environment preserved for rollback"
     }
 
     function Remove-StudioVenvTreeWithRetry {
         param(
             [Parameter(Mandatory = $true)][string]$Path,
-            [Parameter(Mandatory = $true)][string]$Label
+            [Parameter(Mandatory = $true)][string]$Label,
+            # Only the --no-rollback discard asks for this. Test-StudioPathPresent is the stricter
+            # check and arguably the right default, but making it the default would change what
+            # this reports on installs that never passed the flag, and this change is meant to be
+            # invisible to them.
+            [switch]$LinkAware
         )
         $lastError = $null
         for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -6141,7 +7861,12 @@ exit 0
             } catch {
                 $lastError = $_.Exception.Message
             }
-            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            # Under -LinkAware, Test-Path is not enough: it follows a directory reparse point, so
+            # a dangling one that could not be unlinked reads as absent and this would report a
+            # removal that did not happen. The discard acts on that answer by clearing the
+            # rollback state and telling the user the environment is gone.
+            $stillThere = if ($LinkAware) { Test-StudioPathPresent -Path $Path } else { Test-Path -LiteralPath $Path }
+            if (-not $stillThere) { return $true }
             if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
         }
         Write-StudioLine "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
@@ -6240,6 +7965,9 @@ exit 0
         # put one half of a committed install back and keep the other.
         if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
+        # A restore puts the tree back at $VenvDir, so there is nothing left to preserve and
+        # the flag must not survive into any later rollback in the same run.
+        $script:StudioVenvRollbackPreserve = $false
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
         if (-not (Test-StudioPathPresent -Path $backup)) {
@@ -6302,9 +8030,36 @@ exit 0
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false
-        if (Test-StudioPathPresent -Path $backup) {
-            Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
+        $preserve = $script:StudioVenvRollbackPreserve
+        $script:StudioVenvRollbackPreserve = $false
+        if (-not (Test-StudioPathPresent -Path $backup)) { return }
+        if ($preserve) {
+            # The architecture rebuild told the user this tree would still be here to copy
+            # packages out of, so keep the promise instead of the disk space. Renamed out of
+            # the rollback namespace: Remove-StaleStudioVenvRollbacks globs
+            # unsloth_studio.rollback.*, and a preserved copy left under that name would be
+            # swept by the next run as soon as this PID stopped existing.
+            $stamp = Get-Date -Format "yyyyMMddHHmmss"
+            $kept = Join-Path $StudioHome "unsloth_studio.arm64.$stamp"
+            $suffix = 0
+            while (Test-Path -LiteralPath $kept) {
+                $suffix++
+                $kept = Join-Path $StudioHome "unsloth_studio.arm64.$stamp.$suffix"
+            }
+            try {
+                Move-Item -LiteralPath $backup -Destination $kept -ErrorAction Stop
+                substep "previous ARM64 environment kept at $kept"
+                substep "delete it once you have re-installed any extra packages you had added to it."
+                return
+            } catch {
+                # Naming it is the whole point, so a failed rename reports where it actually
+                # is rather than silently deleting the copy the user was told to expect.
+                Write-StudioLine "[WARN] Could not rename the previous ARM64 environment: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-StudioLine "       It is still at $backup" -ForegroundColor Yellow
+                return
+            }
         }
+        Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
     }
 
     # Bounded probe (async-drained, 30s) so a wedged "import torch" cannot stall the installer.
@@ -6366,8 +8121,20 @@ exit 0
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
         }
-        # New layout already exists -- replace only after preserving rollback copy.
-        substep "preserving existing environment for rollback..."
+        # And the interpreter's architecture, for the same reason and while it can still be
+        # read: the move below takes $VenvPython with it, and the Windows-on-ARM rebuild
+        # decision is made after the x64 Python is chosen, which is after that point.
+        if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
+            $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
+        }
+        # New layout already exists -- replace only after preserving rollback copy, unless the
+        # caller asked for no copy at all, in which case this line would be contradicted by the
+        # "discarded" one Start-StudioVenvRollback prints a moment later.
+        if ($script:StudioNoRollback) {
+            substep "moving the existing environment aside..."
+        } else {
+            substep "preserving existing environment for rollback..."
+        }
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
         } catch {
@@ -6430,6 +8197,80 @@ exit 0
         $_Migrated = $true
     }
 
+    # Re-check what is about to be REUSED, not only what was selected: see
+    # Test-StudioVenvArchMismatch. Preserved through the ordinary rollback helper, so the
+    # previous environment is restored if anything later in this run fails, and cleared from
+    # $VenvDir so the branch below creates a fresh one on the x64 interpreter.
+    if (Test-StudioVenvArchMismatch -VenvPython $VenvPython -SelectedPython $DetectedPython `
+            -RecordedTag $script:PrevVenvPlatformTag) {
+        substep "windows on arm: the existing environment runs native ARM64 Python, which cannot" "Yellow"
+        substep "resolve pyarrow or hf-transfer -- rebuilding it on x64 Python $($DetectedPython.Version)." "Yellow"
+        # Stated, not implied: the new environment is built from scratch on a different
+        # architecture, so the ARM64 wheels in the old one cannot be carried into it and
+        # anything the user pip-installed there is not reinstalled. The old tree is kept
+        # under $StudioHome as unsloth_studio.arm64.* rather than deleted with the ordinary
+        # rollback, so it can still be read: $script:StudioVenvRollbackPreserve below.
+        # Only when there is a tree to keep. Under --no-rollback it is either already gone or
+        # about to be, and the arms below say which; printing this as well leaves the user
+        # looking for an unsloth_studio.arm64.* that was never written, and told that packages
+        # they are about to lose are recoverable.
+        if (-not ($script:StudioVenvRollbackDiscarded -or $script:StudioNoRollback)) {
+            substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
+            substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        }
+        try {
+            if ($script:StudioVenvRollbackDiscarded) {
+                # --no-rollback already deleted it. There is nothing to move and nothing to
+                # keep, and calling Start-StudioVenvRollback here would try to rename a
+                # directory that is gone, throw, and take the whole migration out through
+                # Exit-InstallFailure -- after the environment had already been destroyed.
+                substep "the previous ARM64 environment was discarded by --no-rollback, so there is" "Yellow"
+                substep "nothing to copy packages out of; the x64 environment is built fresh." "Yellow"
+            } elseif ($script:StudioVenvRollbackActive) {
+                # The ordinary reinstall already moved this environment aside; a second
+                # Start-StudioVenvRollback would try to move a directory that is no longer
+                # there and throw, taking every architecture migration out through
+                # Exit-InstallFailure. The tree is already where this branch wants it, so
+                # all that is left is to mark it kept rather than swept.
+                $script:StudioVenvRollbackPreserve = $true
+            } else {
+                Start-StudioVenvRollback -ExistingDir $VenvDir
+                if ($script:StudioVenvRollbackDiscarded) {
+                    # --no-rollback discarded it inside that call, so there is no tree to
+                    # preserve and setting the flag would mark one that does not exist. The
+                    # user asked for no old environments kept and that is what they get; say
+                    # so here, where a moment ago the message promised the opposite.
+                    substep "the previous ARM64 environment was discarded by --no-rollback rather than kept;" "Yellow"
+                    substep "the x64 environment is built fresh, and extra packages are not recoverable." "Yellow"
+                } else {
+                    # After the move, so a rollback that never started cannot leave the flag set
+                    # for some later unrelated rollback to act on.
+                    $script:StudioVenvRollbackPreserve = $true
+                }
+            }
+        } catch {
+            Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red
+            Write-StudioLine "        Close Unsloth Studio, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+            return (Exit-InstallFailure "Could not replace the native ARM64 environment at $VenvDir")
+        }
+        # Left set, the migrated-environment branch below would --no-deps into a fresh venv.
+        $_Migrated = $false
+    }
+
+    # The opt-out has to keep something, or it only changes the wording. On a host that
+    # already has an x64 Python, Find-CompatiblePython picks it and the ordinary reinstall
+    # has already moved the ARM64 environment into a rollback that success would delete, so
+    # "not rebuilt on x64" would have been true of the message and of nothing else. The tree
+    # is kept, under the same unsloth_studio.arm64.* name the rebuild branch uses, and the
+    # user is told where it is and how to go back to it.
+    if ($script:PrevVenvPlatformTag -eq "win-arm64" -and (Test-Arm64PythonOptOut) -and
+        $script:StudioVenvRollbackActive) {
+        $script:StudioVenvRollbackPreserve = $true
+        substep "windows on arm: keeping the existing native ARM64 environment under" "Yellow"
+        substep "$StudioHome as unsloth_studio.arm64.*; the new environment is built on" "Yellow"
+        substep "Python $($DetectedPython.Version) ($($DetectedPython.Arch))." "Yellow"
+    }
+
     # A migrated environment has to be ARM64 too: an x64 one has a Triton that cannot do sm_121.
     if ($script:WoaNativeCudaTorch -and $_Migrated -and (Test-Path -LiteralPath $VenvPython)) {
         $_woaMigPlatform = ""
@@ -6439,7 +8280,14 @@ exit 0
         if ($_woaMigPlatform -ne "win-arm64") {
             $_woaMigLabel = if ($_woaMigPlatform) { $_woaMigPlatform } else { "unknown" }
             substep "windows on arm: the migrated environment is $_woaMigLabel, not win-arm64 --" "Yellow"
-            substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            # Varied, not printed flat: the call below discards under --no-rollback, and telling
+            # the user the previous environment is recoverable when it is about to be deleted is
+            # the same promise the ARM64 mismatch branch above already had to stop making.
+            if ($script:StudioNoRollback) {
+                substep "rebuilding it as ARM64; --no-rollback discards the previous one rather than keeping it." "Yellow"
+            } else {
+                substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            }
             try {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
                 # Left set, the install step below would --no-deps into an empty venv.
@@ -6908,6 +8756,11 @@ exit 0
     # so the banner below can skip a second query: detection already waited out the full
     # bound on this binary, and asking a hung nvidia-smi again only doubles the stall.
     $script:NvidiaSmiWedged = $false
+    # Reset per run: streamed execution shares the caller's script scope.
+    $script:NvidiaPresenceOnly = $false
+    $script:NvidiaPresenceCudaFloor = $null
+    $script:NvidiaPresenceDriverRelease = $null
+    $script:VideoControllerScanResult = $null
 
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
@@ -6918,9 +8771,29 @@ exit 0
         return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
     }
 
+    # Interpreter for the shared inventory's Python rung, deliberately NOT part of the shared
+    # region: the two files find Python in different places. Here it is the early read-only
+    # ladder from the process-image rung, which never installs anything.
+    function Get-NvidiaProbePythonExe {
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+        # The interpreter this run installed comes FIRST, and Get-StudioEarlyPython is the
+        # fallback rather than the source.
+        #
+        # That ladder memoises, including a miss: on a fresh host with no Python of its own it
+        # is first called by the install-lock path, finds nothing, and caches $null for the rest
+        # of the run. The inventory is not read until much later, by which point this install
+        # has created a managed interpreter and then a venv, so asking the cache would decline
+        # on exactly the fresh install where nvidia-smi is also most likely to be missing. The
+        # host would take CPU wheels while holding a working NVIDIA card.
+        if (-not [string]::IsNullOrWhiteSpace($VenvPython) -and
+            (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
+            return $VenvPython
+        }
+        try { return "$(Get-StudioEarlyPython)" } catch { return "" }
+    }
+
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
-    # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
-    # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+    # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -6929,117 +8802,287 @@ exit 0
             $candidate = Join-Path $dir "nvml.dll"
             if (Test-Path -LiteralPath $candidate) { return $candidate }
         }
-        return "nvml.dll"
+        return (Join-Path (Get-NvidiaSystem32Dir) "nvml.dll")
     }
 
-    # The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
-    # not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
-    # missing library throws at the first call, not here.
-    function Get-NvidiaLibraryProbeType {
-        $name = "UnslothNvidiaProbeV2"
-        $existing = $name -as [type]
-        if ($existing) { return $existing }
-        # Dynamic Code Security can kill the process on an emitted load rather than throw: the
-        # same gate every other emitted type checks first, and no inventory when it says no.
-        if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
+    function Get-NvidiaSystem32Dir {
+        $root = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+        return (Join-Path $root "System32")
+    }
+
+
+    # The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
+    # driver calls, and the interop leaves the scanned surface rather than moving within it.
+    # available or the probe itself says nothing.
+    # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
+    # interpreter ladder; setup.ps1 has the venv a previous run already built.
+    function Read-NvidiaLibraryRawViaPython {
+        param([int]$TimeoutMs = 10000, [switch]$SkipNvml)
+        # Set only when the child is killed at the deadline, so a caller can tell a hung driver from
+        # an empty answer. Reset first: every early return below is an answer, not a timeout.
+        $script:NvidiaPythonProbeTimedOut = $false
+        if ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+        $exe = ""
+        try { $exe = "$(Get-NvidiaProbePythonExe)" } catch { return "" }
+        if (-not $exe) { return "" }
         $windows = ($env:OS -eq "Windows_NT")
-        $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
-        $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
-        $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
-        $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
+        $nvmlHint = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
+        $cudaHint = if ($windows) { Join-Path (Get-NvidiaSystem32Dir) "nvcuda.dll" } else { "libcuda.so.1" }
+        # Kept byte-identical with studio/nvidia_probe.py's readers by
+        # tests/studio/test_nvidia_python_probe_parity.ps1. Column 0 on purpose: this is Python.
+        $probeSource = @'
+import ctypes, os, sys
+
+
+def _names(kind, hint):
+    if os.name == "nt":
+        # The driver's full path only: a bare name also finds a CUDA stand-in such as ZLUDA
+        # beside the interpreter, and that is not an NVIDIA GPU (#11736).
+        return [hint] if hint and os.path.isabs(hint) else []
+    if kind == "nvml":
+        return ["libnvidia-ml.so.1", "libnvidia-ml.so"]
+    return ["libcuda.so.1", "libcuda.so"]
+
+
+def _load(kind, hint):
+    for name in _names(kind, hint):
+        if not name:
+            continue
+        try:
+            return ctypes.CDLL(name)
+        except Exception:
+            continue
+    return None
+
+
+def _unpack(packed):
+    return "%d;%d" % (packed // 1000, (packed % 1000) // 10)
+
+
+def read_nvml(hint):
+    lib = _load("nvml", hint)
+    if lib is None:
+        return ""
+    try:
+        if lib.nvmlInit_v2() != 0:
+            return ""
+    except Exception:
+        return ""
+    try:
+        count = ctypes.c_uint(0)
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or count.value == 0:
+            return ""
+        packed = ctypes.c_int(0)
+        if lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(packed)) != 0 or packed.value < 1000:
+            return ""
+        # ctypes defaults every return and every pointer argument to a C int, which truncates a
+        # 64-bit nvmlDevice_t handle. Declare both before the first call, not after.
+        handle_of = lib.nvmlDeviceGetHandleByIndex_v2
+        handle_of.restype = ctypes.c_int
+        handle_of.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+        cap_of = lib.nvmlDeviceGetCudaComputeCapability
+        cap_of.restype = ctypes.c_int
+        cap_of.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+        caps = []
+        for index in range(count.value):
+            device = ctypes.c_void_p()
+            # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+            if handle_of(index, ctypes.byref(device)) != 0:
+                return ""
+            major = ctypes.c_int(0)
+            minor = ctypes.c_int(0)
+            if cap_of(device, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return ""
+            caps.append("%d.%d" % (major.value, minor.value))
+        return "nvml;%s;%s" % (_unpack(packed.value), ",".join(caps))
+    finally:
+        try:
+            lib.nvmlShutdown()
+        except Exception:
+            pass
+
+
+def read_cuda(hint):
+    lib = _load("cuda", hint)
+    if lib is None:
+        return ""
+    # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one, so a
+    # hidden pre-Turing card still caps the family. cuInit reads the mask once.
+    saved = os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    try:
+        init = lib.cuInit(0)
+    except Exception:
+        return ""
+    finally:
+        if saved is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved
+    if init != 0:
+        return ""
+    count = ctypes.c_int(0)
+    if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or count.value == 0:
+        return ""
+    packed = ctypes.c_int(0)
+    if lib.cuDriverGetVersion(ctypes.byref(packed)) != 0 or packed.value < 1000:
+        return ""
+    caps = []
+    for index in range(count.value):
+        device = ctypes.c_int(0)
+        if lib.cuDeviceGet(ctypes.byref(device), index) != 0:
+            return ""
+        major = ctypes.c_int(0)
+        minor = ctypes.c_int(0)
+        # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+        if lib.cuDeviceGetAttribute(ctypes.byref(major), 75, device) != 0:
+            return ""
+        if lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) != 0:
+            return ""
+        caps.append("%d.%d" % (major.value, minor.value))
+    return "cuda;%s;%s" % (_unpack(packed.value), ",".join(caps))
+
+
+def main():
+    nvml_hint = os.environ.get("UNSLOTH_NVML_HINT", "")
+    cuda_hint = os.environ.get("UNSLOTH_CUDA_HINT", "")
+    answer = ""
+    # Set only for the CUDA-only retry that follows a child NVML held past its deadline.
+    if os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", "") != "1":
+        try:
+            answer = read_nvml(nvml_hint)
+        except Exception:
+            answer = ""
+    if not answer:
+        try:
+            answer = read_cuda(cuda_hint)
+        except Exception:
+            answer = ""
+    sys.stdout.write(answer)
+
+
+main()
+'@
+        # Cmdlets only: Constrained Language Mode refuses New-Object ProcessStartInfo and
+        # [Process]::Start, and this launcher has to work there.
+        $probeDir = New-StudioChildScriptDirectory
+        $inline = (-not $probeDir)
+        if ($inline) {
+            # Elevated, a shared root lets a standard user plant or swap the redirect files: decline.
+            try { if (Test-StudioChildScriptDirectoryElevated) { return "" } } catch { return "" }
+            # The first root that takes a file: a TEMP that declined the directory may refuse this too.
+            $stem = $null
+            foreach ($root in @($env:TEMP, $env:TMP, $env:LOCALAPPDATA, $env:TMPDIR, "/tmp")) {
+                if (-not $root) { continue }
+                try {
+                    $candidateStem = Join-Path $root ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N")) -ErrorAction Stop
+                    $null = New-Item -ItemType File -Path "$candidateStem.out" -ErrorAction Stop; $stem = $candidateStem; break
+                } catch {}
+            }
+            if (-not $stem) { return "" }
+        } else {
+            $stem = Join-Path $probeDir "nvprobe"
+        }
+        $scriptFile = "$stem.py"
+        $outFile = "$stem.out"
+        $errFile = "$stem.err"
+        $raw = ""
         try {
-            $null = New-StudioEmittedNativeType -TypeName $name -Imports @(
-                @{ Name = "nvmlInit_v2"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
-                @{ Name = "nvmlShutdown"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
-                @{ Name = "nvmlSystemGetCudaDriverVersion_v2"; Library = $nvml; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-                @{ Name = "nvmlDeviceGetCount_v2"; Library = $nvml; Return = $int; Args = @($refUInt); Out = @(1); Ansi = $true },
-                @{ Name = "nvmlDeviceGetHandleByIndex_v2"; Library = $nvml; Return = $int; Args = @($uint, $refPtr); Out = @(2); Ansi = $true },
-                @{ Name = "nvmlDeviceGetCudaComputeCapability"; Library = $nvml; Return = $int; Args = @([IntPtr], $refInt, $refInt); Out = @(2, 3); Ansi = $true },
-                @{ Name = "cuInit"; Library = $cuda; Return = $int; Args = @($uint); Ansi = $true },
-                @{ Name = "cuDriverGetVersion"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-                @{ Name = "cuDeviceGetCount"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-                @{ Name = "cuDeviceGet"; Library = $cuda; Return = $int; Args = @($refInt, $int); Out = @(1); Ansi = $true },
-                @{ Name = "cuDeviceGetAttribute"; Library = $cuda; Return = $int; Args = @($refInt, $int, $int); Out = @(1); Ansi = $true }
-            )
-        } catch { return $null }
-        return ($name -as [type])
+            if (-not $inline) { Set-Content -LiteralPath $scriptFile -Value $probeSource -Encoding UTF8 -ErrorAction Stop }
+            # Whole seconds, rounded up, without [math]::Ceiling: CLM blocks it. PowerShell's / is
+            # floating point and [int] rounds to nearest, so 10000ms must not become 11s.
+            $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+            if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
+            $seconds = [int]$seconds
+            if ($seconds -lt 1) { $seconds = 1 }
+            # Nothing with a space in it reaches the command line. Windows PowerShell 5.1 appends
+            # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
+            # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
+            # spaces and the child would run something else. The script arrives on stdin and the two
+            $savedNvml = $env:UNSLOTH_NVML_HINT
+            $savedCuda = $env:UNSLOTH_CUDA_HINT
+            $savedSkip = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
+            $savedSource = $env:UNSLOTH_NVIDIA_PROBE_SOURCE
+            $env:UNSLOTH_NVML_HINT = $nvmlHint
+            $env:UNSLOTH_CUDA_HINT = $cudaHint
+            # The switch reaches this child only. An inherited value must not make a first child skip NVML.
+            if ($SkipNvml) { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" }
+            else { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
+            try {
+                if ($inline) {
+                    $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $probeSource
+                    $proc = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+                        -ArgumentList @("-I", "-S", "-B", "-c", "exec(__import__('os').environ['UNSLOTH_NVIDIA_PROBE_SOURCE'])") `
+                        -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+                } else {
+                    $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
+                        -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+                }
+            } finally {
+                if ($null -eq $savedSource) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SOURCE -ErrorAction SilentlyContinue }
+                else { $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $savedSource }
+                if ($null -eq $savedNvml) { Remove-Item Env:UNSLOTH_NVML_HINT -ErrorAction SilentlyContinue }
+                else { $env:UNSLOTH_NVML_HINT = $savedNvml }
+                if ($null -eq $savedCuda) { Remove-Item Env:UNSLOTH_CUDA_HINT -ErrorAction SilentlyContinue }
+                else { $env:UNSLOTH_CUDA_HINT = $savedCuda }
+                if ($null -eq $savedSkip) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
+                else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkip }
+            }
+            if (-not $proc) { return "" }
+            # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
+            # Language Mode permits property reads only on its allowed type list and
+            # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
+            # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
+            # compiled code, where the language mode does not reach.
+            $waitError = $null
+            Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
+            if ($waitError) {
+                $script:NvidiaPythonProbeTimedOut = $true
+                try { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue } catch { }
+                # Let the killed child release its redirected files before the finally deletes them.
+                Wait-Process -InputObject $proc -Timeout 2 -ErrorAction SilentlyContinue
+                return ""
+            }
+            $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"
+        } catch { return "" }
+        finally {
+            # The directory, not just the three files: it is ours, nothing else may be in it, and
+            # leaving an empty one behind per probe would litter %TEMP% on every run.
+            if ($probeDir) { Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue }
+            foreach ($stale in @($scriptFile, $outFile, $errFile)) {
+                Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+            }
+        }
+        return "$raw".Trim()
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-    # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
     function Read-NvidiaLibraryRaw {
-        param([int]$TimeoutMs = 10000)
-        $type = Get-NvidiaLibraryProbeType
-        if (-not $type) { return "" }
-        $reader = {
-            param($T)
-            function Read-Nvml {
-                if ($T::nvmlInit_v2() -ne 0) { return "" }
-                try {
-                    [uint32]$count = 0
-                    if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-                    [int]$ver = 0
-                    if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-                    $caps = @()
-                    for ([uint32]$i = 0; $i -lt $count; $i++) {
-                        [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
-                        # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
-                        if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
-                        if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
-                        $caps += "$major.$minor"
-                    }
-                    return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-                } finally { $null = $T::nvmlShutdown() }
-            }
-            function Read-Cuda {
-                # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
-                # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
-                $saved = $env:CUDA_VISIBLE_DEVICES
-                Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
-                try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
-                if ($init -ne 0) { return "" }
-                [int]$count = 0
-                if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-                [int]$ver = 0
-                if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-                $caps = @()
-                for ($i = 0; $i -lt $count; $i++) {
-                    [int]$dev = 0; [int]$major = 0; [int]$minor = 0
-                    if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
-                    # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-                    if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
-                    if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
-                    $caps += "$major.$minor"
-                }
-                return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-            }
-            $r = ""
-            try { $r = Read-Nvml } catch { $r = "" }
-            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
-            return "$r"
-        }
-        $ps = $null; $handle = $null
-        try {
-            $ps = [powershell]::Create()
-            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-            $handle = $ps.BeginInvoke()
-            if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-            return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-        } catch { return "" }
-        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        param([int]$TimeoutMs = 30000)
+        # One deadline for both children, as the two in-process readers had: the first gets a whole
+        # bound, and only a hung NVML earns a CUDA-only child with what is left, less the 2 s kept back
+        # to reap the child it may have to kill. Compared by hand: CLM refuses [math].
+        $deadline = (Get-Date).AddMilliseconds($TimeoutMs * 2)
+        $raw = ""
+        try { $raw = Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs } catch { return "" }
+        if (-not $script:NvidiaPythonProbeTimedOut) { return $raw }
+        $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
+        if ($remainingMs -lt 3000) { return "" }
+        $childMs = $remainingMs - 2000; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
+        try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $childMs -SkipNvml) } catch { return "" }
     }
 
     # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
     function Get-NvidiaLibraryInventory {
-        param([int]$TimeoutSec = 10)
+        param([int]$TimeoutSec = 30)
         if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
         $script:NvidiaLibraryInventoryProbed = $true
         $script:NvidiaLibraryInventory = $null
         if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
         try { $raw = Read-NvidiaLibraryRaw -TimeoutMs ($TimeoutSec * 1000) } catch { return $null }
+        # The Python probe is the only library reader, so its opt-outs leave nvidia-smi as the only source.
+        if (-not "$raw" -and ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0" -or "$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0")) {
+            Write-StudioLine "   NVIDIA driver libraries not read (Python probe disabled): a GPU without a working nvidia-smi is not detected. Set UNSLOTH_TORCH_INDEX_FAMILY=cu128 (or your CUDA wheel) to choose one." -ForegroundColor Yellow
+        }
         $parts = "$raw".Split(";")
         if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
         $caps = @($parts[3].Split(","))
@@ -7070,21 +9113,396 @@ exit 0
         }
     } catch {}
     if (-not $HasNvidiaSmi) {
-        foreach ($p in @(
-            "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-            "$env:SystemRoot\System32\nvidia-smi.exe"
-        )) {
-            if (Test-Path $p) {
-                try {
-                    if (Test-NvidiaSmiHasGpu $p) { $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break }
-                } catch {}
-            }
+        # Two passes, not one, and the reason is the ordering this change introduces. Listing a
+        # GPU is not the same as being able to report a CUDA version: a partially installed or
+        # stale utility can answer -L and still print a banner Get-TorchIndexUrl cannot parse,
+        # and that path falls back to cu126. Taking the first binary that merely lists a GPU
+        # could therefore hand a cu128-capable host cu126 purely because of which directory is
+        # searched first. So prefer a candidate that answers BOTH questions, and only settle for
+        # one that just lists a GPU if none does.
+        #
+        # One deadline across the whole loop, not just the per-call one. Each candidate gets its own
+        # bounded runner, and on a host with a wedged driver every one of them waits out that bound
+        # before failing. The list is longer than it was, so what used to be two stalls could now be
+        # ten, and all of it is spent in front of the driver-library fallback that would have answered
+        # in milliseconds. The bound is on TIME rather than on the number of candidates because the
+        # cost being controlled is time: a machine where every probe answers at once still gets to
+        # try them all, and one where they hang stops early.
+        #
+        # Get-Date rather than a Stopwatch: Constrained Language Mode refuses the method calls, and
+        # this runs on hosts that enforce it.
+        # Enumerated BEFORE the clock starts. Discovery is Test-Path calls, but on a machine with a
+        # filesystem filter driver or slow storage it is not free, and charging it to the probe
+        # budget is how a slow disk turns into no GPU.
+        $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
+        # Two budgets, because "stop early" means two different things here.
+        #
+        # The soft one applies ONLY once a usable answer is already in hand: there is a working
+        # nvidia-smi, and continuing just looks for a better CUDA banner. Giving that up costs at
+        # most a wheel family.
+        #
+        # The hard one is the only thing allowed to end the search with NOTHING found, because that
+        # outcome is CPU-only PyTorch on a machine with a GPU. The first version of this had a single
+        # budget and broke out of the loop after one slow failure, so a host whose System32 copy is
+        # broken and whose legacy NVSMI copy works lost its GPU entirely. That is strictly worse than
+        # the stall it was added to prevent.
+        $probeDeadline = (Get-Date).AddSeconds(30)
+        $probeHardDeadline = (Get-Date).AddSeconds(60)
+        $firstListing = $null
+        # Captured beside the path, because $script:NvidiaSmiWedged describes the LAST binary probed
+        # and the one this loop settles on can be an earlier one. Captured rather than assumed to be
+        # false: it is false today because a candidate only becomes $firstListing when its -L probe
+        # succeeded, and that is a property of Test-NvidiaSmiHasGpu rather than of this loop.
+        $firstListingWedged = $false
+        foreach ($p in $smiCandidates) {
+            # Only give up early when there is already something to fall back on.
+            if ($null -ne $firstListing -and (Get-Date) -gt $probeDeadline) { break }
+            # With nothing found, keep going to the hard bound. Reporting no GPU is the expensive
+            # answer, so it has to be the one that costs the most before it is reached.
+            if ((Get-Date) -gt $probeHardDeadline) { break }
+            try {
+                if (-not (Test-NvidiaSmiHasGpu $p)) { continue }
+                if (-not $firstListing) {
+                    $firstListing = $p
+                    $firstListingWedged = $script:NvidiaSmiWedged
+                }
+                # Rechecked here, not only at the top. The listing probe that just returned can have
+                # spent most of its own bound, and the banner probe below has a full bound of its
+                # own, so a candidate starting just inside the deadline could add nearly twice the
+                # per-probe timeout after it. There is already a usable answer in $firstListing at
+                # this point, so stopping costs at most a wheel family.
+                if ((Get-Date) -gt $probeDeadline) { break }
+                $banner = Invoke-NvidiaSmiBounded $p
+                if ($banner -match 'CUDA(?: UMD)? Version:\s+\d+\.\d+') {
+                    $HasNvidiaSmi = $true; $NvidiaSmiExe = $p; break
+                }
+            } catch {}
+        }
+        if (-not $HasNvidiaSmi -and $firstListing) {
+            $HasNvidiaSmi = $true; $NvidiaSmiExe = $firstListing
+            # Restored for the binary actually selected. A later candidate that timed out leaves the
+            # flag set for ITS path, and the guard downstream reads the flag to decide whether to ask
+            # the selected binary for the name, the compute capability and the driver version. Left
+            # alone, a working nvidia-smi would be treated as wedged and all three queries skipped
+            # because a different binary elsewhere on the machine hung.
+            $script:NvidiaSmiWedged = $firstListingWedged
         }
     }
+    # Must stay above its callers: PowerShell does not hoist. WMI can hang and -OperationTimeoutSec
+    # is not enforced for local COM, so the query runs out of process with a wall-clock kill.
+    function Invoke-BoundedVideoControllerScan {
+        param([int]$TimeoutSec = 15)
+        # Cached even when Ok = $false: that is the hang case, and a retry would hang again.
+        if ($null -ne $script:VideoControllerScanResult) { return $script:VideoControllerScanResult }
+        $result = [pscustomobject]@{ Ok = $false; Names = @(); Adapters = @() }
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                    Select-Object -Property Name, PNPDeviceID, ConfigManagerErrorCode, DriverVersion
+            }
+            if (Wait-Job -Job $job -Timeout $TimeoutSec) {
+                $rows = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+                $result.Adapters = @($rows | Where-Object { $_ })
+                $names = @($rows | ForEach-Object { $_.Name })
+                $result.Names = @($names | Where-Object { $_ })
+                $result.Ok = ($result.Names.Count -gt 0)
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            # -ErrorAction does not stop a terminating error, which would abort the run.
+            if ($job) { try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {} }
+        }
+        $script:VideoControllerScanResult = $result
+        return $result
+    }
+
+    # Mirrors install_llama_prebuilt.py's windows_intel_gpu_in_registry(), but as the fallback, not
+    # registry-first: stale keys here would install XPU torch on a host with no Arc.
+    function Get-IntelRegistryAdapterNames {
+        $names = @()
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return @() }
+        foreach ($sub in $subs) {
+            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+            try {
+                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+                if ("$($sub.PSChildName)" -match '^\d+$') {
+                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                    if ($props) {
+                        $desc = "$($props.DriverDesc)"
+                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
+                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
+                            $names += if ($desc -match '(?i)intel') { $desc }
+                                      elseif ($desc) { "Intel $desc" }
+                                      else { "Intel Graphics" }
+                        } elseif ($desc -match '(?i)intel') {
+                            $names += $desc
+                        }
+                    }
+                }
+            } catch { }
+        }
+        return $names
+    }
+
+    # Returns the entry, not a bool: the version ladder needs its DriverVersion.
+    function Get-NvidiaRegistryAdapter {
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return $null }
+        # These keys outlive hardware, so only a UNANIMOUS release is used; disagreement reads as unknown.
+        $present = $false
+        $versions = @()
+        foreach ($sub in $subs) {
+            try {
+                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                if ("$($props.MatchingDeviceId)" -notmatch '(?i)ven_10de') { continue }
+                $present = $true
+                $version = "$($props.DriverVersion)"
+                if ([string]::IsNullOrWhiteSpace($version)) { continue }
+                $release = Get-NvidiaDriverRelease -DriverVersion $version
+                if ($null -eq $release) { continue }
+                if ($versions -notcontains $release) { $versions += $release }
+            } catch {}
+        }
+        if (-not $present) { return $null }
+        if ($versions.Count -ne 1) { return [pscustomobject]@{ Release = $null } }
+        return [pscustomobject]@{ Release = $versions[0] }
+    }
+
+    # True when no healthy NVIDIA adapter reports an NVIDIA-shaped driver version (e.g. Microsoft Basic
+    # Display): no CUDA driver, so the host must keep CPU wheels and AMD / Intel detection.
+    function Test-NvidiaAdapterWithoutNvidiaDriver {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        $foreign = $false
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $version = "$($adapter.DriverVersion)"
+            if ([string]::IsNullOrWhiteSpace($version)) { $foreign = $true; continue }
+            if ($null -ne (Get-NvidiaDriverRelease -DriverVersion $version)) { return $false }
+            $foreign = $true
+        }
+        return $foreign
+    }
+
+    # VEN_10DE and ConfigManagerErrorCode 0 only, never names: a false yes sets $HasNvidiaSmi and
+    # switches off AMD and Intel detection.
+ 
+    function Test-NvidiaAdapterPresent {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            # $null is not evidence of health.
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            return $true
+        }
+        # No registry fallback: stale class keys would promote a GPU that is gone.
+        return $false
+    }
+
+    # Keeps the promotion additive: a hybrid host already gets AMD or Intel wheels.
+    # Must match the Intel route's pattern exactly (asserted by test_nvidia_adapter_presence.ps1); a
+    # function, not a $script: variable, since an unset $null pattern matches every string.
+    function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
+
+    function Test-IntelXpuRuntimeProven {
+        param($Scan = $null, [string]$PythonExe = "")
+        # The Intel route also serves non-Arc Intel GPUs once the existing torch proves XPU works, with no
+        # WMI precondition, so this asks the same thing. Any failure reads as not proven.
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
+        try {
+            $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+            return [bool]($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+        } catch {
+            return $false
+        }
+    }
+
+    function Test-OtherVendorAdapterPresent {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK,
+        # opted-in amd-smi) vetoes too.
+        if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
+        try {
+            if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
+            foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
+                if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
+            }
+            if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
+                (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
+        } catch {}
+        # Same classification as the Intel route, which ignores PNP ID and status.
+        if ($Scan.Ok) {
+            $scanNames = @($Scan.Names | Where-Object { $_ } | ForEach-Object { "$_" })
+            if (@($scanNames | Where-Object { $_ -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+            try {
+                foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
+                    if ("$regName" -notmatch (Get-XpuCapableNameRegex)) { continue }
+                    foreach ($wmiName in $scanNames) {
+                        if ("$regName".Contains($wmiName)) { return $true }
+                    }
+                }
+            } catch {}
+        }
+        foreach ($adapter in @($Scan.Adapters)) {
+            # AMD vetoes on the AMD route's own test (name or 1002, any status: it keeps parked and
+            # PNP-less cards). Intel was answered above; UHD/Iris do not block.
+            if ("$($adapter.Name)" -match "AMD|Radeon" -or "$($adapter.PNPDeviceID)" -match '(?i)ven_1002') { return $true }
+        }
+        # Registry fallback here is deliberate: staleness only DECLINES a promotion. Without it, broken WMI
+        # hid the Arc on a hybrid host and cost it its XPU wheels.
+        if ($Scan.Ok) { return $false }
+        # Same normalized names as the Intel route (it prefixes "Intel" to a VEN_8086 DriverDesc).
+        try {
+            if (@(Get-IntelRegistryAdapterNames | Where-Object { "$_" -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+        } catch {}
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return $false }
+        foreach ($sub in $subs) {
+            try {
+                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                $match = "$($props.MatchingDeviceId)"
+                if ($match -match '(?i)ven_1002') { return $true }
+            } catch {}
+        }
+        return $false
+    }
+
+    # Ported from studio/nvidia_probe.py's cuda_version_for_driver; the parity test generates the table.
+    # Kept apart from the floor so "no version" differs from "too old for every row".
+    function Get-NvidiaDriverRelease {
+        param([string]$DriverVersion)
+        if ([string]::IsNullOrWhiteSpace($DriverVersion)) { return $null }
+        # NVIDIA's scheme only (32.0.15.6094 is 560.94). Basic Display versions like 10.0.19041.3636 must
+        # not read as releases, or a working CUDA venv gets replaced with CPU wheels.
+        $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(1\d)\.(\d{4})\s*$')
+        if ($m.Success) {
+            $digits = ($m.Groups[1].Value + $m.Groups[2].Value)
+            if ($digits.Length -ge 5) {
+                $tail = $digits.Substring($digits.Length - 5)
+                return [int]$tail.Substring(0, 3)
+            }
+            return $null
+        }
+        # At least three digits: "1.2.3" is malformed, and a low release now selects CPU wheels.
+        $m2 = [regex]::Match($DriverVersion, '^\s*(\d+)\.')
+        if ($m2.Success) {
+            $parsed = [int]$m2.Groups[1].Value
+            if ($parsed -ge 100) { return $parsed }
+        }
+        return $null
+    }
+
+    function Get-NvidiaCudaFloorForRelease {
+        param($Release)
+        if ($null -eq $Release) { return $null }
+        # Same order and values as _DRIVER_MAJOR_CUDA.
+        foreach ($row in @(
+            @(580, 13, 0), @(570, 12, 8), @(560, 12, 6), @(555, 12, 5), @(550, 12, 4),
+            @(545, 12, 3), @(535, 12, 2), @(525, 12, 0), @(450, 11, 0)
+        )) {
+            if ([int]$Release -ge $row[0]) { return @($row[1], $row[2]) }
+        }
+        return $null
+    }
+
+    function Get-NvidiaDriverCudaFloor {
+        param([string]$DriverVersion)
+        return (Get-NvidiaCudaFloorForRelease -Release (Get-NvidiaDriverRelease -DriverVersion $DriverVersion))
+    }
+
+    function Get-NvidiaAdapterDriverRelease {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $release = Get-NvidiaDriverRelease -DriverVersion "$($adapter.DriverVersion)"
+            if ($null -ne $release) { return $release }
+        }
+        if (-not $Scan.Ok) {
+            $registryAdapter = Get-NvidiaRegistryAdapter
+            if ($registryAdapter) { return $registryAdapter.Release }
+        }
+        return $null
+    }
+
+    function Get-NvidiaAdapterCudaFloor {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $floor = Get-NvidiaDriverCudaFloor -DriverVersion "$($adapter.DriverVersion)"
+            if ($floor) { return $floor }
+        }
+        if (-not $Scan.Ok) {
+            $registryAdapter = Get-NvidiaRegistryAdapter
+            if ($registryAdapter) { return (Get-NvidiaCudaFloorForRelease -Release $registryAdapter.Release) }
+        }
+        return $null
+    }
+
     if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
-        # Same promotion as setup.ps1: the gates below read $HasNvidiaSmi as "NVIDIA GPU present".
-        $HasNvidiaSmi = $true
-        Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+        # A driver too old for any CUDA wheel (below 11) is no GPU this route can serve: the Intel and
+        # AMD routes still get their turn instead of the install falling to CPU.
+        if ((Get-NvidiaLibraryInventory).CudaMajor -ge 11) {
+            # Same promotion as setup.ps1: the gates below read $HasNvidiaSmi as "NVIDIA GPU present".
+            $HasNvidiaSmi = $true
+            Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+        }
+    }
+    # Last resort for #9255: presence only, gated on no healthy AMD or Intel adapter. The CUDA
+    # version is decided separately by the version ladder.
+    if (-not $HasNvidiaSmi) {
+        $presenceScan = Invoke-BoundedVideoControllerScan
+        $_presenceXpuPy = $VenvPython
+        if ($script:StudioVenvRollbackDir) {
+            $_presenceRollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
+            if (Test-Path -LiteralPath $_presenceRollbackPy) { $_presenceXpuPy = $_presenceRollbackPy }
+        }
+        # Any throw declines the promotion; flags are set only once every answer is in hand.
+        try {
+            if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+                (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
+                Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
+            } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+                -not (Test-OtherVendorAdapterPresent -Scan $presenceScan) -and
+                -not $script:StudioPreservedXpuVerdict -and
+                -not (Test-IntelXpuRuntimeProven -Scan $presenceScan -PythonExe $_presenceXpuPy)) {
+                $_presenceFloor = Get-NvidiaAdapterCudaFloor -Scan $presenceScan
+                # The floor is $null both for too-old and unreadable, which want opposite answers.
+                $_presenceRelease = Get-NvidiaAdapterDriverRelease -Scan $presenceScan
+                $HasNvidiaSmi = $true
+                $script:NvidiaPresenceOnly = $true
+                $script:NvidiaPresenceCudaFloor = $_presenceFloor
+                $script:NvidiaPresenceDriverRelease = $_presenceRelease
+                Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
+            }
+        } catch {}
     }
     # nvidia-smi was already resolved above and never asked which card it found, so the
     # banner said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the
@@ -7583,112 +10001,6 @@ exit 0
     # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
-    # ── Bounded "ask the venv python" probe ──
-    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
-    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
-    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
-    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
-    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
-    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
-    function Invoke-BoundedPythonProbe {
-        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
-        if (-not $PythonExe -or -not $Code) { return $result }
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-                try { $proc.Kill() } catch {}
-                # Synthesised, not read back: waiting on the reader tasks of a wedged child
-                # would reintroduce the hang this helper exists to bound.
-                $result.Error = "python did not answer within $TimeoutSec seconds"
-                return $result
-            }
-            $result.Output = $outTask.GetAwaiter().GetResult()
-            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
-            $result.Error = $errTask.GetAwaiter().GetResult()
-            $result.Ok = ($proc.ExitCode -eq 0)
-            return $result
-        } catch {
-            $result.Error = $_.Exception.Message
-            return $result
-        }
-    }
-
-    # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
-    # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
-    # enforced for the local COM session this uses, so out of process with a wall-clock kill is
-    # the only bound that holds. Ok = $false on an empty answer too, since a Windows host always
-    # has an adapter. Mirrors setup.ps1's copy.
-    function Invoke-BoundedVideoControllerScan {
-        param([int]$TimeoutSec = 15)
-        $result = [pscustomobject]@{ Ok = $false; Names = @() }
-        $job = $null
-        try {
-            $job = Start-Job -ScriptBlock {
-                Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                    Select-Object -ExpandProperty Name
-            }
-            if (Wait-Job -Job $job -Timeout $TimeoutSec) {
-                $names = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
-                $result.Names = @($names | Where-Object { $_ })
-                $result.Ok = ($result.Names.Count -gt 0)
-            } else {
-                Stop-Job -Job $job -ErrorAction SilentlyContinue
-            }
-        } catch {
-        } finally {
-            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
-        }
-        return $result
-    }
-
-    # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
-    # windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
-    # config. Weaker than WMI (a config can outlive removed hardware), so it is the fallback here
-    # while that function is registry-first -- there a false positive only picks a different
-    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Mirrors setup.ps1.
-    function Get-IntelRegistryAdapterNames {
-        $names = @()
-        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-        try {
-            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
-        } catch { return @() }
-        foreach ($sub in $subs) {
-            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
-            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
-            try {
-                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
-                if ("$($sub.PSChildName)" -match '^\d+$') {
-                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-                    if ($props) {
-                        $desc = "$($props.DriverDesc)"
-                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
-                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
-                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
-                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
-                            $names += if ($desc -match '(?i)intel') { $desc }
-                                      elseif ($desc) { "Intel $desc" }
-                                      else { "Intel Graphics" }
-                        } elseif ($desc -match '(?i)intel') {
-                            $names += $desc
-                        }
-                    }
-                }
-            } catch { }
-        }
-        return $names
-    }
-
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
     # would take that chain and hide a discrete Arc card. $HasIntelGpu is "an Intel adapter is
@@ -7738,6 +10050,13 @@ exit 0
         # A rerun has already moved the old venv to $script:StudioVenvRollbackDir and put an
         # empty one in its place, so probing $VenvPython would ask an interpreter with no torch.
         # Ask the preserved environment instead -- that is the migrated runtime this rescues.
+        # --no-rollback deleted that environment, so the answer was taken before it went. Same
+        # verdict, same effect: opting out of the rollback copy must not narrow the device set.
+        if ($script:StudioPreservedXpuVerdict) {
+            $HasIntelGpu = $true
+            $script:IsIntelXpu = $true
+            if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
+        }
         $_xpuProbePy = $VenvPython
         if ($script:StudioVenvRollbackDir) {
             $_rollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
@@ -7938,6 +10257,10 @@ exit 0
         if ($NvidiaSmiExe) {
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($LASTEXITCODE -eq 124) {
+                    substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
+                    $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
+                }
                 if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 }
@@ -7948,10 +10271,33 @@ exit 0
             $inventory = Get-NvidiaLibraryInventory
             if ($inventory) {
                 $major = $inventory.CudaMajor; $minor = $inventory.CudaMinor; $caps = $inventory.ComputeCaps
+            } elseif ($script:NvidiaPresenceOnly) {
+                # Reached only after the bus promotion, so warning here cannot reach a host with no NVIDIA GPU.
+                if ($script:NvidiaPresenceCudaFloor) {
+                    $major = [int]$script:NvidiaPresenceCudaFloor[0]
+                    $minor = [int]$script:NvidiaPresenceCudaFloor[1]
+                    substep "nvidia-smi and the NVIDIA driver library are both unavailable; the display driver supports at least CUDA $major.$minor, selecting wheels for it" "Yellow"
+                    # Unknown compute capability: cap at cu126, the widest family still built for sm_70 (pre-Turing).
+                    if ($major -gt 12 -or ($major -eq 12 -and $minor -gt 6)) {
+                        $major = 12; $minor = 6
+                        substep "no source could name the GPU's compute capability, so the family stops at cu126; set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
+                    }
+                } elseif ($null -ne $script:NvidiaPresenceDriverRelease -and
+                          $script:NvidiaPresenceDriverRelease -lt 450) {
+                    # Pre-R450: no offered CUDA wheel can run.
+                    substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
+                    return "$baseUrl/cpu"
+                } else {
+                    $major = 12; $minor = 6
+                    substep "an NVIDIA GPU is present but no source could name its CUDA version; defaulting to cu126. Set UNSLOTH_TORCH_INDEX_FAMILY to override" "Yellow"
+                }
             } elseif (-not $NvidiaSmiExe) {
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
+                substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
+                substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"
                 return "$baseUrl/cu126"
             }
         }
@@ -8266,17 +10612,35 @@ exit 0
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
             "gfx1152" = "torch>=2.11.0,<2.12.0"
+            "gfx1030" = "torch>=2.11.0,<2.12.0"; "gfx1031" = "torch>=2.11.0,<2.12.0"
+            "gfx1032" = "torch>=2.11.0,<2.12.0"; "gfx1033" = "torch>=2.11.0,<2.12.0"
+            "gfx1034" = "torch>=2.11.0,<2.12.0"; "gfx1035" = "torch>=2.11.0,<2.12.0"
+            "gfx1036" = "torch>=2.11.0,<2.12.0"; "gfx1100" = "torch>=2.11.0,<2.12.0"
+            "gfx1101" = "torch>=2.11.0,<2.12.0"; "gfx1102" = "torch>=2.11.0,<2.12.0"
+            "gfx1103" = "torch>=2.11.0,<2.12.0"
         }
         # Companions track the torch ceiling for a consistent trio on AMD's per-arch index.
         $torchvisionFloorMap = @{
             "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
             "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
             "gfx1152" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1030" = "torchvision>=0.26.0,<0.27.0"; "gfx1031" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1032" = "torchvision>=0.26.0,<0.27.0"; "gfx1033" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1034" = "torchvision>=0.26.0,<0.27.0"; "gfx1035" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1036" = "torchvision>=0.26.0,<0.27.0"; "gfx1100" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1101" = "torchvision>=0.26.0,<0.27.0"; "gfx1102" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1103" = "torchvision>=0.26.0,<0.27.0"
         }
         $torchaudioFloorMap = @{
             "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
             "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
             "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1030" = "torchaudio>=2.11.0,<2.12.0"; "gfx1031" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1032" = "torchaudio>=2.11.0,<2.12.0"; "gfx1033" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1034" = "torchaudio>=2.11.0,<2.12.0"; "gfx1035" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1036" = "torchaudio>=2.11.0,<2.12.0"; "gfx1100" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1101" = "torchaudio>=2.11.0,<2.12.0"; "gfx1102" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
@@ -8305,8 +10669,8 @@ exit 0
             # Only KNOWN-2.11 rocm (rocm7.2) gets the floor. Matches Test-RocmKnown211Version.
             $_pinRocm211 = ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -eq 2)
         }
-        # Only the 2.11-allowlist gfx arches need the floor; others publish <2.11 and stay bare.
-        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $_pinLeaf
+        # Only the 2.11-allowlist gfx arches need the floor (gfx908 / gfx90a stay bare).
+        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152', 'gfx103x-all', 'gfx110x-all') -contains $_pinLeaf
         if ($_pinGfx211 -or $_pinRocm211) {
             $ROCmIndexUrl = $TorchIndexUrl
             $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
@@ -8385,7 +10749,11 @@ exit 0
         if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
         $short = $null
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
-        if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
+        # Space-free is not sufficient: a volume can hand back an 8.3 name that does not resolve,
+        # and uv then fails to open the file it was pointed at (#11290).
+        if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
+            return @{ Path = $short; Temporary = $false }
+        }
 
         # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
         # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
@@ -8411,7 +10779,9 @@ exit 0
             if ($dir.Contains(" ")) {
                 $dirShort = $null
                 try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
-                if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
+                # Space-free is not sufficient: an 8.3 name that does not resolve would be copied
+                # into and then handed to uv, which cannot open it (#11290).
+                if (-not $dirShort -or $dirShort.Contains(" ") -or -not (Test-Path -LiteralPath $dirShort -PathType Container -ErrorAction SilentlyContinue)) { continue }
                 $dir = $dirShort
             }
             # Declared before the try so the catch can clean up a Copy-Item that failed partway
@@ -8489,7 +10859,7 @@ exit 0
         try {
             [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
         } catch {
-            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            Remove-UnslothTempFileQuietly -Path $f
             $script:TorchOverridesFile = $null
             throw
         }
@@ -8497,11 +10867,23 @@ exit 0
         if ($f.Contains(" ")) {
             $short = $null
             try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($f).ShortPath } catch { }
-            if (-not $short -or $short.Contains(" ")) {
-                # No short name: skip the freeze rather than fail.
-                substep "[WARN] the torch overrides path has a space and no 8.3 short name;" "Yellow"
+            # Space-free is not sufficient. A volume can hand back an 8.3 name that does not resolve,
+            # and this path is then both uv's --overrides argument and the file the caller deletes:
+            # uv fails to open it, and Remove-Item raises a terminating PSArgumentException that
+        # -ErrorAction SilentlyContinue on every one of these probes is the idiom at line 3277
+        # and is load-bearing: under this script's "Stop", Test-Path inside an ACL-denied
+        # directory THROWS UnauthorizedAccessException instead of returning false, and none of
+        # these guards sits inside a try. Bare, the check aborts the install on a path whose
+        # only crime is being unreadable, in functions whose contract is to fall through.
+            # -ErrorAction SilentlyContinue cannot suppress (#11290). Require a real file.
+            if (-not $short -or $short.Contains(" ") -or -not (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
+                # No usable short name: skip the freeze rather than fail.
+                substep "[WARN] the torch overrides path has a space and no usable 8.3 short name;" "Yellow"
                 substep "installing unsloth without freezing the installed PyTorch." "Yellow"
-                Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $f
+                # Tracked above: clear it so the outer sweep is not handed a path this branch
+                # has already deleted.
+                $script:TorchOverridesFile = $null
                 return $null
             }
             $f = $short
@@ -8511,7 +10893,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.4" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.12" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -8519,7 +10901,10 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
+            # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
+            # (tests/test_installer_zoo_floor_parity.py enforces that).
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.8" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -8538,7 +10923,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.8" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -8755,16 +11140,16 @@ exit 0
                 if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {
                     # The probe read the index page, which carries no upload dates, and the pin is exact: an upload cutoff would reject the selected wheel. Only this one command.
                     foreach ($_woaCutoffName in @("UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE")) {
-                        $_woaCutoffValue = [string](Get-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue).Value
+                        $_woaCutoffValue = [string][Environment]::GetEnvironmentVariable($_woaCutoffName)
                         if ($_woaCutoffValue) {
                             $_woaCutoffSaved[$_woaCutoffName] = $_woaCutoffValue
                             Remove-Item "Env:$_woaCutoffName" -ErrorAction SilentlyContinue
                             substep "windows on arm: $_woaCutoffName is not applied to the exact CUDA pin (the index carries no upload dates)."
                         }
                     }
-                    # --no-index ignores every registry index, the selected CUDA one included, so it yields for this one command: torch from the index the probe chose, dependencies from the wheelhouse.
-                    $_woaNoIndexValue = [string](Get-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue).Value
-                    if ($_woaNoIndexValue -and ($_woaNoIndexValue.Trim().ToLowerInvariant() -notin @("", "0", "false"))) {
+                    # Our own UV_NO_INDEX convention (uv defines no such variable) means the operator wants no registry index, and we honour it by naming none. The CUDA trio is published nowhere else, so it yields for this one command: torch from the index the probe chose, dependencies from the wheelhouse. Saved and restored, because the rest of the run still reads it.
+                    $_woaNoIndexValue = [string][Environment]::GetEnvironmentVariable("UV_NO_INDEX")
+                    if (Test-NoIndexRequested) {
                         $_woaCutoffSaved["UV_NO_INDEX"] = $_woaNoIndexValue
                         Remove-Item "Env:UV_NO_INDEX" -ErrorAction SilentlyContinue
                         substep "windows on arm: UV_NO_INDEX yields for the CUDA trio, which only the selected index carries; its dependencies still come from the wheelhouse."
@@ -8789,7 +11174,8 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.8" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -8809,18 +11195,18 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.8" }
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.8" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -8850,7 +11236,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.8" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -9572,7 +11958,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
-    New-StudioShortcuts -ManagedPythonPath $VenvPython
+    New-StudioShortcuts -ManagedPythonPath $VenvPython -DestinationValidated
 
     # Compare content hashes so hardlinks and identical copies do not false-trigger.
     try {
@@ -9690,7 +12076,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
-        Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        Exit-StudioInstallLock -Lock $studioInstallLock
         # Matters for `irm | iex`, where these are the user's own session variables.
         Restore-StudioTempEnvironment
     }
@@ -9701,6 +12087,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
 
 # Under `irm | iex` the script scope IS the caller's session; an earlier value must not leak.
 $script:WoaResolverEnvSaved = $null
+$script:MirrorEnvSaved = @{}
+$script:InstallTorchMirror = $null
 $script:WoaSessionOverrides = $null
 $script:TorchOverridesFile = $null
 try {
@@ -9715,15 +12103,20 @@ try {
         }
         $script:WoaResolverEnvSaved = $null
     }
+    foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
+        $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
+        if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
+        else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+    }
     # UNSLOTH_KEPT_TORCH is a process-scoped handoff, and the session outlives the installer.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     # The generated overrides file copies the caller's UV_OVERRIDE contents; never leave it.
     if ($script:TorchOverridesFile) {
-        Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
         $script:TorchOverridesFile = $null
     }
     if ($script:WoaSessionOverrides) {
-        Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides
         $script:WoaSessionOverrides = $null
     }
 }

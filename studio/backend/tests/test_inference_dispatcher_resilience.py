@@ -14,7 +14,6 @@ import ast
 import queue
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -38,10 +37,14 @@ class _ScriptedQueue:
 
 def _dispatcher():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._dispatcher_stop = threading.Event()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._direct_mailboxes = {}
     o._request_cancel_events = {}
+    o._proc = None  # no worker, so no routed response retires anything
     return o
 
 
@@ -126,6 +129,8 @@ def test_route_llama_streaming_async_clients_disable_proxy_env():
 def _direct_reader_host():
     """Orchestrator with only what _direct_reader and the ownership helpers touch."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._direct_mailboxes = {}
@@ -134,6 +139,7 @@ def _direct_reader_host():
     o._active_cancel_events = []
     o._executing_cancel_events = []
     o._dispatcher_thread = None
+    o._proc = None  # no worker, so no read retires anything
     return o
 
 
@@ -182,10 +188,14 @@ def test_rerouting_a_foreign_gen_done_retires_that_request():
     release()
 
 
-def _direct_reader_calls(o, request_id):
+def _direct_reader_calls(
+    o,
+    request_id,
+    cancel_event = None,
+):
     """_direct_reader wired to a scripted _read_resp (o._scripted, popped in order)."""
-    o._read_resp = lambda timeout = 1.0: o._scripted.pop(0) if o._scripted else None
-    return o._direct_reader(request_id)
+    o._read_resp = lambda timeout = 1.0, observe = True: (o._scripted.pop(0) if o._scripted else None)
+    return o._direct_reader(request_id, cancel_event)
 
 
 @pytest.mark.parametrize(

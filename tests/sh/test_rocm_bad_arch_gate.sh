@@ -146,7 +146,8 @@ trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_
 # ROCm branch answer cpu and these pass for the wrong reason. The ROCm assertion below guards it.
 {
     for _fn in _run_bounded _cvd_hides_nvidia _has_amd_rocm_gpu _has_usable_nvidia_gpu \
-               _ensure_rocm_probe_env _probe_amd_gfx_arch _amd_gfx_select_ordinals \
+               _ensure_rocm_probe_env _rocm_torch_explicitly_requested \
+               _probe_amd_gfx_arch _amd_gfx_select_ordinals \
                _amd_gpu_present_via_pci \
                _infer_amd_gfx_arch_from_gpu_name _infer_linux_amd_gfx_arch \
                _amd_arch_index_family_for_gfx _trim_index_path_slashes \

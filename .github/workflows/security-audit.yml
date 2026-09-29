@@ -75,17 +75,21 @@ on:
       - 'studio/src-tauri/Cargo.toml'
       - 'scripts/scan_packages.py'
       - 'scripts/scan_packages_baseline.json'
-      - 'tests/security/**'
-      # The production code the security suites protect. Without these, a PR touching
-      # only `loader_utils.py` skipped this job entirely - the always-running light
-      # workflow ignores those three suites - so the tests ran for the first time on
-      # the push event, after the regression had already merged.
-      - 'unsloth/models/loader_utils.py'
-      - 'unsloth/models/mapper.py'
-      - 'unsloth/models/_custom_dtype.py'
-      - 'unsloth/models/loader.py'
-      - 'unsloth/models/vision.py'
-      - 'unsloth/models/_utils.py'
+      # Gating steps run these scripts and read these inputs on a pull request:
+      # advisory-audit runs lockfile_supply_chain_audit.py, which reads every lockfile
+      # in its DEFAULT_NPM_LOCKFILES and DEFAULT_CARGO_LOCKFILES; npm-scan-packages runs
+      # scan_npm_packages.py against its baseline with SCAN_ENFORCE=1; and
+      # npm-provenance-and-install-scripts runs check_new_install_scripts.py.
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - 'studio/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'scripts/scan_npm_packages.py'
+      - 'scripts/scan_npm_packages_baseline.json'
+      - 'scripts/check_new_install_scripts.py'
+      # Not tests/security/** or the unsloth/models files those suites protect: no job
+      # here runs pytest any more. The suites moved to workflow-trigger-lint.yml, which
+      # has no paths filter (tests/studio/test_short_job_absorption.py keeps them there),
+      # so those files already run the suites on every pull request.
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
@@ -103,7 +107,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -163,7 +167,7 @@ jobs:
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -622,7 +626,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318  # v3.97.0
+        uses: trufflesecurity/trufflehog@363923b901c911a9164f50b6c423f47c15372b1c  # v3.97.4
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -863,7 +867,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1092,7 +1096,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -1178,7 +1182,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
           disable-sudo: true

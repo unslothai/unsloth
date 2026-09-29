@@ -27,7 +27,10 @@ import {
 import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
 import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
-import { useDownloadCardState } from "./use-download-card-state";
+import {
+  isRepoDownloadProgress,
+  useDownloadCardState,
+} from "./use-download-card-state";
 
 function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
   if (modelFormat === "adapter") return "Adapter";
@@ -48,6 +51,7 @@ export function SafetensorsDownloadCard({
   isPartial = false,
   partialTransport = null,
   partialResumable = false,
+  companionPrefetch = false,
   modelFormat,
   isActive,
   isLoadingThisModel,
@@ -62,6 +66,7 @@ export function SafetensorsDownloadCard({
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   isActive: boolean;
   isLoadingThisModel: boolean;
@@ -103,6 +108,7 @@ export function SafetensorsDownloadCard({
     repoId,
     activeVariant: null,
     autoAdopt: true,
+    includeScopedJobs: true,
   });
 
   const progress = job.progress;
@@ -138,11 +144,11 @@ export function SafetensorsDownloadCard({
     };
   }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online]);
 
-  const downloading = progress !== null && progress.variant === null;
+  const downloading = isRepoDownloadProgress(progress);
   const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
-    variant: null,
+    variant: downloading ? (progress?.variant ?? null) : null,
     expectedBytes: modelTotalBytes ?? 0,
     downloading,
     disabled: isLoadingThisModel || cancelling || repoPeerActive,
@@ -161,8 +167,9 @@ export function SafetensorsDownloadCard({
     !cancelling &&
     !downloadAction.starting &&
     !isLoadingThisModel;
+  const hasCachedFiles = isDownloaded || isPartial || companionPrefetch;
   const canDelete =
-    (isDownloaded || isPartial) &&
+    hasCachedFiles &&
     !downloading &&
     !repoPeerActive &&
     !isActive &&
@@ -210,6 +217,9 @@ export function SafetensorsDownloadCard({
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
           <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
             {isDownloaded && <DotTag tone="success" label="On device" />}
+            {!isDownloaded && downloading && (
+              <DotTag tone="downloading" label="Downloading" />
+            )}
             {!isDownloaded && isPartial && !downloading && (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
@@ -236,7 +246,8 @@ export function SafetensorsDownloadCard({
           <div className="ml-auto flex items-center gap-0.5">
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
                 omitted here. Managed HF-cache repos only. */}
-            {(isDownloaded || (isPartial && !downloading)) &&
+            {(isDownloaded ||
+              ((isPartial || companionPrefetch) && !downloading)) &&
               !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
               <QuantOptionsMenu
                 repoId={repoId}

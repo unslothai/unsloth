@@ -31,16 +31,23 @@ const body = lift(
   "the retry callback",
 );
 
-type Run = { repairs: boolean[]; preflights: number; forcedAfter: boolean };
+type Run = {
+  repairs: boolean[];
+  preflights: number;
+  forcedAfter: boolean;
+  heldRepairAllowed: boolean;
+};
 
 function runRetry(status: string, forced: boolean): Run {
   const repairs: boolean[] = [];
   const forcedRepairRef = { current: forced };
+  const allowHeldRuntimeRepairRef = { current: false };
   let preflights = 0;
   const noop = () => {};
   const scope = {
     statusRef: { current: status },
     forcedRepairRef,
+    allowHeldRuntimeRepairRef,
     startRepair: (options?: { forceInstaller?: boolean }) => {
       // The real one records the flag first; the fake mirrors that so the test can see
       // whether it survived the state reset that now runs ahead of the call.
@@ -66,13 +73,19 @@ function runRetry(status: string, forced: boolean): Run {
     setElevationPackages: noop,
     setIsExternalServer: noop,
     stopExternalServerPoll: noop,
+    stopManagedEnvironmentWait: noop,
   };
   const keys = Object.keys(scope);
   new Function(
     ...keys,
     `${body.replace(/^const retry = /, "return ")}`.replace(/;\s*$/, ";"),
   )(...keys.map((key) => (scope as Record<string, unknown>)[key]))();
-  return { repairs, preflights, forcedAfter: forcedRepairRef.current };
+  return {
+    repairs,
+    preflights,
+    forcedAfter: forcedRepairRef.current,
+    heldRepairAllowed: allowHeldRuntimeRepairRef.current,
+  };
 }
 
 test("retry after a forced repair re-runs the forced repair", () => {
@@ -103,4 +116,16 @@ test("retry from any other failure is untouched", () => {
       `${status} leaves the generic path, so the forced flag must not survive it`,
     );
   }
+});
+
+test("retry lets its preflight repair a recently repaired runtime; a forced resume does not need to", () => {
+  // The recurrence hold is for the silent launch-time repair. A click still goes through
+  // the preflight, which is what catches a busy, external or already fixed install.
+  for (const status of ["error", "repair-error"]) {
+    const run = runRetry(status, false);
+    assert.equal(run.preflights, 1, `${status}: the retry still runs the preflight`);
+    assert.deepEqual(run.repairs, [], `${status}: no repair without the preflight`);
+    assert.equal(run.heldRepairAllowed, true, `${status}: the hold is lifted for it`);
+  }
+  assert.equal(runRetry("repair-error", true).heldRepairAllowed, false);
 });

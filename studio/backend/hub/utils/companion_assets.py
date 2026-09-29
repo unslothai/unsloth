@@ -152,12 +152,30 @@ def repo_holds_denoiser(repo) -> bool:
     repo_id = str(getattr(repo, "repo_id", "") or "")
     if _normalise(repo_id) in _component_only_repo_ids():
         return False
+    encoder_casts = _te_prequant_names(repo_id)
     for name in names:
         if "/" in name or not name.lower().endswith(_WEIGHT_SUFFIXES):
+            continue
+        # A pre-cast text encoder (``Qwen-Image-2.1-text_encoder-FP8.safetensors``) also sits at the root of a prequant repo and is a companion, not a checkpoint.
+        if name.lower() in encoder_casts:
             continue
         if _detect_family(repo_id, name) is not None:
             return True
     return False
+
+
+def _te_prequant_names(repo_id: str) -> set[str]:
+    """Lowercased root file names the loader uses for a pre-cast text encoder hosted in *repo_id*."""
+    try:
+        from core.inference.diffusion_families import _FAMILIES
+        from core.inference.diffusion_te_prequant import te_prequant_repo_filenames
+
+        pairs = {(c, s) for fam in _FAMILIES for s, c, _r in fam.te_prequant_repos}
+        pairs |= {(c, s) for c, _s in pairs for s in ("fp8", "int8")}
+        return {n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)}
+    except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
+        logger.debug("te prequant names unavailable: %s", exc)
+        return set()
 
 
 def _component_only_repo_ids() -> set[str]:
@@ -412,11 +430,12 @@ def required_companion_bases(
     ignored = {_normalise(r) for r in ignore_repo_ids}
     links = read_companion_links()
     pick_names = _cached_checkpoint_pick_names(cache_scans)
-    component_only = _cached_component_only_repo_ids(cache_scans)
+    # Denoiser-gated, not id-gated: a VAE-only fetch from a prequant repo (unsloth/Qwen-Image-2.1-FP8) cannot load, so it pins nothing (#11825).
+    checkpoints = _denoiser_holding_repo_ids(cache_scans)
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
-        if key in ignored or key in component_only:
+        if key in ignored or key not in checkpoints:
             continue
         bases = _family_bases_for_names(repo_id, pick_names.get(key, []))
         recorded = links.get(key)
@@ -430,14 +449,6 @@ def required_companion_bases(
                 continue
             required.setdefault(base_key, set()).add(repo_id)
     return required
-
-
-def _cached_component_only_repo_ids(cache_scans) -> set[str]:
-    """Cached curated component repos holding no denoiser: companions, never checkpoints. Several of those ids carry a family keyword of their own (``unsloth/FLUX.2-dev-ComfyUI`` detects as flux.2-dev) so the loop above read a bare text-encoder fetch as an installed checkpoint and recorded the sibling VAE as still required, and the orphaned pair then held each other on disk: Free up space would not list them and a delete was refused, until the user happened to remove one component first. A repo that does hold a denoiser is a model the user installed and still counts, which is what keeps a borrowed chat GGUF a dependent of nothing and a checkpoint of itself. Through the same identity expansion the rest of this file uses, because an upgraded install holds the component under the legacy repack id the native fetch fell back to (``Comfy-Org/flux2-dev`` for ``unsloth/FLUX.2-dev-ComfyUI``), which matches the flux.2-dev family just as literally, so leaving it out kept the very caches this exclusion is for."""
-    curated = _component_only_repo_ids()
-    if not curated:
-        return set()
-    return curated - _denoiser_holding_repo_ids(cache_scans)
 
 
 def _canonical(repo_id: str) -> str:

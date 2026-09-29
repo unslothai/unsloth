@@ -7,6 +7,7 @@ the config still promises. unsloth#7681."""
 
 import ast
 import json
+import os
 import types
 from pathlib import Path
 
@@ -43,55 +44,8 @@ def test_generic_save_reconciles_the_exported_folder(tree):
     assert "reconcile_mtp_config" in _calls(_func(tree, "unsloth_generic_save"))
 
 
-def test_generic_save_guards_the_push_branch_too(tree):
-    """A push has no local folder to repair afterwards."""
-    assert "_mtp_config_matching_tensors" in _calls(_func(tree, "unsloth_generic_save"))
-
-
 def test_unsloth_save_model_strips_the_declaration(tree):
     assert "_strip_absent_mtp_declaration" in _calls(_func(tree, "unsloth_save_model"))
-
-
-def test_the_push_write_is_inside_the_guard(tree):
-    """Structural: outside the `with`, the guard exits before the write."""
-    func = _func(tree, "unsloth_generic_save")
-    guarded = False
-    for node in ast.walk(func):
-        if not isinstance(node, ast.With):
-            continue
-        names = {
-            item.context_expr.func.id
-            for item in node.items
-            if isinstance(item.context_expr, ast.Call)
-            and isinstance(item.context_expr.func, ast.Name)
-        }
-        if "_mtp_config_matching_tensors" in names and "push_to_hub" in _calls(node):
-            guarded = True
-    assert guarded, "model.push_to_hub is not inside _mtp_config_matching_tensors"
-
-
-def test_the_push_guard_reads_the_resident_tensors_when_no_state_dict_was_built(tree):
-    """lora and merged_4bit push with `state_dict is None`, which no-ops the guard."""
-    func = _func(tree, "unsloth_generic_save")
-    derived_from_model = False
-    for node in ast.walk(func):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "_mtp_tensor_names" for t in node.targets):
-            continue
-        for sub in ast.walk(node.value):
-            if (
-                isinstance(sub, ast.Call)
-                and isinstance(sub.func, ast.Attribute)
-                and sub.func.attr == "state_dict"
-                and isinstance(sub.func.value, ast.Name)
-                and sub.func.value.id == "model"
-            ):
-                derived_from_model = True
-    assert derived_from_model, (
-        "_mtp_tensor_names is never derived from model.state_dict(), so the push guard "
-        "does nothing for save methods that build no state_dict of their own"
-    )
 
 
 @pytest.fixture(scope = "module")
@@ -178,53 +132,6 @@ def test_stripper_never_raises(save_module):
     assert save_module._strip_absent_mtp_declaration({"mtp_num_hidden_layers": 1}, None) is False
 
 
-def _fake_model(declared = 1, nested = True):
-    text_config = types.SimpleNamespace(num_hidden_layers = 24)
-    if nested and declared is not None:
-        text_config.mtp_num_hidden_layers = declared
-    config = types.SimpleNamespace(text_config = text_config)
-    if not nested and declared is not None:
-        config.mtp_num_hidden_layers = declared
-    return types.SimpleNamespace(config = config)
-
-
-@pytest.mark.parametrize("nested", [True, False])
-def test_guard_hides_then_restores_the_declaration(save_module, nested):
-    model = _fake_model(nested = nested)
-    holder = model.config.text_config if nested else model.config
-    with save_module._mtp_config_matching_tensors(model, BODY):
-        assert not hasattr(holder, "mtp_num_hidden_layers")
-    assert holder.mtp_num_hidden_layers == 1
-
-
-def test_guard_leaves_a_backed_declaration_in_place(save_module):
-    model = _fake_model()
-    with save_module._mtp_config_matching_tensors(model, WITH_MTP):
-        assert model.config.text_config.mtp_num_hidden_layers == 1
-    assert model.config.text_config.mtp_num_hidden_layers == 1
-
-
-def test_guard_restores_even_when_the_write_raises(save_module):
-    model = _fake_model()
-    with pytest.raises(RuntimeError):
-        with save_module._mtp_config_matching_tensors(model, BODY):
-            raise RuntimeError("write failed")
-    assert model.config.text_config.mtp_num_hidden_layers == 1
-
-
-def test_guard_does_nothing_when_the_tensor_names_are_unknown(save_module):
-    """`None` means unknown, which must never license editing the config."""
-    model = _fake_model()
-    with save_module._mtp_config_matching_tensors(model, None):
-        assert model.config.text_config.mtp_num_hidden_layers == 1
-    assert model.config.text_config.mtp_num_hidden_layers == 1
-
-
-def test_guard_never_raises_on_a_model_without_a_config(save_module):
-    with save_module._mtp_config_matching_tensors(types.SimpleNamespace(), BODY):
-        pass
-
-
 @pytest.fixture
 def zoo_without_the_helpers(save_module, monkeypatch):
     import sys
@@ -264,28 +171,6 @@ def test_an_older_zoo_leaves_the_config_alone_and_says_nothing(
     assert said == [], said
 
 
-def test_an_older_zoo_does_not_make_the_push_guard_complain(
-    save_module, zoo_without_the_helpers, monkeypatch
-):
-    said = _capture_warnings(save_module, monkeypatch)
-
-    class _Holder:
-        pass
-
-    text = _Holder()
-    setattr(text, "mtp_num_hidden_layers", 1)
-    text.num_hidden_layers = 24
-    config = _Holder()
-    config.text_config = text
-    model = _Holder()
-    model.config = config
-
-    with save_module._mtp_config_matching_tensors(model, BODY):
-        assert getattr(text, "mtp_num_hidden_layers") == 1
-    assert getattr(text, "mtp_num_hidden_layers") == 1
-    assert said == [], said
-
-
 def test_a_real_failure_is_still_reported(save_module, monkeypatch):
     said = _capture_warnings(save_module, monkeypatch)
 
@@ -320,3 +205,127 @@ def test_the_manual_merge_restores_the_config_when_the_write_fails(tree):
         "the scrubbed-config write is not in a try/finally that restores old_config, so a "
         "failed save leaves the caller's model stripped"
     )
+
+
+@pytest.fixture(scope = "module")
+def save_module_any():
+    """`unsloth.save` itself, without the MTP-aware zoo the stripper tests need.
+
+    What this file's other behavioural fixture skips on is the installed zoo exporting the MTP
+    helpers. The cost question below is about this repo's own control flow, so it is answerable
+    on any zoo and should not be skipped with them.
+    """
+    pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
+    try:
+        import unsloth.save as module
+    except ImportError as error:
+        pytest.skip(f"unsloth.save is not importable on this runner: {error}")
+    return module
+
+
+def test_a_local_save_does_not_collect_the_resident_state_dict(
+    save_module_any, monkeypatch, tmp_path
+):
+    """A local save reconciles the folder it just wrote, so reading the resident tensors for it
+    bought nothing and cost a second full collection on top of save_pretrained's own. On an
+    offloaded or sharded model that materialises every weight, and on a distributed one it is
+    a collective the other ranks are not making, so it can stall rather than merely be slow.
+    """
+    import torch
+
+    collected = []
+
+    class _Model:
+        config = None
+
+        def state_dict(self):
+            collected.append("state_dict")
+            # A real tensor, so the 16bit branch below can cast it as it always does.
+            return {"model.embed_tokens.weight": torch.zeros(1)}
+
+        def save_pretrained(self, directory, **kwargs):
+            os.makedirs(directory, exist_ok = True)
+
+    from unsloth_zoo import saving_utils
+
+    monkeypatch.setattr(saving_utils, "reconcile_mtp_config", lambda *_a, **_k: None, raising = False)
+    for method in ("lora", "merged_4bit_forced"):
+        collected.clear()
+        save_module_any.unsloth_generic_save(
+            _Model(),
+            None,
+            save_directory = str(tmp_path / method),
+            save_method = method,
+            push_to_hub = False,
+        )
+        assert collected == [], (method, collected)
+
+    # A 16bit save still builds one, because that state dict is what gets WRITTEN.
+    collected.clear()
+    save_module_any.unsloth_generic_save(
+        _Model(),
+        None,
+        save_directory = str(tmp_path / "16bit"),
+        save_method = "merged_16bit",
+        push_to_hub = False,
+    )
+    assert collected == ["state_dict"], collected
+
+
+def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypatch, tmp_path):
+    """Reading the names back off disk is not always possible, so hand over the ones already held.
+
+    `_checkpoint_tensor_names` declines to unpickle an unindexed `pytorch_model.bin` just to list
+    names, so a `safe_serialization = False` export reconciles against "unknown" and keeps an
+    `mtp_num_hidden_layers` the weights do not carry. Whenever a state dict was built it IS the
+    thing being written, so passing its keys costs nothing and removes the blind spot.
+
+    The names must be read BEFORE the write: transformers 5 pops each tensor out of the supplied
+    dict as it writes the shard holding it, so reading afterwards reports an export carrying no
+    tensors at all and strips a declaration the weights really do back.
+    """
+    import torch
+
+    seen = []
+
+    class _Model:
+        config = None
+
+        def state_dict(self):
+            return {"model.embed_tokens.weight": torch.zeros(1)}
+
+        def save_pretrained(self, directory, **kwargs):
+            os.makedirs(directory, exist_ok = True)
+            # What transformers 5 does: "remove it from state_dict to avoid keeping the ref",
+            # one pop per tensor as its shard is written, leaving the caller's dict empty.
+            for name in list(kwargs.get("state_dict") or ()):
+                kwargs["state_dict"].pop(name)
+
+    from unsloth_zoo import saving_utils
+
+    monkeypatch.setattr(
+        saving_utils,
+        "reconcile_mtp_config",
+        lambda directory, tensor_names = None: seen.append(tensor_names),
+        raising = False,
+    )
+    save_module_any.unsloth_generic_save(
+        _Model(),
+        None,
+        save_directory = str(tmp_path / "16bit"),
+        save_method = "merged_16bit",
+        push_to_hub = False,
+    )
+    assert seen == [["model.embed_tokens.weight"]], seen
+
+    # No state dict of its own means the names really are unknown here, and unknown must stay
+    # unknown rather than licence a guess.
+    seen.clear()
+    save_module_any.unsloth_generic_save(
+        _Model(),
+        None,
+        save_directory = str(tmp_path / "lora"),
+        save_method = "lora",
+        push_to_hub = False,
+    )
+    assert seen == [None], seen
