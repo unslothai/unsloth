@@ -575,6 +575,10 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-collapsed-chat-controls-inset": "12px",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
+  // Pages without their own shell scroll in a box that starts below the band, so their
+  // scrollbar and pinned toolbars never run up beside the window controls.
+  "--studio-non-chat-content-top-inset": "34px",
+  "--studio-non-chat-scroller-top": "34px",
   "--studio-hidden-route-top-inset": "34px",
   // Same split as the native-mac block: chat chrome scales, window chrome does not.
   "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",

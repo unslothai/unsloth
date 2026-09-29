@@ -465,7 +465,7 @@ test("composite settings controls shrink inside their row", () => {
   // wrapper can shrink.
   assert.ok(
     readSrc("features/settings/tabs/general-tab.tsx").includes(
-      '<div className="flex min-w-0 flex-col items-end gap-1.5">\n            <div className="flex max-w-full items-center gap-2">\n              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">',
+      '<div className="flex max-w-full items-center gap-2">\n            <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">',
     ),
   );
   assert.ok(

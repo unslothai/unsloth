@@ -421,60 +421,9 @@ export function LanAccessSection() {
           <SettingsRow
             label="Port"
             description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
-          >
-            <div className="flex flex-col items-end gap-1.5">
-              <div className="flex items-center gap-2">
-                <Select
-                  value={portMode}
-                  disabled={busy !== null || lanAccessPortReadOnly(status)}
-                  onValueChange={(value) => {
-                    setPortMode(value as PortMode);
-                    setPortError(null);
-                  }}
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-28"
-                    aria-label="LAN port mode"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="automatic">Automatic</SelectItem>
-                    <SelectItem value="custom">Custom</SelectItem>
-                  </SelectContent>
-                </Select>
-                {portMode === "custom" ? (
-                  <Input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={portDraft}
-                    disabled={busy !== null || lanAccessPortReadOnly(status)}
-                    aria-label="Custom LAN port"
-                    aria-invalid={portInvalid}
-                    aria-describedby={portErrorVisible ? portErrorId : undefined}
-                    className="h-8 w-24"
-                    onChange={(event) => {
-                      setPortDraft(event.target.value);
-                      setPortError(null);
-                    }}
-                  />
-                ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={savePort}
-                  disabled={
-                    busy !== null ||
-                    lanAccessPortReadOnly(status) ||
-                    portInvalid ||
-                    !portDirty
-                  }
-                >
-                  Save
-                </Button>
-              </div>
+            // Always mounted, even when empty: a live region has to exist before its
+            // text changes for the change to be announced.
+            below={
               <span
                 id={portErrorId}
                 role="status"
@@ -487,6 +436,59 @@ export function LanAccessSection() {
                     : portError
                   : null}
               </span>
+            }
+          >
+            <div className="flex items-center gap-2">
+              <Select
+                value={portMode}
+                disabled={busy !== null || lanAccessPortReadOnly(status)}
+                onValueChange={(value) => {
+                  setPortMode(value as PortMode);
+                  setPortError(null);
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-28"
+                  aria-label="LAN port mode"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="automatic">Automatic</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+              {portMode === "custom" ? (
+                <Input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={portDraft}
+                  disabled={busy !== null || lanAccessPortReadOnly(status)}
+                  aria-label="Custom LAN port"
+                  aria-invalid={portInvalid}
+                  aria-describedby={portErrorVisible ? portErrorId : undefined}
+                  className="h-8 w-24"
+                  onChange={(event) => {
+                    setPortDraft(event.target.value);
+                    setPortError(null);
+                  }}
+                />
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                onClick={savePort}
+                disabled={
+                  busy !== null ||
+                  lanAccessPortReadOnly(status) ||
+                  portInvalid ||
+                  !portDirty
+                }
+              >
+                Save
+              </Button>
             </div>
           </SettingsRow>
         ) : null}

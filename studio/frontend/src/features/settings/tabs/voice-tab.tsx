@@ -1015,23 +1015,10 @@ export function VoiceTab() {
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
-              alignTop={true}
-            >
-              <div className="flex w-56 flex-col items-stretch gap-2">
-                <SttModelPicker
-                  value={sttModel}
-                  language={dictationLanguage}
-                  onChange={(next) => {
-                    if (next !== sttModel) {
-                      void unloadSttModel().catch(() => {});
-                      void autoLoadSttModel(next);
-                    }
-                    setSttModel(next);
-                  }}
-                />
-                {/* Progress lives in the shared downloads panel; a second bar
-                    here said the same thing twice. */}
-                <div className="flex min-h-7 items-center justify-between gap-3">
+              // Progress lives in the shared downloads panel; a second bar here
+              // said the same thing twice.
+              below={
+                <div className="flex min-h-7 w-56 items-center justify-between gap-3">
                   <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                     {effectiveSttDownloadAvailability === "checking" ||
                     sttPhase === "loading" ||
@@ -1123,6 +1110,20 @@ export function VoiceTab() {
                     )
                   ) : null}
                 </div>
+              }
+            >
+              <div className="w-56">
+                <SttModelPicker
+                  value={sttModel}
+                  language={dictationLanguage}
+                  onChange={(next) => {
+                    if (next !== sttModel) {
+                      void unloadSttModel().catch(() => {});
+                      void autoLoadSttModel(next);
+                    }
+                    setSttModel(next);
+                  }}
+                />
               </div>
             </SettingsRow>
           ) : (
