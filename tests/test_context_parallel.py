@@ -128,3 +128,31 @@ def test_shift_labels_is_not_an_eval_label_name():
         forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
 
     assert find_labels(LM) == ["labels"]
+
+
+def test_gqa_is_expanded_under_cp(monkeypatch):
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    seen = []
+    monkeypatch.setattr(
+        ad,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **k: (seen.append((K.shape[1], k.get("enable_gqa"))), Q)[1],
+    )
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 2, n_groups = 2)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 4,
+        head_dim = 8,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q, K = torch.zeros(1, 4, 4, 8), torch.zeros(1, 2, 4, 8)
+    manager = _manager()
+    manager.mesh = None
+    with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+        ad.run_attention(config = config, context = context, Q = Q, K = K, V = K)
+    assert seen == [(4, None)]

@@ -568,6 +568,9 @@ def run_attention(
         kwargs.setdefault("is_causal", is_causal_local)
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
+        # Without flash (T4, fp32) enable_gqa falls to math SDPA, which ring attention cannot shard.
+        if use_sdpa_gqa and get_cp_manager() is not None:
+            use_sdpa_gqa = False
         if (
             use_sdpa_gqa
             and (not requires_grad)
