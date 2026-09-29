@@ -2171,6 +2171,13 @@ export function SharedComposer({
         toast.error("Wait for the current response to finish");
         return;
       }
+      // A compare send holds the loading lease while it prepares, before `comparing` is set.
+      if (useChatRuntimeStore.getState().modelLoading) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
       if (isDictating) {
         toast.error("Finish dictating before running a list");
         return;
