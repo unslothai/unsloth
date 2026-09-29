@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`eval_steps` without `eval_strategy="steps"` is silently ignored by transformers (#3177).
-
-CPU-only: the generated-config snippet and `UnslothTrainingArguments` are lifted
-from source with `ast`, so `unsloth` is never imported.
-"""
+"""#3177: `eval_steps` is ignored unless `eval_strategy="steps"`; both checks are lifted with `ast`, CPU-only."""
 
 import ast
 import contextlib
