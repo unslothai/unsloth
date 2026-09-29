@@ -31,6 +31,11 @@
 # one place. That fallback is why the commit below must stay a full 40-character SHA: an archive
 # records no ref, so only a SHA in the URL makes the resident build identifiable afterwards.
 #
+# Unlike a clone, an archive's bytes are not checked against the commit, so pip and uv verify this
+# SHA-256 before building; no digest line means no zip route. Bump it with the commit:
+#   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
+# archive-sha256: 7b0d00b5b44f5ca1745d477ae4a0c2da125d58b89cff8470c422d3181a797a09
+#
 # Retiring this file: once 0.41.0 ships, bump diffusers-pin.txt to it and delete this. The family
 # entry already records 0.41.0 as QwenImage21Pipeline's minimum, so nothing else has to move.
 diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
