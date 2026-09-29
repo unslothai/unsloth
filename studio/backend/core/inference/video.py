@@ -1886,7 +1886,8 @@ def _video_offload_vram_floor_mib(
         else:
             return None
         if applied:
-            streamed = {name for name in streamed if _video_group_hooked(modules[name])}
+            # From the hooks alone: a refusing encoder stays resident, and the fallback may hook a DiT the plan kept.
+            streamed = {name for name in denoisers | encoders if _video_group_hooked(modules[name])}
         held = sum(size for name, size in sizes.items() if name not in streamed)
         backend = getattr(getattr(plan, "device_memory", None), "backend", None)
         prefetch = backend not in ("mps", "cpu")
@@ -5779,6 +5780,7 @@ class VideoBackend:
                 staged = _stage_denoiser_for_quant(
                     getattr(view, "transformer", None), target, logger = logger
                 )
+                scheme = None
                 try:
                     scheme = quantize_transformer(
                         view,
@@ -5789,7 +5791,8 @@ class VideoBackend:
                         **native_kwargs,
                     )
                 finally:
-                    if staged and video_offload:
+                    # A declined quant can roll back to the bf16 offload plan, which must not start with dense blocks staged.
+                    if staged and (video_offload or scheme is None):
                         _unstage_modules(staged)
                 if scheme is not None:
                     engaged.append(scheme)

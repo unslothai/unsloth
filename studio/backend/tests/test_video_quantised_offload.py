@@ -609,3 +609,38 @@ def test_failed_staging_leaves_nothing_on_the_card(monkeypatch):
     target = types.SimpleNamespace(device = "cuda", torch_device = "cuda")
     assert V._stage_denoiser_for_quant(dit, target) == []
     assert all(not p.is_cuda for p in dit.parameters())
+
+
+def test_applied_floor_counts_a_dit_the_fallback_hooked():
+    """A refusing encoder can make _apply_group_offload hook the DiT the plan kept resident; count it as streamed."""
+    torch = pytest.importorskip("torch")
+    import core.inference.video as V
+
+    def _linear(mib):
+        return torch.nn.Linear(1024, mib * 512, bias = False).to(torch.bfloat16)
+
+    dit = torch.nn.Module()
+    dit.patch_embedding = _linear(1)
+    dit.blocks = torch.nn.ModuleList([_linear(2) for _ in range(4)])
+    dit.blocks[0]._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()})
+    encoder = torch.nn.Module()
+    encoder.register_buffer("w", torch.zeros(12 * 1024 * 1024 // 2, dtype = torch.bfloat16))
+    vae = torch.nn.Module()
+    vae.register_buffer("w", torch.zeros(3 * 1024 * 1024 // 2, dtype = torch.bfloat16))
+    pipe = types.SimpleNamespace(components = {"transformer": dit, "text_encoder": encoder, "vae": vae})
+    plan = types.SimpleNamespace(
+        offload_policy = "group",
+        stream_text_encoders = True,
+        stream_transformer = False,
+        device_memory = types.SimpleNamespace(backend = "cuda"),
+    )
+    # resident TE 12 + VAE 3, plus the streamed DiT's embed 1 and current and prefetched 2 MiB blocks
+    assert V._video_offload_vram_floor_mib(pipe, plan, applied = True) == 20
+
+
+def test_a_declined_quant_unstages_before_any_bf16_rollback():
+    import inspect
+
+    import core.inference.video as V
+
+    assert "if staged and (video_offload or scheme is None):" in inspect.getsource(V)
