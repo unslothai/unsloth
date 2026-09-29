@@ -255,7 +255,9 @@ def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, na
     def _picked_voice(_backend):
         raise RuntimeError("reached the voice slot")
 
-    voice_backend = SimpleNamespace(is_loaded = True, _is_audio = True, _audio_type = "snac")
+    voice_backend = SimpleNamespace(
+        is_loaded = True, _is_audio = True, _audio_type = "snac", model_identifier = "org/voice"
+    )
     monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
     monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)

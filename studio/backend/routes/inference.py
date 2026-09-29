@@ -19579,9 +19579,44 @@ class _VoiceLoadRequest(BaseModel):
 
 
 @router.post("/voice/load")
+@account_access.gpu_busy_route
 async def voice_load_model(
     request: _VoiceLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+
+    async with inference_lifecycle_gate():
+        _raise_if_sidecar_swap_in_progress()
+        account_access.require_live_account()
+        backend = get_voice_llama_backend()
+        account_access.require_resident_control(
+            "voice", backend.model_identifier if backend.is_active else None
+        )
+        # Cancelling an await cannot stop a load already running in a worker. Keep
+        # the gate until that worker settles, then free its slot before admitting
+        # the next mutation. Otherwise a late load can resurrect an unloaded voice.
+        pending = asyncio.create_task(_voice_load_model_impl(request, current_subject))
+        try:
+            result = await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            try:
+                await pending
+            except Exception:
+                logger.debug("Cancelled voice load failed while draining", exc_info = True)
+            finally:
+                await asyncio.to_thread(backend.unload_model)
+                account_access.clear_resident("voice")
+            raise
+        try:
+            account_access.publish_resident("voice", backend.model_identifier)
+        except Exception:
+            await asyncio.to_thread(backend.unload_model)
+            account_access.clear_resident("voice")
+            raise
+        return result
+
+
+async def _voice_load_model_impl(request: _VoiceLoadRequest, current_subject: str):
     """
     Load a TTS model into the voice slot (independent of the main chat slot).
 
@@ -19690,6 +19725,8 @@ async def voice_load_model(
         ok = await asyncio.to_thread(voice_backend.load_model, intent)
     except Exception as e:
         logger.error("Voice slot load error: %s", e, exc_info = True)
+        # An exception can follow process creation just as a False result can.
+        await asyncio.to_thread(voice_backend.unload_model)
         raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
 
     if not ok:
@@ -19741,7 +19778,28 @@ async def voice_load_model(
 
 
 @router.post("/voice/unload")
+@account_access.gpu_busy_route
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
+    """Unload only a voice the caller controls, after earlier mutations settle."""
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+
+    async with inference_lifecycle_gate():
+        backend = get_voice_llama_backend()
+        account_access.require_resident_control(
+            "voice", backend.model_identifier if backend.is_active else None
+        )
+        pending = asyncio.create_task(_voice_unload_model_impl(current_subject))
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            await pending
+            raise
+        finally:
+            if not backend.is_active:
+                account_access.clear_resident("voice")
+
+
+async def _voice_unload_model_impl(current_subject: str):
     """Unload whatever model is in the voice slot."""
     voice_backend = get_voice_llama_backend()
     if not voice_backend.is_active:
@@ -19764,6 +19822,8 @@ async def voice_slot_status(current_subject: str = Depends(get_current_subject))
     """Return the current state of the voice slot."""
     voice_backend = get_voice_llama_backend()
     loaded = voice_backend.is_loaded
+    if account_access.resident_hidden("voice", voice_backend.model_identifier):
+        return {"loaded": False, "loading": False, "model": None, "audio_type": None}
     return {
         "loaded": loaded,
         "loading": voice_backend.is_active and not loaded,
@@ -20681,6 +20741,10 @@ async def _generate_tts_wav(
         and _voice_backend.is_loaded
         and getattr(_voice_backend, "_is_audio", False)
     )
+    if _voice_slot_serves:
+        account_access.require_live_account()
+        account_access.require_resident_control("voice", _voice_backend.model_identifier)
+        account_access.require_model_access(_voice_backend.model_identifier)
     if not _voice_slot_serves:
         await _maybe_auto_switch_model(
             requested_model,
@@ -21216,6 +21280,11 @@ async def openai_audio_speech_stream(
             status_code = 400,
             detail = "Streaming speech requires a loaded SNAC (Orpheus) voice.",
         )
+    account_access.require_live_account()
+    account_access.require_resident_control(
+        "voice" if backend is get_voice_llama_backend() else "chat", backend.model_identifier
+    )
+    account_access.require_model_access(backend.model_identifier)
     # IQ1/IQ2/Q2 Orpheus quants read the "voice:" speaker prefix aloud. The blocking
     # route trims that spoken name off the clip, which needs the whole clip and so has
     # no streaming equivalent (see generate_audio_response_stream). Refuse up front,
