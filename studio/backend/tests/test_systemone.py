@@ -1544,8 +1544,8 @@ def test_collate_matches_laya():
 
 def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA GPU")
+    if not torch.cuda.is_available() or torch.version.hip:
+        pytest.skip("needs a CUDA GPU (ROCm never builds graphs)")
     laya = laya_runtime._laya()
     encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
     torch.manual_seed(0)
