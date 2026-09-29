@@ -1505,6 +1505,26 @@ def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path
     )
 
 
+def test_a_drafter_forced_through_extra_args_also_refits(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "auto",
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    assert _launched_ctx(result) == _launched_ctx(fresh) < replayed
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
 def test_forcing_the_drafter_keeps_a_ctx_size_passed_through_extra_args(tmp_path):
     replayed = _replayed_auto_context(tmp_path)
     backend, gguf = _replayed_context_mtp_backend(tmp_path)

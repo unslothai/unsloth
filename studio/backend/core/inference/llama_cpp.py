@@ -25630,7 +25630,14 @@ class LlamaCppBackend:
                             and ctx_override is None
                             and intent.max_seq_length_auto_derived
                             and _mtp_reserves_gpu
-                            and (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                            # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
+                            and (
+                                (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                                or _user_mtp_via_extras
+                                or _user_draft_via_extras
+                                or _extra_args_set_spec_type(extra_args)
+                                or _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                            )
                         ):
                             # Fitted without the drafter: size it like a fresh MTP load, slot re-fit included.
                             explicit_ctx = False
