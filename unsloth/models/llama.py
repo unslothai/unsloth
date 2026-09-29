@@ -3284,7 +3284,9 @@ class FastLlamaModel:
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         **kwargs,
     ):
-        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+        # The flag reflects the LAST load; a seq2seq model loaded earlier still needs FastBaseModel.
+        _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
             for peft_arg, flag in (
                 ("finetune_vision_layers", False),
                 ("finetune_language_layers", True),
@@ -3295,9 +3297,7 @@ class FastLlamaModel:
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
             # The causal-LM default list names no T5 leaf (q/k/v/o/wi/wo); let FastBaseModel pick seq2seq targets.
-            if target_modules == _DEFAULT_TARGET_MODULES and _is_text_seq2seq_config(
-                getattr(model, "config", None)
-            ):
+            if target_modules == _DEFAULT_TARGET_MODULES and _text_seq2seq:
                 target_modules = None
             return FastBaseModel.get_peft_model(
                 model = model,
@@ -3852,7 +3852,9 @@ class FastLlamaModel:
         # module flags every GRPO step, and TrainingArguments defaults it to False, which would silently
         # disable it at train time (#4735). Recorded here so loader.py's from_pretrained path is covered.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
-        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _is_text_seq2seq_config(
+            getattr(model, "config", None)
+        ):
             return FastBaseModel.patch_peft_model(
                 model = model,
                 use_gradient_checkpointing = use_gradient_checkpointing,
