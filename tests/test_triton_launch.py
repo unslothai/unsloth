@@ -51,7 +51,11 @@ def _run(
 @pytest.fixture(autouse = True)
 def _fresh_cache(monkeypatch):
     monkeypatch.setattr(triton_launch, "_CACHE", {})
-    monkeypatch.setattr(triton_launch, "_ENABLED", torch.version.hip is None)
+    monkeypatch.setattr(
+        triton_launch,
+        "_ENABLED",
+        triton_launch._raw_stream is not None and torch.version.hip is None,
+    )
 
 
 @pytest.mark.parametrize("n", [1, 16, 17, 1000, 4096])

@@ -16,9 +16,14 @@ __all__ = [
     "tag_compile_cache",
 ]
 
-_ENABLED = torch.version.hip is None and os.environ.get("UNSLOTH_TRITON_FAST_LAUNCH", "1") != "0"
+# CPU-only torch builds have no CUDA stream binding.
+_raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None)
+_ENABLED = (
+    _raw_stream is not None
+    and torch.version.hip is None
+    and os.environ.get("UNSLOTH_TRITON_FAST_LAUNCH", "1") != "0"
+)
 _CACHE = {}
-_raw_stream = torch._C._cuda_getCurrentRawStream
 _knobs = getattr(triton, "knobs", None)
 
 
