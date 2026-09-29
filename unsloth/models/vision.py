@@ -102,6 +102,8 @@ from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
+    compressed_tensors_planner_quantization,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
@@ -693,7 +695,22 @@ VLLM_SUPPORTED_VLM = [
     # Qwen3.5 ships as Qwen3_5ForConditionalGeneration with a vision_config, so it
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
+    "idefics3",
 ]
+
+
+def _zoo_supports_idefics3_fast_inference():
+    # unsloth_zoo ships separately; older releases crash converting Idefics3's model.text_model layout.
+    try:
+        from unsloth_zoo.empty_model import get_model_layer_config
+        return (
+            "model.text_model.layers.{kk}.self_attn.q_proj"
+            in get_model_layer_config()["standard_layers"]
+        )
+    except Exception:
+        return False
+
+
 VLLM_NON_LORA_VLM = [
     "mllama",
 ]
@@ -1392,6 +1409,9 @@ def _architecture_skip_modules(model_types):
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
+    # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
+    if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
+        skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
     return skip
 
 
@@ -2023,8 +2043,13 @@ class FastBaseModel:
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Qwen3-VL, Gemma3, Mistral3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and these vision model types: {', '.join(VLLM_SUPPORTED_VLM)}. "
                     f"Found architectures: {', '.join(model_types)}!"
+                )
+            if "idefics3" in model_types and not _zoo_supports_idefics3_fast_inference():
+                raise RuntimeError(
+                    "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
+                    "Please run `pip install --upgrade unsloth_zoo`."
                 )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
@@ -2200,14 +2225,23 @@ class FastBaseModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
         from .fp8_to_nf4 import fp8_to_nf4_planner_quantization_config
 
-        load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+        # The loader passes load_in_4bit=False with an explicit config, so a bnb 4-bit config is the request.
+        _explicit_bnb_4bit = user_quantization_config is not None and (
+            quantization_config_selects_bnb_4bit(user_quantization_config)
+        )
+        _checked_4bit, _checked_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
+            # Re-quantize needs the transformers 4-bit load: not vLLM, not full finetuning; explicit config must be bnb 4-bit.
+            requantize_packed = not fast_inference
+            and not full_finetuning
+            and quantization_config_selects_bnb_4bit(user_quantization_config),
             rewrite_modelopt = not (fast_inference and is_vLLM_available()),
             token = token,
             model_name = model_name,
@@ -2220,6 +2254,10 @@ class FastBaseModel:
                 "local_files_only": local_files_only,
             },
         )
+        # Only an explicit bnb 4-bit config the check kept keeps the caller's flags: a pre-quantized
+        # checkpoint left unarmed (vLLM reads it itself) must not reach vLLM as a bitsandbytes load.
+        if not (_explicit_bnb_4bit and _checked_4bit):
+            load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             keep_task_heads_unquantized,
@@ -2253,6 +2291,13 @@ class FastBaseModel:
         # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
+        _planner_config_reason = "text_only loads a decoder the repo config does not describe"
+        # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
+        if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
+            _planner_config = auto_config
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint"
+            )
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
@@ -2284,7 +2329,7 @@ class FastBaseModel:
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
             planner_config = _planner_config,
-            planner_config_reason = "text_only loads a decoder the repo config does not describe",
+            planner_config_reason = _planner_config_reason,
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -2295,9 +2340,9 @@ class FastBaseModel:
             **add_dtype_kwargs(torch_dtype),
             # A caller-supplied config overrides the flags: loader.py clears them when it forwards one, so the flags alone would size a 4bit load at full precision.
             **planner_quantization_kwargs(
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                quantization_config = user_quantization_config,
+                **compressed_tensors_planner_quantization(
+                    auto_config, load_in_4bit, load_in_8bit, user_quantization_config
+                ),
                 rewritten_quantization_config = modelopt_planner_quantization_config(
                     auto_config, dequantize = load_in_16bit
                 )
@@ -3143,6 +3188,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
+        _auto_targets = target_modules is None or target_modules == "all-linear"
 
         # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never trains, so redirect before scoping, matching FastLanguageModel.
         target_modules, modules_to_save, _moved = _redirect_embedding_targets(
@@ -3292,6 +3339,17 @@ class FastBaseModel:
                         for name, _ in _core.named_parameters()
                         if any(name == t or name.endswith("." + t) for t in _core_parameters)
                     ] or None
+            from .remote_moe_shims import packed_expert_target_parameters
+
+            if _auto_targets and finetune_mlp_modules and finetune_language_layers:
+                _packed_leaves = ("w1", "w2", "w3")
+            elif isinstance(_moe_module_detect, (list, tuple, str)):
+                _packed_leaves = _moe_module_detect
+            else:
+                _packed_leaves = None
+            target_parameters = packed_expert_target_parameters(
+                model, target_parameters, _packed_leaves
+            )
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
@@ -3331,6 +3389,12 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
+        # Block-diagonal grouped linears (DeepSeek-V4's o_a_proj) need a LoRA forward that is grouped too.
         _grouped_classes = register_grouped_linear_lora(lora_config, model)
         if _grouped_classes:
             print(
@@ -3468,6 +3532,11 @@ class FastBaseModel:
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
 
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
         model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,

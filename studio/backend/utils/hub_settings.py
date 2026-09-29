@@ -6,8 +6,10 @@
 The saved values are applied as ``HF_ENDPOINT`` / ``HF_DATASETS_SERVER``, which
 everything in Unsloth -- huggingface_hub, datasets, the browser via /api/health,
 and every worker process spawned afterwards -- already follows. Until the owner
-saves, whatever the operator exported stays in effect. ModelScope as the source
-points ``HF_ENDPOINT`` at the loopback adapter in ``hub.modelscope``.
+saves, whatever the operator exported stays in effect; where Hugging Face is
+restricted, with nothing saved or exported, the source defaults to ModelScope.
+ModelScope as the source points ``HF_ENDPOINT`` at the loopback adapter in
+``hub.modelscope``.
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ import os
 import sqlite3
 import sys
 import threading
+import weakref
 from contextlib import closing
 from dataclasses import dataclass
+from functools import partial
 from urllib.parse import urlsplit
 
 from loggers import get_logger
@@ -53,6 +57,7 @@ class HubSettings:
     datasets_server_follows_endpoint: bool
     saved: bool
     source: str = HUGGINGFACE
+    source_automatic: bool = False
 
 
 def _capture_operator_env() -> dict[str, str | None]:
@@ -75,7 +80,8 @@ def operator_hf_endpoint() -> str:
     return _operator_endpoint() or DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]
 
 
-def _read_stored() -> dict:
+def _read_stored() -> dict | None:
+    """The saved hub settings: ``{}`` before the database exists, None when it cannot be read."""
     keys = [HF_ENDPOINT_KEY, DATASETS_SERVER_FOLLOWS_KEY, SOURCE_KEY]
     try:
         from utils.account_context import OWNER, run_as
@@ -85,6 +91,8 @@ def _read_stored() -> dict:
             from utils.paths.storage_roots import studio_db_path
 
             path = run_as(OWNER, studio_db_path)
+            if not path.exists():
+                return {}
             with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
                 rows = conn.execute(
                     "SELECT key, value_json FROM app_settings WHERE key IN (?, ?, ?)", keys
@@ -95,15 +103,34 @@ def _read_stored() -> dict:
         return run_as(OWNER, get_app_settings, keys)
     except Exception as exc:  # noqa: BLE001 - a missing or unreadable db keeps the environment's values
         logger.debug("hub settings read failed (%s)", exc)
-        return {}
+        return None
+
+
+def _automatic_modelscope(stored: dict) -> bool:
+    """ModelScope by default where Hugging Face is restricted, until a source or an endpoint is saved or exported."""
+    from utils.region import mirror_fallback_enabled
+    return (
+        SOURCE_KEY not in stored
+        and HF_ENDPOINT_KEY not in stored
+        and not (_capture_operator_env()["HF_ENDPOINT"] or "").strip()
+        and mirror_fallback_enabled()
+    )
 
 
 def get_hub_settings() -> HubSettings:
     stored = _read_stored()
-    source = stored.get(SOURCE_KEY) if stored.get(SOURCE_KEY) in SOURCES else HUGGINGFACE
+    # A failed read may hide a saved choice, so it never selects the automatic default.
+    automatic = stored is not None and _automatic_modelscope(stored)
+    stored = stored or {}
+    if automatic:
+        source = MODELSCOPE
+    else:
+        source = stored.get(SOURCE_KEY) if stored.get(SOURCE_KEY) in SOURCES else HUGGINGFACE
     endpoint = stored.get(HF_ENDPOINT_KEY)
     if not isinstance(endpoint, str):
-        return HubSettings(_operator_endpoint(), False, saved = False, source = source)
+        return HubSettings(
+            _operator_endpoint(), False, saved = False, source = source, source_automatic = automatic
+        )
     try:
         endpoint = validate_hub_endpoint(endpoint)
     except ValueError:
@@ -131,6 +158,16 @@ def set_hub_source(source: str) -> HubSettings:
     upsert_app_settings({SOURCE_KEY: source}, read_back = False)
     apply_hub_settings()
     return get_hub_settings()
+
+
+def claim_automatic_source() -> bool:
+    """Save the automatic ModelScope default. True only for the call that saved it, whose client tells the owner."""
+    if not get_hub_settings().source_automatic or active_source() != MODELSCOPE:
+        return False
+    from storage.studio_db import compare_and_set_app_setting
+
+    # An endpoint saved since the read above is a choice too: the claim must not override it.
+    return compare_and_set_app_setting(SOURCE_KEY, None, MODELSCOPE, absent = (HF_ENDPOINT_KEY,))
 
 
 def set_hub_settings(hf_endpoint: str, datasets_server_follows_endpoint: bool) -> HubSettings:
@@ -231,6 +268,34 @@ def _bypass_proxy_for(url: str) -> None:
         # The 1.x shared client read proxies once: drop it, never close it (aborts live downloads).
         with lock:
             http._GLOBAL_CLIENT = None
+
+
+# huggingface_hub closes its shared client in every forked child, so any preexec_fn child (tools,
+# sidecar servers) can block before exec on httpx locks another thread held at the fork. Child
+# hooks run in registration order, which import order decides, so the parent disarms the client.
+_inherited_hub_clients: list = []
+
+
+def _close_if_owner(client_ref: weakref.ref, owner_pid: int) -> None:
+    client = client_ref()
+    if client is None:
+        return
+    if os.getpid() == owner_pid:
+        type(client).close(client)
+    else:
+        _inherited_hub_clients.append(client)
+
+
+def _keep_hub_client_open_in_forks() -> None:
+    http = sys.modules.get("huggingface_hub.utils._http")
+    client = getattr(http, "_GLOBAL_CLIENT", None)
+    if client is not None and "close" not in vars(client):
+        # A weak reference, so the client is still freed by refcount once dropped.
+        client.close = partial(_close_if_owner, weakref.ref(client), os.getpid())
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before = _keep_hub_client_open_in_forks)
 
 
 def _refresh_imported_hub_libraries() -> None:

@@ -1668,6 +1668,43 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         pass
 
 
+VIDEO_GENERATION_FAILED_MSG = "Video generation failed."
+
+_NATIVE_CRASH_NEEDLES = (
+    "sd-cli exited",
+    "process exited",
+    "ggml_abort",
+    "signal",
+    "connection lost",
+    "worker died",
+)
+
+
+def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
+    """A user-facing reason for a failed generation, built only from fixed text."""
+    try:
+        if _is_out_of_memory(exc):
+            if (
+                request_shape is not None
+                and request_shape.get("attention_backend") is None
+                and sdpa_math_only(_probe_target(request_shape))
+            ):
+                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
+                "resolution, fewer frames, or fewer steps."
+            )
+        text = str(exc).lower()
+        if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
+                "server log in Settings > Logs for its output."
+            )
+    except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
+        pass
+    return VIDEO_GENERATION_FAILED_MSG
+
+
 def _is_out_of_memory(exc: BaseException) -> bool:
     """Whether ``exc`` is an allocator failure, by name and text rather than by class: torch
     raises ``torch.OutOfMemoryError`` on CUDA and a plain RuntimeError on some backends."""
@@ -1715,6 +1752,7 @@ class VideoBackend:
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
+        self._last_request_shape: Optional[dict[str, Any]] = None
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it
         # runs.
         self._generate_job_active = False
@@ -6655,6 +6693,7 @@ class VideoBackend:
                     "total": 0,
                     "eta_seconds": None,
                 }
+                self._last_request_shape = None
                 break
         worker = account_thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs: those kwargs are also a
@@ -6785,17 +6824,18 @@ class VideoBackend:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = "Video generation failed."
+                msg = video_failure_detail(exc, self._last_request_shape)
             _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            _record_outcome("Video generation failed.")
+            detail = video_failure_detail(exc, self._last_request_shape)
+            _record_outcome(detail)
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel_event,
-                error = "Video generation failed.",
+                error = detail,
             )
             return
 
@@ -7143,6 +7183,7 @@ class VideoBackend:
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
                 }
+                self._last_request_shape = request_shape
 
                 pipe = state.pipe
                 call_params = inspect.signature(pipe.__call__).parameters
