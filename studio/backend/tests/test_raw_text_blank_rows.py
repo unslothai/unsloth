@@ -62,3 +62,16 @@ def test_all_blank_raw_eval_split_is_left_for_the_trainer_to_skip():
 def test_all_blank_raw_train_split_still_fails():
     with pytest.raises(ValueError, match = "at least one non-blank string"):
         prepare_raw_text_dataset(Dataset.from_dict({"text": ["", "  "]}), split_name = "train")
+
+
+def test_shared_formatter_passes_the_eval_split_to_raw_prep():
+    # The MLX worker formats its eval split through this shared entry point.
+    from utils.datasets import format_and_template_dataset
+
+    blank = Dataset.from_dict({"text": ["", "  "]})
+    kwargs = dict(model_name = "m", tokenizer = None, format_type = "raw")
+    ev = format_and_template_dataset(blank, split_name = "eval", **kwargs)
+    assert ev["success"] and len(ev["dataset"]) == 0
+
+    with pytest.raises(ValueError, match = "at least one non-blank string"):
+        format_and_template_dataset(blank, **kwargs)
