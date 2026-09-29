@@ -41,7 +41,6 @@ def _offline_requested(local_files_only: bool) -> bool:
         return True
     try:
         from huggingface_hub import constants
-
         return bool(constants.HF_HUB_OFFLINE)
     except Exception:  # noqa: BLE001 -- no hub library means nothing to redirect
         return False

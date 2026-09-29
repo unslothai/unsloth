@@ -26,7 +26,12 @@ REPO = "acme/tiny-diffusion"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
-def _fake_cache(root: pathlib.Path, *, subfolders = ("tokenizer",), no_exist_marker = True) -> pathlib.Path:
+def _fake_cache(
+    root: pathlib.Path,
+    *,
+    subfolders = ("tokenizer",),
+    no_exist_marker = True,
+) -> pathlib.Path:
     """``models--acme--tiny-diffusion`` with ``refs/main`` and one snapshot, as a completed download
     leaves it. The ``.no_exist`` marker is what an earlier online 404 writes; it is there by default
     to show it does not rescue a load by repo id."""
@@ -47,7 +52,6 @@ def _fake_cache(root: pathlib.Path, *, subfolders = ("tokenizer",), no_exist_mar
 @pytest.fixture
 def online(monkeypatch):
     import huggingface_hub.constants as constants
-
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
 
 
@@ -102,18 +106,19 @@ def test_nothing_cached_keeps_the_repo_id(tmp_path, online):
 def test_a_local_folder_is_left_alone(tmp_path, online):
     local = tmp_path / "local_model"
     (local / "tokenizer").mkdir(parents = True)
-    assert (
-        offline_source.offline_snapshot_source(
-            str(local), "tokenizer", local_files_only = True, cache_dir = str(tmp_path)
-        )
-        == str(local)
-    )
+    assert offline_source.offline_snapshot_source(
+        str(local), "tokenizer", local_files_only = True, cache_dir = str(tmp_path)
+    ) == str(local)
 
 
 # -- the modular (MiniMax-H3) component sources -----------------------------------------------------
 
 
-def _spec(type_hint, subfolder, repo = REPO):
+def _spec(
+    type_hint,
+    subfolder,
+    repo = REPO,
+):
     return SimpleNamespace(
         type_hint = type_hint,
         subfolder = subfolder,
@@ -142,9 +147,7 @@ def test_modular_tokenizer_and_processor_specs_are_pointed_at_the_snapshot(tmp_p
             "tokenizer": _spec(_Tokenizer, "tokenizer"),
             # Models carry their own config.json and load offline by repo id already.
             "text_encoder": _spec(_Encoder, "text_encoder"),
-            "guider": SimpleNamespace(
-                type_hint = _Tokenizer, default_creation_method = "from_config"
-            ),
+            "guider": SimpleNamespace(type_hint = _Tokenizer, default_creation_method = "from_config"),
         }
     )
     offline = offline_source.offline_component_sources(
@@ -172,7 +175,8 @@ def test_the_h3_modular_build_hands_the_offline_sources_to_load_components():
             calls = [
                 call
                 for call in ast.walk(node)
-                if isinstance(call, ast.Call) and getattr(call.func, "attr", None) == "load_components"
+                if isinstance(call, ast.Call)
+                and getattr(call.func, "attr", None) == "load_components"
             ]
             assert calls, "no load_components call"
             sources = ast.unparse(node)
@@ -189,11 +193,12 @@ def test_the_h3_modular_build_hands_the_offline_sources_to_load_components():
 
 def _live_cache(monkeypatch, root: pathlib.Path) -> None:
     import utils.hf_cache_settings as cache_settings
-
     monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: str(root))
 
 
-def test_the_krea_tokenizer_and_its_fallback_open_the_snapshot_offline(monkeypatch, tmp_path, online):
+def test_the_krea_tokenizer_and_its_fallback_open_the_snapshot_offline(
+    monkeypatch, tmp_path, online
+):
     from core.inference import diffusion_krea2
 
     snapshot = _fake_cache(tmp_path)
