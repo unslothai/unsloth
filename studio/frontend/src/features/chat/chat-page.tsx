@@ -382,6 +382,18 @@ const SingleContent = memo(function SingleContent({
       : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  // Sampled on drag end, not onResize: that fires through the open/close animations too.
+  const artifactPanelWidthRef = useRef<string | null>(null);
+  const rememberArtifactPanelWidth = useCallback(() => {
+    const size = artifactPanelRef.current?.getSize().asPercentage;
+    if (size == null) return;
+    // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
+    if (size <= 5) {
+      onCloseArtifact();
+      return;
+    }
+    artifactPanelWidthRef.current = `${size}%`;
+  }, [onCloseArtifact]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -410,6 +422,25 @@ const SingleContent = memo(function SingleContent({
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
+  const artifactPanelThread = threadId ?? activeThreadId ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetting is the effect
+  useEffect(() => {
+    artifactPanelWidthRef.current = null;
+  }, [artifactPanelThread]);
+
+  const artifactOpenSequence = useChatArtifactsStore(
+    (state) => state.openSequence,
+  );
+  useEffect(() => {
+    if (!showContextPanel || artifactOpenSequence === 0) return;
+    const panel = artifactPanelRef.current;
+    if (!panel) return;
+    if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
+    // expand() alone restores the pre-collapse width, which is zero after a drag shut.
+    panel.expand();
+    panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
+  }, [artifactOpenSequence, showContextPanel]);
+
   useEffect(() => {
     const panel = artifactPanelRef.current;
     if (!panel) return;
@@ -429,7 +460,11 @@ const SingleContent = memo(function SingleContent({
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
       resizeFrameId = window.requestAnimationFrame(() => {
-        panel.resize(showContextPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+        panel.resize(
+          showContextPanel
+            ? (artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE)
+            : "0%",
+        );
       });
     });
     const surfaceTimerId = showContextPanel
@@ -488,6 +523,12 @@ const SingleContent = memo(function SingleContent({
         </ResizablePanel>
         <ResizableHandle
           withHandle={false}
+          onPointerDown={() => {
+            window.addEventListener("pointerup", rememberArtifactPanelWidth, {
+              once: true,
+            });
+          }}
+          onKeyUp={rememberArtifactPanelWidth}
           className={cn(
             "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
             !artifactLayoutActive &&
