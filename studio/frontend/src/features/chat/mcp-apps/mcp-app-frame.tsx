@@ -227,8 +227,10 @@ export function McpAppFrame(props: McpAppFrameProps) {
             hostContext: {
               theme: nowTheme,
               displayMode: "inline",
+              availableDisplayModes: ["inline"],
               containerDimensions: { maxHeight: MAX_HEIGHT },
               locale: navigator.language,
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
               platform: isTauri ? "desktop" : "web",
             },
           };
