@@ -8,7 +8,7 @@
   sha256 `adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981`
 - Licence: `LICENSE` beside this file, copied unmodified from the wheel.
 
-`utils/native_tls.py` uses it to verify TLS against the OS trust store, so Studio works behind a
+`utils/native_tls.py` uses it to verify TLS against the OS trust store, so Unsloth works behind a
 corporate TLS-inspecting proxy. See that module's docstring for the why.
 
 ### Why the source is checked in rather than installed
@@ -47,3 +47,32 @@ To move to another release, replace `truststore/` with that version's wheel cont
 `truststore_manifest.json`. `tests/test_vendored_truststore.py` fails until the manifest matches, so
 a half-finished swap cannot land. Read upstream's changelog first: a 0.x minor is where truststore
 has changed verification behaviour, which here applies process-wide.
+
+## laya 0.3.5 (Apache-2.0)
+
+- Upstream: https://huggingface.co/convaiinnovations/laya
+- Release: https://pypi.org/project/laya/0.3.5/
+- Taken from `laya-0.3.5-py3-none-any.whl`,
+  sha256 `4c57f64cbaf893bb5c7b4affddc2bf21a819f55df51941689f11868583be2903`
+- Licence: `LICENSE.laya` beside this file, copied unmodified from the wheel. The wheel ships no
+  `NOTICE` file, and the source files are unmodified.
+
+`core/systemone/laya_runtime.py` uses it to serve the Decision API (`POST /v1/systemone`). It is pure
+Python over torch, transformers, safetensors, huggingface_hub and numpy, all of which Studio already
+installs, so shipping the source replaces the `laya` pin in `requirements/extras-no-deps.txt` and the
+runtime `pip install` the Decision API used to fall back to.
+
+### How it is imported
+
+Only through `laya_runtime._laya()`, which loads `vendor/laya/__init__.py` by file path and registers
+it as the top-level `laya` module (its files import each other relatively). It never goes through
+`sys.path`, so a `laya` left in the venv by an older Studio, or installed by the user, does not replace
+this copy: `laya_runtime` drives laya internals (`Agent._to_internal`, `laya.common.collate_items`),
+so the version it runs must be the one it was written against.
+
+### Updating
+
+Replace `laya/` with the new wheel's `laya/` directory, copy its licence to `LICENSE.laya`, and update
+`version`, `wheel`, `wheel_sha256` and the per-file hashes in `laya_manifest.json`. Then check every
+laya internal `laya_runtime.py` reaches into, and run `SYSTEMONE_TEST_LAYA=<snapshot> pytest
+tests/test_systemone.py`, which compares the fast path against `laya.Agent.predict`.

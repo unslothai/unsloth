@@ -1152,7 +1152,7 @@ def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
     train this family" and disables Start with "Not supported on this GPU". MiniMax-H3 was only
     in _FLOW_TRAIN_FAMILIES, while the info builder keyed the precision branch on
     _DIT_TRAIN_FAMILIES, so it reported [] even on a host that can train, and the trainer this
-    PR adds was unreachable from Studio.
+    PR adds was unreachable from Unsloth.
 
     Judged against a reference DiT family rather than against a hardcoded list, so the test
     describes the host it runs on: on a GPU-less runner BOTH are legitimately empty, and the
@@ -1273,7 +1273,7 @@ def test_the_precision_recorded_for_h3_is_the_one_its_loop_runs_in():
 
     # The claim the equality rests on: the same weight-dtype rule in both loops, and no reader of
     # mixed_precision in the H3 one.
-    dtype_rule = 'weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32'
+    dtype_rule = 'weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32'
     h3_src = inspect.getsource(diffusion_h3_trainer)
     assert dtype_rule in h3_src
     assert dtype_rule in inspect.getsource(diffusion_dit_trainer)

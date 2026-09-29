@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Unpack the Playwright evidence the Studio payload smuggled home.
+"""Unpack the Playwright evidence the Unsloth payload smuggled home.
 
 Kaggle's ``kernels output`` returns the whole of ``/kaggle/working``, and the
 shared launcher deliberately does not take it: a previous incident lost two
@@ -58,11 +58,19 @@ def iter_text(path: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        for cell in nb.get("cells", []):
-            for output in cell.get("outputs", []):
+        # Kernels have returned valid JSON that is not a notebook (`[]`, or a
+        # non-object cell); raising here fails the job after the verdict posted.
+        if not isinstance(nb, dict):
+            continue
+        for cell in nb.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for output in cell.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
                 text = output.get("text") or ""
                 if isinstance(text, list):
-                    text = "".join(text)
+                    text = "".join(str(t) for t in text)
                 yield text
     for log_path in sorted(path.rglob("kernel.log")):
         raw = log_path.read_text(encoding = "utf-8", errors = "replace")
@@ -154,8 +162,8 @@ def main() -> int:
 
     missing = [i for i in range(1, total + 1) if i not in chunks]
     if missing:
-        # Report rather than guess. A bundle reassembled out of a truncated
-        # log decodes to something, and that something is not the evidence.
+        # A bundle reassembled from a truncated log decodes to something, and that something is not the evidence.
+        # Report rather than guess.
         print(
             f"[evidence] {len(missing)} of {total} chunks are missing "
             f"(first: {missing[0]}), so the bundle is incomplete and is not "

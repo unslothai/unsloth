@@ -9,12 +9,15 @@ import {
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
-  ArrowRight01Icon,
   FolderSearchIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -189,6 +192,7 @@ export function PickerShell({
   useThisLabel: string;
 }) {
   const t = useT();
+  const hubSource = useHubSource();
   const idBase = useId();
   const panelId = `${idBase}-panel`;
   const activeTabId = pickerTabId(idBase, tab);
@@ -197,7 +201,10 @@ export function PickerShell({
   const [queryStatus, setQueryStatus] = useState("");
   const tabs = [
     { value: PICKER_TAB.device, label: t("picker.onDevice") },
-    { value: PICKER_TAB.hub, label: t("picker.huggingFace") },
+    {
+      value: PICKER_TAB.hub,
+      label: t(hubSource === "modelscope" ? "picker.modelScope" : "picker.huggingFace"),
+    },
   ] as const;
   const canCommitQuery = tab !== PICKER_TAB.hub || online;
   const canUseThis = showUseThis && canCommitQuery;
@@ -368,7 +375,7 @@ export function PickerShell({
 
           <div
             ref={scrollRef}
-            className="min-h-0 max-h-[320px] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
+            className="min-h-0 max-h-[calc(320px*var(--ui-space-scale,1))] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
           >
             {canUseThis && (
               <button
@@ -396,8 +403,7 @@ export function PickerShell({
                     {useThisLabel}
                   </span>
                 </span>
-                <HugeiconsIcon
-                  icon={ArrowRight01Icon}
+                <ChevronRightIcon
                   strokeWidth={1.5}
                   className="size-3.5 shrink-0 text-muted-foreground/70"
                 />

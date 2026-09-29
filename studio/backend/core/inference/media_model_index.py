@@ -31,9 +31,9 @@ VIDEO_TASK = "text-to-video"
 # the scan walks several roots and reads gguf headers, and this runs per request
 _INDEX_TTL_S = 5.0
 _index_lock = threading.Lock()
-_index: dict[str, tuple[float, dict[str, "MediaModelPick"]]] = {}
+_index: dict[tuple[str, str], tuple[float, dict[str, "MediaModelPick"]]] = {}
 
-# the video family whose partitions are a load-time choice rather than a property of the files
+# the video family whose partitions are a load-time choice, not a property of the files
 _H3_FAMILY = "minimax-h3"
 
 
@@ -51,9 +51,6 @@ class MediaModelPick:
 
 # sentinel for a name two different models answer to; resolution treats it as no match
 _AMBIGUOUS = MediaModelPick("", "")
-
-
-# ── resolving a name to a downloaded model ──────────────────────────
 
 
 def _resolve_load_dir(p: Path) -> Path:
@@ -144,8 +141,8 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
 
     root = Path(load_path)
     if not root.is_dir():
-        # a repo id loads from the cache, where the containment rule does not apply but the
-        # split set still has to be whole; an uncached child is the download guard's business
+        # a repo id loads from the cache, where the containment rule does not apply but the split set still has to be
+        # whole; an uncached child is the download guard's business
         cached = _cached_repo_file(load_path, filename)
         return True if cached is None else bool(colocated_split_shards(cached)[1])
     from core.inference.diffusion_families import resolve_local_gguf_child
@@ -249,8 +246,8 @@ def _loadable_directory(load_dir: Path) -> bool:
             return True
     except OSError:
         return False
-    # a sole checkpoint is reinterpreted as a single_file load, which resolves the name through
-    # the same containment check a gguf goes through, so a cache snapshot's symlink is refused
+    # a sole checkpoint is reinterpreted as a single_file load, which resolves the name through the same containment
+    # check a gguf goes through, so a cache snapshot's symlink is refused
     sole = resolve_local_single_file(str(load_dir))
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
@@ -335,15 +332,18 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
 
 
 def _cached_index(task: str) -> dict[str, MediaModelPick]:
+    from utils.account_context import current_account_id
+
+    key = (current_account_id(), task)
     now = time.monotonic()
     with _index_lock:
-        hit = _index.get(task)
+        hit = _index.get(key)
         if hit is not None and now - hit[0] < _INDEX_TTL_S:
             return hit[1]
     built = _mark_ambiguous_builds(_build_index(task))
     with _index_lock:
         # stamped after the scan, so one slower than the ttl is not already expired
-        _index[task] = (time.monotonic(), built)
+        _index[key] = (time.monotonic(), built)
     return built
 
 
@@ -366,9 +366,6 @@ def available_media_model_ids(task: str) -> list[str]:
     return sorted(
         {pick.model_id for pick in _cached_index(task).values() if pick is not _AMBIGUOUS}
     )
-
-
-# ── recognising the resident model ──────────────────────────────────
 
 
 def published_token(pick: MediaModelPick) -> str:

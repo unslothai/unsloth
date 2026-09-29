@@ -24,6 +24,10 @@ def _plain_cli_output(monkeypatch):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("TERM", "dumb")
+    # UNSLOTH_DEBUG makes the catalog re-raise a failing source instead of reporting it, so a
+    # developer who exports it fails every test that drives a source into a raise. The one
+    # test that wants it sets it itself.
+    monkeypatch.delenv("UNSLOTH_DEBUG", raising = False)
 
 
 @pytest.fixture

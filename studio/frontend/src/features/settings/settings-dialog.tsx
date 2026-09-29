@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { FloatingMonitor } from "@/components/floating-monitor";
+import { useIsAccountOwner } from "@/features/auth";
+import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -11,8 +13,12 @@ import {
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
@@ -20,44 +26,159 @@ import {
   ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
+  EnergyRectangleIcon,
   Globe02Icon,
   HelpCircleIcon,
-  Message01Icon,
+  HomeWifiIcon,
+  LibrariesIcon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  Component,
+  type ComponentType,
   type FC,
+  type ReactNode,
+  Suspense,
+  lazy,
   useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
+  renderedSearchEntries,
 } from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-import { AboutTab } from "./tabs/about-tab";
-import { AgentsTab } from "./tabs/agents-tab";
-import { ApiKeysTab } from "./tabs/api-keys-tab";
-import { AppearanceTab } from "./tabs/appearance-tab";
-import { ChatTab } from "./tabs/chat-tab";
-import { ConnectionsTab } from "./tabs/connections-tab";
-import { DataTab } from "./tabs/data-tab";
-import { DebuggingTab } from "./tabs/debugging-tab";
-import { GeneralTab } from "./tabs/general-tab";
-import { ProfileTab } from "./tabs/profile-tab";
-import { ResourcesTab } from "./tabs/resources-tab";
-import { VoiceTab } from "./tabs/voice-tab";
+
+interface SettingsPanelProps {
+  searchEntry?: string;
+}
+
+// Statically imported, every panel ran before first paint even though the dialog
+// starts closed. Load each on first view instead; this map also drives the prefetch.
+const TAB_LOADERS = {
+  accounts: () =>
+    import("./tabs/accounts-tab").then((m) => ({ default: m.AccountsTab })),
+  general: () =>
+    import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () =>
+    import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  appearance: () =>
+    import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
+  resources: () =>
+    import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
+  chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  voice: () =>
+    import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  connections: () =>
+    import("./tabs/connections-tab").then((m) => ({
+      default: m.ConnectionsTab,
+    })),
+  library: () =>
+    import("./tabs/library-tab").then((m) => ({ default: m.LibraryTab })),
+  data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "keyboard-shortcuts": () =>
+    import("./tabs/keyboard-shortcuts-tab").then((m) => ({
+      default: m.KeyboardShortcutsTab,
+    })),
+  "api-keys": () =>
+    import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "remote-lan": () =>
+    import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
+  agents: () =>
+    import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  debugging: () =>
+    import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  about: () =>
+    import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+} satisfies Record<SettingsTab, () => Promise<{ default: FC<SettingsPanelProps> }>>;
+
+function lazyTabs<
+  T extends Record<string, () => Promise<{ default: FC<SettingsPanelProps> }>>,
+>(
+  loaders: T,
+): Record<keyof T, ComponentType<SettingsPanelProps>> {
+  const out = {} as Record<keyof T, ComponentType<SettingsPanelProps>>;
+  for (const id of Object.keys(loaders) as (keyof T)[]) {
+    out[id] = lazy(loaders[id]);
+  }
+  return out;
+}
+
+const LAZY_TABS = lazyTabs(TAB_LOADERS);
+
+interface PanelBoundaryProps {
+  tab: SettingsTab;
+  message: string;
+  reloadLabel: string;
+  children: ReactNode;
+}
+
+interface PanelBoundaryState {
+  tab: SettingsTab;
+  failed: boolean;
+}
+
+/**
+ * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
+ * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
+ * all of Unsloth rather than one panel.
+ *
+ * Reload rather than retry: React and the browser's module map both cache the failed
+ * import, so re-importing rethrows with no new request (whatwg/html#6768), while
+ * index.html is no-store and a reload does pick up the current chunk names.
+ */
+class SettingsPanelBoundary extends Component<
+  PanelBoundaryProps,
+  PanelBoundaryState
+> {
+  state: PanelBoundaryState = { tab: this.props.tab, failed: false };
+
+  static getDerivedStateFromError(): Partial<PanelBoundaryState> {
+    return { failed: true };
+  }
+
+  // A different tab is a different chunk, so one panel's failure must not hold the rest.
+  static getDerivedStateFromProps(
+    props: PanelBoundaryProps,
+    state: PanelBoundaryState,
+  ): Partial<PanelBoundaryState> | null {
+    return props.tab === state.tab ? null : { tab: props.tab, failed: false };
+  }
+
+  render() {
+    if (!this.state.failed) {
+      return this.props.children;
+    }
+    return (
+      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+        <p className="text-muted-foreground text-sm">{this.props.message}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          {this.props.reloadLabel}
+        </Button>
+      </div>
+    );
+  }
+}
 
 interface TabDef {
   id: SettingsTab;
@@ -73,8 +194,7 @@ const TABS: TabDef[] = [
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
-    icon: UserIcon,
-    badgeKey: "common.new",
+    icon: UserCircleIcon,
   },
   {
     id: "appearance",
@@ -89,7 +209,7 @@ const TABS: TabDef[] = [
   {
     id: "chat",
     labelKey: "settings.tabs.chat",
-    icon: Message01Icon,
+    icon: MessageCircleIcon,
   },
   {
     id: "api-keys",
@@ -97,27 +217,45 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
   },
   {
+    id: "remote-lan",
+    labelKey: "settings.tabs.remoteLan",
+    icon: HomeWifiIcon,
+  },
+  {
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
   },
   {
+    id: "accounts",
+    labelKey: "settings.tabs.accounts",
+    icon: UserCircleIcon,
+  },
+  {
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
     badgeKey: "common.new",
   },
   {
     id: "data",
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
-    badgeKey: "common.new",
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: EnergyRectangleIcon,
   },
   {
     id: "debugging",
@@ -137,57 +275,75 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
       clientPlatform.includes("linux")),
 });
 
-function renderTab(tab: SettingsTab) {
-  switch (tab) {
-    case "general":
-      return <GeneralTab />;
-    case "profile":
-      return <ProfileTab />;
-    case "appearance":
-      return <AppearanceTab />;
-    case "resources":
-      return <ResourcesTab />;
-    case "chat":
-      return <ChatTab />;
-    case "voice":
-      return <VoiceTab />;
-    case "connections":
-      return <ConnectionsTab />;
-    case "data":
-      return <DataTab />;
-    case "api-keys":
-      return <ApiKeysTab />;
-    case "agents":
-      return <AgentsTab />;
-    case "debugging":
-      return <DebuggingTab />;
-    case "about":
-      return <AboutTab />;
-  }
+/**
+ * Stack the tab rail over the pane when the dialog is narrower than it is at
+ * sm (608px, 640px less its 2rem margin) scaled by the UI. At 100% that is
+ * max-sm exactly; at 200% the 960px cap is always too narrow.
+ */
+function useStackedLayout(): boolean {
+  const width = 608 * useUiSpaceScale();
+  const query = `(width < ${width + 32}px)`;
+  const narrow = useSyncExternalStore(
+    (onChange) => {
+      const list = window.matchMedia(query);
+      list.addEventListener("change", onChange);
+      return () => list.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia(query).matches,
+    () => false,
+  );
+  return width > 960 || narrow;
 }
 
 export function SettingsDialog() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
+  const stacked = useStackedLayout();
+  const hubSource = useHubSource();
+  const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
+  const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
-  const activeTab = useSettingsDialogStore((s) => s.activeTab);
+  const requestedTab = useSettingsDialogStore((s) => s.activeTab);
+  const activeTab = resolveSettingsTab(requestedTab, isOwner);
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const opener = useSettingsDialogStore((s) => s.opener);
+  const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
   const reduced = useReducedMotion();
-  // Mounting a heavy tab panel (System, Connections) in the same commit as
-  // the nav highlight makes the highlight lag the click. Render the panel
-  // from a deferred value so the nav updates first.
-  const panelTab = useDeferredValue(activeTab);
+  // Mounting a heavy tab panel (System, Connections) in the same commit as the nav highlight makes
+  // the highlight lag the click. Render the panel from a deferred value so the nav updates first.
+  const deferredTab = useDeferredValue(activeTab);
+  const panelTab = resolveSettingsTab(deferredTab, isOwner);
+  const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
+
+  // Once opened, pull the other panels in on idle so a tab click never waits on the
+  // network. Nothing runs while closed, which is its state for the whole launch.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    return scheduleIdleTask(() => {
+      for (const load of Object.values(TAB_LOADERS)) {
+        // Warming a panel nobody asked for must not surface as an unhandled rejection;
+        // the boundary above speaks for the panel the user does open.
+        void load().catch(() => undefined);
+      }
+    });
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return null;
-    return TABS.map((tab) => {
+    if (!q) {
+      return null;
+    }
+    return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = SETTINGS_SEARCH_INDEX[tab.id]
+      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource)
         .filter((key) => {
-          if (t(key).toLowerCase().includes(q)) return true;
+          if (t(key).toLowerCase().includes(q)) {
+            return true;
+          }
           const keywordsKey = SETTINGS_SEARCH_KEYWORDS[key];
           return keywordsKey ? t(keywordsKey).toLowerCase().includes(q) : false;
         })
@@ -200,7 +356,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t]);
+  }, [query, t, visibleTabs, hubSource]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
@@ -219,12 +375,18 @@ export function SettingsDialog() {
   // renders deferred and some sections load their data lazily, so observe the
   // panel until the requested row exists instead of imposing a render deadline.
   useEffect(() => {
-    if (!pendingScroll) return;
+    if (!pendingScroll) {
+      return;
+    }
     // Wait until the destination tab is mounted before matching, so a same-named
     // row in the previous tab (for example "Storage") is not scrolled to instead.
-    if (panelTab !== pendingScroll.tab) return;
+    if (panelTab !== pendingScroll.tab) {
+      return;
+    }
     const root = mainScrollRef.current;
-    if (!root) return;
+    if (!root) {
+      return;
+    }
     const attempt = (): boolean => {
       const target = [
         ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
@@ -242,11 +404,15 @@ export function SettingsDialog() {
       return false;
     };
     const observer = new MutationObserver(() => {
-      if (attempt()) observer.disconnect();
+      if (attempt()) {
+        observer.disconnect();
+      }
     });
     observer.observe(root, { childList: true, subtree: true });
     const frame = window.requestAnimationFrame(() => {
-      if (attempt()) observer.disconnect();
+      if (attempt()) {
+        observer.disconnect();
+      }
     });
     return () => {
       observer.disconnect();
@@ -255,7 +421,9 @@ export function SettingsDialog() {
   }, [pendingScroll, panelTab]);
 
   useEffect(() => {
-    if (open) return;
+    if (open) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
       setQuery("");
       setPendingScroll(null);
@@ -263,6 +431,7 @@ export function SettingsDialog() {
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
+    accounts: null,
     general: null,
     profile: null,
     appearance: null,
@@ -270,17 +439,27 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    "keyboard-shortcuts": null,
+    library: null,
     data: null,
     "api-keys": null,
+    "remote-lan": null,
     agents: null,
     debugging: null,
     about: null,
   });
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
-      tabButtonRefs.current[activeTab]?.focus({ preventScroll: true });
+      const button = tabButtonRefs.current[activeTab];
+      button?.focus({ preventScroll: true });
+      // The tab list scrolls once it outgrows the sidebar, so a deep-opened tab
+      // can start outside it. preventScroll above keeps focus from revealing it,
+      // and "nearest" moves only the list, never the panel beside it.
+      button?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, activeTab]);
@@ -292,12 +471,14 @@ export function SettingsDialog() {
           showCloseButton={false}
           overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
           onCloseAutoFocus={(e) => {
-            // Restore focus to the element that triggered openDialog(). Radix's
-            // FocusScope races our rAF-scheduled tab focus and loses the
-            // previous-focus reference, so restore it by hand.
-            if (opener && opener.isConnected) {
+            // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
+            const focusTarget = [opener, openerFallback].find(
+              (element) =>
+                element?.isConnected && !element.closest("[inert], [hidden]"),
+            );
+            if (focusTarget) {
               e.preventDefault();
-              opener.focus({ preventScroll: true });
+              focusTarget.focus({ preventScroll: true });
             }
           }}
           className={cn(
@@ -312,6 +493,8 @@ export function SettingsDialog() {
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Larger surface on 4K / ultrawide.
+            "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -321,11 +504,20 @@ export function SettingsDialog() {
             {t("settings.dialog.description")}
           </DialogDescription>
           {/* Keep tab content from expanding the dialog grid. */}
-          <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
+          <div
+            data-stacked={stacked || undefined}
+            className="group/settings flex h-full min-h-0 min-w-0 w-full data-stacked:flex-col"
+          >
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
-              <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
+            <aside
+              className={cn(
+                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
+                // Narrower rail on tablets, unless the scale has stacked it.
+                !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
+              )}
+            >
+              <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -342,7 +534,7 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
@@ -356,7 +548,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1 max-sm:hidden">
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 group-data-stacked/settings:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -367,7 +559,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -385,7 +577,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -397,19 +589,26 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
+                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground group-data-stacked/settings:hidden",
                   results !== null && "hidden",
                 )}
               >
                 {t("settings.dialog.title")}
               </p>
               <nav
+                ref={attachRail}
+                onScroll={onRailScroll}
                 className={cn(
-                  "flex flex-col gap-0.5 px-1 max-sm:flex-row max-sm:overflow-x-auto",
-                  results !== null && "max-sm:flex hidden",
+                  // The tab list is the sidebar's flexible row: a short window
+                  // leaves it taller than the sidebar, and the dialog clips its
+                  // overflow, so scroll it rather than losing the last tabs.
+                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  railFadeClass,
+                  "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
+                  results !== null && "group-data-stacked/settings:flex hidden",
                 )}
               >
-                {TABS.map((tab) => {
+                {visibleTabs.map((tab) => {
                   const active = activeTab === tab.id;
                   return (
                     <button
@@ -422,14 +621,16 @@ export function SettingsDialog() {
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
-                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
-                        "max-sm:shrink-0",
+                        "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+                        // Keep the row height when the list scrolls: a flex item
+                        // shrinks past h-[calc(32px*var(--ui-space-scale,1))] down to its text otherwise.
+                        "shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
                         // only unselected items get a keyboard focus ring.
                         active
                           ? "text-accent-foreground"
-                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                          : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
                       )}
                     >
                       {active && (
@@ -475,7 +676,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
@@ -484,13 +685,34 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {renderTab(panelTab)}
+                {/* Only a panel's first view waits, so the fallback is delayed and a
+                    promptly arriving panel never flashes it. */}
+                <SettingsPanelBoundary
+                  tab={panelTab}
+                  message={t("settings.dialog.panelFailed")}
+                  reloadLabel={t("settings.dialog.panelReload")}
+                >
+                  <Suspense
+                    fallback={
+                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                        {t("common.loading")}
+                      </div>
+                    }
+                  >
+                    <Tab
+                      searchEntry={
+                        pendingScroll?.tab === panelTab
+                          ? pendingScroll.entry
+                          : undefined
+                      }
+                    />
+                  </Suspense>
+                </SettingsPanelBoundary>
               </div>
             </main>
           </div>
         </DialogContent>
       </Dialog>
-      <FloatingMonitor />
     </>
   );
 }

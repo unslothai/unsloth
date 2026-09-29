@@ -1,0 +1,221 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// The external body never spread min_p / repetition_penalty, so the sliders did nothing.
+// Its function is too large to call here, so the gated spreads are extracted and evaluated.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import ts from "typescript";
+
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { getProviderCapabilities } = await import(
+  "../src/features/chat/provider-capabilities.ts"
+);
+const { minPSamplingPayload } = await import(
+  "../src/features/chat/lib/min-p-policy.ts"
+);
+import type { MinPMode } from "../src/features/chat/types/runtime.ts";
+
+const PARAMS = {
+  temperature: 0.6,
+  topP: 0.95,
+  topK: 40,
+  minP: 0.07,
+  minPMode: "custom" as MinPMode,
+  repetitionPenalty: 1.15,
+  presencePenalty: 0.3,
+};
+
+const source = readSrc("features/chat/api/chat-adapter.ts");
+const tree = ts.createSourceFile(
+  "chat-adapter.ts",
+  source,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
+
+function externalBodyLiteral(): ts.ObjectLiteralExpression {
+  let found: ts.ObjectLiteralExpression | null = null;
+  const visit = (node: ts.Node): void => {
+    if (
+      !found &&
+      ts.isObjectLiteralExpression(node) &&
+      node.properties.some(
+        (property) =>
+          ts.isPropertyAssignment(property) &&
+          property.name.getText() === "model" &&
+          property.initializer.getText() === "externalSelection.modelId",
+      )
+    ) {
+      found = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(found, "external request body literal not found");
+  return found;
+}
+
+const gatedSpreads = externalBodyLiteral()
+  .properties.filter(ts.isSpreadAssignment)
+  .map((property) => property.expression.getText())
+  .filter((text) => text.includes("externalCapabilities"));
+
+// Without this, an extraction that matched nothing would pass every assertion vacuously.
+assert.ok(
+  gatedSpreads.length >= 4,
+  `only ${gatedSpreads.length} gated spreads`,
+);
+
+const buildSamplingFields = new Function(
+  "externalCapabilities",
+  "params",
+  "externalProvider",
+  "minPSamplingPayload",
+  `return Object.assign({}, ${gatedSpreads.join(", ")});`,
+) as (
+  capabilities: unknown,
+  params: typeof PARAMS,
+  externalProvider: { providerType: string },
+  payload: typeof minPSamplingPayload,
+) => Record<string, number>;
+
+function bodyFor(
+  providerType: string,
+  params = PARAMS,
+  apiType?: "chat_completions" | "responses",
+  modelId?: string,
+  baseUrl?: string,
+): Record<string, number> {
+  return buildSamplingFields(
+    getProviderCapabilities(providerType, apiType, modelId, baseUrl),
+    params,
+    { providerType },
+    minPSamplingPayload,
+  );
+}
+
+test("vLLM server default omits Min P while retaining other sampling fields", () => {
+  const custom = bodyFor("vllm");
+  const server = bodyFor("vllm", { ...PARAMS, minPMode: "server-default" });
+  const { min_p, ...other } = custom;
+  assert.equal(min_p, PARAMS.minP);
+  assert.deepEqual(server, other);
+  assert.equal(bodyFor("vllm", { ...PARAMS, minP: 0 }).min_p, 0);
+});
+
+for (const providerType of ["vllm", "openrouter", "llama_cpp"]) {
+  test(`${providerType} carries the min_p and repetition_penalty the panel offers`, () => {
+    const body = bodyFor(providerType);
+    assert.equal(body.min_p, PARAMS.minP);
+    assert.equal(body.repetition_penalty, PARAMS.repetitionPenalty);
+    assert.equal(body.top_k, PARAMS.topK);
+    assert.equal(body.presence_penalty, PARAMS.presencePenalty);
+    assert.equal(body.temperature, PARAMS.temperature);
+    assert.equal(body.top_p, PARAMS.topP);
+    if (providerType !== "vllm") {
+      assert.deepEqual(
+        bodyFor(providerType, { ...PARAMS, minPMode: "server-default" }),
+        body,
+      );
+    }
+  });
+}
+
+test("top_p at Off is left out so a provider that forbids it alongside temperature accepts the request", () => {
+  for (const providerType of ["custom", "vllm", "openrouter"]) {
+    const body = bodyFor(providerType, { ...PARAMS, topP: 1 });
+    assert.ok(!("top_p" in body), providerType);
+    assert.equal(body.temperature, PARAMS.temperature, providerType);
+    assert.equal(bodyFor(providerType).top_p, PARAMS.topP, providerType);
+  }
+});
+
+test("custom stays on the OpenAI-compatible baseline", () => {
+  const body = bodyFor("custom");
+  assert.ok(!("min_p" in body));
+  assert.ok(!("repetition_penalty" in body));
+  assert.ok(!("top_k" in body));
+  assert.equal(body.presence_penalty, PARAMS.presencePenalty);
+  assert.equal(body.temperature, PARAMS.temperature);
+});
+
+test("custom Responses sends gateway sampling but omits it for managed fixed models", () => {
+  const gateway = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://gateway.example/v1");
+  assert.equal(gateway.temperature, PARAMS.temperature);
+  assert.equal(gateway.top_p, PARAMS.topP);
+  const managed = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://api.openai.com/v1");
+  assert.ok(!("temperature" in managed));
+  assert.ok(!("top_p" in managed));
+  assert.match(source, /getProviderCapabilities\(\s*externalProvider\?\.providerType,\s*externalProvider\?\.apiType,\s*externalSelection\?\.modelId,\s*externalProvider\?\.baseUrl/);
+});
+
+test("ollama is sent none of the three its /v1 layer drops", () => {
+  const body = bodyFor("ollama");
+  assert.ok(!("min_p" in body));
+  assert.ok(!("repetition_penalty" in body));
+  assert.ok(!("top_k" in body));
+  assert.equal(body.presence_penalty, PARAMS.presencePenalty);
+  assert.equal(body.temperature, PARAMS.temperature);
+});
+
+test("a hosted provider's body is unchanged by the new rows", () => {
+  for (const providerType of [
+    "anthropic",
+    "openai",
+    "openai_codex",
+    "gemini",
+    "kimi",
+    "deepseek",
+    "mistral",
+    "qwen",
+    "huggingface",
+  ]) {
+    const body = bodyFor(providerType);
+    assert.ok(!("min_p" in body), providerType);
+    assert.ok(!("repetition_penalty" in body), providerType);
+  }
+});
+
+test("an unknown provider stays on the OpenAI-compatible shape", () => {
+  // A connection saved by a newer build lands here, and a strict endpoint 400s on extensions.
+  const body = bodyFor("some-provider-this-build-never-heard-of");
+  assert.ok(!("min_p" in body));
+  assert.ok(!("repetition_penalty" in body));
+  assert.ok(!("top_k" in body));
+});
+
+test("the panel and the request read the same capability flags", () => {
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
+  // Gating the body on anything but these flags is how panel and request drifted apart.
+  assert.match(sheet, /Boolean\(providerCapabilities\?\.minP\)/);
+  assert.match(sheet, /Boolean\(providerCapabilities\?\.repetitionPenalty\)/);
+  assert.ok(
+    gatedSpreads.some((text) => text.includes("externalCapabilities?.minP")),
+  );
+  assert.ok(
+    gatedSpreads.some((text) =>
+      text.includes("externalCapabilities?.repetitionPenalty"),
+    ),
+  );
+});
+
+// The proxy drops the usage chunk for a caller that did not opt in, which hid the usage bar.
+test("the external body opts into the stream usage chunk", () => {
+  const optIn = externalBodyLiteral().properties.find(
+    (property) =>
+      ts.isPropertyAssignment(property) &&
+      property.name.getText() === "stream_options",
+  );
+  assert.ok(optIn && ts.isPropertyAssignment(optIn), "stream_options missing");
+  assert.deepEqual(new Function(`return (${optIn.initializer.getText()});`)(), {
+    include_usage: true,
+  });
+});

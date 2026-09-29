@@ -135,12 +135,13 @@ def _run(
     return taken.get("backend")
 
 
-# 8129 documents at 16 heads / head_dim 128 is the last count that ran; 20000 is well past it.
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_oversized_partition_falls_back_to_sdpa(monkeypatch, backend):
     assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = True) == ad.SDPA
 
 
+# 8129 documents at 16 heads / head_dim 128 is the last count that ran;
+# 20000 is well past it.
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_softcapped_model_raises_instead_of_silently_dropping_the_softcap(monkeypatch, backend):
     """Gemma 2 hands `attn_logit_softcapping` to the fast kernels through

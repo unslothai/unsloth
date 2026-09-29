@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Optional
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STUDIO = _REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
@@ -77,41 +78,60 @@ def test_the_windows_branch_is_the_exe():
     }, "the .exe branch must be gated on platform.system() == 'Windows'"
 
 
-def _launch_head_value() -> ast.expr:
+def _assigned_launch_head(stmts) -> Optional[ast.expr]:
+    for stmt in stmts:
+        if isinstance(stmt, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "launch_head" for t in stmt.targets
+        ):
+            return stmt.value
+    return None
+
+
+def _launch_head_arms() -> tuple[ast.expr, ast.expr, ast.expr]:
+    """(Windows arm, POSIX arm, platform test) from an IfExp or an if/elif/else chain."""
     for node in ast.walk(_run_function()):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "launch_head":
-                return node.value
+        if isinstance(node, ast.Assign) and _assigned_launch_head([node]) is not None:
+            value = node.value
+            assert isinstance(
+                value, ast.IfExp
+            ), f"expected launch_head to branch per platform, got {ast.dump(value)}"
+            return value.body, value.orelse, value.test
+        if (
+            isinstance(node, ast.If)
+            and _assigned_launch_head(node.body) is not None
+            and any(isinstance(c, ast.Constant) and c.value == "win32" for c in ast.walk(node.test))
+        ):
+            last = node
+            while len(last.orelse) == 1 and isinstance(last.orelse[0], ast.If):
+                last = last.orelse[0]
+            posix = _assigned_launch_head(last.orelse)
+            assert posix is not None, "the launch_head chain needs a final else for POSIX"
+            return _assigned_launch_head(node.body), posix, node.test
     raise AssertionError("`run` never assigns a launch_head")
 
 
 def test_windows_respawns_through_the_interpreter_not_the_console_script():
     """The blocked executable must not be argv[0] of the child on Windows."""
-    branch = _launch_head_value()
-    assert isinstance(
-        branch, ast.IfExp
-    ), f"expected launch_head to branch per platform, got {ast.dump(branch)}"
+    windows_arm, posix_arm, platform_test = _launch_head_arms()
     # Windows arm: _managed_cli_argv(studio_python), i.e. the interpreter form.
-    assert isinstance(branch.body, ast.Call), ast.dump(branch.body)
-    assert isinstance(branch.body.func, ast.Name)
-    assert branch.body.func.id == "_managed_cli_argv", (
+    assert isinstance(windows_arm, ast.Call), ast.dump(windows_arm)
+    assert isinstance(windows_arm.func, ast.Name)
+    assert windows_arm.func.id == "_managed_cli_argv", (
         "the Windows arm must build the interpreter argv via _managed_cli_argv, got "
-        f"{ast.dump(branch.body.func)}"
+        f"{ast.dump(windows_arm.func)}"
     )
-    assert [arg.id for arg in branch.body.args if isinstance(arg, ast.Name)] == [
+    assert [arg.id for arg in windows_arm.args if isinstance(arg, ast.Name)] == [
         "studio_python"
     ], "the interpreter argv must be built from studio_python"
     # POSIX arm: [str(studio_bin)] -- unchanged, and what os.execvp needs.
-    assert isinstance(branch.orelse, ast.List) and len(branch.orelse.elts) == 1
-    posix_head = branch.orelse.elts[0]
+    assert isinstance(posix_arm, ast.List) and len(posix_arm.elts) == 1
+    posix_head = posix_arm.elts[0]
     assert isinstance(posix_head, ast.Call) and isinstance(posix_head.func, ast.Name)
     assert posix_head.func.id == "str"
     assert isinstance(posix_head.args[0], ast.Name) and posix_head.args[0].id == "studio_bin"
     assert "win32" in {
         node.value
-        for node in ast.walk(branch.test)
+        for node in ast.walk(platform_test)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }, "the interpreter arm must be gated on sys.platform == 'win32'"
 
@@ -122,8 +142,8 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
     Each side is read from its own file. An earlier version of this test only
     grepped studio.py, so drifting the Rust and PowerShell copies left it green.
     """
-    # Spelled out, not imported from any of the three, so editing any single copy
-    # fails here instead of quietly agreeing with itself.
+    # Spelled out, not imported from any of the three, so editing any single copy fails here instead of quietly agreeing
+    # with itself.
     canonical = (
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
@@ -177,8 +197,7 @@ def test_the_interpreter_argv_carries_no_isolation_flag_by_default():
     inherited = ast.literal_eval(ternaries[0].orelse)
 
     assert inherited == ["-X", "utf8"], "the default argv must stay `-X utf8 -c <trampoline>`"
-    # -X utf8 before -I: -I implies -E, which discards PYTHONUTF8 but cannot
-    # touch a flag already on the command line.
+    # X utf8 before -I: -I implies -E, which discards PYTHONUTF8 but cannot touch a flag already on the command line.
     assert isolated == ["-X", "utf8", "-I"]
     assert ternaries[0].test.id == "isolated", "the ternary must key off the isolated parameter"
 
@@ -247,5 +266,5 @@ def test_the_windows_existence_gate_accepts_a_quarantined_venv():
     }
     assert "_managed_cli_package_present" in fallbacks, (
         "a missing console script must fall back to the installed package, or a "
-        "quarantined Windows install cannot start Studio"
+        "quarantined Windows install cannot start Unsloth"
     )

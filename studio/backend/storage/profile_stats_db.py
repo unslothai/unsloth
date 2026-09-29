@@ -1,19 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Profile usage statistics derived from studio.db.
+"""Profile usage statistics derived from studio.db.
 
-Read-only aggregation over rows the app already writes: chat threads/messages
-(with their per-message ``metadata_json``) and training runs/metrics. Nothing
-is recorded specifically for stats, so the numbers are only as complete as the
-local history.
+Read-only aggregation over chat threads/messages (with their per-message ``metadata_json``), content-free API
+usage receipts, and training runs/metrics. The numbers are only as complete as the local history retained after
+each feature was introduced. Chat and training tables predate authenticated subjects and therefore remain
+install-wide; API usage receipts are filtered to the requesting subject.
 
-Token counts live inside each message's metadata blob, so they cannot be summed
-in SQL portably (JSON1 is not guaranteed on every bundled SQLite). Rows are
-streamed once in (thread, time) order and every metric is folded in that single
-pass, then memoised against a (count, max created_at) fingerprint so reopening
-the Profile tab is free until history changes.
+Token counts live inside each message's metadata blob, so they cannot be summed in SQL portably (JSON1 is not
+guaranteed on every bundled SQLite). Rows are streamed once in (thread, time) order and every metric is folded
+in that single pass, then memoised against per-source count/timestamp fingerprints so reopening the Profile tab
+is free until history changes.
 """
 
 import json
@@ -25,12 +23,15 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
+from storage.api_usage_db import canonical_api_subject
 from storage.studio_db import count_chat_message_attachments, get_connection
+from utils.account_context import current_account_id
+from utils.paths import studio_db_path
 
 logger = get_logger(__name__)
 
-# Gaps longer than this end a "sitting at the keyboard" stretch: without the cap
-# a thread reopened a week later would report a week-long chat.
+# Gaps longer than this end a sitting-at-the-keyboard stretch: without the cap a thread reopened a
+# week later would report a week-long chat.
 SESSION_GAP_SECONDS = 30 * 60
 # Cap on the daily activity series handed to the UI (the heatmap draws a year).
 MAX_DAILY_DAYS = 366
@@ -39,19 +40,17 @@ MAX_TZ_OFFSET_MINUTES = 14 * 60
 # Top-N lists returned to the client.
 TOP_MODELS = 8
 RECENT_RUNS = 5
-# Serve a memoised payload for this long even if the fingerprint is unchanged,
-# so a chat that is mid-stream still refreshes reasonably promptly.
+# Serve a memoised payload for this long even when the fingerprint is unchanged, so a chat that is
+# mid-stream still refreshes promptly.
 CACHE_TTL_SECONDS = 20.0
 
 _cache_lock = threading.Lock()
-_cache: dict[str, Any] = {"fingerprint": None, "expires_at": 0.0, "payload": None}
+_cache: dict[str, dict[str, Any]] = {}
 
 
 def _as_float(value: Any) -> Optional[float]:
-    """Coerce JSON numbers defensively; metadata is written by the client.
-
-    json accepts integers of any width, and float() raises OverflowError past
-    ~1e308, so one oversized counter would 500 the whole panel.
+    """Coerce JSON numbers defensively; metadata is written by the client. json accepts integers of any width,
+    and float() raises OverflowError past ~1e308, so one oversized counter would 500 the whole panel.
     """
     if isinstance(value, bool) or value is None:
         return None
@@ -80,13 +79,10 @@ def _clean_str(value: Any) -> str:
 
 
 def _resolve_zone(tz_name: str, tz_offset_minutes: int):
-    """The caller's zone, preferring an IANA name over a single offset.
-
-    A fixed offset is only correct for the half of the year the caller happens
-    to be in, so a winter message read during summer lands an hour out and can
-    cross midnight. An IANA name carries each date's own offset. The offset
-    stays as the fallback for callers that send no name, or hosts with no tzdata.
-    """
+    """The caller's zone, preferring an IANA name over a single offset. A fixed offset is only correct
+    for the half of the year the caller happens to be in, so a winter message read during summer
+    lands an hour out and can cross midnight. An IANA name carries each date's own offset. The
+    offset stays as the fallback for callers that send no name, or hosts with no tzdata."""
     if tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -96,12 +92,9 @@ def _resolve_zone(tz_name: str, tz_offset_minutes: int):
 
 
 def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
-    """Wall-clock time in the caller's timezone, not the server's.
-
-    created_at is a client-supplied integer that SQLite stores unchecked, so a
-    value outside datetime's range is possible. Drop that row rather than let
-    one bad import take down the whole panel.
-    """
+    """Wall-clock time in the caller's timezone, not the server's. created_at is a client-supplied
+    integer that SQLite stores unchecked, so a value outside datetime's range is possible. Drop that
+    row rather than let one bad import take down the whole panel."""
     if created_at_ms <= 0:
         return None
     try:
@@ -111,15 +104,10 @@ def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
-    """Current and longest run of consecutive active days.
-
-    The current streak survives a day that has not been used yet: a streak that
-    ended yesterday is still "live" until today is over.
-
-    Imported history or a skewed client clock can date rows in the future.
-    Those are dropped up front so they cannot pad the longest streak or be
-    reported as the last active day either.
-    """
+    """Current and longest run of consecutive active days. The current streak survives a day that has
+    not been used yet: a streak that ended yesterday is still "live" until today is over. Imported
+    history or a skewed client clock can date rows in the future; those are dropped up front so they
+    cannot pad the longest streak or be reported as the last active day either."""
     days = {day for day in days if day <= today}
     if not days:
         return {"current": 0, "longest": 0, "lastActiveDay": None}
@@ -193,19 +181,78 @@ class _MessageFold:
         bucket["threads"].add(thread_id)
 
 
+class _ApiUsageFold:
+    """Scalar-only API receipts folded separately from chat-only metrics."""
+
+    def __init__(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.by_day: dict[date, int] = {}
+        self.models: dict[str, dict[str, Any]] = {}
+        self.requests = 0
+
+
+def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
+    fold = _ApiUsageFold()
+    rows = conn.execute(
+        """
+        SELECT model, prompt_tokens, completion_tokens, total_tokens, created_at
+        FROM api_usage_events
+        WHERE subject = ?
+        ORDER BY created_at
+        """,
+        (subject,),
+    )
+    for row in rows:
+        prompt_tokens = _as_int(row["prompt_tokens"])
+        completion_tokens = _as_int(row["completion_tokens"])
+        total_tokens = _as_int(row["total_tokens"])
+        fold.prompt_tokens += prompt_tokens
+        fold.completion_tokens += completion_tokens
+        # Preserve the provider's authoritative total even when it differs from the input/output sum.
+        fold.total_tokens += total_tokens
+        fold.requests += 1
+
+        stamp = _local_stamp(_as_int(row["created_at"]), zone)
+        if stamp is not None:
+            day = stamp.date()
+            fold.by_day[day] = fold.by_day.get(day, 0) + total_tokens
+
+        model_id = _clean_str(row["model"])
+        if model_id:
+            model = fold.models.setdefault(
+                model_id,
+                {"id": model_id, "label": _model_label(model_id), "messages": 0, "tokens": 0},
+            )
+            # One terminal API request represents one model response in the combined leaderboard.
+            model["messages"] += 1
+            model["tokens"] += total_tokens
+    return fold
+
+
+def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
+    """Merge only combined activity surfaces, leaving chat counters intact."""
+    for day, tokens in api.by_day.items():
+        bucket = chat.by_day.setdefault(day, {"tokens": 0, "messages": 0, "threads": set()})
+        bucket["tokens"] += tokens
+    for model_id, api_model in api.models.items():
+        model = chat.models.setdefault(
+            model_id,
+            {"id": model_id, "label": api_model["label"], "messages": 0, "tokens": 0},
+        )
+        model["messages"] += api_model["messages"]
+        model["tokens"] += api_model["tokens"]
+
+
 def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
-    """For each original message, the one clone elected to stand in for it.
-
-    A clone is normally ignored because the original is counted instead. Once
-    the original is gone, whether its thread was deleted or just that row was
-    pruned, the clones become the only record. Letting every sibling count them
-    would multiply the usage, so exactly one may.
-
-    Electing per message rather than per fork matters because fork_chat_thread
-    copies one parent_id branch, not the whole thread: sibling forks taken from
-    a retry and a regeneration hold different rows, and a per-fork winner would
-    silently drop whatever only the loser carries.
-    """
+    """For each original message, the one clone elected to stand in for it. A clone is normally ignored
+    because the original is counted instead. Once the original is gone, whether its thread was
+    deleted or just that row was pruned, the clones become the only record. Letting every sibling
+    count them would multiply the usage, so exactly one may. Electing per message rather than per
+    fork matters because fork_chat_thread copies one parent_id branch, not the whole thread: sibling
+    forks taken from a retry and a regeneration hold different rows, and a per-fork winner would
+    silently drop whatever only the loser carries."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role,
@@ -229,11 +276,9 @@ def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
 
 
 def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
-    """Identity of every message still living in a thread that has been forked.
-
-    Clones get fresh ids, so there is nothing to join on. Within one thread the
-    timestamp and role are enough to recognise the row a clone was taken from.
-    """
+    """Identity of every message still living in a thread that has been forked. Clones get fresh ids,
+    so there is nothing to join on. Within one thread the timestamp and role are enough to recognise
+    the row a clone was taken from."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role
@@ -292,20 +337,16 @@ def _fold_messages(conn, zone) -> _MessageFold:
             thread_messages = 0
             previous_created = None
 
-        # Compare mode stores one thread per pane under a shared pair_id, and
-        # the sidebar shows them as a single conversation. Count them that way
-        # too, or one comparison inflates the chat total and drags the average
-        # tokens per chat down.
+        # Compare mode stores one thread per pane under a shared pair_id and the sidebar shows them as a
+        # single conversation, so counting them twice inflates the chat total.
         conversation_id = row["pair_id"] or thread_id
 
-        # A fork is its own visible conversation, so it counts towards the chat
-        # total from the moment it exists, before any new turn is added.
+        # A fork is its own visible conversation, so it counts towards the chat total from the moment it exists, before
+        # any new turn is added.
         fold.threads.add(conversation_id)
 
-        # Forking clones the whole ancestry into the new thread, keeping each
-        # copy's original timestamp. Skip a clone while the row it was taken
-        # from is still there to be counted; once that original is gone, only
-        # the elected fork stands in for it, so nothing is lost or doubled.
+        # Forking clones the whole ancestry keeping each copy's timestamp, so skip a clone while the row
+        # it came from is still countable; once that original is gone the elected fork stands in.
         source_id = row["forked_from_thread_id"]
         if source_id and created_at < _as_int(row["thread_created_at"]):
             original = (source_id, created_at, row["role"])
@@ -348,9 +389,8 @@ def _fold_messages(conn, zone) -> _MessageFold:
             usage = usage if isinstance(usage, dict) else {}
             timing = timing if isinstance(timing, dict) else {}
 
-            # llama.cpp reports its own counters under serverTimings when the
-            # provider sends no usage chunk. The response-details sheet already
-            # falls back to these, so the totals here have to as well.
+            # llama.cpp reports its own counters under serverTimings when the provider sends no usage chunk, and
+            # the response-details sheet already falls back to these.
             server = metadata.get("serverTimings")
             server = server if isinstance(server, dict) else {}
 
@@ -361,7 +401,6 @@ def _fold_messages(conn, zone) -> _MessageFold:
             total_tokens = _as_int(usage.get("totalTokens"))
             if completion_tokens == 0:
                 # Local engines occasionally omit the usage chunk; the adapter's
-                # own token count is the next best estimate.
                 completion_tokens = _as_int(timing.get("tokenCount"))
             if total_tokens == 0:
                 total_tokens = prompt_tokens + completion_tokens
@@ -375,11 +414,8 @@ def _fold_messages(conn, zone) -> _MessageFold:
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
-            # responseDetails carries the model that actually answered, which
-            # differs from the requested checkpoint whenever a provider routes
-            # or resolves an alias. contextUsage.modelId is the request, so it
-            # is only the fallback. The thread's model_id is never used: it
-            # tracks the current selection, not the one that ran.
+            # responseDetails carries the model that actually answered, which differs from the requested
+            # checkpoint whenever a provider routes or resolves an alias.
             details = metadata.get("responseDetails")
             details = details if isinstance(details, dict) else {}
             model_id = _clean_str(details.get("responseModelId")) or _clean_str(
@@ -430,28 +466,18 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
 
 
 def _superseded(prefix: str = "r.") -> str:
-    """SQL for "a later run resumed from this one, so its counters live there".
-
-    ``prefix`` must qualify the outer row: the EXISTS subquery selects from the
-    same table, so a bare column name would bind to the subquery instead.
-
-    ``create_run``'s resume claim sets ``resume_blocked`` and leaves
-    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the
-    same flag, so the flag alone cannot tell the two apart.
-
-    ``delete_run`` never clears the flag, so the continuation has to still be
-    there. Otherwise deleting it would strand the source at zero while its row
-    and metrics stay visible in history.
-
-    The continuation also has to have reached the source's step. ``create_run``
-    claims the source the moment a resume starts, but ``final_step`` is only
-    written on the first metric flush, so a continuation that fails before then
-    would take the source's completed work down with it.
-
-    ``resumed_from_run_id`` records the lineage outright. Runs written before
-    that column existed fall back to matching ``output_dir``, which is weaker:
-    cancelling a continuation nulls its ``output_dir`` and breaks the match.
-    """
+    """SQL for "a later run resumed from this one, so its counters live there". ``prefix`` must qualify
+    the outer row: the EXISTS subquery selects from the same table, so a bare column name would bind
+    to the subquery instead. ``create_run``'s resume claim sets ``resume_blocked`` and leaves
+    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the same flag, so the flag
+    alone cannot tell the two apart. ``delete_run`` never clears the flag, so the continuation has
+    to still be there; otherwise deleting it would strand the source at zero while its row and
+    metrics stay visible in history. The continuation also has to have reached the source's step.
+    ``create_run`` claims the source the moment a resume starts, but ``final_step`` is only written
+    on the first metric flush, so a continuation that fails before then would take the source's
+    completed work down with it. ``resumed_from_run_id`` records the lineage outright. Runs written
+    before that column existed fall back to matching ``output_dir``, which is weaker: cancelling a
+    continuation nulls its ``output_dir`` and breaks the match."""
     return f"""
         {prefix}resume_blocked = 1
         AND EXISTS (
@@ -485,18 +511,15 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    # A resumed run continues its source's step and token counters from the
-    # checkpoint, so both absolute totals already include the source's work.
-    # Only a run superseded by a resume is dropped: create_run's claim sets
-    # resume_blocked while leaving output_dir intact, whereas cancelling clears
-    # output_dir, so a cancelled run keeps contributing the work it did do.
+    # A resumed run continues its source's counters, so only a run superseded by a resume is dropped: create_run's
+    # claim sets resume_blocked while leaving output_dir intact, whereas cancelling clears it, so a cancelled run
+    # keeps the work it did do.
     steps = conn.execute(
         f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
 
-    # num_tokens is state.num_input_tokens_seen, a running total logged at each
-    # step, so summing the samples multiplies the real figure. Take each run's
-    # final counter, the same value get_run_metrics reports.
+    # num_tokens is state.num_input_tokens_seen, a running total logged at each step, so summing the samples
+    # multiplies the real figure; take each run's final counter, the value get_run_metrics reports.
     tokens = conn.execute(
         f"""
         SELECT COALESCE(SUM(run_tokens), 0) FROM (
@@ -532,8 +555,8 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
-                # A renamed run keeps the name the user gave it; otherwise fall
-                # back to the short model label rather than the full repo id.
+                # A renamed run keeps the name the user gave it; otherwise fall back to the short model label rather
+                # than the full repo id.
                 "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),
@@ -548,51 +571,82 @@ def _training_stats(conn) -> dict[str, Any]:
     }
 
 
-def _fingerprint(conn) -> tuple:
+def _fingerprint(conn, subject: str) -> tuple:
     message_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages"
     ).fetchone()
     run_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(started_at), '') FROM training_runs"
     ).fetchone()
-    return (message_row[0], message_row[1], run_row[0], run_row[1])
+    api_row = conn.execute(
+        """
+        SELECT COUNT(*), COALESCE(MAX(created_at), 0)
+        FROM api_usage_events
+        WHERE subject = ?
+        """,
+        (subject,),
+    ).fetchone()
+    return (
+        message_row[0],
+        message_row[1],
+        run_row[0],
+        run_row[1],
+        subject,
+        api_row[0],
+        api_row[1],
+    )
 
 
 def compute_profile_stats(
     days: int = MAX_DAILY_DAYS,
     tz_offset_minutes: int = 0,
     tz_name: str = "",
+    *,
+    subject: str = "",
 ) -> dict[str, Any]:
-    """Aggregate every profile statistic in one pass, memoised per history state."""
+    """Aggregate profile statistics, subject-scoping only external API usage. Legacy Unsloth chat and
+    training history is install-wide because those rows have no authenticated owner. An empty
+    subject intentionally sees no API receipts, keeping non-route callers fail-closed."""
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
         -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
     )
     zone = _resolve_zone(tz_name, tz_offset_minutes)
+    subject = canonical_api_subject(subject)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn), days, tz_offset_minutes, tz_name)
+        # The path is in the fingerprint, so a reused account id cannot read another database.
+        fingerprint = (
+            str(studio_db_path()),
+            _fingerprint(conn, subject),
+            days,
+            tz_offset_minutes,
+            tz_name,
+        )
         now = time.monotonic()
+        account_id = current_account_id()
         with _cache_lock:
+            cached = _cache.get(account_id)
             if (
-                _cache["payload"] is not None
-                and _cache["fingerprint"] == fingerprint
-                and _cache["expires_at"] > now
+                cached is not None
+                and cached["fingerprint"] == fingerprint
+                and cached["expires_at"] > now
             ):
-                return _cache["payload"]
+                return cached["payload"]
 
         started = time.perf_counter()
         fold = _fold_messages(conn, zone)
+        api_fold = _fold_api_usage(conn, zone, subject)
+        _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)
 
-        # "Today" has to match the buckets above, or the newest column and the
-        # current streak drift by a day whenever the caller is elsewhere.
+        # "Today" has to match the buckets above, or the newest column and the current streak drift by a day
+        # whenever the caller is elsewhere.
         today = (_local_stamp(int(time.time() * 1000), zone) or datetime.now()).date()
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 
-        # The grid stops at today and the streaks ignore anything later, so the
-        # day-based headlines have to as well. A skewed client clock would
+        # The grid stops at today and the streaks ignore anything later, so a skewed client clock would
         # otherwise name a peak day that is nowhere in the chart.
         past_days = {day: bucket for day, bucket in fold.by_day.items() if day <= today}
         peak_day = max(past_days.items(), key = lambda item: item[1]["tokens"], default = None)
@@ -609,9 +663,15 @@ def compute_profile_stats(
                 "messages": fold.messages,
                 "userMessages": fold.user_messages,
                 "assistantMessages": fold.assistant_messages,
-                "promptTokens": fold.prompt_tokens,
-                "completionTokens": fold.completion_tokens,
-                "totalTokens": fold.total_tokens,
+                "promptTokens": fold.prompt_tokens + api_fold.prompt_tokens,
+                "completionTokens": fold.completion_tokens + api_fold.completion_tokens,
+                "totalTokens": fold.total_tokens + api_fold.total_tokens,
+                "chatPromptTokens": fold.prompt_tokens,
+                "chatCompletionTokens": fold.completion_tokens,
+                "chatTokens": fold.total_tokens,
+                "apiPromptTokens": api_fold.prompt_tokens,
+                "apiCompletionTokens": api_fold.completion_tokens,
+                "apiTokens": api_fold.total_tokens,
                 "cachedTokens": fold.cached_tokens,
                 "toolCalls": fold.tool_calls,
                 "attachments": fold.attachments,
@@ -656,23 +716,23 @@ def compute_profile_stats(
         }
 
         logger.debug(
-            "profile stats computed in %.1f ms (%d messages)",
+            "profile stats computed in %.1f ms (%d messages, %d API requests)",
             (time.perf_counter() - started) * 1000,
             fold.messages,
+            api_fold.requests,
         )
 
         with _cache_lock:
-            _cache["fingerprint"] = fingerprint
-            _cache["expires_at"] = time.monotonic() + CACHE_TTL_SECONDS
-            _cache["payload"] = payload
+            _cache[account_id] = {
+                "fingerprint": fingerprint,
+                "expires_at": time.monotonic() + CACHE_TTL_SECONDS,
+                "payload": payload,
+            }
         return payload
     finally:
         conn.close()
 
 
 def invalidate_profile_stats_cache() -> None:
-    """Drop the memoised payload (used by tests and after history wipes)."""
     with _cache_lock:
-        _cache["fingerprint"] = None
-        _cache["expires_at"] = 0.0
-        _cache["payload"] = None
+        _cache.pop(current_account_id(), None)
