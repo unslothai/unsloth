@@ -210,21 +210,30 @@ export function ArtifactHtmlFrame({
     event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const pendingEntries = useRef<CanvasConsoleEntry[]>([]);
+  const pendingDropped = useRef(false);
   const flushHandle = useRef<number | null>(null);
   const queueEntry = useCallback(
     (entry: CanvasConsoleEntry) => {
+      // The canvas can post here directly, past the shell's cap, and a hidden tab never flushes.
       pendingEntries.current.push(entry);
+      if (pendingEntries.current.length > CANVAS_CONSOLE_ENTRIES_TRACKED) {
+        pendingEntries.current.shift();
+        pendingDropped.current = true;
+      }
       if (flushHandle.current !== null) return;
       flushHandle.current = window.requestAnimationFrame(() => {
         flushHandle.current = null;
         const batch = pendingEntries.current;
+        const dropped = pendingDropped.current;
         pendingEntries.current = [];
-        setOutput((current) =>
-          batch.reduce(
+        pendingDropped.current = false;
+        setOutput((current) => {
+          const next = batch.reduce(
             (state, queued) => appendCanvasEntry(state, code, queued),
             current,
-          ),
-        );
+          );
+          return dropped ? { ...next, capped: true } : next;
+        });
       });
     },
     [code],
@@ -250,6 +259,7 @@ export function ArtifactHtmlFrame({
       flushHandle.current = null;
     }
     pendingEntries.current = [];
+    pendingDropped.current = false;
   }, []);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   // Everything that reruns the document (code, reload counter, network policy) must be in this key.

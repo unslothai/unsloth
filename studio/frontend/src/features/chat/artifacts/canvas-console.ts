@@ -99,16 +99,22 @@ export function canvasErrors(
   return state.entries.filter((entry) => entry.kind === "error");
 }
 
-const WRAPPER_FRAME = "artifact-preview-frame";
+// The shell's render(); it and every frame below it are Studio's, not the canvas's.
+// Matched by name, not URL: Firefox and WebKit give the canvas's own frames the shell's URL.
+const SHELL_RENDER_FRAME = "unslothRenderArtifact";
 // The browser prefixes the event message with "Uncaught "; the stack's copy has no prefix.
-const STACK_FRAME = /^\s*at\s/;
+// V8 frames start with "at "; SpiderMonkey and JavaScriptCore use "name@url" with no message line.
+const STACK_FRAME = /^\s*at\s|^[^\s@]*@\S|^(?:global|module|eval) code@/;
+const NATIVE_WRITE_FRAME = /^write@\[native code\]$/;
 
 export function canvasStack(entry: CanvasConsoleEntry): string {
   const lines = entry.stack.split("\n");
   const first = lines.findIndex((line) => STACK_FRAME.test(line));
-  const frames = first < 0 ? [] : lines.slice(first);
-  return frames
-    .filter((line) => !line.includes(WRAPPER_FRAME))
+  if (first < 0) return "";
+  const frames = lines.slice(first);
+  const shell = frames.findIndex((line) => line.includes(SHELL_RENDER_FRAME));
+  return (shell < 0 ? frames : frames.slice(0, shell))
+    .filter((line) => STACK_FRAME.test(line) && !NATIVE_WRITE_FRAME.test(line))
     .join("\n")
     .trimEnd();
 }

@@ -3982,7 +3982,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             };
           }
         };
-        const render = (html) => {
+        // Named for canvasStack() in the frontend, which trims from this frame down.
+        const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
           document.open();
           // document.open() clears the window's listeners too, and an inline script's
@@ -3996,14 +3997,14 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
-        // Survives the document.open() in render(), so once is enough.
+        // Survives the document.open() in unslothRenderArtifact(), so once is enough.
         installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
-          // The canvas shares this window, so it can post to itself. Only the embedder drives render().
+          // The canvas shares this window, so it can post to itself. Only the embedder drives unslothRenderArtifact().
           if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
-          render(data.html);
+          unslothRenderArtifact(data.html);
         });
       })();
     </script>

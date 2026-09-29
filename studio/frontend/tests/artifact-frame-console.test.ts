@@ -114,6 +114,10 @@ test("past the cap the oldest entries go, not the newest", () => {
 test("a burst of reports costs one render, not one per report", () => {
   assert.match(frameSource, /requestAnimationFrame/);
   assert.match(frameSource, /pendingEntries\.current\.push\(entry\)/);
+  assert.match(
+    frameSource,
+    /pendingEntries\.current\.length > CANVAS_CONSOLE_ENTRIES_TRACKED/,
+  );
 });
 
 test("only throws and rejections count as errors", () => {
@@ -268,7 +272,7 @@ test("the stack drops the repeated message line and Studio's own frames", () => 
     stack: [
       "TypeError: Cannot read properties of null",
       "    at <anonymous>:2:48",
-      "    at render (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
+      "    at unslothRenderArtifact (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
       "    at http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:140:11",
     ].join("\n"),
   })!;
@@ -282,11 +286,11 @@ test("the full trace keeps the frames the trimmed one drops", () => {
     stack: [
       "TypeError: Cannot read properties of null",
       "    at <anonymous>:2:48",
-      "    at render (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
+      "    at unslothRenderArtifact (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
     ].join("\n"),
   })!;
-  assert.match(canvasStackFull(entry), /at render \(http/);
-  assert.doesNotMatch(canvasStack(entry), /at render \(http/);
+  assert.match(canvasStackFull(entry), /at unslothRenderArtifact \(http/);
+  assert.doesNotMatch(canvasStack(entry), /at unslothRenderArtifact \(http/);
   assert.match(frameSource, /fullTraces \? canvasStackFull\(entry\) : canvasStack\(entry\)/);
 });
 
@@ -334,4 +338,51 @@ test("a stack with nothing but the message, or no stack at all, renders as nothi
   })!;
   assert.equal(canvasStack(bare), "");
   assert.equal(canvasStack(parseCanvasReport(thrown("boom"))!), "");
+});
+
+test("Firefox and WebKit stacks keep the canvas's frames and drop the shell's", () => {
+  const url = "http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=abc";
+  const firefox = parseCanvasReport({
+    type: "unsloth:artifact-error",
+    message: "TypeError: x is null",
+    stack: [
+      `drawBoard@${url} line 129 > injectedScript:4:44`,
+      `start@${url} line 129 > injectedScript:5:19`,
+      `@${url} line 129 > injectedScript:7:1`,
+      `unslothRenderArtifact@${url}:130:20`,
+      `@${url}:143:17`,
+      `EventListener.handleEvent*@${url}:138:16`,
+      "",
+    ].join("\n"),
+  })!;
+  assert.equal(
+    canvasStack(firefox),
+    [
+      `drawBoard@${url} line 129 > injectedScript:4:44`,
+      `start@${url} line 129 > injectedScript:5:19`,
+      `@${url} line 129 > injectedScript:7:1`,
+    ].join("\n"),
+  );
+  const webkit = parseCanvasReport({
+    type: "unsloth:artifact-error",
+    message: "Error: boom",
+    stack: [
+      `global code@${url}:1:25`,
+      "write@[native code]",
+      `unslothRenderArtifact@${url}:130:25`,
+      `@${url}:143:17`,
+    ].join("\n"),
+  })!;
+  assert.equal(canvasStack(webkit), `global code@${url}:1:25`);
+});
+
+test("the shell's render frame carries the name the stack trim looks for", () => {
+  const shell = readFileSync(
+    fileURLToPath(
+      new URL("../../backend/routes/inference.py", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(shell, /const unslothRenderArtifact = \(html\) =>/);
+  assert.match(shell, /unslothRenderArtifact\(data\.html\);/);
 });

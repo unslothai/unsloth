@@ -621,23 +621,6 @@ export function SharedComposer({
     pendingImagesRef.current = pendingImages;
     pendingAudioRef.current = pendingAudio;
   }, [text, pendingImages, pendingAudio]);
-  const pendingFixPrompt = useChatArtifactsStore(
-    (state) => state.pendingFixPrompt,
-  );
-  useEffect(() => {
-    if (!pendingFixPrompt) return;
-    useChatArtifactsStore.getState().clearFixPrompt();
-    setCurrentText((current) =>
-      current.trim().length > 0
-        ? `${current}\n\n${pendingFixPrompt}`
-        : pendingFixPrompt,
-    );
-    window.setTimeout(() => {
-      document
-        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
-        ?.focus();
-    }, 0);
-  }, [pendingFixPrompt, setCurrentText]);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -666,6 +649,20 @@ export function SharedComposer({
   const compareStepSucceededRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    setCurrentText((current) =>
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Not the selector: a single chat's composer stays mounted, hidden, ahead of this one.
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);

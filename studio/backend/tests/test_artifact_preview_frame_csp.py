@@ -179,7 +179,7 @@ def test_only_the_embedder_can_drive_render():
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     listener = shell.index('window.addEventListener("message"')
     guard = shell.index("if (event.source !== parent) return;", listener)
-    assert guard < shell.index("render(data.html);", listener)
+    assert guard < shell.index("unslothRenderArtifact(data.html);", listener)
 
 
 def test_the_shell_caps_and_clips_what_it_reports():
