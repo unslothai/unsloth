@@ -11,10 +11,8 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 from __future__ import annotations
 
 import contextlib
-import json
-
-
 import dataclasses
+import json
 import re
 import sys
 import threading
@@ -938,6 +936,20 @@ def fake_runtime(monkeypatch):
 _LOAD_DEFAULTS = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
 
 
+def _write_pipeline(
+    root,
+    class_name,
+    spec = ("diffusers", "Transformer2DModel"),
+    weight = "diffusion_pytorch_model.safetensors",
+):
+    """A minimal complete local pipeline: a manifest naming one transformer plus its weights."""
+    (root / "transformer").mkdir(parents = True, exist_ok = True)
+    manifest = {"_class_name": class_name, "transformer": list(spec)}
+    (root / "model_index.json").write_text(json.dumps(manifest), encoding = "utf-8")
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / weight).write_bytes(b"x")
+
+
 def _load_into(backend, tmp_path, **overrides):
     """``load_pipeline`` on ``tmp_path`` over the z-image defaults; writes no checkpoint file."""
     return backend.load_pipeline(str(tmp_path), **{**_LOAD_DEFAULTS, **overrides})
@@ -1195,7 +1207,7 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: "_native_cudnn" if speed_active else None,
+        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 
@@ -2246,18 +2258,7 @@ def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_
     with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
         backend.validate_load_request(str(tmp_path), family_override = "z-image")
 
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "ZImagePipeline",
-                "transformer": ["diffusers", "ZImageTransformer2DModel"],
-            }
-        ),
-        encoding = "utf-8",
-    )
-    (tmp_path / "transformer").mkdir()
-    (tmp_path / "transformer" / "config.json").write_text("{}")
-    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    _write_pipeline(tmp_path, "ZImagePipeline")
     assert backend.validate_load_request(str(tmp_path), family_override = "z-image") is not None
 
 
@@ -2630,17 +2631,7 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 def _load_ideogram(backend, tmp_path):
     # Ideogram 4 loads only as a full pipeline (the loader is stubbed), so a local dir is enough.
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "Ideogram4Pipeline",
-                "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
-            }
-        )
-    )
-    (tmp_path / "transformer").mkdir(exist_ok = True)
-    (tmp_path / "transformer" / "config.json").write_text("{}")
-    (tmp_path / "transformer" / "pytorch_model.bin").write_bytes(b"x")
+    _write_pipeline(tmp_path, "Ideogram4Pipeline", weight = "pytorch_model.bin")
     backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
 
 
@@ -2684,17 +2675,7 @@ def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path
 
 def _load_lumina(backend, tmp_path):
     # Lumina 2 loads through the GENERIC pipeline path, so a local pipeline dir is enough here.
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "Lumina2Pipeline",
-                "transformer": ["diffusers", "Lumina2Transformer2DModel"],
-            }
-        )
-    )
-    (tmp_path / "transformer").mkdir(exist_ok = True)
-    (tmp_path / "transformer" / "config.json").write_text("{}")
-    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    _write_pipeline(tmp_path, "Lumina2Pipeline")
     backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
 
 
@@ -3180,17 +3161,7 @@ def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, p
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "TestPipeline",
-                "transformer": ["test_components", "TestTransformer"],
-            }
-        ),
-        encoding = "utf-8",
-    )
-    (tmp_path / "transformer").mkdir()
-    (tmp_path / "transformer" / "test_weights.bin").write_bytes(b"weights")
+    _write_pipeline(tmp_path, "TestPipeline", ("test_components", "TestTransformer"), "w.bin")
 
     def record(name, value):
         calls.append(name)
@@ -3288,17 +3259,7 @@ def test_eager_encoder_cancellation_stops_pipeline_build(
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "TestPipeline",
-                "transformer": ["test_components", "TestTransformer"],
-            }
-        ),
-        encoding = "utf-8",
-    )
-    (tmp_path / "transformer").mkdir()
-    (tmp_path / "transformer" / "test_weights.bin").write_bytes(b"weights")
+    _write_pipeline(tmp_path, "TestPipeline", ("test_components", "TestTransformer"), "w.bin")
     filename = "model.gguf" if kind == "gguf" else "model.safetensors"
     (tmp_path / filename).write_bytes(b"weights")
     sys.modules["diffusers"].HiDreamImagePipeline = _FakePipeline
@@ -3374,17 +3335,7 @@ def test_ideogram_component_load_honors_eject(fake_runtime, tmp_path, monkeypatc
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "TestPipeline",
-                "transformer": ["test_components", "TestTransformer"],
-            }
-        ),
-        encoding = "utf-8",
-    )
-    (tmp_path / "transformer").mkdir()
-    (tmp_path / "transformer" / "test_weights.bin").write_bytes(b"weights")
+    _write_pipeline(tmp_path, "TestPipeline", ("test_components", "TestTransformer"), "w.bin")
 
     def component(name):
         calls.append(name)
@@ -6634,9 +6585,8 @@ def test_dense_transformer_cached_follows_the_mirror_the_widened_fetch_picks(
     monkeypatch.setattr(
         dmod,
         "cache_holds_files",
-        lambda repo_id, files: (
-            set(files) <= (mirror_cache if repo_id == "unsloth/FLUX.2-dev" else upstream_cache)
-        ),
+        lambda repo_id, files: set(files)
+        <= (mirror_cache if repo_id == "unsloth/FLUX.2-dev" else upstream_cache),
     )
 
     assert (
@@ -8247,9 +8197,9 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: (
-                repo_id == "unsloth/FLUX.1-dev-GGUF" and filename == "flux1-dev-Q4_K_M.gguf"
-            )
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: repo_id
+            == "unsloth/FLUX.1-dev-GGUF"
+            and filename == "flux1-dev-Q4_K_M.gguf"
         ),
     )
 
@@ -10783,9 +10733,10 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None, declared_sizes = None: (
-                seen.append((repo_id, revision)) or set()
+            lambda repo_id, files, revision = None, declared_sizes = None: seen.append(
+                (repo_id, revision)
             )
+            or set()
         ),
     )
 
@@ -10946,70 +10897,28 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     assert lowered.estimates["model_dense_mib"] < measured
 
 
-def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
-    fake_runtime, tmp_path, monkeypatch
+@pytest.mark.parametrize("configured", [True, False])
+def test_the_resident_size_table_trusts_only_a_configured_cache_snapshot(
+    fake_runtime, tmp_path, monkeypatch, configured
 ):
-    """A cache snapshot is a local load target but still has trustworthy Hub provenance."""
+    """A configured-cache snapshot keeps its Hub provenance; a lookalike path elsewhere does not."""
     import torch
 
-    from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_families import detect_family
 
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
     cache_root = tmp_path / "hub"
     snapshot = cache_root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [cache_root])
-    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
-    measured = 40_000
-
+    known = [cache_root] if configured else [tmp_path / "other-hub"]
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: known)
     sized = DiffusionBackend()._resident_sized_plan(
-        _plan_with_weights(measured), fam, str(snapshot), target, "pipeline"
-    )
-
-    assert sized.estimates["model_dense_mib"] < measured
-
-
-def test_the_resident_size_table_rejects_an_unconfigured_cache_shaped_path(
-    fake_runtime, tmp_path, monkeypatch
-):
-    """A local derivative cannot borrow a smaller Hub table entry by mimicking its path shape."""
-    import torch
-
-    from core.inference.diffusion_device import DiffusionDeviceTarget
-    from core.inference.diffusion_families import detect_family
-
-    target = DiffusionDeviceTarget(
-        device = "mps",
-        dtype = torch.bfloat16,
-        backend = "mps",
-        vendor = "apple",
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-    )
-    configured = tmp_path / "configured-hub"
-    lookalike = tmp_path / "srv" / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("b" * 40)
-    lookalike.mkdir(parents = True)
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [configured])
-    measured = 40_000
-    sized = DiffusionBackend()._resident_sized_plan(
-        _plan_with_weights(measured),
+        _plan_with_weights(40_000),
         detect_family("Tongyi-MAI/Z-Image-Turbo"),
-        str(lookalike),
-        target,
+        str(snapshot),
+        _mps_target(torch),
         "pipeline",
     )
-
-    assert sized.estimates["model_dense_mib"] == measured
+    assert (sized.estimates["model_dense_mib"] < 40_000) is configured
 
 
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):

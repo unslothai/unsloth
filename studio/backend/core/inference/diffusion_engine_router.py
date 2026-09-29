@@ -457,9 +457,8 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
         return False
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.cache
 def _supported_family_capabilities() -> tuple[str, ...]:
-    """Process-static Diffusers capability snapshot used by status responses."""
     return tuple(pipeline_available_family_names())
 
 

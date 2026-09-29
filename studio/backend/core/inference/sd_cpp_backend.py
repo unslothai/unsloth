@@ -30,10 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference.diffusion_auto_policy import (
-    build_resolved_record,
-    format_generation_for_log,
-)
+from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -2434,9 +2431,6 @@ class SdCppDiffusionBackend:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
-        display_repo_id = (
-            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
-        ) or None
         if gpu_ordinal is None:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)
@@ -2864,6 +2858,9 @@ class SdCppDiffusionBackend:
                         gpu_ordinal,
                     )
                 )
+                family_reason = (
+                    "detected from the model" if family_override is None else "requested"
+                )
                 state = _SdState(
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
@@ -2883,15 +2880,7 @@ class SdCppDiffusionBackend:
                     mode = mode,
                     hf_token = hf_token,
                     resolved = build_resolved_record(
-                        {
-                            "family_override": (
-                                family_override,
-                                fam.name,
-                                "detected from the model"
-                                if family_override is None
-                                else "requested",
-                            )
-                        }
+                        {"family_override": (family_override, fam.name, family_reason)}
                     ),
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,

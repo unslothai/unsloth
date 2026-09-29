@@ -11,7 +11,7 @@ from core.inference.video_families import (
     VIDEO_NOT_LOADED_MSG,
     default_video_generation_params,
     detect_video_family,
-    pipeline_available_video_family_names,
+    pipeline_available_video_families,
     resolve_video_base_repo,
     snap_num_frames,
     snap_video_size,
@@ -188,22 +188,19 @@ def test_supported_names():
     )
 
 
-def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
+@pytest.mark.parametrize(
+    "device, blocked, hidden",
+    [(None, {"minimax-h3", "ltx-2"}, {"minimax-h3", "ltx-2"}), ("mps", set(), {"minimax-h3"})],
+)
+def test_pipeline_available_families_filter_the_override_selector(
+    monkeypatch, device, blocked, hidden
+):
+    # Unselectable families drop out, and MPS additionally hides modular workflows.
     monkeypatch.setattr(
-        "core.inference.diffusion_families.family_selectable",
-        lambda fam: fam.name not in {"minimax-h3", "ltx-2"},
+        "core.inference.diffusion_families.family_selectable", lambda fam: fam.name not in blocked
     )
-    assert set(supported_video_family_names()) - set(pipeline_available_video_family_names()) == {
-        "minimax-h3",
-        "ltx-2",
-    }
-
-
-def test_pipeline_available_names_hide_modular_workflows_on_mps(monkeypatch):
-    monkeypatch.setattr("core.inference.diffusion_families.family_selectable", lambda _fam: True)
-    available = set(pipeline_available_video_family_names(device = "mps"))
-    assert "minimax-h3" not in available
-    assert "ltx-2" in available
+    available = {fam.name for fam in pipeline_available_video_families(device = device)}
+    assert set(supported_video_family_names()) - available == hidden
 
 
 def test_minimax_h3_family_and_frame_lattice():
