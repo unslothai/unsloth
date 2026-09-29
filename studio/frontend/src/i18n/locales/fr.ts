@@ -96,6 +96,7 @@ export const fr = {
     useModelScope: "Utiliser ModelScope",
     useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
     useModelScopeFailed: "Impossible de passer à ModelScope.",
+    updateToken: "Mettre à jour le jeton",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",
@@ -719,6 +720,7 @@ export const fr = {
       disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Aucun fichier journal n'a été trouvé.",
       unreadable: "Le fichier journal n'a pas pu être lu.",
+      viewLogs: "Voir les journaux",
       timeout: "La demande du journal a expire. Le serveur est peut-etre injoignable.",
       droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
       morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
@@ -1106,6 +1108,9 @@ export const fr = {
         source: "Source des modèles",
         sourceDescription: "Où le hub de modèles recherche et télécharge. Choisissez ModelScope si Hugging Face est bloqué ou lent sur votre réseau.",
         sourceFallback: "ModelScope n'a pas pu démarrer, Hugging Face est donc utilisé. Consultez les journaux d'Unsloth.",
+        autoSourceTitle: "Source des modèles basculée sur ModelScope",
+        autoSourceDescription: "Hugging Face est souvent lent ou bloqué dans votre région ; Unsloth télécharge donc désormais les modèles depuis ModelScope.",
+        autoSourceAction: "Ouvrir les paramètres de source des modèles",
         sectionTitle: "Hub de modèles",
         endpoint: "Point de terminaison Hugging Face",
         endpointDescription: "Source de téléchargement des modèles et jeux de données. Laissez vide pour huggingface.co, ou saisissez un miroir comme https://hf-mirror.com.",
@@ -2241,6 +2246,9 @@ export const fr = {
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
         download: "Télécharger",
+        downloadConfirmTitle: "Télécharger Laya {model} ?",
+        downloadConfirmBody:
+          "L'API de décision a besoin de ce modèle pour répondre aux requêtes. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
         unload: "Décharger",
         downloadBusy: "Un modèle de l'API de décision est déjà en cours de téléchargement.",
         downloadFailed: "Impossible de lancer le téléchargement.",
@@ -2481,6 +2489,8 @@ export const fr = {
       tokenRejectedTitle: "Token Hugging Face refusé",
       tokenRejectedBody:
         "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      tokenRejectedAnonymousBody:
+        "Les modèles publics s'affichent sans lui. Mettez à jour votre token dans Paramètres → Général pour accéder aux modèles privés et restreints.",
       hubUnreachable: "Impossible de joindre Hugging Face",
       cantUseModel: "Impossible d'utiliser le modèle pour l'entraînement",
       reasonTypeMismatch:

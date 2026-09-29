@@ -801,7 +801,7 @@ def prepare_cache_for_transport(
     return total_purged
 
 
-_HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{20,}")
+_HF_TOKEN_RE = re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})")
 _BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
 
 

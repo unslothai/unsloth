@@ -1959,6 +1959,9 @@ def add_scan_folder(path: str) -> dict:
 
 
 def remove_scan_folder(id: int) -> bool:
+    # sqlite INTEGER is signed 64-bit: binding a wider id raises instead of matching nothing.
+    if not -(2**63) <= id < 2**63:
+        return False
     conn = get_connection()
     try:
         cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
@@ -4891,17 +4894,30 @@ def get_app_settings(keys: list[str]) -> dict[str, Any]:
         conn.close()
 
 
-def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
-    """Write ``value`` to ``key`` only while it still holds ``expected``. A read-then-upsert cannot
-    express "clear this flag": another save committing in the gap is silently reverted by the write
-    that follows it. Comparing inside one immediate transaction makes a losing update a no-op
-    instead. Returns whether the write happened."""
+def compare_and_set_app_setting(
+    key: str,
+    expected: Any,
+    value: Any,
+    *,
+    absent: tuple[str, ...] = (),
+) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected`` and no key in ``absent``
+    is set. A read-then-upsert cannot express "clear this flag": another save committing in the
+    gap is silently reverted by the write that follows it. Comparing inside one immediate
+    transaction makes a losing update a no-op instead. Returns whether the write happened."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], None) if row is not None else None
-        if current != expected:
+        present = (
+            absent
+            and conn.execute(
+                f"SELECT 1 FROM app_settings WHERE key IN ({', '.join('?' * len(absent))}) LIMIT 1",
+                absent,
+            ).fetchone()
+        )
+        if current != expected or present:
             conn.rollback()
             return False
         conn.execute(

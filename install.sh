@@ -1677,6 +1677,37 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     exit 1
 fi
 
+# A missing or malformed id makes /api/health report "", which the baked id never matches: restore ours no-clobber (the desktop app mints it too), leaving a different valid id or an unreadable file alone.
+_repair_studio_install_id() (
+    LC_ALL=C
+    export LC_ALL
+    _rid_file=${STUDIO_INSTALL_ID_FILE:-}
+    [ -n "$_rid_file" ] && [ -n "$_EXPECTED_STUDIO_ROOT_ID" ] || return 0
+    _rid_has_valid() {
+        [ -e "$_rid_file" ] || return 1
+        [ -f "$_rid_file" ] || return 0
+        _rid_cur=$({ cat "$_rid_file"; } 2>/dev/null) || return 0
+        _rid_cur=${_rid_cur#"${_rid_cur%%[![:space:]]*}"}
+        _rid_cur=${_rid_cur%"${_rid_cur##*[![:space:]]}"}
+        case "$_rid_cur" in
+            "" | *[!0123456789abcdef]*) return 1 ;;
+        esac
+        [ "${#_rid_cur}" -eq 64 ]
+    }
+    _rid_has_valid && return 0
+    mkdir -p "$(dirname "$_rid_file")" 2>/dev/null || return 0
+    _rid_tmp=$(mktemp "$_rid_file.XXXXXX" 2>/dev/null) || return 0
+    if printf '%s' "$_EXPECTED_STUDIO_ROOT_ID" > "$_rid_tmp" 2>/dev/null; then
+        if ! ln "$_rid_tmp" "$_rid_file" 2>/dev/null && ! _rid_has_valid; then
+            mv -f "$_rid_tmp" "$_rid_file" 2>/dev/null || true
+        fi
+        chmod 600 "$_rid_file" 2>/dev/null || true
+    fi
+    rm -f "$_rid_tmp" 2>/dev/null
+    return 0
+)
+_repair_studio_install_id
+
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
@@ -2039,6 +2070,8 @@ LAUNCHER_EOF
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        _css_quoted_id_file=$(printf '%s' "$_css_id_file" | sed "s/'/'\\\\''/g")
+        printf '%s\n' "STUDIO_INSTALL_ID_FILE='$_css_quoted_id_file'"
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             # An override resolving to the legacy default shares ~/.unsloth/llama.cpp.
             _css_legacy_studio="$HOME/.unsloth/studio"
@@ -2483,56 +2516,60 @@ if (\$hasIcon) {
 } elseif (\$preIconHash) {
     \$iconChanged = \$true
 }
-# Per-item refresh always (cheap, non-disruptive) so the rewritten .lnk renders
-# immediately instead of a stale/blank (generic) icon. The reliable fix (no
-# explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
-# <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
-#
-# Emitted, not compiled. Add-Type -MemberDefinition writes C# to %TEMP% and runs
-# csc.exe on Windows PowerShell 5.1, and security software blocks the DLL that comes
-# out. install.ps1 carries the same reflection-emit form for the same reason; this
-# copy was missed when that one changed. Reflection emit builds the identical stub in
-# memory: no compiler process, no source on disk, no DLL.
-# Which product blocked what: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-try {
-    \$refreshType = 'UnslothShellIconRefresh' -as [type]
-    if (-not \$refreshType) {
-        \$asmName = New-Object System.Reflection.AssemblyName 'UnslothShellIconRefreshAsm'
-        # Both spellings, matching New-StudioDynamicAssembly in install.ps1. The static
-        # AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
-        # 4.8.1, so the 5.1 host this script is launched under should take the first branch; it
-        # is tried rather than assumed because the outer catch here is empty, so guessing wrong
-        # costs the icon refresh with nothing printed. AppDomain.CurrentDomain is the .NET
-        # Framework spelling and is absent on .NET Core, so it is the fallback and not the lead.
-        \$access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-        try {
-            \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(\$asmName, \$access)
-        } catch [System.Management.Automation.MethodException] {
-            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
-        } catch [System.Management.Automation.RuntimeException] {
-            # Some hosts surface a missing static as RuntimeException rather than
-            # MethodException. Both mean "no such method here", and a real emit failure throws
-            # from the AppDomain call too, so a genuine refusal still reaches the outer catch.
-            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+# Per-item SHCNE_UPDATEITEM so a rewritten same-name .lnk re-reads its icon; the global broadcast
+# alone does not. Called through a Windows Python's ctypes, as install.ps1 does, so this script
+# defines no native types. Without one the shortcut still works, and the heavier refresh below
+# still runs on a first install or an icon change.
+if (\$created.Count -gt 0) {
+    \$isAdmin = \$true
+    try {
+        \$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {}
+    # Never launch a user-writable interpreter from an elevated shell.
+    \$pyCandidates = @()
+    if (-not \$isAdmin) {
+        \$pyCandidates += Join-Path \$env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\python.exe'
+        foreach (\$name in @('python3', 'python')) {
+            try {
+                foreach (\$cmd in @(Get-Command \$name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if (\$cmd -and \$cmd.Source) { \$pyCandidates += \$cmd.Source }
+                }
+            } catch {}
         }
-        \$module = \$asm.DefineDynamicModule('UnslothShellIconRefreshMod')
-        \$typeBuilder = \$module.DefineType('UnslothShellIconRefresh',
-            'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-        \$method = \$typeBuilder.DefinePInvokeMethod(
-            'SHChangeNotify', 'shell32.dll', 'SHChangeNotify',
-            'Public, Static, PinvokeImpl',
-            [System.Reflection.CallingConventions]::Standard,
-            [System.Void],
-            @([int], [uint32], [string], [IntPtr]),
-            [System.Runtime.InteropServices.CallingConvention]::Winapi,
-            [System.Runtime.InteropServices.CharSet]::Unicode)
-        \$method.SetImplementationFlags(
-            \$method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
-        \$refreshType = \$typeBuilder.CreateType()
     }
-    foreach (\$p in \$created) { try { \$refreshType::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
-    \$refreshType::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
-} catch {}
+    # SHCNF_FLUSH (0x1000): the child exits at once and a queued notification would be lost.
+    \$refreshCode = "import ctypes,os;from ctypes import wintypes as w;f=ctypes.WinDLL('shell32').SHChangeNotify;f.restype=None;f.argtypes=[w.LONG,w.UINT,w.LPCWSTR,w.LPCWSTR];[f(0x2000,0x1005,p,None) for p in os.environ['UNSLOTH_SHORTCUT_PATHS'].split('|') if p];f(0x8000000,0x1000,None,None);print('ok')"
+    foreach (\$py in \$pyCandidates) {
+        # The WindowsApps alias opens the Store instead of running anything.
+        if (-not \$py -or \$py -like '*\Microsoft\WindowsApps\*') { continue }
+        if (-not (Test-Path -LiteralPath \$py -PathType Leaf)) { continue }
+        \$proc = \$null
+        try {
+            \$psi = New-Object System.Diagnostics.ProcessStartInfo
+            \$psi.FileName = \$py
+            # -I -S: no user site, no PYTHON* variables, no sitecustomize. -B: write no .pyc.
+            \$psi.Arguments = '-I -S -B -c "' + \$refreshCode + '"'
+            # '|' cannot appear in a Windows path, so it separates them safely.
+            \$psi.EnvironmentVariables['UNSLOTH_SHORTCUT_PATHS'] = (\$created -join '|')
+            \$psi.WorkingDirectory = Split-Path -Parent \$py
+            \$psi.UseShellExecute = \$false
+            \$psi.RedirectStandardOutput = \$true
+            \$psi.RedirectStandardError = \$true
+            \$psi.CreateNoWindow = \$true
+            \$proc = [System.Diagnostics.Process]::Start(\$psi)
+            \$out = \$proc.StandardOutput.ReadToEndAsync()
+            \$null = \$proc.StandardError.ReadToEndAsync()
+            if (-not \$proc.WaitForExit(10000)) {
+                try { \$proc.Kill() } catch {}
+                continue
+            }
+            if (\$proc.ExitCode -eq 0 -and \$out.Wait(2000) -and "\$(\$out.Result)".Trim() -eq 'ok') { break }
+        } catch {
+        } finally {
+            if (\$proc) { try { \$proc.Dispose() } catch {} }
+        }
+    }
+}
 # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
 # (preserve start2.bin) only on first install or a real icon change, so a no-op
 # WSL reinstall does not purge caches and kill a shell process for nothing.
@@ -3812,7 +3849,7 @@ _uv_unzip() {
         *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
     esac
     command -v python3 >/dev/null 2>&1 &&
-        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+        python3 -m zipfile -e "$1" "$2" >/dev/null 2>&1
 }
 
 # Echoes the SHA-256 of "$1", or nothing when the host has no digest tool.
@@ -7631,7 +7668,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.11}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.12}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -7644,7 +7681,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -7659,7 +7696,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -7879,7 +7916,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -7898,7 +7935,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -7929,7 +7966,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.7" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.8" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
