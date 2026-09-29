@@ -623,8 +623,9 @@ export function SharedComposer({
   );
   // Audio files still being read into base64, which pendingAudio cannot see yet.
   const audioDecodingRef = useRef(0);
-  // convertingImages state is stale inside runPromptList's closure; the ref is read synchronously.
-  const convertingImagesRef = useRef(0);
+  // Attachments still being classified or converted, invisible to pendingImages/pendingAudio;
+  // a ref so runPromptList reads it synchronously.
+  const attachingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -1061,7 +1062,7 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback(
+  const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
       if (!input?.length) return;
       // Compare takes audio, so an audio-only 3GP must not be read off its
@@ -1109,7 +1110,6 @@ export function SharedComposer({
           continue;
         }
         let image: File;
-        convertingImagesRef.current += 1;
         setConvertingImages((count) => count + 1);
         try {
           image = await normalizeChatImage(file);
@@ -1118,7 +1118,6 @@ export function SharedComposer({
             error instanceof Error ? error.message : String(error);
           continue;
         } finally {
-          convertingImagesRef.current -= 1;
           setConvertingImages((count) => count - 1);
         }
         next.push({ id: crypto.randomUUID(), file: image });
@@ -1142,30 +1141,46 @@ export function SharedComposer({
     [setPendingAudioStore, attachUnavailableReason],
   );
 
+  const trackAttaching = useCallback(async (work: () => Promise<void>) => {
+    attachingRef.current += 1;
+    try {
+      await work();
+    } finally {
+      attachingRef.current -= 1;
+    }
+  }, []);
+
+  const addFiles = useCallback(
+    (input: FileList | readonly File[] | null) =>
+      trackAttaching(() => addFilesUntracked(input)),
+    [trackAttaching, addFilesUntracked],
+  );
+
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
         event,
-        async (pasted) => {
-          // Classify before the check, so a pasted audio-only 3GP is not read
-          // as unsupported on its extension alone.
-          const files = await classifiedAttachmentFiles(pasted);
-          // Let addFiles report audio size errors.
-          const supported = files.some(
-            (file) =>
-              isAudioAttachmentFile(file) ||
-              (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
-          );
-          if (!supported) throw new Error("Unsupported compare attachment");
-          await addFiles(files);
-        },
+        (pasted) =>
+          trackAttaching(async () => {
+            // Classify before the check, so a pasted audio-only 3GP is not read
+            // as unsupported on its extension alone.
+            const files = await classifiedAttachmentFiles(pasted);
+            // Let addFiles report audio size errors.
+            const supported = files.some(
+              (file) =>
+                isAudioAttachmentFile(file) ||
+                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+            );
+            if (!supported) throw new Error("Unsupported compare attachment");
+            await addFilesUntracked(files);
+          }),
         () =>
           toast.error("Could not paste files.", {
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
     },
-    [addFiles],
+    [trackAttaching, addFilesUntracked],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -2192,7 +2207,7 @@ export function SharedComposer({
         pendingImagesRef.current.length > 0 ||
         pendingAudioRef.current ||
         audioDecodingRef.current > 0 ||
-        convertingImagesRef.current > 0
+        attachingRef.current > 0
       ) {
         toast.error("Remove the staged attachment before running a list", {
           description: "Only the first prompt in the list would carry it.",
