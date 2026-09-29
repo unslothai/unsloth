@@ -578,3 +578,64 @@ class _Hooked:
 )
 def test_denoiser_hooked(transformer, hooked):
     assert dmod._denoiser_hooked(types.SimpleNamespace(transformer = transformer)) is hooked
+
+
+def _int8_linear(rows = 1024, cols = 1024):
+    torch = pytest.importorskip("torch")
+    quant = pytest.importorskip("torchao.quantization")
+    linear = torch.nn.Linear(cols, rows, bias = False).to(torch.bfloat16)
+    try:
+        quant.quantize_(linear, quant.Int8DynamicActivationInt8WeightConfig(version = 2))
+    except Exception as exc:  # noqa: BLE001 - torchao without the v2 int8 tensor
+        pytest.skip(f"int8 v2 quantisation unavailable: {exc}")
+    if type(linear.weight).__name__ != "Int8Tensor":
+        pytest.skip("this torchao does not produce Int8Tensor")
+    return linear
+
+
+def test_host_size_counts_packed_torchao_storage_not_the_logical_bf16_size():
+    linear = _int8_linear(2048, 2048)
+    # 2048 x 2048 int8 = 4 MiB of qdata plus per-row scales; the logical bf16 size would be 8 MiB.
+    assert mem._module_host_mib(linear) < 8
+    assert mem._module_host_mib(linear) >= 4
+
+
+def test_stream_kept_when_the_packed_weights_fit_the_pin_budget(monkeypatch):
+    linear = _int8_linear(2048, 2048)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(mem, "install_group_offload_torchao_swap_retry", lambda: None)
+    # Between the packed (~4 MiB) and logical bf16 (8 MiB) sizes.
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 6)
+    kwargs = mem._torchao_group_offload_kwargs(linear, {"use_stream": True, "low_cpu_mem_usage": True})
+    assert kwargs["use_stream"] is True
+    assert kwargs["low_cpu_mem_usage"] is False
+
+
+def test_storage_size_recurses_through_nested_wrappers():
+    class Inner:
+        def __init__(self, n):
+            self._n = n
+
+        def numel(self):
+            return self._n
+
+        def element_size(self):
+            return 1
+
+    class Wrapper:
+        def __init__(self, *inner):
+            self._inner = inner
+            for i, t in enumerate(inner):
+                setattr(self, f"t{i}", t)
+
+        def __tensor_flatten__(self):
+            return [f"t{i}" for i in range(len(self._inner))], None
+
+        def numel(self):
+            return 10 ** 9
+
+        def element_size(self):
+            return 2
+
+    nested = Wrapper(Wrapper(Inner(100), Inner(4)), Inner(7))
+    assert mem._storage_nbytes(nested) == [100, 4, 7]

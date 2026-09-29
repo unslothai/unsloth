@@ -1650,12 +1650,27 @@ def _module_host_mib(module: Any) -> int:
             if id(tensor) in seen:
                 continue
             seen.add(id(tensor))
-            nbytes = int(tensor.numel()) * int(tensor.element_size())
-            if nbytes > 0:
-                total += 1 << (nbytes - 1).bit_length()
+            for nbytes in _storage_nbytes(tensor):
+                if nbytes > 0:
+                    total += 1 << (nbytes - 1).bit_length()
         return total // (1024 * 1024)
     except Exception:  # noqa: BLE001 - an unsizeable module is priced as nothing to pin
         return 0
+
+
+def _storage_nbytes(tensor: Any, depth: int = 0) -> list[int]:
+    """Bytes of each allocation behind ``tensor``. A torchao subclass reports its logical bf16 size, so size its
+    packed inner tensors instead."""
+    flatten = getattr(type(tensor), "__tensor_flatten__", None)
+    if flatten is not None and depth < 4:
+        try:
+            names, _ctx = tensor.__tensor_flatten__()
+            inner = [getattr(tensor, name, None) for name in names]
+            if inner and all(t is not None for t in inner):
+                return [n for t in inner for n in _storage_nbytes(t, depth + 1)]
+        except Exception:  # noqa: BLE001 - fall back to the logical size, which only over-counts
+            pass
+    return [int(tensor.numel()) * int(tensor.element_size())]
 
 
 def _pin_budget_mib() -> Optional[int]:
