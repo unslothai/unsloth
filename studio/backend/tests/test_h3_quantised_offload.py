@@ -15,18 +15,14 @@ torch = pytest.importorskip("torch")
 
 def _h3_family():
     from core.inference.video_families import detect_video_family
-
     return detect_video_family("minimax-h3")
 
 
 @pytest.fixture(autouse = True)
 def _hosted_checkpoint_readable(monkeypatch):
     import core.inference.diffusion_prequant as pq
-
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: True)
-
-
 
 
 def _precision(vid, fam, tq, te_scheme, free_gb, monkeypatch):
@@ -112,23 +108,32 @@ def test_speed_off_and_unreadable_cards_keep_their_placements():
     whole = (20_300_000_000, 47_000_000_000)
     assert (
         vid._h3_placement_tier(
-            quantised = True, whole_set_sizes = whole, pinned_sizes = sizes,
-            free_bytes = 500 * 1000**3, speed_off = True,
+            quantised = True,
+            whole_set_sizes = whole,
+            pinned_sizes = sizes,
+            free_bytes = 500 * 1000**3,
+            speed_off = True,
         )
         == "pinned"
     )
     assert (
         vid._h3_placement_tier(
-            quantised = False, whole_set_sizes = whole, pinned_sizes = sizes,
-            free_bytes = 500 * 1000**3, speed_off = True,
+            quantised = False,
+            whole_set_sizes = whole,
+            pinned_sizes = sizes,
+            free_bytes = 500 * 1000**3,
+            speed_off = True,
         )
         == "rotation"
     )
     for quantised, tier in ((True, "pinned"), (False, "rotation")):
         assert (
             vid._h3_placement_tier(
-                quantised = quantised, whole_set_sizes = whole, pinned_sizes = sizes,
-                free_bytes = None, speed_off = False,
+                quantised = quantised,
+                whole_set_sizes = whole,
+                pinned_sizes = sizes,
+                free_bytes = None,
+                speed_off = False,
             )
             == tier
         )
@@ -165,8 +170,6 @@ def test_the_quantised_denoiser_is_sized_on_its_payload_not_its_logical_shape():
 
     assert tensor_payload_bytes(QuantisedWeight()) == 1000 + 40
     assert tensor_payload_bytes(torch.empty(10, dtype = torch.bfloat16)) == 20
-
-
 
 
 def test_a_32gb_card_is_admitted_with_the_streamed_quantised_denoiser():
@@ -213,16 +216,23 @@ def test_the_generate_preflight_reads_the_streamed_fact_off_the_state():
     assert {"denoiser_streamed", "denoiser_host_copy"} <= fields
     source = inspect.getsource(vid.VideoBackend.generate)
     # VRAM floor: any streaming. Host floor: only a full pinned host copy doubles the denoiser.
-    assert source.count('transformer_streamed = bool(getattr(state, "denoiser_streamed", False))') == 1
-    assert source.count('transformer_streamed = bool(getattr(state, "denoiser_host_copy", False))') == 1
+    assert (
+        source.count('transformer_streamed = bool(getattr(state, "denoiser_streamed", False))') == 1
+    )
+    assert (
+        source.count('transformer_streamed = bool(getattr(state, "denoiser_host_copy", False))')
+        == 1
+    )
     load = inspect.getsource(vid)
     assert 'denoiser_host_copy = denoiser_streamed == "stream"' in load
 
 
-
-
 class _Net(torch.nn.Module):
-    def __init__(self, d = 256, n = 4):
+    def __init__(
+        self,
+        d = 256,
+        n = 4,
+    ):
         super().__init__()
         self.blocks = torch.nn.ModuleList(
             [
@@ -235,7 +245,6 @@ class _Net(torch.nn.Module):
     def pad_small_m(self):
         # What the hosted H3 load does to its small-M int8 linears: a wrapper that forwards ``weight`` to the Linear.
         from core.inference.diffusion_quant_pad import PadToMinM
-
         self.proj_out = PadToMinM(self.proj_out)
         return self
 
@@ -275,16 +284,13 @@ def _torchao_configs():
         try:
             Int8DynamicActivationInt8WeightConfig(version = 1)
             from torchao.quantization import linear_activation_quantized_tensor  # noqa: F401
-
             configs["int8_v1"] = lambda: Int8DynamicActivationInt8WeightConfig(version = 1)
         except Exception:  # noqa: BLE001 -- torchao >= 0.18 removed the v1 classes
             pass
     else:
         configs["int8_v1"] = lambda: Int8DynamicActivationInt8WeightConfig()
     if torch.cuda.get_device_capability() >= (8, 9):
-        configs["fp8_row"] = lambda: Float8DynamicActivationFloat8WeightConfig(
-            granularity = PerRow()
-        )
+        configs["fp8_row"] = lambda: Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
     del torchao
     return configs
 
@@ -422,7 +428,9 @@ def test_a_failed_streaming_setup_raises_instead_of_pinning(monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 @pytest.mark.parametrize("pin_all, expected", [(True, "stream"), (False, "stream_lazy")])
-def test_the_stream_mode_says_whether_a_full_pinned_host_copy_exists(monkeypatch, pin_all, expected):
+def test_the_stream_mode_says_whether_a_full_pinned_host_copy_exists(
+    monkeypatch, pin_all, expected
+):
     """The host floor doubles the denoiser only for a full up-front pin; lazy pinning holds one group at a time."""
     pytest.importorskip("diffusers")
     from torchao.quantization import quantize_

@@ -112,7 +112,9 @@ def estimate_h3_diffusers_vram_gb(
     ``transformer_streamed``: no two large components are ever resident together."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
     if transformer_streamed:
-        text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
+        text_encoder = (
+            H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
+        )
         activations = H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
         return max(
             text_encoder + H3_DIFFUSERS_VRAM_OVERHEAD_GB,

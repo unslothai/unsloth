@@ -443,7 +443,11 @@ def _wrap_cpu_offload_hook(
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version, p.data_ptr())
             for name, b in _named_buffers(mod):
-                if name in buffer_host and b.device.type != "cpu" and _buffer_version(b) is not None:
+                if (
+                    name in buffer_host
+                    and b.device.type != "cpu"
+                    and _buffer_version(b) is not None
+                ):
                     buffer_version[name] = (b, _buffer_version(b), b.data_ptr())
         return out
 

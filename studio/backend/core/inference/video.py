@@ -1129,7 +1129,6 @@ def h3_streamed_int8_supported(target: Any = None) -> bool:
         return False
     try:
         from .diffusion_prequant import torchao_group_offload_supported
-
         return bool(torchao_group_offload_supported())
     except Exception:  # noqa: BLE001 -- an unanswerable probe hides the tier
         return False
@@ -1153,14 +1152,17 @@ def _h3_others_bytes(
         * 1024
         * 1024
     )
-    beside = (
-        max(text_encoder_gb, components[2]) if rotating else text_encoder_gb + components[2]
-    )
+    beside = max(text_encoder_gb, components[2]) if rotating else text_encoder_gb + components[2]
     return int(beside * scale * 1000.0**3) + headroom_bytes
 
 
 def _h3_dense_denoiser_resident_bytes(
-    fam: Any, *, denoiser: Any, te_scheme: Optional[str], dtype: Any, rotating: bool = False
+    fam: Any,
+    *,
+    denoiser: Any,
+    te_scheme: Optional[str],
+    dtype: Any,
+    rotating: bool = False,
 ) -> Optional[tuple[int, int]]:
     """``(denoiser_bytes, everything_else_bytes)`` for a MiniMax-H3 modular pipeline, or None.
 
@@ -1190,7 +1192,11 @@ def _h3_dense_denoiser_resident_bytes(
 
 
 def _h3_planned_denoiser_bytes(
-    fam: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool = False
+    fam: Any,
+    *,
+    te_scheme: Optional[str],
+    dtype: Any,
+    rotating: bool = False,
 ) -> Optional[tuple[int, int]]:
     """The same ``(denoiser_bytes, everything_else_bytes)`` split, PREDICTED from the family table.
 
@@ -1356,9 +1362,7 @@ def _h3_auto_denoiser_scheme(
 
     if not torchao_group_offload_supported():
         # Without streaming, a torchao denoiser can only be pinned beside the larger rotating component.
-        sizes = _h3_planned_denoiser_bytes(
-            fam, te_scheme = te_scheme, dtype = dtype, rotating = True
-        )
+        sizes = _h3_planned_denoiser_bytes(fam, te_scheme = te_scheme, dtype = dtype, rotating = True)
         free_bytes = (free_reader or _h3_free_device_bytes)(device)
         hosted_bytes = int(h3_transformer_resident_gb(H3_AUTO_FALLBACK_SCHEME) * 1000.0**3)
         if sizes is None or not _h3_dense_denoiser_fits((hosted_bytes, sizes[1]), free_bytes):
@@ -1586,11 +1590,17 @@ def _stage_units(module: Any) -> list:
 
 def _module_dense_bytes(module: Any) -> int:
     from itertools import chain
+    return sum(
+        int(t.numel()) * int(t.element_size()) for t in chain(module.parameters(), module.buffers())
+    )
 
-    return sum(int(t.numel()) * int(t.element_size()) for t in chain(module.parameters(), module.buffers()))
 
-
-def _stage_denoiser_for_quant(transformer: Any, target: Any, *, logger: Any = None) -> list:
+def _stage_denoiser_for_quant(
+    transformer: Any,
+    target: Any,
+    *,
+    logger: Any = None,
+) -> list:
     """Stage a CPU DiT onto ``target``'s CUDA device block by block as far as it fits; quantisers work per linear,
     so a partial fit gives the same result. Returns the moved modules; never raises."""
     try:
@@ -1687,7 +1697,9 @@ def _video_prefer_whole_module(
         return plan
     phases = (
         int(text_encoder_mib) + DEFAULT_BASE_OVERHEAD_MIB,
-        int(denoiser_mib) + min(int(runtime_mib), _VIDEO_DENOISE_ACTIVATION_MIB) + DEFAULT_BASE_OVERHEAD_MIB,
+        int(denoiser_mib)
+        + min(int(runtime_mib), _VIDEO_DENOISE_ACTIVATION_MIB)
+        + DEFAULT_BASE_OVERHEAD_MIB,
         int(vae_mib) + int(runtime_mib) + DEFAULT_BASE_OVERHEAD_MIB,
     )
     if max(phases) > int(budget):
@@ -1772,7 +1784,9 @@ def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
         if policy == OFFLOAD_MODEL:
             held = max(sizes.values())
         elif policy == OFFLOAD_GROUP:
-            streamed = set() if not bool(getattr(plan, "stream_transformer", True)) else set(denoisers)
+            streamed = (
+                set() if not bool(getattr(plan, "stream_transformer", True)) else set(denoisers)
+            )
             if bool(getattr(plan, "stream_text_encoders", False)):
                 streamed |= encoders
             held = sum(size for name, size in sizes.items() if name not in streamed)
@@ -5153,8 +5167,10 @@ class VideoBackend:
             experts = 2 if getattr(fam, "is_moe", False) else 1
             vae_mib = int(scaled_vae_gb * mib_per_gb) if components is not None else None
             dit_mib = (
-                int(transformer_gb * mib_per_gb) if components is not None else None
-            ) if kind == "pipeline" else transformer_mib
+                (int(transformer_gb * mib_per_gb) if components is not None else None)
+                if kind == "pipeline"
+                else transformer_mib
+            )
             planned = _video_prefer_whole_module(
                 plan_diffusion_memory(
                     target = target,
@@ -5190,7 +5206,10 @@ class VideoBackend:
                     dense_transformer_supported(target)
                     or native_quant_scheme(target, transformer_quant, family = fam.name) is not None
                     or native_quant_scheme(
-                        target, _auto_offload_scheme(transformer_quant), family = fam.name, offload = True
+                        target,
+                        _auto_offload_scheme(transformer_quant),
+                        family = fam.name,
+                        offload = True,
                     )
                     is not None
                 )
@@ -5204,7 +5223,10 @@ class VideoBackend:
                         else None
                     )
                     or native_quant_scheme(
-                        target, _auto_offload_scheme(transformer_quant), family = fam.name, offload = True
+                        target,
+                        _auto_offload_scheme(transformer_quant),
+                        family = fam.name,
+                        offload = True,
                     )
                 )
                 factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
@@ -6612,6 +6634,7 @@ class VideoBackend:
                         pin_prequantized_module,
                         stream_prequantized_module,
                     )
+
                     pinned_sizes = _h3_dense_denoiser_resident_bytes(
                         fam,
                         denoiser = denoiser,
@@ -6708,7 +6731,9 @@ class VideoBackend:
         # needs ``denoiser_pinned``, which only exists after the offload. ``effective_speed`` itself was resolved above
         # the offload, because the pin reads it.
         # ── the speed layer this workflow used to skip entirely.
-        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (denoiser_pinned or denoiser_streamed):
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (
+            denoiser_pinned or denoiser_streamed
+        ):
             # Compile only a resident or streamed denoiser: in the rotation the graph fights the onload hooks
             # (measured 69-85 s vs 30-115 s eager). Group offload hooks are compiler-disabled.
             logger.info(

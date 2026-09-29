@@ -106,7 +106,9 @@ def test_the_probe_follows_diffusers_group_offload(monkeypatch, attrs, expected)
         ("cpu", "float32", True, False),
     ],
 )
-def test_the_streamed_tier_needs_an_int8_capable_gpu(monkeypatch, device, dtype_name, streaming, expected):
+def test_the_streamed_tier_needs_an_int8_capable_gpu(
+    monkeypatch, device, dtype_name, streaming, expected
+):
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_prequant, video
 

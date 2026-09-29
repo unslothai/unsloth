@@ -38,6 +38,7 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(
         _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -1123,9 +1124,13 @@ def test_a_pinned_denoiser_is_sized_beside_the_larger_rotating_component_not_the
     ):
         whole = sizer()[1]
         rotating = sizer(rotating = True)[1]
-        assert whole - rotating == int((te_gb + vae_gb) * 1000**3) - int(max(te_gb, vae_gb) * 1000**3)
+        assert whole - rotating == int((te_gb + vae_gb) * 1000**3) - int(
+            max(te_gb, vae_gb) * 1000**3
+        )
     whole = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16)[1]
-    rotating = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16, rotating = True)[1]
+    rotating = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16, rotating = True)[
+        1
+    ]
     assert abs((whole - rotating) - vae_gb * 1000**3) < 1000
 
 

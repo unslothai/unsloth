@@ -34,20 +34,40 @@ FAMILIES = {
 _BF, _AO, _W8 = "bf16", "ao", "w8"
 EXPECTED = {
     "wan2.2-ti2v-5b": {
-        8: ("model", _W8), 12: ("model", _W8), 16: ("model", _W8), 24: ("dit", _AO),
-        32: ("dit", _BF), 48: ("none", _BF), 80: ("none", _BF),
+        8: ("model", _W8),
+        12: ("model", _W8),
+        16: ("model", _W8),
+        24: ("dit", _AO),
+        32: ("dit", _BF),
+        48: ("none", _BF),
+        80: ("none", _BF),
     },
     "wan2.2-t2v-a14b": {
-        8: ("model", _W8), 12: ("both", _W8), 16: ("both", _W8), 24: ("model", _W8),
-        32: ("model", _W8), 48: ("dit", _AO), 80: ("dit", _BF),
+        8: ("model", _W8),
+        12: ("both", _W8),
+        16: ("both", _W8),
+        24: ("model", _W8),
+        32: ("model", _W8),
+        48: ("dit", _AO),
+        80: ("dit", _BF),
     },
     "hv15-480p": {
-        8: ("model", _W8), 12: ("model", _W8), 16: ("both", _W8), 24: ("dit", _AO),
-        32: ("dit", _BF), 48: ("dit", _BF), 80: ("none", _BF),
+        8: ("model", _W8),
+        12: ("model", _W8),
+        16: ("both", _W8),
+        24: ("dit", _AO),
+        32: ("dit", _BF),
+        48: ("dit", _BF),
+        80: ("none", _BF),
     },
     "ltx-2": {
-        8: ("model", _W8), 12: ("model", _W8), 16: ("both", _W8), 24: ("both", _W8),
-        32: ("model", _W8), 48: ("dit", _AO), 80: ("dit", _BF),
+        8: ("model", _W8),
+        12: ("model", _W8),
+        16: ("both", _W8),
+        24: ("both", _W8),
+        32: ("model", _W8),
+        48: ("dit", _AO),
+        80: ("dit", _BF),
     },
 }
 EXPECTED["hv15-720p"] = EXPECTED["hv15-480p"]
@@ -61,7 +81,12 @@ def _tier_code(plan) -> str:
     return plan.offload_policy
 
 
-def _spoof(monkeypatch, *, tier_gib: int, cap = (12, 0)):
+def _spoof(
+    monkeypatch,
+    *,
+    tier_gib: int,
+    cap = (12, 0),
+):
     import core.inference.video as V
     from core.inference import diffusion_transformer_quant as tq
     from core.inference.diffusion_device import DiffusionDeviceTarget
@@ -108,7 +133,15 @@ def _spoof(monkeypatch, *, tier_gib: int, cap = (12, 0)):
 
     monkeypatch.setattr(vdp, "denoiser_prequant_pipe_kwargs", _seed)
 
-    def _quantize(view, tgt, *, mode, family = None, logger = None, **kw):
+    def _quantize(
+        view,
+        tgt,
+        *,
+        mode,
+        family = None,
+        logger = None,
+        **kw,
+    ):
         spy.quant.append({"mode": mode, **kw})
         if kw.get("offload"):
             return "int8"
@@ -118,13 +151,22 @@ def _spoof(monkeypatch, *, tier_gib: int, cap = (12, 0)):
     monkeypatch.setattr(V, "native_quant_reason", lambda m, s: f"native {s}")
 
     def _speed(view, tgt, *, is_gguf, family, speed_mode, cache_active, offload_active, **kw):
-        compiled = speed_mode in ("default", "max") and not is_gguf and family.supports_torch_compile
+        compiled = (
+            speed_mode in ("default", "max") and not is_gguf and family.supports_torch_compile
+        )
         spy.speed.append({"compiled": compiled, "offload_active": offload_active})
         return {"compiled": compiled}
 
     monkeypatch.setattr(V, "apply_speed_optims", _speed)
 
-    def _apply(pipe, plan, *, device = None, placement_device = None, logger = None):
+    def _apply(
+        pipe,
+        plan,
+        *,
+        device = None,
+        placement_device = None,
+        logger = None,
+    ):
         spy.plans.append(plan)
         return plan.offload_policy, plan.vae_tiling
 
@@ -252,7 +294,11 @@ def test_seed_stays_resident_counts_the_streamed_text_encoder(monkeypatch):
 def test_offload_tiers_rank_fastest_first():
     from core.inference.video import _video_plan_label, _video_plan_rank
 
-    def _plan(policy, te = False, dit = True):
+    def _plan(
+        policy,
+        te = False,
+        dit = True,
+    ):
         return types.SimpleNamespace(
             offload_policy = policy, stream_text_encoders = te, stream_transformer = dit
         )
@@ -324,7 +370,11 @@ def test_vram_floor_counts_what_each_tier_holds_at_once():
         }
     )
 
-    def _plan(policy, te = False, dit = True):
+    def _plan(
+        policy,
+        te = False,
+        dit = True,
+    ):
         return types.SimpleNamespace(
             offload_policy = policy, stream_text_encoders = te, stream_transformer = dit
         )
@@ -419,7 +469,9 @@ def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
         + 2 * block_bytes
         + 1
     )
-    monkeypatch.setattr("utils.hardware.trusted_mem_get_info", lambda d, module = None: (free, 10 * free))
+    monkeypatch.setattr(
+        "utils.hardware.trusted_mem_get_info", lambda d, module = None: (free, 10 * free)
+    )
     staged = V._stage_denoiser_for_quant(dit, target)
     on_card = [m for m in staged if next(m.parameters()).is_cuda]
     assert len(on_card) == len(staged) >= 2
