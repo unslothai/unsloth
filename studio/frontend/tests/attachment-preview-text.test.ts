@@ -1159,3 +1159,33 @@ test("the text adapter claims text/plain documents but not real ones", () => {
   ];
   for (const [name, type, text] of cases) assert.equal(isTextAttachment(name, type), text, `${name} (${type || "no type"})`);
 });
+
+test("a thumbnail repack restores images in the notes its kept paragraphs refer to", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
+  const ns = `xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"`;
+  const note = (id: string, image: string) =>
+    `<w:footnote w:id="${id}"><w:p><w:r><w:drawing><a:blip r:embed="${image}"/></w:drawing></w:r></w:p></w:footnote>`;
+  const ref = (id: string) => `<w:p><w:r><w:footnoteReference w:id="${id}"/></w:r></w:p>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(`<Relationships xmlns="${PKG}"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/document.xml": strToU8(`<w:document ${ns}><w:body>${ref("1")}${ref("2")}</w:body></w:document>`),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="f" Type="${R}/footnotes" Target="footnotes.xml"/></Relationships>`,
+    ),
+    "word/footnotes.xml": strToU8(`<w:footnotes ${ns}>${note("1", "rIdA")}${note("2", "rIdB")}</w:footnotes>`),
+    "word/_rels/footnotes.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="rIdA" Type="${R}/image" Target="media/a.png"/><Relationship Id="rIdB" Type="${R}/image" Target="media/b.png"/></Relationships>`,
+    ),
+    "word/media/a.png": new Uint8Array([1]),
+    "word/media/b.png": new Uint8Array([2]),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/a.png"));
+  assert.ok(!kept.includes("word/media/b.png"));
+});

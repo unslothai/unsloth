@@ -805,23 +805,15 @@ const XML_ELEMENT_TAG_RE = /<[^\s/>!?](?:"[^"]*"|'[^']*'|[^"'>])*>/g;
 const DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE = /^[\w.-]+:(?:embed|link|id)$/;
 const DOCX_IMAGE_RELATIONSHIP_TYPE_RE = /\/image$/;
 
-/** Inflates only the images the kept body references, so a thumbnail skips the rest. */
-function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument: string, body: string): void {
-  // Attributes of real elements only: not comments, CDATA or paragraph text.
-  const ids = new Set<string>();
-  for (const tag of body.replace(XML_NON_ELEMENT_RE, "").match(XML_ELEMENT_TAG_RE) ?? []) {
-    for (const [, name, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
-      if (DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE.test(name!)) ids.add(decodeXmlEntities(double ?? single ?? ""));
-    }
-  }
-  const rels = archive.entries[docxRelationshipsPath(mainDocument)];
-  if (!rels || ids.size === 0) return;
-  const base = mainDocument.slice(0, Math.max(0, mainDocument.lastIndexOf("/")));
-  const wanted = new Set<string>();
+type DocxRelationship = { id: string; type: string; path: string };
+
+function docxRelationships(rels: Uint8Array | undefined, base: string): DocxRelationship[] {
+  if (!rels) return [];
+  const list: DocxRelationship[] = [];
   const markup = strFromU8(rels).replace(XML_NON_ELEMENT_RE, "");
   for (const tag of markup.match(DOCX_RELATIONSHIP_TAG_RE) ?? []) {
-    let id: string | undefined;
-    let target: string | undefined;
+    let id = "";
+    let target = "";
     let type = "";
     for (const [, name, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
       const value = decodeXmlEntities(double ?? single ?? "");
@@ -829,11 +821,72 @@ function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument
       else if (name === "Target") target = value;
       else if (name === "Type") type = value;
     }
-    // Images only: an oversized altChunk or OLE part the first pass left out stays out.
-    if (id && target && ids.has(id) && DOCX_IMAGE_RELATIONSHIP_TYPE_RE.test(type)) {
-      wanted.add(joinDocxPath(base, target));
-    }
+    if (id && target) list.push({ id, type, path: joinDocxPath(base, target) });
   }
+  return list;
+}
+
+/** Each element tag's local name and attributes; comments, CDATA and text are skipped. */
+function* docxElementTags(xml: string): Generator<{ local: string; attributes: Map<string, string> }> {
+  for (const tag of xml.replace(XML_NON_ELEMENT_RE, "").match(XML_ELEMENT_TAG_RE) ?? []) {
+    const name = /^<([^\s/>]+)/.exec(tag)![1]!;
+    const attributes = new Map<string, string>();
+    for (const [, key, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
+      attributes.set(key!, decodeXmlEntities(double ?? single ?? ""));
+    }
+    yield { local: name.slice(name.indexOf(":") + 1), attributes };
+  }
+}
+
+function relationshipIdsIn(xml: string): Set<string> {
+  const ids = new Set<string>();
+  for (const { attributes } of docxElementTags(xml)) {
+    for (const [name, value] of attributes) if (DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE.test(name)) ids.add(value);
+  }
+  return ids;
+}
+
+const DOCX_NOTE_REFERENCES: Record<string, string> = {
+  footnoteReference: "footnote",
+  endnoteReference: "endnote",
+  commentReference: "comment",
+};
+
+/** Inflates only the images the kept body, and the notes it refers to, reference. */
+function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument: string, body: string): void {
+  const dirname = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+  const wanted = new Set<string>();
+  const addImages = (relationships: DocxRelationship[], ids: Set<string>) => {
+    for (const rel of relationships) {
+      // Images only: an oversized altChunk or OLE part the first pass left out stays out.
+      if (ids.has(rel.id) && DOCX_IMAGE_RELATIONSHIP_TYPE_RE.test(rel.type)) wanted.add(rel.path);
+    }
+  };
+  const mainRels = docxRelationships(archive.entries[docxRelationshipsPath(mainDocument)], dirname(mainDocument));
+  addImages(mainRels, relationshipIdsIn(body));
+  // Notes the kept body refers to, by element name ("footnote") and id.
+  const notes = new Map<string, Set<string>>();
+  for (const { local, attributes } of docxElementTags(body)) {
+    const note = DOCX_NOTE_REFERENCES[local];
+    const id = [...attributes].find(([name]) => name === "id" || name.endsWith(":id"))?.[1];
+    if (note && id !== undefined) notes.set(note, (notes.get(note) ?? new Set()).add(id));
+  }
+  for (const [note, noteIds] of notes) {
+    const part = mainRels.find((rel) => rel.type.endsWith(`/${note}s`))?.path;
+    const xml = part ? archive.entries[part] : undefined;
+    if (!part || !xml) continue;
+    // Just the referenced notes' elements, not the whole part.
+    const element = new RegExp(`<([\\w.-]+:)?${note}(?=[\\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>[\\s\\S]*?</\\1?${note}>`, "g");
+    const kept = [...strFromU8(xml).replace(XML_NON_ELEMENT_RE, "").matchAll(element)]
+      .map(([whole]) => whole)
+      .filter((whole) => {
+        const open = docxElementTags(whole).next().value;
+        const id = open && [...open.attributes].find(([name]) => name === "id" || name.endsWith(":id"))?.[1];
+        return id !== undefined && noteIds.has(id);
+      });
+    addImages(docxRelationships(archive.entries[docxRelationshipsPath(part)], dirname(part)), relationshipIdsIn(kept.join("")));
+  }
+  if (wanted.size === 0) return;
   // One budget with the parts already unpacked.
   let unpacked = Object.values(archive.entries).reduce((total, entry) => total + entry.length, 0);
   const images = unzipSync(bytes, {
