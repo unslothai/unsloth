@@ -113,6 +113,26 @@ def test_other_formats_are_still_reencoded_to_png(raw):
     assert Image.open(BytesIO(out)).mode == "RGB"
 
 
+@pytest.mark.parametrize(
+    "fmt, mode, kw",
+    [
+        ("PNG", "RGBA", {}),
+        ("PNG", "LA", {}),
+        ("WEBP", "RGBA", {"lossless": True, "exact": True}),
+        ("GIF", "RGBA", {}),
+    ],
+    ids = ["png", "grey-alpha-png", "webp", "gif"],
+)
+def test_dark_strokes_on_a_transparent_background_stay_visible(fmt, mode, kw):
+    img = Image.new("RGBA", (64, 48), (0, 0, 0, 0))
+    img.paste((0, 0, 0, 255), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img.convert(mode), fmt, **kw)))
+    assert head == "data:image/png;base64"
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert stb_view.getpixel((2, 2)) == (255, 255, 255)
+    assert max(stb_view.getpixel((32, 24))) < 64
+
+
 def test_jpeg_frames_stb_rejects_are_not_passed_through():
     raw = _encode(_photo(), "JPEG")
     assert _stb_reads_jpeg(raw)
