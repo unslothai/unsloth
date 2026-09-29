@@ -992,6 +992,8 @@ class _VideoLoadState:
     denoiser_streamed: bool = False
     # MiB the offload tier holds on the device at once; None when nothing is offloaded.
     vram_floor_mib: Optional[int] = None
+    # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
+    denoiser_host_copy: bool = False
     resolved: Optional[dict] = None
 
 
@@ -1283,6 +1285,7 @@ def _h3_placement_tier(
 # Unset transformer_quant resolves to int8 over fp8: same size and speed, closer to released (SSIM 0.49 vs 0.43),
 # and no per-row scale support needed.
 H3_AUTO_FALLBACK_SCHEME = "int8"
+_H3_STREAM_MODES = ("stream", "stream_lazy", "sync")
 
 
 def _h3_auto_denoiser_scheme(
@@ -6632,7 +6635,7 @@ class VideoBackend:
                         if stream
                         else None
                     )
-                    if stream and placed not in ("stream", "sync"):
+                    if stream and placed not in _H3_STREAM_MODES:
                         # Pinning is the tier the planner already ruled out, so it would OOM or be refused later.
                         raise RuntimeError(
                             f"MiniMax-H3's {transformer_quant_engaged} denoiser has to stream block by block "
@@ -6640,7 +6643,7 @@ class VideoBackend:
                             f"{sum(pinned_sizes) / 1e9:.1f} GB needed pinned), but group offloading is not "
                             "available in this install. Free GPU memory or pick the GGUF version."
                         )
-                    if placed in ("stream", "sync"):
+                    if placed in _H3_STREAM_MODES:
                         # offload_policy stays "model": the post-generation host reclaim keys on it.
                         denoiser_streamed = placed
                         logger.info(
@@ -6899,6 +6902,7 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant_engaged,
                 denoiser_pinned = denoiser_pinned,
                 denoiser_streamed = bool(denoiser_streamed),
+                denoiser_host_copy = denoiser_streamed == "stream",
                 resolved = resolved,
             )
             self._precommit_globals = None
@@ -7576,7 +7580,7 @@ class VideoBackend:
                                 state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
-                            transformer_streamed = bool(getattr(state, "denoiser_streamed", False)),
+                            transformer_streamed = bool(getattr(state, "denoiser_host_copy", False)),
                         )
                         if host_capacity_gb + 0.5 < required_host_gb:
                             raise RuntimeError(

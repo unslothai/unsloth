@@ -209,9 +209,14 @@ def test_the_generate_preflight_reads_the_streamed_fact_off_the_state():
 
     from core.inference import video as vid
 
-    assert "denoiser_streamed" in {f for f in vid._VideoLoadState.__dataclass_fields__}
+    fields = set(vid._VideoLoadState.__dataclass_fields__)
+    assert {"denoiser_streamed", "denoiser_host_copy"} <= fields
     source = inspect.getsource(vid.VideoBackend.generate)
-    assert source.count('transformer_streamed = bool(getattr(state, "denoiser_streamed", False))') == 2
+    # VRAM floor: any streaming. Host floor: only a full pinned host copy doubles the denoiser.
+    assert source.count('transformer_streamed = bool(getattr(state, "denoiser_streamed", False))') == 1
+    assert source.count('transformer_streamed = bool(getattr(state, "denoiser_host_copy", False))') == 1
+    load = inspect.getsource(vid)
+    assert 'denoiser_host_copy = denoiser_streamed == "stream"' in load
 
 
 
@@ -413,3 +418,26 @@ def test_a_failed_streaming_setup_raises_instead_of_pinning(monkeypatch):
     with pytest.raises(RuntimeError, match = "group offloading could not be set up"):
         prequant.stream_prequantized_module(manager, module, "cpu")
     assert hook.removed and module.weight.device.type == "cpu"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("pin_all, expected", [(True, "stream"), (False, "stream_lazy")])
+def test_the_stream_mode_says_whether_a_full_pinned_host_copy_exists(monkeypatch, pin_all, expected):
+    """The host floor doubles the denoiser only for a full up-front pin; lazy pinning holds one group at a time."""
+    pytest.importorskip("diffusers")
+    from torchao.quantization import quantize_
+
+    import core.inference.diffusion_memory as mem
+    from core.inference.diffusion_prequant import (
+        stream_prequantized_module,
+        torchao_group_offload_supported,
+    )
+
+    configs = _torchao_configs()
+    if "int8_v2" not in configs or not torchao_group_offload_supported():
+        pytest.skip("needs Int8Tensor and torchao-aware group offload")
+    monkeypatch.setattr(mem, "_streamed_pin_plan", lambda *a, **k: (pin_all, pin_all))
+    streamed = _Net().to(torch.bfloat16)
+    quantize_(streamed, configs["int8_v2"]())
+    mode, _ = _stream(streamed, stream_prequantized_module)
+    assert mode == expected
