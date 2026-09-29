@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -164,6 +165,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
+  const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
       hfToken: s.token,
@@ -171,7 +173,6 @@ export function ExportPage() {
     })),
   );
 
-  // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
     () => getCachedCheckpoints() ?? [],
   );
@@ -213,6 +214,7 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
+  const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
@@ -234,6 +236,7 @@ export function ExportPage() {
   // The GGUF method's LoRA-adapter target is not offered on Mac; GGUF LoRA
   // adapters ship through the LoRA method's toggle. Controls below key off this.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const torchaoUnavailable = !hardware.torchaoExportSupported;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
@@ -248,19 +251,27 @@ export function ExportPage() {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
         // Portable torchao is the fallback for hosts without the NVIDIA compressed path. Hidden on
-        // NVIDIA (use compressed-tensors) and on macOS/MLX (the backend rejects quantized export).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // NVIDIA (use compressed-tensors), macOS/MLX (rejected) and where torchao cannot load.
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !torchaoUnavailable;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, torchaoUnavailable],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop picks the gate removed, only once hardware is loaded: before that hasNvidia reads false.
+  useEffect(() => {
+    if (!hardware.loaded) return;
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
@@ -296,7 +307,6 @@ export function ExportPage() {
     steps: exportTourSteps,
   });
 
-  // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedCheckpoints() !== null;
@@ -341,7 +351,6 @@ export function ExportPage() {
     setExportMethod("gguf");
   }, [preselectRun, models]);
 
-  // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedLocalModels() !== null;
@@ -367,7 +376,19 @@ export function ExportPage() {
     };
   }, []);
 
-  // ---- Derived state ----
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      loadingCheckpoints ||
+      isLoadingLocalModels ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [isLoadingLocalModels, loadingCheckpoints, signalReady]);
+
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
@@ -577,6 +598,14 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  // Derived, not reset in an effect: an imatrix is calibrated for one model, so another source must not inherit it.
+  const imatrixSourceKey = JSON.stringify([
+    sourceTab,
+    sourceMode === "checkpoint" ? selectedModelIdx : null,
+    selectedExportSource,
+  ]);
+  const imatrixPath =
+    customImatrix.sourceKey === imatrixSourceKey ? customImatrix.path : "";
   const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
@@ -771,6 +800,7 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
+      imatrixPath,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
@@ -806,6 +836,7 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
+    imatrixPath,
     selectedFormats,
     hubMultiFormat,
     ggufAsLora,
@@ -864,10 +895,9 @@ export function ExportPage() {
     return () => obs.disconnect();
   }, [showPanel]);
 
-  // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
+      <main className="mx-auto max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
@@ -1134,7 +1164,7 @@ export function ExportPage() {
                                       No models found
                                     </ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  <ComboboxList>
                                     {(id: string) => (
                                       <ComboboxItem
                                         key={id}
@@ -1247,7 +1277,7 @@ export function ExportPage() {
                                     No local models found
                                   </ComboboxEmpty>
                                 )}
-                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                <ComboboxList>
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
@@ -1293,7 +1323,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-foreground/[0.04] p-3">
+                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1302,7 +1332,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1350,7 +1380,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-ui-10 font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold">
                           {i + 1}
                         </span>
                         {step}
@@ -1508,11 +1538,19 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {torchaoUnavailable && (
+                      <div className="text-ui-11 text-muted-foreground">
+                        Portable FP8/INT8 (torchao) export needs torchao, which
+                        is not installed here. Update Unsloth, or use
+                        16-bit or GGUF.
                       </div>
                     )}
                   </div>
@@ -1692,16 +1730,50 @@ export function ExportPage() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
-                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                              ? "Required for the selected IQ low-bit quant."
+                              : "Improves quant quality and unlocks the IQ low-bit quants."}
                           </div>
                         </div>
                         <Switch
+                          aria-label="Importance matrix (imatrix)"
                           checked={effectiveImatrix}
                           onCheckedChange={setUseImatrix}
                           disabled={requiresImatrix}
                         />
                       </div>
+                      {effectiveImatrix && (
+                        <div className="space-y-1.5">
+                          <label
+                            htmlFor="export-imatrix-path"
+                            className="text-sm font-medium"
+                          >
+                            Local imatrix file (optional)
+                          </label>
+                          <InputGroup>
+                            <InputGroupInput
+                              id="export-imatrix-path"
+                              aria-describedby="export-imatrix-path-help"
+                              placeholder="/path/to/imatrix.gguf"
+                              value={imatrixPath}
+                              onChange={(e) =>
+                                setCustomImatrix({
+                                  sourceKey: imatrixSourceKey,
+                                  path: e.target.value,
+                                })
+                              }
+                            />
+                          </InputGroup>
+                          <p
+                            id="export-imatrix-path-help"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Absolute path to a .dat or .gguf imatrix file on the
+                            machine running Unsloth. Leave blank to
+                            auto-download the upstream Unsloth imatrix for the
+                            base model, if one exists.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

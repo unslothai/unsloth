@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Adapter-format export contracts: platform-resolved default, conversion
-routing, GGUF staging rejects, Hub compare-and-swap, feature metadata."""
+"""Adapter-format export: platform default, conversion routing, GGUF rejects, feature metadata."""
 
 import json
 import os
@@ -14,20 +13,11 @@ from core.export import export as export_mod
 from utils.models.checkpoints import parse_adapter_features
 
 
-def _backend(
-    monkeypatch,
-    is_mlx,
-    tmp_path,
-    created = None,
-):
+def _backend(monkeypatch, is_mlx, tmp_path):
     monkeypatch.setattr(export_mod, "_IS_MLX", is_mlx)
     monkeypatch.setattr(export_mod, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda p: tmp_path / "out")
-    monkeypatch.setattr(
-        export_mod,
-        "ensure_dir",
-        (lambda p: created.append(str(p))) if created is not None else (lambda p: None),
-    )
+    monkeypatch.setattr(export_mod, "ensure_dir", lambda p: os.makedirs(p, exist_ok = True))
     backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
     backend.current_model = MagicMock()
     backend.current_tokenizer = MagicMock()
@@ -35,22 +25,39 @@ def _backend(
     return backend
 
 
-# The six-cell platform x field matrix: omission stays byte-identical to the
-# pre-existing native call on BOTH platforms, and explicit native values match.
+def _peft_writer(model):
+    # The real zoo converter refuses an existing destination and publishes a fresh one.
+    def _save(
+        path,
+        adapter_config = None,
+        adapter_format = "mlx",
+    ):
+        assert not os.path.lexists(path)
+        os.makedirs(path)
+        with open(os.path.join(path, "adapter_model.safetensors"), "w") as f:
+            f.write(adapter_format)
+        with open(os.path.join(path, "adapter_config.json"), "w") as f:
+            json.dump({"r": 8}, f)
+
+    model.save_lora_adapters = MagicMock(side_effect = _save)
+
+
+# Omission stays the pre-existing native call on both platforms; explicit native values match.
 @pytest.mark.parametrize(
     "is_mlx,requested,expect",
     [
-        (True, None, "mlx"),  # Mac + omitted -> native MLX passthrough
-        (True, "mlx", "mlx"),  # Mac + explicit mlx (frontend default path)
-        (True, "peft", "peft"),  # Mac + explicit peft -> converts
-        (False, None, "peft"),  # CUDA + omitted -> native PEFT passthrough
-        (False, "peft", "peft"),  # CUDA + explicit peft -> same native result
-        (False, "mlx", "error"),  # CUDA + explicit mlx -> specified error
+        (True, None, "mlx"),
+        (True, "mlx", "mlx"),
+        (True, "peft", "peft"),
+        (False, None, "peft"),
+        (False, "peft", "peft"),
+        (False, "mlx", "error"),
     ],
 )
 def test_six_cell_matrix(monkeypatch, tmp_path, is_mlx, requested, expect):
-    created = []
-    backend = _backend(monkeypatch, is_mlx, tmp_path, created)
+    backend = _backend(monkeypatch, is_mlx, tmp_path)
+    if expect == "peft" and is_mlx:
+        _peft_writer(backend.current_model)
     ok, message, _path = backend.export_lora_adapter(
         str(tmp_path / "dst"),
         adapter_format = requested,
@@ -62,19 +69,38 @@ def test_six_cell_matrix(monkeypatch, tmp_path, is_mlx, requested, expect):
     assert ok, message
     if is_mlx:
         args, kwargs = backend.current_model.save_lora_adapters.call_args
+        backend.current_model.save_pretrained.assert_not_called()
         if expect == "mlx":
-            # Exactly the pre-existing native call: no adapter_format kwarg.
-            assert kwargs == {}
+            assert args == (str(tmp_path / "out"),) and kwargs == {}
         else:
             assert kwargs == {"adapter_format": "peft"}
-        backend.current_model.save_pretrained.assert_not_called()
-        # Conversions get a fresh destination (parent created only); the
-        # native path keeps its pre-created directory.
-        expected_dir = tmp_path / ("out" if expect == "mlx" else "")
-        assert created == [str(expected_dir)]
+            assert (tmp_path / "out" / "adapter_model.safetensors").read_text() == "peft"
     else:
         backend.current_model.save_pretrained.assert_called_once()
         backend.current_model.save_lora_adapters.assert_not_called()
+
+
+def test_repeat_peft_export_overwrites(monkeypatch, tmp_path):
+    backend = _backend(monkeypatch, True, tmp_path)
+    _peft_writer(backend.current_model)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "adapter_model.safetensors").write_text("stale")
+    for _ in range(2):
+        ok, message, _ = backend.export_lora_adapter(str(out), adapter_format = "peft")
+        assert ok, message
+    assert (out / "adapter_model.safetensors").read_text() == "peft"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+
+
+def test_cuda_hub_push_unchanged(monkeypatch, tmp_path):
+    backend = _backend(monkeypatch, False, tmp_path)
+    monkeypatch.setattr(export_mod, "HfApi", lambda token = None: MagicMock())
+    monkeypatch.setattr(export_mod, "_open_hub_repo", lambda hf_api, repo_id, private: repo_id)
+    monkeypatch.setattr(export_mod, "_publish_unsloth_model_card", lambda *a: None)
+    ok, message, _ = backend.export_lora_adapter("", push_to_hub = True, repo_id = "u/r", hf_token = "t")
+    assert ok, message
+    backend.current_model.push_to_hub.assert_called_once_with("u/r", token = "t", private = False)
 
 
 def test_outdated_zoo_hard_error(monkeypatch, tmp_path):
@@ -105,27 +131,6 @@ def test_outdated_zoo_hard_error(monkeypatch, tmp_path):
     assert not ok and "unsloth-zoo" not in message and "scale" in message
 
 
-def _gguf_setup(
-    monkeypatch,
-    tmp_path,
-    peft_cfg,
-    fs_attr = None,
-):
-    backend = _backend(monkeypatch, True, tmp_path)
-    out = tmp_path / "gguf"
-    out.mkdir()
-
-    def _fake_save(destination, resolved_format):
-        assert resolved_format == "peft"
-        os.makedirs(destination, exist_ok = True)  # the real zoo publishes the dir
-        with open(os.path.join(destination, "adapter_config.json"), "w") as f:
-            json.dump(peft_cfg, f)
-
-    backend._save_mlx_adapter = _fake_save
-    backend.current_model._unsloth_full_state_modules = fs_attr
-    return backend, str(out)
-
-
 @pytest.mark.parametrize(
     "cfg,fs_attr,reason",
     [
@@ -137,10 +142,42 @@ def _gguf_setup(
         ({"target_parameters": ["experts.gate_up_proj"]}, None, "expert"),
     ],
 )
-def test_gguf_staging_rejects(monkeypatch, tmp_path, cfg, fs_attr, reason):
-    backend, out = _gguf_setup(monkeypatch, tmp_path, cfg, fs_attr)
+def test_gguf_rejects(monkeypatch, tmp_path, cfg, fs_attr, reason):
+    backend = _backend(monkeypatch, True, tmp_path)
+    backend.current_model._unsloth_full_state_modules = fs_attr
+    (tmp_path / "adapter_config.json").write_text(json.dumps(cfg))
     with pytest.raises(RuntimeError, match = reason):
-        backend._export_mlx_lora_gguf(out, "q8_0", None)
+        backend._convert_peft_dir_to_gguf(str(tmp_path), "q8_0", None)
+
+
+@pytest.mark.parametrize("token,expect", [(False, None), ("hf_x", "hf_x")])
+def test_gguf_converter_token_env(monkeypatch, tmp_path, token, expect):
+    import subprocess
+    import sys
+    import types
+
+    llama = tmp_path / "llama.cpp"
+    (llama / "gguf-py").mkdir(parents = True)
+    (llama / "convert_lora_to_gguf.py").write_text("")
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.llama_cpp",
+        types.SimpleNamespace(LLAMA_CPP_DEFAULT_DIR = str(llama), install_llama_cpp = lambda **k: None),
+    )
+    seen = {}
+
+    def _run(cmd, env, **kwargs):
+        seen["env"] = env
+        return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setenv("HF_TOKEN", "host-token")
+    backend = _backend(monkeypatch, True, tmp_path)
+    backend.current_model._unsloth_full_state_modules = None
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "o/m"}))
+    backend._convert_peft_dir_to_gguf(str(tmp_path), "q8_0", token)
+    assert seen["env"].get("HF_TOKEN") == expect
+    assert (seen["env"].get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "1") is (token is False)
 
 
 def test_parse_adapter_features(tmp_path):

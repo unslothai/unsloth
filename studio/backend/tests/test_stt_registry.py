@@ -27,6 +27,7 @@ class _Sidecar:
         self.unload_expected = []
         self.loaded_with = None
         self.load_cancel_event = None
+        self.loaded_device = None
 
     def is_loading(self):
         return self._loading
@@ -35,9 +36,11 @@ class _Sidecar:
         self,
         model,
         request_cancel_event = None,
+        device = None,
     ):
         self.loaded_with = model
         self.load_cancel_event = request_cancel_event
+        self.loaded_device = device
 
     def unload(
         self,
@@ -85,7 +88,7 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
             f"unload:{name}"
         )
     target = sidecars["mtmd"]
-    target.load = lambda model, request_cancel_event = None: order.append("load:mtmd")
+    target.load = lambda model, request_cancel_event = None, device = None: order.append("load:mtmd")
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
 
     stt_registry.load("qwen3-asr-0.6b", "mtmd")
@@ -231,7 +234,11 @@ def test_a_failed_load_leaves_the_engine_the_user_was_using(monkeypatch):
     """The sidecars order preflight before release for this reason; so does the registry."""
     sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
 
-    def refuse(model, request_cancel_event = None):
+    def refuse(
+        model,
+        request_cancel_event = None,
+        device = None,
+    ):
         raise RuntimeError("STT model 'x' is not downloaded.")
 
     sidecars["mtmd"].load = refuse
@@ -314,6 +321,7 @@ def test_a_downloaded_switch_releases_the_old_engine_before_allocating(monkeypat
             self,
             model,
             request_cancel_event = None,
+            device = None,
         ):
             order.append(("load", model))
 
@@ -340,6 +348,7 @@ def test_an_undownloaded_switch_keeps_the_resident_engine_until_the_load_succeed
             self,
             model,
             request_cancel_event = None,
+            device = None,
         ):
             order.append(("load", model))
 
@@ -442,7 +451,10 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
     monkeypatch.setattr(
         ri,
         "_stt_lifecycle",
-        lambda: (lambda model, engine, cancel = None: loaded.append((model, engine)), lambda *a: []),
+        lambda: (
+            lambda model, engine, cancel = None, device = None: loaded.append((model, engine)),
+            lambda *a: [],
+        ),
     )
 
     result = asyncio.run(

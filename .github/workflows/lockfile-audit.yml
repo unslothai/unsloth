@@ -24,24 +24,15 @@
 
 name: Lockfile supply-chain audit
 
+# Per-commit runs are gone: this audit now runs as a background lane inside Lint CI,
+# which already occupies a runner on every commit, so it costs a slot there instead of
+# holding one of its own for ~6s of work. Both call
+# .github/scripts/lane-lockfile-audit.sh, so there is one definition.
+#
+# The nightly schedule is deliberately KEPT. It is not the same check: it re-audits the
+# lockfiles as they stand against advisories published since the last commit, which no
+# commit-triggered run can do.
 on:
-  pull_request:
-    paths:
-      - 'studio/frontend/package-lock.json'
-      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
-      - 'studio/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'scripts/lockfile_supply_chain_audit.py'
-      - '.github/workflows/lockfile-audit.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'studio/frontend/package-lock.json'
-      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
-      - 'studio/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'scripts/lockfile_supply_chain_audit.py'
-      - '.github/workflows/lockfile-audit.yml'
   schedule:
     - cron: '37 5 * * *'
   workflow_dispatch:
@@ -75,11 +66,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify audit script parses
-        run: python3 -c "import ast; ast.parse(open('scripts/lockfile_supply_chain_audit.py').read())"
-
+      # One definition, shared with the Lint CI lane that runs this on every commit.
       - name: Run lockfile supply-chain audit
-        # Blocks known-malicious versions, IOC strings, broken lockfiles,
-        # and provenance/integrity failures. Lesser anomalies stay
-        # ::warning:: unless --strict is passed.
-        run: python3 scripts/lockfile_supply_chain_audit.py
+        run: bash .github/scripts/lane-lockfile-audit.sh

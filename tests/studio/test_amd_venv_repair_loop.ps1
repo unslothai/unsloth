@@ -289,7 +289,7 @@ Check "XPU is judged before ROCm"          (
 
 Write-Host "the stale-venv decision has no dead end left in it"
 # Starts on `\$null\n`, so a CRLF checkout fails the match instead of returning an empty region.
-$_repairPat = '(?s)(\$reason = \$null\n.*?Remove-Item -LiteralPath \$VenvDir -Recurse)'
+$_repairPat = '(?s)(\$reason = \$null\n.*?Rename-Item -LiteralPath \$VenvDir)'
 $_repair = if ($setupText -match $_repairPat) { $Matches[1] } else { "" }
 Check "the stale-venv decision was found"  ($_repair -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_repairPat))
@@ -314,7 +314,24 @@ Check "it does not try to wipe the venv it runs from" (-not ($_managed -match 'R
 # A direct `unsloth studio update` keeps its own self-repair, and the custom-home guard stays in
 # front of the delete.
 Check "a direct update still rebuilds"     ($_repair -match 'Stale venv detected \(\$reason\) -- rebuilding')
+# ...unless it is running from the venv's own python.exe, which `unsloth studio update` always is
+# on Windows: a running image cannot be deleted, so that run repairs in place like install.ps1.
+Check "a direct update from inside the venv repairs in place" (
+    $_repair -match '(?s)\$_hostPy = Get-SetupHostInterpreterInVenv -VenvDir \$VenvDir.*?\$script:PinChangedForceReinstall = \$true.*?\$shouldRebuild = \$false')
+# And when it does rebuild, the old tree is moved aside first: a rename fails whole where a
+# recursive delete stops at the first locked file and leaves a venv nothing can start.
+Check "the rebuild moves the venv aside before deleting" (
+    $_repair -match 'Rename-Item -LiteralPath \$VenvDir' -and -not ($_repair -match 'Remove-Item -LiteralPath \$VenvDir'))
 Check "the custom-home guard still gates the wipe" ($_repair -match '\$StudioHomeIsCustom')
+# The sweep next to the venv deletes on every qualifying run, including one that rebuilds nothing,
+# and it runs ahead of that guard. So it asks the same ownership question the guard asks, and it
+# requires the directory to look like an environment this script moved rather than trusting a name.
+Check "the sweep reads the same ownership guard" ($_repair -match '\$_studioRootIsOurs')
+Check "the sweep wants more than a matching name" (
+    $_repair -match 'foreach \(\$_sign in @\("pyvenv\.cfg", \$StudioOwnedMarker, \$StudioStaleMarker\)\)')
+# A taken destination takes a suffix instead of failing the rename, as install.sh already does.
+Check "a taken stale name takes a suffix"        ($_repair -match '\$_staleTry -lt 64')
+Check "the sweep recognises that suffix"         ($_repair -match '\(\?:-\[0-9\]\+\)\?\$')
 # Why it failed, not just that it failed: this line separates a faulted GPU driver from a missing
 # wheel, and the user is about to be told what happened to their environment.
 Check "the swallowed probe error is surfaced" ($_repair -match '\$_verProbe\.Error')
@@ -558,8 +575,10 @@ Assert-VenvActivated -VenvDir `$Venv
 
 # ── where it is wired in ──
 # Both ends sit immediately after a non-newline token, so a CRLF checkout fails the match rather
-# than yielding an empty region every -not check would pass against.
-$_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
+# than yielding an empty region every -not check would pass against. The dot-source is reached
+# through Enter-StudioVenv, which picks it or the staged-root PATH activation, so the region
+# spans that helper rather than requiring the dot-source on the very next line.
+$_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n.*?\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
 $_act = if ($setupText -match $_actPat) { $Matches[1] } else { "" }
 Check "the activation block was found"     ($_act -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_actPat))
@@ -583,7 +602,10 @@ Check "and that one is outside the swallowing catch" (
     $setupText.IndexOf('} catch { }') -lt
     $setupText.LastIndexOf('Assert-VenvActivated -VenvDir $VenvDir'))
 # It refuses; it does not repair, and it does not wipe a venv install.ps1 may still restore from.
-Check "the guard does not delete anything" (($_act -ne "") -and -not ($_act -match 'Remove-Item'))
+# Env: is exempt: the staged branch clears PYTHONHOME the way Activate.ps1 does, and that removes
+# a variable, not a file.
+Check "the guard does not delete anything" (
+    ($_act -ne "") -and -not ($_act -match 'Remove-Item(?!\s+Env:)'))
 
 Write-Host ""
 Write-Host "=== an installer-managed repair never moves a GPU wheel to another family ==="
@@ -647,10 +669,11 @@ Check "it reports the resolved flavor, not the raw index URL" (
 # session must not inherit the first one's answer. Assigning "" clears it on every edition (7.5+
 # keeps a present blank value, 5.1 and 7.0-7.4 remove the variable) and setup reads both as
 # unknown. The -match half is the anti-vacuity half: a bare -notmatch passes against a tree that
-# never grew the assignment at all.
+# never grew the assignment at all. The finally that puts the caller's own value back is a
+# conditional assignment too, and is not the report; only its $previous* form is allowed.
 Check "the report is assigned on every run, not only when known" (
     ($installText -match '(?m)^\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = ') -and
-    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG'))
+    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = (?!\$previous)'))
 Check "it is handed over before setup is invoked" (
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -ge 0 -and
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -lt
@@ -697,10 +720,13 @@ $_cuTag = if ($setupText -match $_cuTagPat) { $Matches[1] } else { "" }
 Check "the index selection was found"      ($_cuTag -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_cuTagPat))
 # The two install arms that force torch back on their own. Their CONDITIONS are extracted and
-# evaluated below, so "the kept wheel survives" is answered by the shipped gates. The AMD arm's
-# --force-reinstall is unconditional inside its block; the XPU arm's is keyed off the installed tag.
-Check "the AMD arm still force-reinstalls unconditionally" (
-    $setupText -match 'Fast-Install @_rocmTrio --force-reinstall --index-url \$ROCmIndexUrl')
+# evaluated below, so "the kept wheel survives" is answered by the shipped gates. Both arms key
+# --force-reinstall off the installed tag; the AMD arm used to force unconditionally, which made
+# every update re-resolve the trio against the ROCm index.
+Check "the AMD arm forces on any non-rocm tag" (
+    $setupText -match 'if \(\$installedTorchTag -ne "rocm"\) \{ \$rocmForce = @\("--force-reinstall"\) \}')
+Check "the AMD arm no longer forces unconditionally" (
+    -not ($setupText -match 'Fast-Install @_rocmTrio --force-reinstall'))
 Check "the XPU arm forces on any non-xpu tag" (
     $setupText -match 'if \(\$installedTorchTag -ne "xpu"\) \{ \$xpuForce = @\("--force-reinstall"\) \}')
 $_amdGate = if ($setupText -match '(?m)^if \((-not \$TorchIndexPinned -and \(\$HasROCm -or \$ROCmGfxArch\) -and \$CuTag -eq "cpu")\) \{$') { $Matches[1] } else { "" }

@@ -336,6 +336,34 @@ export function windowBaseline(
   return values[start - 1] ?? 0;
 }
 
+export type ActivityGridCell = {
+  day: { tokens: number } | null;
+};
+
+export type ActivityGridColumn = ActivityGridCell[];
+
+/** Subtitle headline: weekly reports the busiest week, other modes sum the window. */
+export function activitySummaryForMode(
+  grid: ActivityGridColumn[],
+  mode: ActivityMode,
+): number {
+  if (grid.length === 0) return 0;
+  if (mode === "weekly") {
+    return grid.reduce((peak, column) => {
+      let weekTokens = 0;
+      for (const cell of column) {
+        if (cell.day) weekTokens += cell.day.tokens;
+      }
+      return Math.max(peak, weekTokens);
+    }, 0);
+  }
+  return grid.reduce(
+    (sum, column) =>
+      column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
+    0,
+  );
+}
+
 export function seriesForMode(
   daily: Array<{ date: string; tokens: number }>,
   mode: ActivityMode,

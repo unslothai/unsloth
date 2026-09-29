@@ -2,12 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
   resolveVerdict,
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
+
+// Backend routes, so same origin: the page CSP already allows them whatever endpoint is saved later.
+const MODELSCOPE_HUB_PATH = "/api/hub/modelscope";
+
+function backendUrl(path: string): string {
+  return new URL(apiUrl(path), window.location.href).href;
+}
 
 export const env = {
   MODE: import.meta.env.MODE,
@@ -20,8 +28,16 @@ export const env = {
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
+export type FileManager = "finder" | "explorer" | "files" | null;
+
 interface PlatformState {
   deviceType: DeviceType;
+  // Unified memory: GPU and system draw on one pool, so an over-committed load has
+  // nowhere to spill and takes the machine down rather than failing. Narrower than
+  // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
+  // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
+  appleSilicon: boolean;
+  fileManager: FileManager | undefined;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
   // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
@@ -62,6 +78,8 @@ const localDeviceType = detectLocalPlatform();
 
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
+  appleSilicon: false,
+  fileManager: undefined,
   // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
   // that must decide something before /api/health answers. Capability gating must read
   // capabilitiesUnknown() first and hold, not gray a tab out on this.
@@ -84,13 +102,12 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   },
 }));
 
-// Once an authoritative (server-reported) platform has been fetched, a
-// non-forced response must not overwrite it. The post-render fetchDeviceType()
-// in main.tsx runs before auth is ready and can resolve after the authed
-// root-route/provider fetches; such a late write would reset deviceType,
-// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback
-// (unauthenticated) or an earlier authenticated request that landed after a
-// later forced refresh. Forced refreshes are explicit re-reads, so they still write.
+// Once an authoritative (server-reported) platform has been fetched, a non-forced response must not
+// overwrite it. The post-render fetchDeviceType() in main.tsx runs before auth is ready and can
+// resolve after the authed root-route/provider fetches; such a late write would reset deviceType,
+// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback (unauthenticated)
+// or an earlier authenticated request that landed after a later forced refresh. Forced refreshes
+// are explicit re-reads, so they still write.
 function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
@@ -153,19 +170,41 @@ export async function fetchDeviceType(options?: {
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;
+        apple_silicon?: boolean;
+        file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
         secure?: boolean;
+        hf_endpoint?: string;
+        hf_datasets_server?: string;
+        hub_source?: string;
+        hub_proxy?: string | null;
+        datasets_server_proxy?: string | null;
       };
-      // Once the store holds an authoritative (server-reported) platform, a
-      // non-forced response must not overwrite it. It may be an unauthenticated
-      // fallback, or an earlier authenticated request that resolved after a
-      // later forced refresh already picked up device_type and the tunnel
-      // fields; writing either would reset device type or null the tunnel
-      // fields. Forced refreshes are explicit re-reads, so they still write.
+      // Once the store holds an authoritative (server-reported) platform, a non-forced response
+      // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
+      // request that resolved after a later forced refresh already picked up device_type and the
+      // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
+      // refreshes are explicit re-reads, so they still write.
+      // Before the authoritative-platform guard below: unauthenticated and
+      // idempotent, and a mirror whose first authoritative reply already landed
+      // would otherwise never route its Hub calls.
+      const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
+      const datasetsProxy =
+        typeof data.datasets_server_proxy === "string" ? data.datasets_server_proxy : null;
+      setHfEndpoints(
+        data.hub_source === "modelscope"
+          ? backendUrl(MODELSCOPE_HUB_PATH)
+          : hubProxy
+            ? backendUrl(hubProxy)
+            : data.hf_endpoint,
+        datasetsProxy ? backendUrl(datasetsProxy) : data.hf_datasets_server,
+        data.hub_source,
+        { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
+      );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
@@ -176,6 +215,18 @@ export async function fetchDeviceType(options?: {
       const keepPlatform = data.device_type === undefined && previous.fetched;
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
+      // Rides with device_type and is kept on the same terms: a provisional or
+      // unauthenticated reply carries neither, and a browser guess cannot tell Apple
+      // Silicon from Intel. Absent means false, the pre-Apple-Silicon wording -- correct
+      // on an Intel Mac, and on a Mac browser pointed at a Linux host.
+      const appleSilicon =
+        data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
+      const fileManager =
+        data.device_type !== undefined
+          ? data.file_manager
+          : keepPlatform
+            ? previous.fileManager
+            : undefined;
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
       const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
         data,
@@ -186,6 +237,8 @@ export async function fetchDeviceType(options?: {
       // SSH); keeping fetched=false retries once a token exists.
       usePlatformStore.setState({
         deviceType,
+        appleSilicon,
+        fileManager,
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
@@ -198,10 +251,9 @@ export async function fetchDeviceType(options?: {
       return deviceType;
     }
   } catch {
-    // Backend not ready: use client-side detection so chat-only guard works
-    // on initial load (important for macOS). Keep fetched=false so a later
-    // call retries against the backend. But a late non-forced failure must not
-    // wipe an authoritative platform that already resolved.
+    // Backend not ready: use client-side detection so chat-only guard works on initial load
+    // (important for macOS). Keep fetched=false so a later call retries against the backend. But a
+    // late non-forced failure must not wipe an authoritative platform that already resolved.
     if (shouldKeepAuthoritativePlatform(options?.force)) {
       return usePlatformStore.getState().deviceType;
     }

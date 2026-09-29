@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+// Module state outlives a logout, so this store clears with the session. Relative and
+// extensioned like the sibling below: the store's test runs under
+// `node --experimental-strip-types`, which cannot resolve the `@/` alias.
+import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
   TrainingMetricsResponse,
@@ -60,7 +64,9 @@ const initialState: TrainingRuntimeState = {
   startRequestId: null,
   startError: null,
   startModelName: null,
+  modelDownloadRepoId: null,
   startDatasetName: null,
+  startHfToken: null,
   startProjectName: null,
   startFromResume: false,
   sseConnected: false,
@@ -74,6 +80,7 @@ const initialState: TrainingRuntimeState = {
   progressPercent: 0,
   elapsedSeconds: null,
   etaSeconds: null,
+  sessionStartStep: 0,
   currentGradNorm: null,
   currentNumTokens: null,
   outputDir: null,
@@ -248,7 +255,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           return state;
         }
         acquired = true;
-        return { isStarting: true, startRequestId };
+        return { isStarting: true, startRequestId, modelDownloadRepoId: null };
       });
       return acquired;
     },
@@ -263,10 +270,12 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       startDatasetName,
       startFromResume = false,
       startProjectName = null,
+      startHfToken = null,
     ) =>
       set({
         startModelName,
         startDatasetName,
+        startHfToken,
         startProjectName,
         startFromResume,
       }),
@@ -301,6 +310,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           warnings: [],
           startError: null,
           phase: "configuring",
+          modelDownloadRepoId: null,
           isStarting: false,
           startRequestId,
           sseConnected: false,
@@ -314,6 +324,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           progressPercent: 0,
           elapsedSeconds: null,
           etaSeconds: null,
+          sessionStartStep: 0,
           currentGradNorm: null,
           currentNumTokens: null,
           outputDir: null,
@@ -393,6 +404,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               progressPercent: 0,
               elapsedSeconds: null,
               etaSeconds: null,
+              sessionStartStep: 0,
               currentGradNorm: null,
               currentNumTokens: null,
               outputDir: null,
@@ -451,6 +463,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             canApplyDetailMetrics && detailEpoch !== null
               ? Math.max(detailEpoch, runtimeState.currentEpoch)
               : runtimeState.currentEpoch,
+          modelDownloadRepoId: payload.details?.model_download_repo_id ?? null,
           outputDir:
             payload.details?.output_dir !== undefined
               ? payload.details.output_dir
@@ -572,6 +585,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               : state.currentEpoch,
           elapsedSeconds: payload.elapsed_seconds,
           etaSeconds: payload.eta_seconds,
+          sessionStartStep: payload.session_start_step ?? state.sessionStartStep,
           currentGradNorm,
           currentNumTokens: payload.num_tokens,
           firstStepReceived: state.firstStepReceived || step > 0,
@@ -602,6 +616,22 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       }),
   }),
 );
+
+// startHfToken holds a raw Hub credential in module state that outlives a logout:
+// reconcile() in __root remounts rather than reloading, so the next account in the tab
+// would poll with the previous one's token. useHfTokenStore already clears on this event.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    useTrainingRuntimeStore.getState().resetRuntime();
+    useTrainingRuntimeStore.setState({
+      startHfToken: null,
+      startModelName: null,
+      modelDownloadRepoId: null,
+      startDatasetName: null,
+      startProjectName: null,
+    });
+  });
+}
 
 export function shouldShowTrainingView(state: TrainingRuntimeStore): boolean {
   return (

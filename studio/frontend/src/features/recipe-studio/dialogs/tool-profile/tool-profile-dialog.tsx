@@ -12,10 +12,12 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toastError } from "@/shared/toast";
 import {
-  ArrowRight01Icon,
   Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { listMcpTools } from "../../api";
@@ -124,8 +126,7 @@ function McpServerCard({
               type="button"
               className="flex min-w-0 flex-1 items-start gap-3 text-left"
             >
-              <HugeiconsIcon
-                icon={ArrowRight01Icon}
+              <ChevronRightIcon
                 className={`mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform ${
                   open ? "rotate-90" : ""
                 }`}
@@ -271,6 +272,7 @@ function McpServerCard({
                     />
                     <Input
                       className="nodrag"
+                      data-reload-snapshot-sensitive
                       value={item.value}
                       placeholder="value"
                       onChange={(event) =>
@@ -329,6 +331,7 @@ function McpServerCard({
                   />
                   <Input
                     className="nodrag"
+                    data-reload-snapshot-sensitive
                     value={provider.api_key ?? ""}
                     placeholder="token"
                     onChange={(event) =>

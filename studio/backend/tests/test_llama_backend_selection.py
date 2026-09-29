@@ -131,7 +131,7 @@ def test_windows_rocm_bundle_satisfies_a_rocm_request():
         # Written by this build.
         ({"backend": "rocm", "backend_request": "rocm"}, "rocm"),
         ({"backend": "cuda", "backend_request": "auto"}, "auto"),
-        # A choice from a newer Studio is returned verbatim, never as "auto":
+        # A choice from a newer Unsloth is returned verbatim, never as "auto":
         # "auto" would license this build to re-detect over it.
         ({"backend": "sycl", "backend_request": "sycl"}, "sycl"),
         ({"asset": "x.tar.gz", "llama_backend": "sycl"}, "sycl"),
@@ -208,13 +208,36 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
         ("cpu", "linux-cpu", "cpu"),
         ("auto", "linux-cuda", "auto"),
         (None, "linux-cuda", "auto"),
-        # macOS cannot persist requests that all resolve to its universal Metal build.
+        # An unhonourable request is KEPT, not erased to "auto" (#11143), so a later update
+        # can retry it.
+        ("vulkan", "linux-cpu", "vulkan"),
+        # Except where no release could ever honour it: macOS ships one universal Metal
+        # bundle and the picker offers only "auto", so a preserved "cpu" is unappliable.
         ("cpu", "macos-arm64", "auto"),
-        ("vulkan", "linux-cpu", "auto"),
+        ("vulkan", "macos-x64", "auto"),
     ],
 )
-def test_only_a_request_the_install_honours_is_recorded(request_backend, kind, expected):
+def test_the_request_is_recorded_verbatim(request_backend, kind, expected):
     assert ilp.persisted_marker_backend_request(request_backend, _choice(kind)) == expected
+
+
+@pytest.mark.parametrize(
+    "request_backend, kind, satisfied",
+    [
+        ("vulkan", "linux-vulkan", True),
+        ("cpu", "linux-cpu", True),
+        ("auto", "linux-cuda", True),
+        (None, "linux-cuda", True),
+        # A single-build platform cannot owe a request: nothing could ever serve it.
+        ("cpu", "macos-arm64", True),
+        # Concrete requests the bundle that landed contradicts.
+        ("vulkan", "linux-cpu", False),
+    ],
+)
+def test_a_request_the_install_could_not_honour_is_flagged(request_backend, kind, satisfied):
+    """The other half of the pair: the request is preserved, so something has to say it
+    is not what runs, or every reader would treat it as the installed backend."""
+    assert ilp.marker_backend_request_was_satisfied(request_backend, _choice(kind)) is satisfied
 
 
 def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
@@ -460,7 +483,7 @@ def test_metadata_records_both_the_backend_and_the_choice(tmp_path):
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["backend"] == "vulkan"
     assert marker["backend_request"] == "vulkan"
-    # The superseded field stays, so an older Studio keeps re-asserting Vulkan.
+    # The superseded field stays, so an older Unsloth keeps re-asserting Vulkan.
     assert marker["llama_backend"] == "vulkan"
 
 
@@ -571,7 +594,10 @@ def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkey
 
     assert seen == ["rocm", "auto"]
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
-    assert marker["backend_request"] == "auto"
+    # The CHOICE survives the re-detect, flagged as not what landed. Erasing it to "auto"
+    # here is what made a configured Vulkan install keep coming back as ROCm (#11143).
+    assert marker["backend_request"] == "rocm"
+    assert marker["backend_request_unsatisfied"] is True
 
 
 def test_a_named_backend_this_host_cannot_serve_fails_instead(monkeypatch, tmp_path):

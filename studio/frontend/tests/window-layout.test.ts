@@ -5,7 +5,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  finalizeAppWindowLayout,
+  measureWindowLayout,
+  observeDevicePixelRatio,
+  prepareSetupWindow,
+  shouldFinishWindowLayoutWait,
+} from "../src/app/window-layout-lifecycle.ts";
+import {
   DEFAULT_APP_WINDOW_SIZE_BOUNDS,
+  MINIMUM_APP_WINDOW_SIZE,
   PREFERRED_SETUP_WINDOW_SIZE,
   calculateCenteredPosition,
   calculateFirstAppWindowSize,
@@ -13,11 +21,6 @@ import {
   constrainWindowSize,
   fitWindowSize,
 } from "../src/app/window-layout.ts";
-import {
-  finalizeAppWindowLayout,
-  shouldFinishWindowLayoutWait,
-  measureWindowLayout,
-} from "../src/app/window-layout-lifecycle.ts";
 
 // A work area is the panel minus the taskbar, in logical pixels.
 function workArea(
@@ -32,6 +35,50 @@ function workArea(
   };
 }
 
+test("repair setup unmaximizes before sizing or locking the window", async () => {
+  const events: string[] = [];
+  const done = Promise.resolve();
+  let maximized = true;
+  const completed = await prepareSetupWindow({
+    resetLayout: () => {
+      events.push("reset");
+      return done;
+    },
+    unmaximize: () => {
+      maximized = false;
+      events.push("unmaximize");
+      return done;
+    },
+    clearConstraints: () => {
+      events.push("clear");
+      return done;
+    },
+    enableResize: () => {
+      events.push("unlocked");
+      return done;
+    },
+    resizeForSetup: () => {
+      events.push("sized");
+      return Promise.resolve(true);
+    },
+    disableResize: () => {
+      events.push("fixed");
+      return done;
+    },
+    isCurrent: () => true,
+  });
+  assert.equal(completed, true);
+  assert.equal(maximized, false);
+  assert.deepEqual(events, [
+    "reset",
+    "unmaximize",
+    "clear",
+    "unlocked",
+    "sized",
+    "fixed",
+  ]);
+});
+
 test("waits for the first native restore event before settling", () => {
   assert.equal(shouldFinishWindowLayoutWait(false), false);
   assert.equal(shouldFinishWindowLayoutWait(true), true);
@@ -39,11 +86,102 @@ test("waits for the first native restore event before settling", () => {
 test("keeps the nominal minimum and preferred size on a roomy work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
 
-  assert.deepEqual(bounds.minimum, { width: 900, height: 600 });
+  // The resize floor is a companion width, not the size a first launch opens.
+  assert.deepEqual(bounds.minimum, MINIMUM_APP_WINDOW_SIZE);
   assert.deepEqual(calculateFirstAppWindowSize(bounds), {
     width: 1440,
     height: 884,
   });
+});
+
+test("lets a window stay squeezed to a companion width", () => {
+  const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
+  const squeezed = { width: 480, height: 700 };
+
+  // Nothing widens it back to a desktop size once the user has narrowed it.
+  assert.deepEqual(
+    constrainWindowSize(squeezed, bounds.minimum, bounds),
+    squeezed,
+  );
+});
+
+function pixelRatioHarness(initial: number) {
+  const queries: { dppx: number; listeners: Array<() => void> }[] = [];
+  let ratio = initial;
+  const source = {
+    devicePixelRatio: () => ratio,
+    matchResolution: (dppx: number) => {
+      const entry = { dppx, listeners: [] as Array<() => void> };
+      queries.push(entry);
+      return {
+        addEventListener: (_type: "change", listener: () => void) => {
+          entry.listeners.push(listener);
+        },
+        removeEventListener: (_type: "change", listener: () => void) => {
+          entry.listeners = entry.listeners.filter((l) => l !== listener);
+        },
+      };
+    },
+  };
+  const change = (next: number) => {
+    ratio = next;
+    for (const listener of [...queries[queries.length - 1].listeners]) {
+      listener();
+    }
+  };
+  return { source, queries, change };
+}
+
+test("rearms the resolution query on every pixel ratio change", () => {
+  const { source, queries, change } = pixelRatioHarness(1);
+  let changes = 0;
+  const dispose = observeDevicePixelRatio(source, () => {
+    changes += 1;
+  });
+
+  // The query that reports a change is the one that stopped matching, so the
+  // next change has to come off a query for the ratio now in force.
+  change(1.5);
+  assert.equal(changes, 1);
+  change(2);
+  assert.equal(changes, 2);
+  assert.deepEqual(
+    queries.map((query) => query.dppx),
+    [1, 1.5, 2],
+  );
+
+  dispose();
+  change(1);
+  assert.equal(changes, 2);
+});
+
+test("never opens a first window below the resize floor", () => {
+  // Small enough that the nominal size relaxes: 85% of it is under the floor.
+  const bounds = calculateWindowSizeBounds({ width: 700, height: 500 });
+  const first = calculateFirstAppWindowSize(bounds);
+
+  // Opening under the floor leaves the size constraints to grow the window
+  // afterwards, away from the centre it was just placed on.
+  assert.ok(first.width >= bounds.minimum.width, `width ${first.width}`);
+  assert.ok(first.height >= bounds.minimum.height, `height ${first.height}`);
+  assert.deepEqual(first, { width: 595, height: 480 });
+});
+
+test("keeps the resize floor a CSS-pixel floor under webview zoom", () => {
+  const workAreaSize = { width: 1920, height: 1040 };
+
+  // Windows text scaling: the window measures in logical pixels but lays out
+  // in fewer CSS pixels, so the floor has to grow by the same ratio.
+  const zoomed = calculateWindowSizeBounds(workAreaSize, 1.5);
+  assert.deepEqual(zoomed.minimum, {
+    width: MINIMUM_APP_WINDOW_SIZE.width * 1.5,
+    height: MINIMUM_APP_WINDOW_SIZE.height * 1.5,
+  });
+  // No zoom, no change: every platform without text scaling.
+  assert.deepEqual(
+    calculateWindowSizeBounds(workAreaSize, 1).minimum,
+    MINIMUM_APP_WINDOW_SIZE,
+  );
 });
 
 test("fits a 1366x768 panel at 125% scaling above the taskbar", () => {
@@ -290,14 +428,13 @@ test("remeasures a restored window after show on its compact secondary", async (
     "constraints",
     "enforce",
   ]);
-  assert.deepEqual(constrainedMinimum, { width: 900, height: 494 });
-  assert.deepEqual(enforcementBounds, {
-    minimum: { width: 900, height: 494 },
-  });
+  assert.deepEqual(constrainedMinimum, MINIMUM_APP_WINDOW_SIZE);
+  assert.deepEqual(enforcementBounds, { minimum: MINIMUM_APP_WINDOW_SIZE });
+  // The restored size survives: the floor no longer inflates a saved window.
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
 
-test("waits for restored geometry before enforcing its minimum", async () => {
+test("restored geometry settles before the window becomes visible", async () => {
   const events: string[] = [];
   let currentSize = { width: 760, height: 560 };
   const measured = {
@@ -314,6 +451,7 @@ test("waits for restored geometry before enforcing its minimum", async () => {
     measured,
     show: async () => {
       events.push("show");
+      assert.deepEqual(currentSize, { width: 1200, height: 800 });
       return true;
     },
     waitForSettled: async () => {
@@ -335,13 +473,57 @@ test("waits for restored geometry before enforcing its minimum", async () => {
   });
 
   assert.deepEqual(events, [
+    "settled",
+    "show",
+    "measure",
+    "constraints",
+    "enforce",
+  ]);
+  assert.deepEqual(currentSize, { width: 1200, height: 800 });
+});
+
+test("a natively restored window is shown without waiting, then settles", async () => {
+  const events: string[] = [];
+  const measured = {
+    bounds: {
+      minimum: { width: 900, height: 600 },
+      maximum: { width: 1920, height: 1040 },
+    },
+    monitor: null,
+    frameSize: { width: 0, height: 0 },
+  };
+
+  await finalizeAppWindowLayout({
+    restored: true,
+    nativeRestored: true,
+    measured,
+    show: async () => {
+      events.push("show");
+      return true;
+    },
+    waitForSettled: async () => {
+      events.push("settled");
+    },
+    measure: async () => {
+      events.push("measure");
+      return measured;
+    },
+    setMinimumConstraints: async () => {
+      events.push("constraints");
+    },
+    enforceBounds: async () => {
+      events.push("enforce");
+    },
+    isCurrent: () => true,
+  });
+
+  assert.deepEqual(events, [
     "show",
     "settled",
     "measure",
     "constraints",
     "enforce",
   ]);
-  assert.deepEqual(currentSize, { width: 1200, height: 800 });
 });
 
 test("preserves restored geometry while an autostart window stays hidden", async () => {
@@ -361,9 +543,6 @@ test("preserves restored geometry while an autostart window stays hidden", async
     show: async () => {
       events.push("show");
       return false;
-    },
-    waitForSettled: async () => {
-      events.push("settled");
     },
     measure: async () => {
       events.push("measure");
