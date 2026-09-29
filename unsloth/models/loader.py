@@ -49,6 +49,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    is_distributed,
     is_automatic_device_map,
     prepare_device_map,
     requested_device_map,
@@ -79,6 +80,7 @@ from ..device_type import (
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.tiled_mlp import patch_tiled_mlp
+from ._tiled_mlp_ddp import patch_tiled_mlp_for_ddp
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -1509,6 +1511,8 @@ class FastLanguageModel(FastLlamaModel):
         )
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+            if is_distributed():
+                patch_tiled_mlp_for_ddp()
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -2691,6 +2695,8 @@ class FastModel(FastBaseModel):
         )
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+            if is_distributed():
+                patch_tiled_mlp_for_ddp()
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)

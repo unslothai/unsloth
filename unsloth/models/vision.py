@@ -3574,11 +3574,17 @@ class FastBaseModel:
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
+        if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
+            # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
+            for module in model.modules():
+                func = getattr(module, "_gradient_checkpointing_func", None)
+                if getattr(func, "__module__", None) == "torch.utils.checkpoint":
+                    module._gradient_checkpointing_func = _nonre_checkpoint
         # Persist the configured GC mode so the trainer restores it verbatim: for_inference() clears the module flags every GRPO generation step, and TrainingArguments defaults gradient_checkpointing=False, which would silently disable it at train time (#4735).
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # The Gemma3N audio conformer's variable-length tensors cause stride mismatches in the AOT autograd compiled backward under non-reentrant checkpointing, and TRL may override gradient_checkpointing_kwargs later, so intercept the enable and force use_reentrant=True.
-        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
