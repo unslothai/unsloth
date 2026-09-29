@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-""" "off" (Full access in sandbox) asks before a risky python/terminal call without OS isolation.
-"""
+""" "off" (Full access in sandbox) asks before a risky python/terminal call without OS isolation."""
 
 import itertools
 import sys
@@ -116,8 +115,6 @@ def test_may_prompt_before_arguments(isolation, isolated):
     )
 
 
-
-
 class _Payload:
     def __init__(self, **kw):
         self.permission_mode = kw.get("permission_mode")
@@ -224,8 +221,6 @@ def test_gguf_route_hands_the_loop_an_armed_gate_for_off(monkeypatch, stream, he
     assert captured["bypass_permissions"] is False
 
 
-
-
 def test_cached_isolation_never_blocks_and_refreshes_once(monkeypatch):
     monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
     release = threading.Event()
@@ -310,8 +305,6 @@ def test_no_startup_warmup_on_windows(monkeypatch):
     monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", lambda *a, **k: called.append(a))
     assert os_sandbox.start_tool_isolation_warmup() is None
     assert called == []
-
-
 
 
 class _Clock:
@@ -430,8 +423,6 @@ def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
     assert sandbox_probe.probe(_Backend()) == (False, "after")
 
 
-
-
 @pytest.fixture(autouse = True)
 def _no_host_setup_probe(monkeypatch):
     # The setup plan would run `sudo -n true` on this host; the capability tests only need its shape.
@@ -474,8 +465,6 @@ def test_capability_reports_the_cached_answers():
     assert body["terminal_os_isolated"] is False
     assert body["backend"] == "bubblewrap"
     assert body["reason"] == "no bash"
-
-
 
 
 @pytest.mark.parametrize(

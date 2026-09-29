@@ -132,8 +132,6 @@ def _os_isolation_available() -> bool:
         return False
 
 
-
-
 def manual_command(steps) -> str:
     return " && ".join(f"sudo {shlex.join(step)}" for step in steps)
 
@@ -294,8 +292,6 @@ def _linux_plan() -> SetupPlan:
     )
 
 
-
-
 _ARM64_NOTE = (
     "The MXC runtime Unsloth installs is built for x64 Windows, and this PC is not x64, so there "
     "is nothing Unsloth can install here yet."
@@ -408,8 +404,6 @@ def _windows_plan() -> SetupPlan:
 
 def _sentence(text: str) -> str:
     return f"{text[:1].upper()}{text[1:]}." if text else ""
-
-
 
 
 def setup_fields_for(
