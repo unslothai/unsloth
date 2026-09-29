@@ -301,10 +301,13 @@ def test_gguf_converter_offline_refuses_clone(monkeypatch, tmp_path):
 
 
 def test_gguf_converter_honors_scripts_dir(monkeypatch, tmp_path):
+    import sys
+
     backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
     pinned = tmp_path / "pinned"
     pinned.mkdir()
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", str(pinned))
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = None  # must not be called
     with pytest.raises(RuntimeError, match = "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"):
         backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     (pinned / "convert_lora_to_gguf.py").write_text("")

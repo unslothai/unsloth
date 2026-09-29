@@ -1756,17 +1756,9 @@ class ExportBackend:
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
-        # The revision the installed binaries came from (or the latest release), so the clone is
-        # as pinned as the converter the merged-model GGUF path uses.
-        try:
-            _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
-        except Exception:
-            tag = None
-        tag = tag.split("-mix-")[0] if tag else None
-        source_dir = os.path.join(
-            os.path.dirname(default_dir), f"llama.cpp-source-{tag}" if tag else "llama.cpp-source"
-        )
-        # A user-set scripts dir is authoritative, as it is for the merged-model converter.
+        source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        # A user-set scripts dir is authoritative, as it is for the merged-model converter, and is
+        # checked before anything that may resolve a revision over the network.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
             converter = os.path.join(os.path.expanduser(pinned_dir), "convert_lora_to_gguf.py")
@@ -1775,21 +1767,21 @@ class ExportBackend:
                     f"UNSLOTH_LLAMA_CPP_SCRIPTS_DIR={pinned_dir} has no convert_lora_to_gguf.py; point it "
                     "at a full llama.cpp checkout or unset it."
                 )
-        converter = (
-            converter
-            if pinned_dir
-            else next(
-                (
-                    path
-                    for path in (
-                        os.path.join(d, "convert_lora_to_gguf.py")
-                        for d in (default_dir, source_dir)
-                    )
-                    if os.path.exists(path)
-                ),
-                None,
-            )
-        )
+        elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
+            converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
+        else:
+            # The revision the installed binaries came from (or the latest release), so the clone
+            # is as pinned as the converter the merged-model GGUF path uses.
+            try:
+                _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
+            except Exception:
+                tag = None
+            tag = tag.split("-mix-")[0] if tag else None
+            if tag:
+                source_dir = f"{source_dir}-{tag}"
+            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+            if not os.path.exists(converter):
+                converter = None
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(
