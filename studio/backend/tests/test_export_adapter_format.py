@@ -42,7 +42,6 @@ def _peft_writer(model):
     model.save_lora_adapters = MagicMock(side_effect = _save)
 
 
-# Omission stays the pre-existing native call on both platforms; explicit native values match.
 @pytest.mark.parametrize(
     "is_mlx,requested,expect",
     [

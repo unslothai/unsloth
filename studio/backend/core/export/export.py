@@ -1757,8 +1757,7 @@ class ExportBackend:
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
-        # A user-set scripts dir is authoritative, as it is for the merged-model converter, and is
-        # checked before anything that may resolve a revision over the network.
+        # A user-set scripts dir is authoritative and is checked before any network revision lookup.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
             converter = os.path.join(os.path.expanduser(pinned_dir), "convert_lora_to_gguf.py")
@@ -1770,8 +1769,7 @@ class ExportBackend:
         elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
             converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
         else:
-            # The revision the installed binaries came from (or the latest release), so the clone
-            # is as pinned as the converter the merged-model GGUF path uses.
+            # Pinned to the installed binaries' revision (else the latest release).
             try:
                 _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
             except Exception:
@@ -1793,8 +1791,7 @@ class ExportBackend:
                     "GGUF adapter export needs a llama.cpp source checkout and automatic "
                     f"installation was declined (UNSLOTH_AUTO_INSTALL=0); clone llama.cpp into {source_dir}."
                 )
-            # A plain clone: install_llama_cpp probes apt-get for build deps even when only
-            # cloning, which fails on macOS, and a prebuilt install ships no convert_lora_to_gguf.py.
+            # Not install_llama_cpp: it probes apt-get even when only cloning, which fails on macOS.
             ensure_dir(Path(source_dir).parent)
             with tempfile.TemporaryDirectory(dir = Path(source_dir).parent) as tmp_dir:
                 clone = os.path.join(tmp_dir, "llama.cpp")
