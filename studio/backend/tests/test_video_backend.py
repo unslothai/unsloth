@@ -12498,3 +12498,57 @@ def test_ltx23_reads_the_checkpoint_onto_the_card_only_for_a_resident_dit(
     assert seen["text_encoder_device"] is (sentinel if te_direct else None)
     assert bool(asked) is direct
     backend.unload()
+
+
+def _cuda_wan_load(monkeypatch, *, policy, speed_mode):
+    """Load Wan2.2-TI2V-5B on a stubbed CUDA target with ``apply_memory_plan`` returning ``policy``."""
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch,
+        "cuda",
+        types.SimpleNamespace(is_available = lambda: False, synchronize = lambda: None),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: DiffusionDeviceTarget(
+            device = "cuda",
+            dtype = torch.bfloat16,
+            backend = "cuda",
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        ),
+    )
+    monkeypatch.setattr(
+        "core.inference.video.settled_snapshot_device_memory", _fits_in_memory_snapshot("cuda")
+    )
+    _stub_apply_memory_plan(monkeypatch, video_module, policy = policy, vae_tiling = True)
+    backend = VideoBackend()
+    return backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = speed_mode
+    )
+
+
+@pytest.mark.parametrize(
+    "policy,speed_mode,installed",
+    [("none", "default", True), ("model", "default", False), ("none", "off", False)],
+)
+def test_resident_wan_load_decodes_untiled_when_it_fits(
+    fake_runtime, monkeypatch, policy, speed_mode, installed
+):
+    # Tiling is forced on for every conventional video load; a resident CUDA pipeline additionally gets the
+    # untiled-when-it-fits decode (reported in speed_optims). Offloaded and SPEED_OFF loads keep the plain tiled decode.
+    from core.inference import video_vae_untiled
+
+    calls = []
+    monkeypatch.setattr(
+        video_vae_untiled,
+        "install_untiled_decode",
+        lambda pipe, family, logger = None: calls.append(family) or True,
+    )
+    status = _cuda_wan_load(monkeypatch, policy = policy, speed_mode = speed_mode)
+    assert status["loaded"] is True
+    assert calls == (["wan2.2-ti2v-5b"] if installed else [])
+    assert ("vae_untiled_when_fits" in status["speed_optims"]) is installed
