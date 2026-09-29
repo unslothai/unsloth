@@ -290,3 +290,11 @@ def test_text_only_retry_abort_is_memoed(crashing, tmp_path):
     before = crashing.spawns
     crashing.load(mmproj_path = str(mmproj), is_vision = True)
     assert crashing.spawns == before
+
+
+def test_a_changed_vram_budget_is_allowed_to_retry(crashing):
+    crashing.load()
+    before = crashing.spawns
+    with patch("core.inference.llama_cpp._active_vram_fraction", return_value = 0.5):
+        crashing.load()
+    assert crashing.spawns > before

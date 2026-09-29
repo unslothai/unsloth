@@ -23409,11 +23409,14 @@ class LlamaCppBackend:
                 return False
 
             # Fail fast before killing the live server. Keyed on the whole request, so an
-            # identical replay is blocked but any changed setting (quant, -c, TP, spec) retries;
-            # an explicit reload also retries (freed memory can make the same load fit) and
-            # clears the entry, so only a repeat abort blocks again.
+            # identical replay is blocked but any changed setting (quant, -c, TP, spec, VRAM
+            # budget) retries; an explicit reload also retries (freed memory can make the same
+            # load fit) and clears the entry, so only a repeat abort blocks again.
             _abort_memo_model = repr(
-                replace(intent, hf_token = None, force_reload = False, verified_gguf = None)
+                (
+                    replace(intent, hf_token = None, force_reload = False, verified_gguf = None),
+                    _vram_frac,
+                )
             )
             if intent.force_reload:
                 LlamaCppBackend._forget_sched_reserve_abort(binary, _abort_memo_model)
