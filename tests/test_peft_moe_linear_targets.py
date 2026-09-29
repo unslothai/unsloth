@@ -203,6 +203,20 @@ def test_quantized_linear_that_is_not_nn_linear_is_restored():
     assert "gate" not in set(config.target_modules)  # the router stays a parameter target
 
 
+def test_eetq_style_linear_without_feature_attributes_is_restored():
+    class EetqLinear(nn.Module):  # transformers' EetqLinear keeps only weight / weight_scales
+        def __init__(self, inner):
+            super().__init__()
+            self.weight = nn.Parameter(inner.weight.detach().t().clone(), requires_grad = False)
+
+    model = _deepseek_v3()
+    mlp0 = model.model.layers[0].mlp
+    mlp0.down_proj = EetqLinear(mlp0.down_proj)
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj", "up_proj", "down_proj"])
+    twc.convert_peft_config_for_transformers(config, model, None)
+    assert "down_proj" in set(config.target_modules)
+
+
 def test_qwen2_moe_converts_like_transformers_5_5():
     # transformers <= 5.5 mapped qwen2_moe onto itself, so PEFT's fused-pair check applies on every release.
     with pytest.raises(ValueError, match = "without also targeting up_proj"):

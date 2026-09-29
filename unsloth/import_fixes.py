@@ -8275,12 +8275,14 @@ def _patch_peft_moe_target_conversion(twc):
 def _is_lora_linear_target(module):
     from torch import nn
 
-    # The linear shapes PEFT's LoRA layer reads (tuners_utils._get_in_out_features): nn.Linear and bnb,
-    # GPTQ QuantLinear (infeatures), HQQ / AWQ (in_features), Megatron (input_size).
+    # nn.Linear and bnb, plus the quantized linears PEFT dispatches that are not nn.Linear: by the shapes
+    # tuners_utils._get_in_out_features reads (GPTQ, AWQ, HQQ, Megatron) or by name (EetqLinear, AQLM, ...).
     if isinstance(module, nn.Linear):
         return True
     if isinstance(module, (nn.Embedding, nn.modules.conv._ConvNd)):
         return False
+    if "Linear" in type(module).__name__:
+        return True
     return any(
         hasattr(module, a) and hasattr(module, b)
         for a, b in (
