@@ -339,7 +339,8 @@ export async function syncExternalProvidersFromBackend(
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
       // No backend CAS: an auto-reloading llama.cpp catalog is written only by the queued save paths.
-      const settingsMayBackfill = uiProviderType !== "llama_cpp";
+      const settingsMayBackfill =
+        uiProviderType !== "llama_cpp" || existing?.autoReloadModels !== true;
       if ((needsModelBackfill || needsAvailableBackfill) && settingsMayBackfill) {
         backfillTasks.push(() =>
           updateProviderConfig(config.id, {

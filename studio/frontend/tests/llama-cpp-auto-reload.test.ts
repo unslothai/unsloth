@@ -475,7 +475,7 @@ test("credential-state replacement retires an in-flight llama.cpp poll", async (
   }
 });
 
-test("llama.cpp catalogs are never overwritten by settings backfill", async () => {
+test("auto-reloading llama.cpp catalogs are never overwritten by settings backfill", async () => {
   const storage = new Map<string, string>([["unsloth_auth_token", "test-token"]]);
   const originalWindow = globalThis.window;
   const originalStorage = globalThis.localStorage;
@@ -554,7 +554,7 @@ test("llama.cpp catalogs are never overwritten by settings backfill", async () =
     models: ["stale"],
     availableModels: ["stale"],
     hasApiKey: false,
-    autoReloadModels: false,
+    autoReloadModels: true,
     createdAt: 1,
     updatedAt: 1,
   };
@@ -567,6 +567,9 @@ test("llama.cpp catalogs are never overwritten by settings backfill", async () =
     await sync;
     assert.equal(listCalls, 1, "settings sync must not start a compare-then-write race");
     assert.deepEqual(writes, [], "settings sync must not write the live catalog");
+    // With auto reload off, a local-only catalog is still backfilled for remote clients.
+    await syncExternalProvidersFromBackend([{ ...existing, autoReloadModels: false }]);
+    assert.deepEqual(writes, [{ models: ["stale"], available_models: ["stale"] }]);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "window", {
