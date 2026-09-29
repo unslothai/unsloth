@@ -1326,7 +1326,21 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         and getattr(self.config, "pad_token_id", None) is not None
     ):
         default_pad_token_id = self.config.pad_token_id
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
+
+    # When the caller already passes an explicit `generation_config` (e.g. TRL's
+    # GRPOTrainer at rollout time), also setting pad_token_id as a separate kwarg
+    # triggers transformers' "Passing `generation_config` together with
+    # generation-related arguments" deprecation warning (see
+    # transformers/generation/utils.py: GenerationMixin._prepare_generation_config).
+    # Set it on the config object instead in that case, so no stray kwarg is left.
+    caller_generation_config = kwargs.get("generation_config")
+    if caller_generation_config is not None:
+        if getattr(caller_generation_config, "pad_token_id", None) is None:
+            caller_generation_config.pad_token_id = kwargs.pop("pad_token_id", default_pad_token_id)
+        else:
+            kwargs.pop("pad_token_id", None)
+    else:
+        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
