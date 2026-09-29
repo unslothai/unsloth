@@ -2305,30 +2305,91 @@ def _fused_lora_skip_reason(lora_dropout, bias) -> str:
     )
 
 
+def _patched_transformers_modules(model_patcher):
+    """The transformers modeling modules whose classes ``model_patcher``'s module imported (and pre_patch edits)."""
+    patcher_module = sys.modules.get(getattr(model_patcher, "__module__", ""))
+    if patcher_module is None:
+        return {}
+    originals = {}
+    for original in list(vars(patcher_module).values()):
+        if isinstance(original, type) and original.__module__.startswith("transformers.models."):
+            modeling = sys.modules.get(original.__module__)
+            if modeling is not None:
+                originals.setdefault(modeling, []).append(original)
+    return originals
+
+
 def _restore_uncompiled_transformers_classes(model_patcher):
     """FastModel's compiler rebinds a family's transformers classes (e.g. ``modeling_llama.LlamaAttention``) to its
     compiled copies; FastLanguageModel patches the classes it imported, so point the modeling module back at those
     before loading, else a later FastLanguageModel load builds compiled layers under the fast forwards and crashes."""
-    patcher_module = sys.modules.get(getattr(model_patcher, "__module__", ""))
-    if patcher_module is None:
-        return
-    for original in list(vars(patcher_module).values()):
-        if not isinstance(original, type) or not original.__module__.startswith(
-            "transformers.models."
-        ):
+    for modeling, originals in _patched_transformers_modules(model_patcher).items():
+        for original in originals:
+            current = getattr(modeling, original.__name__, None)
+            if current is None or current is original:
+                continue
+            if not getattr(current, "__module__", "").startswith("unsloth_compiled_module"):
+                continue
+            setattr(modeling, original.__name__, original)
+            for value in vars(modeling).values():
+                if type(value) is dict:
+                    for key, item in list(value.items()):
+                        if item is current:
+                            value[key] = original
+
+
+_MISSING = object()
+
+
+def _snapshot_transformers_modules(model_patcher):
+    snapshot = {}
+    for modeling in _patched_transformers_modules(model_patcher):
+        classes = [
+            v
+            for v in vars(modeling).values()
+            if isinstance(v, type) and v.__module__ == modeling.__name__
+        ]
+        snapshot[modeling] = (dict(vars(modeling)), {cls: dict(vars(cls)) for cls in classes})
+    return snapshot
+
+
+def _record_pre_patch_changes(snapshot):
+    """Keep, per modeling module, the original value of every module global and class attribute pre_patch changed
+    (first recording wins, so a second FastLanguageModel load never records its own patches as the originals)."""
+    for modeling, (module_globals, class_dicts) in snapshot.items():
+        record = vars(modeling).get("_unsloth_pre_patch_originals")
+        if record is None:
+            record = modeling._unsloth_pre_patch_originals = ({}, {})
+        changed_globals, changed_attrs = record
+        for name, value in module_globals.items():
+            if vars(modeling).get(name, _MISSING) is not value:
+                changed_globals.setdefault(name, value)
+        for cls, saved in class_dicts.items():
+            now = vars(cls)
+            for name in set(saved) | set(now):
+                if now.get(name, _MISSING) is not saved.get(name, _MISSING):
+                    changed_attrs.setdefault((cls, name), saved.get(name, _MISSING))
+
+
+def restore_transformers_family(model_types):
+    """Undo FastLanguageModel's pre_patch on these families before FastModel compiles them: the compiler copies the
+    classes' current forwards, and the fast forwards reference names its generated module does not define."""
+    for model_type in model_types:
+        modeling = sys.modules.get(f"transformers.models.{model_type}.modeling_{model_type}")
+        record = (
+            vars(modeling).get("_unsloth_pre_patch_originals") if modeling is not None else None
+        )
+        if record is None:
             continue
-        modeling = sys.modules.get(original.__module__)
-        current = getattr(modeling, original.__name__, None)
-        if current is None or current is original:
-            continue
-        if not getattr(current, "__module__", "").startswith("unsloth_compiled_module"):
-            continue
-        setattr(modeling, original.__name__, original)
-        for value in vars(modeling).values():
-            if type(value) is dict:
-                for key, item in list(value.items()):
-                    if item is current:
-                        value[key] = original
+        changed_globals, changed_attrs = record
+        for name, value in changed_globals.items():
+            setattr(modeling, name, value)
+        for (cls, name), value in changed_attrs.items():
+            if value is _MISSING:
+                if name in vars(cls):
+                    delattr(cls, name)
+            else:
+                setattr(cls, name, value)
 
 
 class FastLlamaModel:
@@ -2478,7 +2539,9 @@ class FastLlamaModel:
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         _restore_uncompiled_transformers_classes(model_patcher)
+        snapshot = _snapshot_transformers_modules(model_patcher)
         model_patcher.pre_patch()
+        _record_pre_patch_changes(snapshot)
         # A download counter, to see whether environments are breaking or HF is down.
         get_statistics(kwargs.get("local_files_only", False))
 

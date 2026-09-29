@@ -23,7 +23,7 @@ from ._utils import (
 )
 from ._custom_dtype import register_custom_dtype
 from .granite import FastGraniteModel
-from .llama import FastLlamaModel, logger, _vllm_will_load_weights
+from .llama import FastLlamaModel, logger, _vllm_will_load_weights, restore_transformers_family
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
@@ -2212,6 +2212,7 @@ class FastModel(FastBaseModel):
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype
         )
+        restore_transformers_family(model_types)
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types, supports_sdpa = unsloth_compile_transformers(
