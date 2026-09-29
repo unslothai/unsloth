@@ -83,7 +83,7 @@ fn reconcile_before_update_with(home: &Path, in_use: bool) -> Result<(), String>
     // backend this update would replace is usually the one holding the tree.
     const RESTART: &str =
         "An unfinished background update from an earlier release is still waiting on a \
-         running backend. Quit Unsloth Studio, reopen it, and update again.";
+         running backend. Quit Unsloth, reopen it, and update again.";
     if in_use {
         return Err(RESTART.to_string());
     }
@@ -761,7 +761,7 @@ mod tests {
         let error = reconcile_before_update_with(&home, true).unwrap_err();
 
         // Restarting is what settles it, so the message says that and not a path.
-        assert!(error.contains("Quit Unsloth Studio"), "{error}");
+        assert!(error.contains("Quit Unsloth"), "{error}");
         // Nothing moved, so the launch after this one still has its decision to make.
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());

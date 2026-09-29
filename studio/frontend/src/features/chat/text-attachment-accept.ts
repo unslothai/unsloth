@@ -233,6 +233,7 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".cairo",
   ".mojo",
   ".gd",
+  ".sqf",
   ".sh",
   ".bash",
   ".zsh",

@@ -40,7 +40,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex items-center gap-2">
         <button
           type="button"
@@ -56,7 +56,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="settings-heading text-sm font-semibold">
           {t("settings.voice.dictionary.sectionTitle")}
         </h2>
         <p className="text-xs text-muted-foreground">

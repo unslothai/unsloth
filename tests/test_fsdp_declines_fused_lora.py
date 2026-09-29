@@ -11,26 +11,9 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""unsloth#409: the fused LoRA kernels must be declined under FSDP.
-
-`apply_lora_qkv` / `apply_lora_o` / `apply_lora_mlp` read `.weight` off the
-projection modules and matmul it themselves, so they never go through the module
-call FSDP hooks its unshard onto. Under FSDP those weights are shard views: on a
-2-rank FULL_SHARD run a LoRA A of shape (8, 896) arrives as a 1-D tensor of 3584
-elements, and `matmul_lora` dies with
-
-    RuntimeError: size mismatch, got input (20), mat (20x896), vec (3584)
-
-which is the torch 2.14 spelling of #409's
-`setStorage ... out of bounds for storage of size 0`.
-
-Measured on 2 GPUs, Qwen2.5-0.5B LoRA SFT, `accelerate launch` with an FSDP1
-config: before, every run died in `matmul_lora`; after (together with the
-empty-logits sentinel fix), both ranks log `[3.5723, 3.9427, 3.5217, 3.4233]`.
-The FSDP2 config on the same branch logs `[3.5781, 3.9453, 3.5234, 3.4297]`,
-the fused path's own answer, so the fallback is tracking it.
-
-No GPU: the probe is env-driven and the wiring check is textual.
+"""unsloth#409: under FSDP the fused LoRA kernels read shard views (`matmul_lora`:
+`size mismatch, got input (20), mat (20x896), vec (3584)` on Qwen2.5-0.5B FULL_SHARD), so
+patch_peft_model must decline them. No GPU: the probe is env-driven, the wiring check textual.
 """
 
 from __future__ import annotations
@@ -132,7 +115,7 @@ def test_the_fused_lora_install_is_gated_on_the_probe():
 
 def test_the_declined_message_names_the_override():
     """A user who sees the slowdown has to be able to find the way back."""
-    source = _LLAMA.read_text(encoding = "utf-8")
-    index = source.index("fused_lora_declined_for_fsdp")
-    window = source[index : index + 1200]
-    assert "UNSLOTH_FORCE_FUSED_LORA" in window
+    from unsloth.models.llama import _fused_lora_skip_reason
+
+    assert _fused_lora_skip_reason(0, "none") == ""
+    assert "UNSLOTH_FORCE_FUSED_LORA" in _fused_lora_skip_reason(0, "none", fsdp = True)

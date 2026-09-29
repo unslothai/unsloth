@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth import policy
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import diffusion_engine_router, gpu_arbiter
 from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -46,6 +46,7 @@ def client_for(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     return TestClient(app)

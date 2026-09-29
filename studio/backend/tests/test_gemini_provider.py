@@ -31,6 +31,7 @@ and test_openai_image_generation.py.
 
 import asyncio
 import base64
+import io
 import json
 
 import httpx
@@ -2626,8 +2627,11 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self, _n = None):
-            return b"PNG"
+        # One body followed by EOF, as a real response reads.
+        _body = io.BytesIO(b"PNG")
+
+        def read(self, n = -1):
+            return self._body.read(n)
 
     class _StubOpener:
         def open(
@@ -3142,8 +3146,11 @@ def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self, _n = None):
-            return b"PNG"
+        # One body followed by EOF, as a real response reads.
+        _body = io.BytesIO(b"PNG")
+
+        def read(self, n = -1):
+            return self._body.read(n)
 
     class _StubOpener:
         def open(

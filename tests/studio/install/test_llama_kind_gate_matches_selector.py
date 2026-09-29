@@ -28,7 +28,7 @@ import itertools
 import pathlib
 import re
 import shutil
-import subprocess
+import hashlib
 import sys
 
 import pytest
@@ -38,8 +38,10 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SRC = SETUP_PS1.read_text(encoding = "utf-8")
 
 sys.path.insert(0, str(REPO_ROOT / "studio"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
 
 import install_llama_prebuilt as ip  # noqa: E402
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "PowerShell is unavailable")
@@ -57,10 +59,21 @@ ASSET_NAMES = (
     f"llama-{TAG}-bin-win-vulkan-x64.zip",
     f"llama-{TAG}-bin-win-hip-radeon-x64.zip",
 )
+
+
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 RELEASE = {
     "tag_name": TAG,
     "assets": [
-        {"name": name, "browser_download_url": f"https://example.invalid/{name}"}
+        {
+            "name": name,
+            "browser_download_url": f"https://example.invalid/{name}",
+            "digest": f"sha256:{_fixture_digest(name)}",
+        }
         for name in ASSET_NAMES
     ],
 }
@@ -115,13 +128,16 @@ def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool
             "function Test-WoaPersistableIndex { param($i) return ($i -like '*nvidia*') }",
             f"$env:UNSLOTH_LLAMA_ARM64_CUDA = '{'0' if opt_out else '1'}'",
             f"$HasNvidiaSmi = ${str(nvidia).lower()}",
+            f"$HasNvidiaDriverEvidence = ${str(nvidia).lower()}",
             f"$HasROCm = ${str(rocm).lower()}",
             "$script:ROCmGfxArch = " + ("'gfx1201'" if rocm else "$null"),
             block,
             "Write-Output ('<<<' + ($expectedKinds -join ',') + '>>>')",
         ]
     )
-    done = subprocess.run(
+    # run_pwsh, not subprocess.run: one shared $XDG_CACHE_HOME/powershell startup cache
+    # across xdist workers kills ~1 startup in 500 before it reaches the script.
+    done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         timeout = 120,

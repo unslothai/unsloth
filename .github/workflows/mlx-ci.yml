@@ -102,6 +102,31 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
+      # The prebuilt llama.cpp step runs studio/install_llama_prebuilt.py by path and
+      # fetches the GGUF through hf-download-with-retry.sh. The installer imports
+      # prebuilt_core.py and nvidia_probe.py beside it, and
+      # backend.utils.prebuilt.llama_backend and backend.utils.auth_safe (with the
+      # vendored truststore) from the backend, so these decide which bundle it installs.
+      # The job also pip installs studio.txt and the repo itself, and its pytest runs
+      # load tests/conftest.py, which loads tests/_shared.
+      - '.github/scripts/hf-download-with-retry.sh'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/requirements/studio.txt'
+      - 'pyproject.toml'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
   push:
     branches: [main]
     paths:
@@ -120,6 +145,31 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
+      # The prebuilt llama.cpp step runs studio/install_llama_prebuilt.py by path and
+      # fetches the GGUF through hf-download-with-retry.sh. The installer imports
+      # prebuilt_core.py and nvidia_probe.py beside it, and
+      # backend.utils.prebuilt.llama_backend and backend.utils.auth_safe (with the
+      # vendored truststore) from the backend, so these decide which bundle it installs.
+      # The job also pip installs studio.txt and the repo itself, and its pytest runs
+      # load tests/conftest.py, which loads tests/_shared.
+      - '.github/scripts/hf-download-with-retry.sh'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/requirements/studio.txt'
+      - 'pyproject.toml'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -176,7 +226,7 @@ jobs:
       # runners. Keep this job in audit while its egress destinations are
       # observed, then graduate it to a reviewed block-mode allowlist.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 

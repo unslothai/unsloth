@@ -38,6 +38,32 @@ export function formatDuration(seconds: number | null | undefined): string {
   return `${s}s`;
 }
 
+export function sessionStepsPerSecond(
+  currentStep: number,
+  sessionStartStep: number,
+  elapsedSeconds: number | null,
+): number | null {
+  const sessionSteps = currentStep - sessionStartStep;
+  if (elapsedSeconds == null || elapsedSeconds <= 0 || sessionSteps < 0) {
+    return null;
+  }
+  return sessionSteps / elapsedSeconds;
+}
+
+export function sessionEtaSeconds(
+  currentStep: number,
+  sessionStartStep: number,
+  totalSteps: number,
+  elapsedSeconds: number | null,
+): number | null {
+  const sessionSteps = currentStep - sessionStartStep;
+  const remaining = totalSteps - currentStep;
+  if (elapsedSeconds == null || sessionSteps <= 0 || remaining < 0) {
+    return null;
+  }
+  return Math.round((elapsedSeconds * remaining) / sessionSteps);
+}
+
 export function formatNumber(value: number | null | undefined, digits: number): string {
   if (value == null || !Number.isFinite(value)) return "--";
   return value.toFixed(digits);

@@ -524,7 +524,9 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 
-# The block's fifteen save/restore pairs bar the ROCm handoff, which the arch parametrisation drives.
+# The block's nineteen save/restore pairs bar the ROCm handoff, which the arch parametrisation
+# drives. Kept in step with install.ps1 by test_every_saved_variable_in_the_block_is_covered:
+# a save added there and not named here fails that test rather than going quietly uncovered.
 _CALLER_ENV_NAMES = (
     "SKIP_STUDIO_BASE",
     "UNSLOTH_STUDIO_HOME",
@@ -540,6 +542,15 @@ _CALLER_ENV_NAMES = (
     "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
     "UNSLOTH_INSTALL_ROLLBACK_MANAGED",
     "UNSLOTH_SETUP_PYTHON",
+    # The four Windows-on-ARM facts install.ps1 hands setup.ps1 about the torch it just
+    # resolved. Restored from a TABLE rather than from four written-out if/else arms, which
+    # is why they need naming here: the runtime cases below are the only thing that proves
+    # the table is consumed, and a table is exactly the shape where one wrong index restores
+    # every one of the four from the same save.
+    "UNSLOTH_WOA_HAS_TORCHAUDIO",
+    "UNSLOTH_WOA_TORCH_PRERELEASE",
+    "UNSLOTH_WOA_SELECTED_TORCH_INDEX",
+    "UNSLOTH_WOA_PYPI_PROVIDED",
 )
 
 # Distinct per variable, or a finally restoring everything from the wrong save reads as a pass.
@@ -857,6 +868,68 @@ def test_every_save_sits_above_the_handoff_try():
         )
 
 
+#: `$env:NAME = $previousX`, the spelling the finally used when every restore was written out.
+_RESTORE_INLINE = re.compile(r"\$env:(\w+) = \$previous\w+")
+#: `@("NAME", $hadPreviousX, $previousY)`, one row of a table the finally walks. Added for the
+#: four UNSLOTH_WOA_* variables, whose four if/else arms were identical bar the names.
+_RESTORE_TABLE_ROW = re.compile(
+    r"""@\(\s*["'](\w+)["']\s*,\s*\$hadPrevious\w+\s*,\s*\$previous\w+\s*\)"""
+)
+#: What consumes such a table. Without it the rows are data nobody reads.
+_RESTORE_TABLE_APPLY = re.compile(r"""Set-Item\s+["']Env:\$\(""")
+
+
+def _restored_names(block: str) -> set[str]:
+    """Every variable the finally puts back, in either spelling install.ps1 uses.
+
+    A regex that knew only `$env:NAME = $previousX` read the four UNSLOTH_WOA_* restores as
+    absent and called a correct block broken (#10282 landed them as a table and this file said
+    "saved but never restored"). Worse than the noise: had the table genuinely gone missing, the
+    same blind regex would have reported it identically, so the check could not tell the two
+    apart. Both spellings are recognised here, and a table only counts when something walks it --
+    rows nobody consumes restore nothing, and that is the failure this is guarding against.
+    """
+    names = set(_RESTORE_INLINE.findall(block))
+    rows = set(_RESTORE_TABLE_ROW.findall(block))
+    if rows:
+        assert _RESTORE_TABLE_APPLY.search(block), (
+            "the finally carries a restore table for "
+            f'{sorted(rows)} but nothing walks it with Set-Item "Env:$(...)", so those '
+            "variables are left exactly as install.ps1 set them for the child"
+        )
+        names |= rows
+    return names
+
+
+def test_the_restore_reader_sees_both_spellings_and_no_others():
+    """The reader above is what stands between a real leak and a green run, so it gets rows.
+
+    Written as a table rather than against install.ps1 so it still says which spelling broke
+    when the installer is rewritten, and so the negative rows -- text that must NOT read as a
+    restore -- can be stated at all.
+    """
+    inline = "    $env:SKIP_STUDIO_BASE = $previousSkipStudioBase\n"
+    table = (
+        "    foreach ($_p in @(\n"
+        '            @("UNSLOTH_WOA_HAS_TORCHAUDIO", $hadPreviousA, $previousA),\n'
+        '            @("UNSLOTH_WOA_PYPI_PROVIDED", $hadPreviousB, $previousB))) {\n'
+        '        if ($_p[1]) { Set-Item "Env:$($_p[0])" $_p[2] }\n'
+        "    }\n"
+    )
+    assert _restored_names(inline) == {"SKIP_STUDIO_BASE"}
+    assert _restored_names(table) == {"UNSLOTH_WOA_HAS_TORCHAUDIO", "UNSLOTH_WOA_PYPI_PROVIDED"}
+    assert _restored_names(inline + table) == {
+        "SKIP_STUDIO_BASE",
+        "UNSLOTH_WOA_HAS_TORCHAUDIO",
+        "UNSLOTH_WOA_PYPI_PROVIDED",
+    }
+    # A SAVE is not a restore, in either direction of the assignment.
+    assert _restored_names("    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE\n") == set()
+    # A table nobody walks restores nothing, and saying so is the whole point of the apply check.
+    with pytest.raises(AssertionError, match = "nothing walks it"):
+        _restored_names(table.split("        if (")[0])
+
+
 def test_every_saved_variable_in_the_block_is_covered():
     """_CALLER_ENV checked against the source, so a save added to the block names the variable
     whose restore nothing exercises. UV_CACHE_DIR, TMP and TEMP are out of scope by construction:
@@ -867,7 +940,7 @@ def test_every_saved_variable_in_the_block_is_covered():
     saved = set(re.findall(r"\$previous\w+ = \$env:(\w+)", block))
     # The restore side closes the anchor hole: a save PREPENDED above the anchor is invisible to
     # any save-side check, but its restore cannot escape the finally.
-    restored = set(re.findall(r"\$env:(\w+) = \$previous\w+", block))
+    restored = _restored_names(block)
     assert restored == covered, (
         "the block restores variables this file does not claim to cover: "
         f"{sorted(restored - covered)} (a save prepended above the slice anchor looks like this); "

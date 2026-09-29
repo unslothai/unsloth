@@ -9,6 +9,7 @@ import structlog
 import tempfile
 from loggers import get_logger
 import os
+import sys
 import shutil
 import contextlib
 from pathlib import Path
@@ -54,6 +55,11 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 
+def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
+    # True is the loaders' default; passing it reads as an explicit request to requantize fp8 checkpoints to NF4.
+    return {} if load_in_4bit else {"load_in_4bit": False}
+
+
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
@@ -80,6 +86,80 @@ _PYTORCH_MISSING_MESSAGE = (
 )
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
+
+
+@contextlib.contextmanager
+def _llama_cpp_scripts_pin():
+    """Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref for one conversion.
+
+    Scoped and marked internal because UNSLOTH_LLAMA_CPP_SCRIPTS_DIR is read as the
+    user's own choice: it outranks UNSLOTH_LLAMA_CPP_CONVERTER_TAG, and it exempts the
+    converter from the UNSLOTH_CONVERTER_SCAN_STRICT refusal. A pin the user set is left
+    exactly as it is; that one carries their exemption.
+    """
+    global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
+    if _IS_MLX:
+        # The MLX save path pins for itself, under a plain threading.Lock held across the
+        # conversion: entering it here too nests, and the second entry never returns.
+        yield
+        return
+    try:
+        from unsloth_zoo.llama_cpp import (
+            LLAMA_CPP_DEFAULT_DIR,
+            _resolve_local_convert_script,  # noqa: F401
+        )
+    except Exception:
+        # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or AttributeError.
+        if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
+            logger.warning(
+                "Unsloth: installed unsloth_zoo does not honor "
+                "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR; convert_hf_to_gguf.py will "
+                "still be downloaded from llama.cpp master and may drift "
+                "past the pinned llama-quantize binary. Upgrade unsloth_zoo "
+                "to activate the local script pin."
+            )
+            _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
+        yield
+        return
+
+    if os.environ.get("UNSLOTH_LLAMA_CPP_CONVERTER_TAG", "").strip():
+        # The pin outranks the tag, so pinning here is what made setting a tag do nothing.
+        yield
+        return
+
+    try:
+        from unsloth_zoo.llama_cpp import _converter_dir_is_incomplete
+        incomplete = _converter_dir_is_incomplete(LLAMA_CPP_DEFAULT_DIR)
+    except Exception:
+        # An older unsloth_zoo has no such check, and it only ever skips the pin.
+        incomplete = False
+    if incomplete:
+        # Pinning an entrypoint with no conversion/ beside it is what stops the staged
+        # resolver from fetching a co-versioned set that runs.
+        yield
+        return
+
+    try:
+        from unsloth_zoo.llama_cpp import internal_scripts_dir_pin
+    except ImportError:
+        internal_scripts_dir_pin = None
+
+    if internal_scripts_dir_pin is not None:
+        with internal_scripts_dir_pin(LLAMA_CPP_DEFAULT_DIR):
+            yield
+        return
+
+    # Older unsloth_zoo, no internal pin: scope the variable by hand so it cannot leak.
+    # Strict mode still takes the exemption there; upgrading unsloth_zoo is the fix.
+    existing = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR")
+    if existing is not None:
+        yield
+        return
+    os.environ["UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"] = LLAMA_CPP_DEFAULT_DIR
+    try:
+        yield
+    finally:
+        os.environ.pop("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", None)
 
 
 def _multi_gpu_device_map_kwargs() -> dict:
@@ -194,17 +274,6 @@ def _supports_kwarg(fn, name):
     )
 
 
-def _gguf_shard_export_supported(fn):
-    """True when the exporter explicitly implements GGUF shard-size control."""
-    import inspect
-
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-    return _accepts_by_keyword(params, "gguf_shard_size")
-
-
 def _imatrix_export_supported(save_fn):
     """True when this build can apply an imatrix, not merely swallow the keyword: the MLX binding
     takes `**kwargs` and filters them, so only unsloth_zoo itself settles it."""
@@ -300,12 +369,40 @@ def _compressed_export_supported():
 
 
 def _torchao_export_supported():
-    """True if the installed unsloth build has the portable torchao FP8/INT8 export path."""
+    """True if the installed unsloth build has the portable torchao FP8/INT8 export path and a real
+    torchao to run it; False where torchao is stubbed (its config classes return None)."""
     try:
+        if _torchao_runtime_unavailable():
+            return False
         import unsloth.save as _us
         return hasattr(_us, "_normalize_torchao_method")
     except Exception:
         return False
+
+
+def _torchao_runtime_unavailable():
+    try:
+        from core._torchao_stub import _is_windows_rocm, is_stubbed
+        if is_stubbed("torchao"):
+            return True
+        # Windows ROCm only gets real torchao through install_torchao_windows_rocm_real_or_stub().
+        return _is_windows_rocm() and "torchao" not in sys.modules
+    except Exception:
+        return False
+
+
+def _is_torchao_alias(alias):
+    """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
+    ROCm guard catches it before it is misread as compressed-tensors."""
+    if not alias:
+        return False
+    try:
+        import unsloth.save as _us
+        if _us._normalize_torchao_method(alias) is not None:
+            return True
+    except Exception:
+        pass
+    return str(alias).lower().startswith("torchao")
 
 
 def _has_nvidia_gpu():
@@ -463,6 +560,13 @@ def _staging_dir(export_parent):
     return tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX)
 
 
+def _dir_is_fresh(directory):
+    # Finder metadata does not count; the upload drops it anyway.
+    return not (
+        Path(directory).is_dir() and any_not_appledouble_metadata(Path(directory).iterdir())
+    )
+
+
 def _holds_checkpoint_weights(directory):
     return Path(directory).is_dir() and any(
         entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
@@ -486,6 +590,74 @@ def _ensure_hub_repo_private(hf_api, repo_id):
             "(the token likely lacks `write:repo_settings`, or the repository belongs to "
             "someone else). Refusing to upload rather than publish to a public repository."
         ) from exception
+
+
+def _open_hub_repo(hf_api, repo_id, private):
+    """Create or reuse the repo we are about to upload into, private before anything lands.
+
+    Call this immediately before the upload, not earlier: it is what turns a failure after
+    this point into an empty repo.
+    """
+    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+    repo_id = getattr(repo_url, "repo_id", repo_id)
+    if private:
+        _ensure_hub_repo_private(hf_api, repo_id)
+    return repo_id
+
+
+def _push_mlx_merged(
+    model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
+):
+    """Upload an MLX merged save; returns the repo id the Hub resolved."""
+    with contextlib.ExitStack() as stack:
+        upload_dir = output_path
+        if not output_is_fresh:
+            # A reused folder can hold leftovers, so upload a clean second save; without a
+            # local save this is the only one.
+            upload_dir = stack.enter_context(
+                _staging_dir(Path(output_path).parent)
+                if output_path
+                else tempfile.TemporaryDirectory()
+            )
+            model.save_pretrained_merged(upload_dir, tokenizer, save_method = save_method)
+        hf_api = HfApi(token = hf_token)
+        repo_id = _open_hub_repo(hf_api, repo_id, private)
+        hf_api.upload_folder(
+            folder_path = upload_dir,
+            repo_id = repo_id,
+            repo_type = "model",
+            ignore_patterns = _HUB_UPLOAD_IGNORE,
+        )
+    return repo_id
+
+
+def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
+    """Write the card the delegated push can no longer write for itself.
+
+    Unsloth's `upload_to_huggingface` only writes it when its own `create_repo(exist_ok=False)`
+    finds the repo absent, so opening the repo first silently costs a fresh push its card.
+    Best-effort, and an existing card is kept, exactly as the merged and base paths do.
+    """
+    try:
+        if hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+            return
+        config = getattr(model, "config", None)
+        if config is None:
+            return
+        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        # method/extra reproduce what upload_to_huggingface passed for this path
+        # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
+        # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
+        content = MODEL_CARD.format(
+            username = repo_id.split("/")[0],
+            base_model = repo_id if os.path.isdir(base_model) else base_model,
+            model_type = getattr(config, "model_type", "llm"),
+            method = "",
+            extra = "trl",
+        )
+        ModelCard(content).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+    except Exception as exception:
+        logger.warning(f"Could not publish the model card: {exception}")
 
 
 class ExportBackend:
@@ -638,7 +810,7 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     dtype = None,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -678,7 +850,7 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     dtype = None,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -692,7 +864,7 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     dtype = None,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -779,7 +951,13 @@ class ExportBackend:
                 if self.current_checkpoint
                 else None
             )
-            metadata = {"base_model": base_model}
+            source = self.current_checkpoint
+            metadata = {
+                "base_model": base_model,
+                "source_checkpoint": str(Path(source).resolve())
+                if source and Path(source).exists()
+                else None,
+            }
             metadata_path = os.path.join(save_directory, "export_metadata.json")
             with open(metadata_path, "w", encoding = "utf-8") as f:
                 json.dump(metadata, f, indent = 2)
@@ -820,6 +998,17 @@ class ExportBackend:
             "NVFP4 (compressed-tensors)": "nvfp4",
         }
         compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
+
+        # Fail fast: a stubbed torchao otherwise crashes in transformers with TorchAoConfig(quant_type=None).
+        if _is_torchao_alias(compressed_alias) and _torchao_runtime_unavailable():
+            return (
+                False,
+                "Portable torchao FP8/INT8 export needs torchao, which could not be loaded "
+                "on this Windows ROCm build. Update Unsloth to install it, or use "
+                "16-bit merged or GGUF quantization instead.",
+                None,
+            )
+
         compressed_suffix: Optional[str] = None
         # Classify the alias: torchao-portable vs compressed-tensors.
         torchao_info = None
@@ -914,11 +1103,8 @@ class ExportBackend:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 # Leftovers in a reused folder would be uploaded too, so only a fresh one is
-                # pushed as is. Finder metadata does not count; the upload drops it anyway.
-                save_dir_was_empty = not (
-                    Path(save_directory).is_dir()
-                    and any_not_appledouble_metadata(Path(save_directory).iterdir())
-                )
+                # pushed as is.
+                save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
                 # No push, but the merge resolves the base repo and save.py turns None into
@@ -965,28 +1151,16 @@ class ExportBackend:
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
 
                 if _IS_MLX:
-                    if save_directory:
-                        self.current_model.push_to_hub_merged(
-                            repo_id,
-                            self.current_tokenizer,
-                            save_directory = save_directory,
-                            token = hf_token,
-                            private = private,
-                        )
-                    else:
-                        with tempfile.TemporaryDirectory() as tmp_dir:
-                            self.current_model.save_pretrained_merged(
-                                tmp_dir,
-                                self.current_tokenizer,
-                                save_method = mlx_save_method,
-                            )
-                            self.current_model.push_to_hub_merged(
-                                repo_id,
-                                self.current_tokenizer,
-                                save_directory = tmp_dir,
-                                token = hf_token,
-                                private = private,
-                            )
+                    repo_id = _push_mlx_merged(
+                        self.current_model,
+                        self.current_tokenizer,
+                        save_method = mlx_save_method,
+                        output_path = output_path,
+                        output_is_fresh = save_dir_was_empty,
+                        repo_id = repo_id,
+                        hf_token = hf_token,
+                        private = private,
+                    )
                 else:
                     uploaded = False
                     if output_path and Path(output_path).is_dir():
@@ -1087,10 +1261,12 @@ class ExportBackend:
             )
 
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
+                save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
                 if _IS_MLX:
@@ -1119,63 +1295,64 @@ class ExportBackend:
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
                 if _IS_MLX:
-                    if save_directory:
-                        self.current_model.push_to_hub_merged(
-                            repo_id,
-                            self.current_tokenizer,
-                            save_directory = save_directory,
-                            token = hf_token,
-                            private = private,
-                        )
-                    else:
-                        with tempfile.TemporaryDirectory() as tmp_dir:
-                            self.current_model.save_pretrained_merged(
-                                tmp_dir,
-                                self.current_tokenizer,
-                                save_method = "merged_16bit",
-                            )
-                            self.current_model.push_to_hub_merged(
-                                repo_id,
-                                self.current_tokenizer,
-                                save_directory = tmp_dir,
-                                token = hf_token,
-                                private = private,
-                            )
+                    _push_mlx_merged(
+                        self.current_model,
+                        self.current_tokenizer,
+                        save_method = "merged_16bit",
+                        output_path = output_path,
+                        output_is_fresh = save_dir_was_empty,
+                        repo_id = repo_id,
+                        hf_token = hf_token,
+                        private = private,
+                    )
                 else:
                     base_model = (
                         base_model_id or self.current_model.config._name_or_path or "unknown"
                     )
 
-                    hf_api = HfApi(token = hf_token)
-                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    repo_id = getattr(repo_url, "repo_id", repo_id)
-                    if private:
-                        _ensure_hub_repo_private(hf_api, repo_id)
-                    username = repo_id.split("/")[0]
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = save_directory
+                        if save_directory and not save_dir_was_empty:
+                            # A reused folder can hold leftovers, so upload a clean second save
+                            # instead.
+                            upload_dir = stack.enter_context(
+                                _staging_dir(Path(save_directory).parent)
+                            )
+                            self.current_model.save_pretrained(upload_dir)
+                            self.current_tokenizer.save_pretrained(upload_dir)
+                        hf_api = HfApi(token = hf_token)
+                        repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = getattr(repo_url, "repo_id", repo_id)
+                        if private:
+                            _ensure_hub_repo_private(hf_api, repo_id)
+                        username = repo_id.split("/")[0]
 
-                    content = MODEL_CARD.format(
-                        username = username,
-                        base_model = base_model,
-                        model_type = self.current_model.config.model_type,
-                        method = "",
-                        extra = "unsloth",
-                    )
-                    card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                        content = MODEL_CARD.format(
+                            username = username,
+                            base_model = base_model,
+                            model_type = self.current_model.config.model_type,
+                            method = "",
+                            extra = "unsloth",
+                        )
+                        card = ModelCard(content)
+                        card.push_to_hub(
+                            repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                        )
 
-                    if save_directory:
-                        hf_api.upload_folder(
-                            folder_path = save_directory,
-                            repo_id = repo_id,
-                            repo_type = "model",
-                        )
-                        logger.info(f"Model pushed successfully to {repo_id}")
-                    else:
-                        return (
-                            False,
-                            "Local save directory required for Hub upload",
-                            None,
-                        )
+                        if save_directory:
+                            hf_api.upload_folder(
+                                folder_path = upload_dir,
+                                repo_id = repo_id,
+                                repo_type = "model",
+                                ignore_patterns = _HUB_UPLOAD_IGNORE,
+                            )
+                            logger.info(f"Model pushed successfully to {repo_id}")
+                        else:
+                            return (
+                                False,
+                                "Local save directory required for Hub upload",
+                                None,
+                            )
 
             return True, "Model exported successfully", output_path
 
@@ -1195,14 +1372,12 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
-        gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export the model in GGUF format.
 
         ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
         produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
-        internally. ``imatrix_file`` is an importance matrix path or boolean, and
-        ``gguf_shard_size`` caps the final full-precision GGUF shard size.
+        internally. ``imatrix_file`` is an importance matrix path or boolean.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1219,21 +1394,6 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
-        shard_hooks = []
-        if save_directory:
-            shard_hooks.append(self.current_model.save_pretrained_gguf)
-        elif push_to_hub:
-            shard_hooks.append(self.current_model.push_to_hub_gguf)
-        if gguf_shard_size is not None and not all(
-            _gguf_shard_export_supported(hook) for hook in shard_hooks
-        ):
-            return (
-                False,
-                "This Unsloth build does not support GGUF shard-size control. "
-                "Upgrade unsloth and unsloth_zoo, or clear the shard-size option.",
-                None,
-            )
-        shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
         local_token_kw = (
@@ -1260,28 +1420,6 @@ class ExportBackend:
                 quant_methods = ["q4_k_m"]
             quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
 
-            # Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref so it cannot drift past the pinned llama-
-            # quantize gguf API.
-            global _LLAMA_CPP_SCRIPTS_WARNING_EMITTED
-            try:
-                from unsloth_zoo.llama_cpp import (
-                    LLAMA_CPP_DEFAULT_DIR,
-                    _resolve_local_convert_script,  # noqa: F401
-                )
-                os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-            except Exception:
-                # Not just ImportError: a half-built unsloth_zoo raises RuntimeError or AttributeError, and this pin
-                # is only an optimisation.
-                if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
-                    logger.warning(
-                        "Unsloth: installed unsloth_zoo does not honor "
-                        "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR; convert_hf_to_gguf.py will "
-                        "still be downloaded from llama.cpp master and may drift "
-                        "past the pinned llama-quantize binary. Upgrade unsloth_zoo "
-                        "to activate the local script pin."
-                    )
-                    _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
-
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 # Keep unsloth relative-path internals anchored to the repo cwd.
@@ -1300,14 +1438,16 @@ class ExportBackend:
                 # Resolve before anything can raise; the cleanup below needs it too.
                 imatrix_path = _materialized_imatrix_path(_model_tmp, imatrix_file)
                 try:
-                    result = self.current_model.save_pretrained_gguf(
-                        _model_tmp,
-                        self.current_tokenizer,
-                        quantization_method = quant_method,
-                        **imatrix_kw,
-                        **local_token_kw,
-                        **shard_kw,
-                    )
+                    # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
+                    # llama-quantize gguf API; scoped to the conversion.
+                    with _llama_cpp_scripts_pin():
+                        result = self.current_model.save_pretrained_gguf(
+                            _model_tmp,
+                            self.current_tokenizer,
+                            quantization_method = quant_method,
+                            **imatrix_kw,
+                            **local_token_kw,
+                        )
 
                     # Scan only the owned root; exact reported paths cover external outputs.
                     reported = result if isinstance(result, dict) else {}
@@ -1484,15 +1624,16 @@ class ExportBackend:
                     except Exception as exception:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
-                    self.current_model.push_to_hub_gguf(
-                        repo_id,
-                        self.current_tokenizer,
-                        quantization_method = quant_method,
-                        token = hf_token,
-                        private = private,
-                        **imatrix_kw,
-                        **shard_kw,
-                    )
+                    # Converts as well as pushes, so it needs the same scoped pin.
+                    with _llama_cpp_scripts_pin():
+                        self.current_model.push_to_hub_gguf(
+                            repo_id,
+                            self.current_tokenizer,
+                            quantization_method = quant_method,
+                            token = hf_token,
+                            private = private,
+                            **imatrix_kw,
+                        )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
             return (
@@ -1578,25 +1719,30 @@ class ExportBackend:
                     None,
                 )
 
+        def save_lora_gguf(directory):
+            # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
+            self.current_model.save_pretrained_gguf(
+                directory,
+                self.current_tokenizer,
+                save_method = "lora",
+                quantization_method = outtype,
+                # A token fetches a gated base's config; False keeps a denied caller
+                # off get_token().
+                token = normalize_token(hf_token),
+            )
+
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
+                save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
 
                 if gguf:
-                    # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
                     _apply_wsl_sudo_patch()
-                    self.current_model.save_pretrained_gguf(
-                        save_directory,
-                        self.current_tokenizer,
-                        save_method = "lora",
-                        quantization_method = outtype,
-                        # A token fetches a gated base's config; False keeps a denied caller
-                        # off get_token().
-                        token = normalize_token(hf_token),
-                    )
+                    save_lora_gguf(save_directory)
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
                         str(p)
@@ -1614,6 +1760,7 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                self._write_export_metadata(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
 
@@ -1627,34 +1774,52 @@ class ExportBackend:
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
-                if gguf:
-                    # Needs a local save_directory so the conversion is not re-run.
-                    if not (output_path and Path(output_path).is_dir()):
-                        return (
-                            False,
-                            "GGUF LoRA Hub upload requires a local save directory; set one and "
-                            "retry.",
-                            None,
-                        )
-                    hf_api = HfApi(token = hf_token)
-                    hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
+                # Needs a local save_directory so the conversion is not re-run.
+                if gguf and not (output_path and Path(output_path).is_dir()):
+                    return (
+                        False,
+                        "GGUF LoRA Hub upload requires a local save directory; set one and retry.",
+                        None,
                     )
+
+                hf_api = HfApi(token = hf_token)
+
+                if gguf:
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = output_path
+                        if not save_dir_was_empty:
+                            # A reused folder can hold leftovers, so upload a clean second save
+                            # instead. The converter names the GGUF's model after its folder.
+                            upload_dir = os.path.join(
+                                stack.enter_context(_staging_dir(Path(output_path).parent)),
+                                Path(output_path).name,
+                            )
+                            save_lora_gguf(upload_dir)
+                        repo_id = _open_hub_repo(hf_api, repo_id, private)
+                        hf_api.upload_folder(
+                            folder_path = upload_dir,
+                            repo_id = repo_id,
+                            repo_type = "model",
+                            ignore_patterns = _HUB_UPLOAD_IGNORE,
+                        )
                 elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
+                        # Serialise first: opening the repo before this would leave an empty
+                        # one behind whenever the adapter or tokenizer fails to write.
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = _open_hub_repo(hf_api, repo_id, private)
                         hf_api.upload_folder(
                             folder_path = tmp_dir,
                             repo_id = repo_id,
                             repo_type = "model",
                         )
                 else:
+                    # Opened here rather than left to push_to_hub: a repo that does not exist
+                    # yet is one another client can create public first, and `private` cannot
+                    # change an existing repo's visibility, so the adapter would land in it.
+                    repo_id = _open_hub_repo(hf_api, repo_id, private)
+                    _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")

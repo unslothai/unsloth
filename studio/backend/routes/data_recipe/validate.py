@@ -23,6 +23,8 @@ from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+from .jobs import _resolve_seed_endpoint
+
 logger = get_logger(__name__)
 router = APIRouter()
 
@@ -149,6 +151,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         require_ui_session_for_local_commands(via_api_key)
 
     _patch_local_providers(recipe)
+    _resolve_seed_endpoint(recipe)
 
     github_source = _github_seed_source(recipe)
     if github_source is not None:
@@ -197,7 +200,12 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
             exc_info = True,
         )
         detail = safe_curated_detail(exc, fallback = "Validation failed.")
-        parsed_errors = _collect_validation_errors(recipe)
+        try:
+            parsed_errors = _collect_validation_errors(recipe)
+        except Exception:
+            # It re-reads the seed, so an unreadable one raises here too; escaping turns an
+            # answerable "this recipe is wrong" into a 500.
+            parsed_errors = []
         return ValidateResponse(
             valid = False,
             errors = parsed_errors or [ValidateError(message = detail)],
