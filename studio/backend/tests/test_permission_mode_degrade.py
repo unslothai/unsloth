@@ -154,6 +154,30 @@ def test_off_gate_is_armed_only_where_a_prompt_can_reach_the_caller(
     assert inference_route._off_mode_sandbox_gate(payload, ui_events) is armed
 
 
+@pytest.mark.parametrize(
+    "body,armed",
+    [
+        ({}, True),
+        ({"confirm_tool_calls": False}, False),
+        # An explicit true is the Ask-every-time contract, not an opt-out.
+        ({"confirm_tool_calls": True}, True),
+    ],
+)
+def test_an_explicit_confirm_opt_out_keeps_off_unprompted(body, armed):
+    import routes.inference as inference_route
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        stream = True,
+        permission_mode = "off",
+        **body,
+    )
+    # The fold still hides confirm from the route guards either way.
+    assert payload.confirm_tool_calls is False
+    assert inference_route._off_mode_sandbox_gate(payload, True) is armed
+
+
 def _gguf_client(monkeypatch, captured):
     import routes.inference as inference_route
     from .llama_backend_double import FakeLlamaCppBackend

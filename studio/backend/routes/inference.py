@@ -4639,10 +4639,12 @@ def _off_mode_sandbox_gate(payload, ui_events: bool) -> bool:
     Armed only where a prompt can reach the caller: a stream carrying the control frames. The
     loop then asks only for a high-risk python/terminal call that would run without OS
     isolation (state.tool_policy.needs_tool_confirmation). Everywhere else "off" keeps running
-    unprompted, as before, so no route guard or non-streaming client sees a change.
+    unprompted, as before, so no route guard or non-streaming client sees a change. A client's own
+    confirm_tool_calls=false still wins over the mode, as in _permission_mode_confirm.
     """
     return (
         getattr(payload, "permission_mode", None) == "off"
+        and not getattr(payload, "_off_confirm_opt_out", False)
         and not getattr(payload, "bypass_permissions", False)
         and bool(getattr(payload, "stream", False))
         and bool(ui_events)

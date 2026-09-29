@@ -6355,7 +6355,7 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
-                    ...(permissionMode === "auto"
+                    ...(permissionMode === "auto" || permissionMode === "off"
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
                     bypass_permissions: bypassPermissions,
@@ -6537,9 +6537,10 @@ export function createOpenAIStreamAdapter(
               : {}),
             // Sent for every local chat, since `unsloth run --enable-tools` can open the tool loop with
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
-            // defeat the safe-only exception); "ask" sends true, off/full send false.
+            // defeat the safe-only exception); "off" omits it too, since an explicit false opts out of
+            // its risky-call prompt without an OS sandbox; "ask" sends true, full sends false.
             permission_mode: permissionMode,
-            ...(permissionMode === "auto"
+            ...(permissionMode === "auto" || permissionMode === "off"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,

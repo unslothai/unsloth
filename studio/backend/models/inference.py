@@ -2278,6 +2278,8 @@ class ChatCompletionRequest(BaseModel):
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
+    # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
+    _off_confirm_opt_out: bool = PrivateAttr(default = False)
 
     model: str = Field(
         "default",
@@ -2859,6 +2861,9 @@ class ChatCompletionRequest(BaseModel):
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
         elif self.permission_mode == "off":
+            self._off_confirm_opt_out = (
+                "confirm_tool_calls" in self.model_fields_set and self.confirm_tool_calls is False
+            )
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
