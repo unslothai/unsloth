@@ -45,7 +45,11 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
-import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  uploadChatAttachmentOriginal,
+} from "./api/chat-api";
+import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
   cancelChatGenerationRun,
@@ -65,7 +69,12 @@ import {
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
 } from "./attachment-content";
-import { persistAttachmentOriginals, withAttachmentOriginal } from "./attachment-originals";
+import {
+  type ChatAttachmentOriginal,
+  persistAttachmentOriginals,
+  reuseStagedUpload,
+  withAttachmentOriginal,
+} from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -81,18 +90,34 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
+import {
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  normalizeChatImage,
+} from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
+import {
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+  RTF_ATTACHMENT_ACCEPT,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+} from "./open-document-accept";
+import {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
+import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
+  codeToolsOn,
   commitHeldThreadScopedEditsToTheirThread,
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
@@ -235,8 +260,8 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 
   add(state: { file: File }) {
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
-    // for an audio-only 3GP recording, so settle that from the container's own tracks first, as the
-    // native readers do. Every other file goes straight through, keeping the delegate's own return.
+    // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
+    // first, as the native readers do. Every other file goes straight through.
     if (!needsAttachmentTrackInspection(state.file)) {
       return this.delegate.add(state);
     }
@@ -249,9 +274,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const file = await classifiedAttachmentFile(state.file);
     const added = await this.delegate.add({ ...state, file });
     if (Symbol.asyncIterator in added) {
-      // Only the audio and video adapters claim a 3GP and both resolve to one
-      // attachment, so this drains a generator to its last value rather than
-      // forwarding the progress an adapter here does not report.
       let last: PendingAttachment | undefined;
       for await (const value of added) last = value;
       if (!last) throw new Error("The attachment adapter yielded nothing.");
@@ -270,7 +292,13 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const { incognito } = useChatRuntimeStore.getState();
     const epoch = getAuthSessionEpoch();
     try {
-      return await withAttachmentOriginal(attachment, await this.delegate.send(attachment), incognito, epoch);
+      return await withAttachmentOriginal(
+        attachment,
+        await this.delegate.send(attachment),
+        incognito,
+        epoch,
+        pythonToolRunsInStudio(),
+      );
     } catch (error) {
       if (
         reservationToken &&
@@ -284,9 +312,14 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
-  accept = "image/jpeg,image/png,image/webp,image/gif";
+  accept = CHAT_IMAGE_ACCEPT;
+  private readonly converted = new Map<string, Promise<File | null>>();
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
+  async *add({
+    file: picked,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const state = useChatRuntimeStore.getState();
     const checkpoint = state.params.checkpoint;
     const activeModel = state.models.find((m) => m.id === checkpoint);
@@ -330,38 +363,65 @@ class VisionImageAdapter implements AttachmentAdapter {
     }
 
     const maxSize = 20 * 1024 * 1024;
-    if (file.size > maxSize) {
+    if (picked.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
     }
-
-    return {
+    const attachment = {
       id: crypto.randomUUID(),
       type: "image",
-      name: file.name,
-      contentType: file.type,
-      file,
+      name: picked.name,
+      contentType: picked.type,
+      file: picked,
       status: { type: "requires-action", reason: "composer-send" },
+    } satisfies PendingAttachment;
+    if (convertedImageType(picked) === null) {
+      yield attachment;
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "running", reason: "uploading", progress: 0 },
     };
+    const conversion = normalizeChatImage(picked);
+    this.converted.set(
+      attachment.id,
+      conversion.catch(() => null),
+    );
+    let file: File;
+    try {
+      file = await conversion;
+    } catch (error) {
+      if (!this.converted.has(attachment.id)) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    // Removed while converting: yielding again would put it back.
+    if (!this.converted.has(attachment.id)) {
+      return;
+    }
+    yield { ...attachment, name: file.name, contentType: file.type, file };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const conversion = this.converted.get(attachment.id);
+    this.converted.delete(attachment.id);
+    const file = conversion ? await conversion : attachment.file;
     return {
       id: attachment.id,
       type: "image",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "image",
-          image: await this.fileToBase64DataURL(attachment.file),
-        },
-      ],
+      name: file?.name ?? attachment.name,
+      contentType: file?.type ?? attachment.contentType,
+      content: file
+        ? [{ type: "image", image: await this.fileToBase64DataURL(file) }]
+        : [],
       status: { type: "complete" },
     };
   }
 
-  async remove(): Promise<void> {
-    return Promise.resolve();
+  async remove(attachment: { id: string }): Promise<void> {
+    this.converted.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
@@ -646,6 +706,53 @@ class OfficeAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+class RtfAttachmentAdapter implements AttachmentAdapter {
+  accept = RTF_ATTACHMENT_ACCEPT;
+  // Read at add, like OfficeAttachmentAdapter: the composer drops the typed message before send().
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    let text: string;
+    try {
+      ({ text } = await readRtfAttachmentContent(file, file.name));
+    } catch (cause) {
+      const error = `RTF file could not be read: ${file.name}: ${(cause as Error).message}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const text =
+      this.texts.get(attachment.id) ??
+      (await readRtfAttachmentContent(attachment.file, attachment.name)).text;
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[RTF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
 class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
@@ -732,6 +839,124 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     this.sending.delete(attachment.id);
     this.content.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+
+/** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
+function pythonToolRunsInStudio(): boolean {
+  const state = useChatRuntimeStore.getState();
+  // The effective Code state, as the send path computes it: Full access turns it on locally.
+  const codeToolsEnabled = codeToolsOn(state);
+  const external = parseExternalModelId(state.params.checkpoint);
+  if (!external) return state.supportsTools && codeToolsEnabled;
+  const provider = (
+    loadConnectionsEnabled() ? loadExternalProviders() : []
+  ).find((p) => p.id === external.providerId);
+  if (
+    !provider ||
+    providerModelSupportsStudioTools(
+      provider.providerType,
+      external.modelId,
+    ) !== true
+  ) {
+    return false;
+  }
+  return selectCodeToolNames({
+    codeToolsEnabled,
+    hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution(
+      provider.providerType,
+      external.modelId,
+      provider.baseUrl,
+      provider.apiType,
+    ),
+    providerHostsCodeExecution: providerHostsCodeExecution(
+      provider.providerType,
+      provider.baseUrl,
+      provider.apiType,
+    ),
+  }).local.includes("python");
+}
+
+class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
+  accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
+  private readonly uploads = new Map<
+    string,
+    Promise<ChatAttachmentOriginal | null>
+  >();
+  private readonly uploadedAt = new Map<string, number>();
+
+  private upload(file: File): Promise<ChatAttachmentOriginal | null> {
+    return uploadChatAttachmentOriginal(file).catch(() => null);
+  }
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const refusal = !pythonToolRunsInStudio()
+      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      : useChatRuntimeStore.getState().incognito
+        ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
+        : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
+          ? `File is too large: ${file.name}`
+          : null;
+    if (refusal) {
+      toast.error(refusal);
+      throw new Error(refusal);
+    }
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    yield attachment;
+    const upload = this.upload(file);
+    this.uploads.set(attachment.id, upload);
+    this.uploadedAt.set(attachment.id, Date.now());
+    const original = await upload;
+    if (this.uploads.get(attachment.id) !== upload) return;
+    if (!original) {
+      this.uploads.delete(attachment.id);
+      toast.error(`Could not upload ${file.name}`);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const original =
+      (reuseStagedUpload(this.uploadedAt.get(attachment.id))
+        ? await this.uploads.get(attachment.id)
+        : null) ?? (await this.upload(attachment.file));
+    this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
+    const text = original
+      ? `[${attachment.name}: only the python tool can read this file]`
+      : `[${attachment.name} could not be uploaded, so it cannot be read]`;
+    const complete: CompleteAttachment = {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text }],
+      status: { type: "complete" },
+    };
+    return original ? ({ ...complete, original } as CompleteAttachment) : complete;
+  }
+
+  async remove(attachment: { id: string }): Promise<void> {
+    this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
   }
 }
 
@@ -866,7 +1091,9 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       role: "user" as const,
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       attachments: cloneAttachments(m.attachments),
-      metadata: { custom: {} },
+      metadata: {
+        custom: m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {},
+      },
     };
   }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
@@ -2497,6 +2724,8 @@ function useStudioRuntimeAdapters(
           new DocxAttachmentAdapter(),
           new OfficeAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
+          new RtfAttachmentAdapter(),
+          new ToolOnlyAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

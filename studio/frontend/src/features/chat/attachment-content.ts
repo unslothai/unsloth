@@ -17,7 +17,11 @@ import {
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
+  RTF_MIMES,
+  isRtfAttachmentName,
+  isToolOnlyAttachmentName,
 } from "./open-document-accept";
+import { readRtfAttachmentContent } from "./rtf";
 
 export type AttachmentTextLabel =
   | "PDF"
@@ -26,7 +30,8 @@ export type AttachmentTextLabel =
   | "ODS"
   | "ODT"
   | "XLSX"
-  | "PPTX";
+  | "PPTX"
+  | "RTF";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -45,7 +50,7 @@ const PDF_ATTACHMENT_RE = /\.pdf$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
-const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n/;
+const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -480,10 +485,21 @@ export function isOpenDocumentAttachment(
   );
 }
 
+export function isRtfAttachment(
+  name: string | undefined,
+  contentType: string | undefined,
+): boolean {
+  return (
+    RTF_MIMES.includes(contentType?.toLowerCase() ?? "") ||
+    isRtfAttachmentName(name ?? "")
+  );
+}
+
 // CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
 // document-specific adapters, so previews must apply the same MIME-or-extension match
 // before looking at PDF/DOCX/HTML names.
-function isTextAttachment(
+/** Whether the text adapter claims the file; it runs before the document ones. */
+export function isTextAttachment(
   name: string,
   contentType: string | undefined,
 ): boolean {
@@ -648,7 +664,12 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
   return { isImage, used };
 }
 
-function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
+function unpackDocxEntries(
+  filename: string,
+  bytes: Uint8Array,
+  keepLarge = false,
+  skipImages = false,
+): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
   let count = 0;
@@ -665,7 +686,7 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = fals
     filter: (entry) => {
       names.add(entry.name);
       const image = images?.isImage(entry.name) ?? false;
-      if (image && !images!.used.has(entry.name)) return false;
+      if (image && (skipImages || !images!.used.has(entry.name))) return false;
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
         if (!image) return false;
@@ -765,13 +786,118 @@ export function repackDocxPreviewArchive(
   filename: string,
   bytes: Uint8Array,
   maxParagraphs: number,
+  { keptImagesOnly = false } = {},
 ): { archive: Uint8Array; truncated: boolean } {
-  const archive = unpackDocxEntries(filename, bytes, true);
+  const archive = unpackDocxEntries(filename, bytes, true, keptImagesOnly);
   const mainDocument = assertDocxPartSizes(filename, archive);
   const main = archive.entries[mainDocument];
   const cut = main ? cutDocxParagraphs(strFromU8(main), maxParagraphs) : null;
   if (cut !== null) archive.entries[mainDocument] = strToU8(cut);
+  if (keptImagesOnly && main) {
+    addKeptDocxImages(bytes, archive, mainDocument, cut ?? strFromU8(main));
+  }
   return { archive: zipSync(archive.entries, { level: 0 }), truncated: cut !== null };
+}
+
+// Element tags only, skipping any ">" inside an attribute value.
+const XML_ELEMENT_TAG_RE = /<[^\s/>!?](?:"[^"]*"|'[^']*'|[^"'>])*>/g;
+// Relationship id attributes, whatever their prefix.
+const DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE = /^[\w.-]+:(?:embed|link|id)$/;
+const DOCX_IMAGE_RELATIONSHIP_TYPE_RE = /\/image$/;
+
+type DocxRelationship = { id: string; type: string; path: string };
+
+function docxRelationships(rels: Uint8Array | undefined, base: string): DocxRelationship[] {
+  if (!rels) return [];
+  const list: DocxRelationship[] = [];
+  const markup = strFromU8(rels).replace(XML_NON_ELEMENT_RE, "");
+  for (const tag of markup.match(DOCX_RELATIONSHIP_TAG_RE) ?? []) {
+    let id = "";
+    let target = "";
+    let type = "";
+    for (const [, name, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
+      const value = decodeXmlEntities(double ?? single ?? "");
+      if (name === "Id") id = value;
+      else if (name === "Target") target = value;
+      else if (name === "Type") type = value;
+    }
+    if (id && target) list.push({ id, type, path: joinDocxPath(base, target) });
+  }
+  return list;
+}
+
+/** Each element tag's local name and attributes; comments, CDATA and text are skipped. */
+function* docxElementTags(xml: string): Generator<{ local: string; attributes: Map<string, string> }> {
+  for (const tag of xml.replace(XML_NON_ELEMENT_RE, "").match(XML_ELEMENT_TAG_RE) ?? []) {
+    const name = /^<([^\s/>]+)/.exec(tag)![1]!;
+    const attributes = new Map<string, string>();
+    for (const [, key, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
+      attributes.set(key!, decodeXmlEntities(double ?? single ?? ""));
+    }
+    yield { local: name.slice(name.indexOf(":") + 1), attributes };
+  }
+}
+
+function relationshipIdsIn(xml: string): Set<string> {
+  const ids = new Set<string>();
+  for (const { attributes } of docxElementTags(xml)) {
+    for (const [name, value] of attributes) if (DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE.test(name)) ids.add(value);
+  }
+  return ids;
+}
+
+const DOCX_NOTE_REFERENCES: Record<string, string> = {
+  footnoteReference: "footnote",
+  endnoteReference: "endnote",
+  commentReference: "comment",
+};
+
+/** Inflates only the images the kept body, and the notes it refers to, reference. */
+function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument: string, body: string): void {
+  const dirname = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+  const wanted = new Set<string>();
+  const addImages = (relationships: DocxRelationship[], ids: Set<string>) => {
+    for (const rel of relationships) {
+      // Images only: an oversized altChunk or OLE part the first pass left out stays out.
+      if (ids.has(rel.id) && DOCX_IMAGE_RELATIONSHIP_TYPE_RE.test(rel.type)) wanted.add(rel.path);
+    }
+  };
+  const mainRels = docxRelationships(archive.entries[docxRelationshipsPath(mainDocument)], dirname(mainDocument));
+  addImages(mainRels, relationshipIdsIn(body));
+  // Notes the kept body refers to, by element name ("footnote") and id.
+  const notes = new Map<string, Set<string>>();
+  for (const { local, attributes } of docxElementTags(body)) {
+    const note = DOCX_NOTE_REFERENCES[local];
+    const id = [...attributes].find(([name]) => name === "id" || name.endsWith(":id"))?.[1];
+    if (note && id !== undefined) notes.set(note, (notes.get(note) ?? new Set()).add(id));
+  }
+  for (const [note, noteIds] of notes) {
+    const part = mainRels.find((rel) => rel.type.endsWith(`/${note}s`))?.path;
+    const xml = part ? archive.entries[part] : undefined;
+    if (!part || !xml) continue;
+    // Just the referenced notes' elements, not the whole part.
+    const element = new RegExp(`<([\\w.-]+:)?${note}(?=[\\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>[\\s\\S]*?</\\1?${note}>`, "g");
+    const kept = [...strFromU8(xml).replace(XML_NON_ELEMENT_RE, "").matchAll(element)]
+      .map(([whole]) => whole)
+      .filter((whole) => {
+        const open = docxElementTags(whole).next().value;
+        const id = open && [...open.attributes].find(([name]) => name === "id" || name.endsWith(":id"))?.[1];
+        return id !== undefined && noteIds.has(id);
+      });
+    addImages(docxRelationships(archive.entries[docxRelationshipsPath(part)], dirname(part)), relationshipIdsIn(kept.join("")));
+  }
+  if (wanted.size === 0) return;
+  // One budget with the parts already unpacked.
+  let unpacked = Object.values(archive.entries).reduce((total, entry) => total + entry.length, 0);
+  const images = unzipSync(bytes, {
+    filter: (entry) => {
+      if (!wanted.has(entry.name) || archive.entries[entry.name]) return false;
+      if (unpacked + entry.originalSize > MAX_DOCX_UNPACKED_BYTES) return false;
+      unpacked += entry.originalSize;
+      return true;
+    },
+  });
+  Object.assign(archive.entries, images);
 }
 
 /** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the
@@ -1010,6 +1136,17 @@ export async function readAttachmentText(
       contentType ?? "",
     );
     return { label, text, truncated: false };
+  }
+  if (isRtfAttachment(name, contentType)) {
+    const { label, text } = await readRtfAttachmentContent(file, name);
+    return { label, text, truncated: false };
+  }
+  if (isToolOnlyAttachmentName(name)) {
+    return {
+      label: null,
+      text: `${name} has no preview: only the python tool can read it.`,
+      truncated: false,
+    };
   }
   return { label: null, ...(await readBoundedText(file)) };
 }

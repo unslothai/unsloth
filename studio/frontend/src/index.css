@@ -2143,7 +2143,7 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
-	/* The backward-traversal reveal sentinel in thread.tsx is a real tab stop, so it needs a
+	/* The backward-traversal reveal sentinels in thread.tsx are real tab stops, so they need a
 	   real focus indicator. The rule above is scoped to :where(div, main, ...) and never
 	   matched a span, so focus visibly disappeared for one stop before the next Shift+Tab
 	   reached the action bar, which is a focus-visible failure rather than a cosmetic one.
@@ -2152,14 +2152,16 @@ html[data-chat-font] .aui-root {
 	   in layout, so the indicator appears without shifting the message the way giving the span
 	   dimensions on focus would. Nothing is drawn at rest, and :focus-visible means a mouse
 	   click never draws it either. */
-	.aui-assistant-reveal-sentinel {
+	.aui-assistant-reveal-sentinel,
+	.aui-user-reveal-sentinel {
 		display: inline-block;
 		width: 0;
 		height: 0;
 		vertical-align: middle;
 	}
 
-	.aui-assistant-reveal-sentinel:focus-visible {
+	.aui-assistant-reveal-sentinel:focus-visible,
+	.aui-user-reveal-sentinel:focus-visible {
 		outline: 1px solid var(--ring-soft);
 		outline-offset: 6px;
 		border-radius: 2px;
@@ -2997,11 +2999,28 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 8px 28px -6px var(--background) !important;
 	}
 
-	/* Library card menus: match the card menu button so they stand off the cards. */
-	.dark [data-slot="dropdown-menu-content"].library-actions-menu,
-	.dark [data-slot="dropdown-menu-sub-content"].library-actions-menu {
-		--accent: var(--color-neutral-600);
-		background-color: var(--color-neutral-700);
+	/* Library menus in dark: the sidebar menus' surface, text, hover, dividers and red. */
+	.dark :is([data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"]):is(.library-actions-menu, .library-menu) {
+		--library-menu-surface: color-mix(in srgb, var(--card), white 7%);
+		--accent: color-mix(in srgb, var(--library-menu-surface), white 10%);
+		--accent-foreground: #fff;
+		--destructive: #ed716a;
+		background-color: var(--library-menu-surface);
+		color: #fff;
+		box-shadow: 0 4px 14px var(--background) !important;
+	}
+
+	.dark :is(.library-actions-menu, .library-menu) [data-slot="dropdown-menu-separator"] {
+		background-color: color-mix(in srgb, var(--card), white 16%);
+	}
+
+	/* Library header row once stuck: a lighter take on the composer's shadow, cast below only. */
+	.library-header-row[data-stuck] {
+		box-shadow: 0 2px 6px -3px rgba(0, 0, 0, 0.1);
+		clip-path: inset(0 0 -40px 0);
+	}
+	.dark .library-header-row[data-stuck] {
+		box-shadow: 0 2px 10px -2px var(--background);
 	}
 
 	/* Model selector: tighter than the menus above so it lifts off the
@@ -4494,6 +4513,14 @@ html[data-chat-font] .aui-root {
 	min-width: 0;
 }
 
+/* A load failure carries a real diagnostic: a summary line, the runner's output, and the
+   path of the log it came from. Default `white-space: normal` collapsed every newline to
+   a space, so the structure the backend built was destroyed on the way to the reader. */
+[data-sonner-toast][data-styled='true'] [data-title],
+[data-sonner-toast][data-styled='true'] [data-description] {
+	white-space: pre-wrap;
+}
+
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
@@ -4783,6 +4810,45 @@ html.force-reduced-motion .sidebar-section-drop-line {
 			font-size: max(16px, 1rem * var(--ui-font-scale, 1)) !important;
 		}
 	}
+}
+
+/* Images prompt boxes: inset the scroll track so the thumb stays inside the
+   rounded corners. Chromium ignores ::-webkit-scrollbar while scrollbar-width
+   or scrollbar-color is set, so reset them. */
+@supports selector(::-webkit-scrollbar) {
+	.image-prompt-box,
+	.dark .image-prompt-box {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.image-prompt-box::-webkit-scrollbar {
+	width: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-track {
+	margin-block: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-thumb {
+	border: 4px solid transparent;
+	background-clip: padding-box;
+}
+
+/* Attachment card page previews: drop the viewer's gray backdrop, padding and
+   scrollbars so the first page fills the card. */
+.attachment-card-preview-page > * {
+	background: transparent;
+	padding-block: 0;
+}
+
+.attachment-card-preview * {
+	scrollbar-width: none;
+}
+
+.attachment-card-preview *::-webkit-scrollbar {
+	display: none;
 }
 
 /* Composer textarea: keep the scroll thumb faint until the user hovers or

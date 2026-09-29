@@ -62,6 +62,15 @@ _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
 
+from unsloth_cli._ssl_keylog import (
+    drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
+)
+
+# After the move out of System32, so a relative path is judged where ssl will open it, and
+# before any command module builds an HTTPS client; the Studio backend's workers inherit it.
+if _is_entry_point:
+    _drop_unwritable_ssl_keylog_file()
+
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
 
@@ -99,6 +108,7 @@ def _prepare_entry_point():
     if _entry_point_prepared:
         return
     _reconfigure_entry_point_streams()
+    _drop_unwritable_ssl_keylog_file()
     _expand_attached_np_short()
     # Set last, so a raise leaves the work retryable rather than silently skipped.
     _entry_point_prepared = True

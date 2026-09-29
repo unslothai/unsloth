@@ -516,11 +516,15 @@ function formatBytes(bytes: number): string {
 const CAPABILITY_BADGES: {
   key: keyof ModelCapabilities;
   title: string;
+  /** Glyph colour, one per capability like the vision badge's indigo, so the kinds tell apart at a glance. */
+  tone: string;
   Glyph: (props: { className: string }) => ReactNode;
 }[] = [
   {
     key: "videoGen",
     title: "Generates video",
+    // Warm, at the vision indigo's lightness and chroma: amber-300 outshone every other tag.
+    tone: "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.8} {...props} />
     ),
@@ -528,6 +532,8 @@ const CAPABILITY_BADGES: {
   {
     key: "imageGen",
     title: "Generates images",
+    // Pink, as the Hub tags diffusion models.
+    tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
       <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
     ),
@@ -537,6 +543,9 @@ const CAPABILITY_BADGES: {
     // Direction-neutral, unlike the two above: `audio` covers ASR and classification as well as
     // synthesis, so a Whisper row would claim to generate what it consumes.
     title: "Audio",
+    // Teal, not the Hub's rose, which is too close to the image pink at this size; held to the
+    // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
+    tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
     ),
@@ -567,12 +576,16 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   const scope = useContext(CapabilityScope);
   return (
     <>
-      {visibleCapabilityBadges(caps, scope).map(({ key, title, Glyph }) => (
+      {visibleCapabilityBadges(caps, scope).map(({ key, title, tone, Glyph }) => (
+        // The vision badge's pill (same height and px-1.5), so every glyph tag in the row is one width.
         <span
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
+          className={cn(
+            "flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5",
+            tone,
+          )}
         >
           <Glyph className="size-3" />
         </span>
@@ -953,17 +966,17 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
-  // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
-  // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
-  badge: "min-w-min min-[560px]:w-[calc(24px*var(--ui-space-scale,1))]",
-  // One glyph plus the disk mark (18 + 4 + 14).
-  badgeMid: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // slot and shift every column after it. This slot holds capability glyphs and the vision badge
+  // (both 26px pills) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
+  badge: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
+  // One glyph plus the disk mark (26 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
   // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
   // both grow past the slot and carry its quant chip 18px left of every other row.
   badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
-  badgeWide: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // Hub draws the disk mark and no vision badge (26+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
   // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
