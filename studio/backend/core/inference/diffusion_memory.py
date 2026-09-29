@@ -1034,7 +1034,9 @@ def _torchao_weight_classes(module: Any) -> set[str]:
 
 
 def _torchao_group_offload_kwargs(
-    module: Any, kwargs: dict[str, Any], pinned_mib: Optional[list] = None
+    module: Any,
+    kwargs: dict[str, Any],
+    pinned_mib: Optional[list] = None,
 ) -> dict[str, Any]:
     """``apply_group_offloading`` kwargs a torchao-weighted ``module`` survives. Weights are frozen first: swap_tensors
     on a requires_grad torchao weight hits an unimplemented ``aten.view``. Lazy pinning refuses torchao, so the copy
@@ -1941,7 +1943,9 @@ def _apply_group_offload(
             else 0
         ]
         for module in streamed.values():
-            apply_group_offloading(module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib))
+            apply_group_offloading(
+                module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
+            )
             installed += 1
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
@@ -2509,7 +2513,9 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 kwargs["record_stream"] = False
             if use_stream and "low_cpu_mem_usage" in params:
                 kwargs["low_cpu_mem_usage"] = True
-            apply_group_offloading(module, **_torchao_group_offload_kwargs(module, kwargs, pinned_mib))
+            apply_group_offloading(
+                module, **_torchao_group_offload_kwargs(module, kwargs, pinned_mib)
+            )
             installed += 1
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
