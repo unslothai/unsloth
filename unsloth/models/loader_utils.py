@@ -1768,7 +1768,14 @@ def _patch_peft_for_routed_compressed_tensors():
         patched_merge._unsloth_routed = True
         lora_layer.Linear.merge = patched_merge
     # PiSSA / OLoRA / CorDA / LoftQ / orthogonal / LoRA-GA read or rewrite the dense base weight (or its dtype).
-    for init in ("pissa_init", "olora_init", "corda_init", "loftq_init", "orthogonal_init", "lora_ga_init"):
+    for init in (
+        "pissa_init",
+        "olora_init",
+        "corda_init",
+        "loftq_init",
+        "orthogonal_init",
+        "lora_ga_init",
+    ):
         original = getattr(lora_layer.LoraLayer, init, None)
         if original is None or getattr(original, "_unsloth_routed", False):
             continue
@@ -1795,7 +1802,11 @@ def _patch_peft_for_routed_compressed_tensors():
         if targets is None or getattr(targets, "_unsloth_routed", False):
             continue
 
-        def patched_targets(*args, _targets = targets, **kwargs):
+        def patched_targets(
+            *args,
+            _targets = targets,
+            **kwargs,
+        ):
             for name, module in _targets(*args, **kwargs):
                 yield name, _dequantize_routed_linear_(module)
 
