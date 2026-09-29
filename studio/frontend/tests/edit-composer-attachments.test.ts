@@ -25,6 +25,14 @@ test("the edit composer shows the attachments it will resend", () => {
   );
 });
 
+test("Send is disabled once the edit leaves nothing to send", () => {
+  assert.match(
+    editComposer,
+    /const editEmpty = useAuiState\(\(\{ composer \}\) => composer\.isEmpty\);/,
+  );
+  assert.match(editComposer, /disabled=\{researchActive \|\| editEmpty\}/);
+});
+
 test("a pasted-text chip without its File previews instead of inlining", () => {
   const chip = block(attachment, "const PastedTextAttachmentUI: FC<{");
   assert.match(

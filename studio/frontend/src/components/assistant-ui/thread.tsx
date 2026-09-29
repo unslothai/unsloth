@@ -8620,6 +8620,8 @@ const EditComposer: FC = () => {
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
+  // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
+  const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -8671,7 +8673,7 @@ const EditComposer: FC = () => {
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button type="submit" size="sm" disabled={researchActive}>
+          <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
             Send
           </Button>
         </div>
