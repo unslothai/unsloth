@@ -10,6 +10,7 @@ import json
 import os
 import shlex
 import sys
+import threading
 import time
 
 import pytest
@@ -44,6 +45,15 @@ def env(monkeypatch, tmp_path):
         calls["resets"] += 1
 
     monkeypatch.setattr(sandbox_probe, "reset_probe_cache", count)
+    # Pinning finds root-owned system binaries; the fakes live in tmp_path, so pin by name.
+    monkeypatch.setattr(
+        plan_mod,
+        "elevated_steps",
+        lambda steps: [[f"/pinned/{step[0]}", *step[1:]] for step in steps],
+    )
+    monkeypatch.setattr(
+        plan_mod, "trusted_system_binary", lambda name: "/bin/sh" if name == "sh" else None
+    )
     monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", _Clearable(count))
     monkeypatch.setattr(mxc_probe, "invalidate_cache", count)
     monkeypatch.setattr(tools, "reset_terminal_profile_cache", count)
@@ -96,8 +106,12 @@ def _linux_plan(monkeypatch, elevation, path):
         manual_command = "sudo apt-get install -y bubblewrap && sudo apparmor_parser -r x",
     )
     monkeypatch.setattr(plan_mod, "detect", lambda *a, **k: plan)
-    monkeypatch.setattr(plan_mod, "linux_elevation", lambda: (elevation, path))
+    monkeypatch.setattr(plan_mod, "linux_elevation", lambda **_kw: (elevation, path))
     return plan
+
+
+def _pinned(step):
+    return [f"/pinned/{step[0]}", *step[1:]]
 
 
 def _settle(job, seconds = 30):
@@ -113,7 +127,10 @@ def test_sudo_runs_each_fixed_step_non_interactively(monkeypatch, env):
     job_mod.add_finish_hook(lambda: env.__setitem__("hooks", env["hooks"] + 1))
     job = _settle(job_mod.start(plan_mod.LINUX_INSTALL))
     assert job.state == "succeeded" and job.exit_code == 0
-    assert env["recorded"]() == [[sudo, "-n", *_STEPS[0]], [sudo, "-n", *_STEPS[1]]]
+    assert env["recorded"]() == [
+        [sudo, "-n", *_pinned(_STEPS[0])],
+        [sudo, "-n", *_pinned(_STEPS[1])],
+    ]
     assert env["resets"] >= 5 and env["hooks"] == 1
 
 
@@ -133,11 +150,11 @@ def test_pkexec_asks_once_for_one_constant_script(monkeypatch, env):
     assert job.state == "succeeded"
     (call,) = env["recorded"]()
     assert call[:3] == [pkexec, "/bin/sh", "-c"]
-    assert (
-        call[3]
-        == "set -e\napt-get install -y bubblewrap\napparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict\n"
+    assert call[3] == (
+        "set -e\n/pinned/apt-get install -y bubblewrap\n"
+        "/pinned/apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict\n"
     )
-    assert call[3] == job_mod.pkexec_script(_STEPS)
+    assert call[3] == job_mod.pkexec_script([_pinned(step) for step in _STEPS])
 
 
 def test_a_dismissed_polkit_prompt_is_declined(monkeypatch, env):
@@ -155,6 +172,9 @@ def test_no_polkit_agent_is_a_named_failure(monkeypatch, env):
 def test_no_elevation_means_no_job(monkeypatch, env):
     plan = plan_mod.SetupPlan(platform = "linux", manual_command = "sudo apt-get install -y bubblewrap")
     monkeypatch.setattr(plan_mod, "detect", lambda *a, **k: plan)
+    with pytest.raises(job_mod.SetupUnavailable):
+        job_mod.start(plan_mod.LINUX_INSTALL)
+    _linux_plan(monkeypatch, None, None)
     with pytest.raises(job_mod.SetupUnavailable):
         job_mod.start(plan_mod.LINUX_INSTALL)
     with pytest.raises(job_mod.SetupUnavailable):
@@ -234,3 +254,112 @@ def test_a_spawn_error_is_a_failed_job(monkeypatch, env):
     _linux_plan(monkeypatch, "sudo", os.path.join(os.sep, "nonexistent", "sudo"))
     job = _settle(job_mod.start(plan_mod.LINUX_INSTALL))
     assert job.state == "failed" and job.exit_code is None
+
+
+def test_elevated_steps_run_with_only_a_fixed_environment(monkeypatch, env):
+    monkeypatch.setenv("LD_PRELOAD", "/tmp/evil.so")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/evil")
+    spawned = []
+
+    class _Done:
+        stdout = iter(())
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(
+        job_mod, "_spawn", lambda argv, env = None: spawned.append((argv, env)) or _Done()
+    )
+    _linux_plan(monkeypatch, "sudo", "/usr/bin/sudo")
+    job = _settle(job_mod.start(plan_mod.LINUX_INSTALL))
+    assert job.state == "succeeded" and len(spawned) == 2
+    for argv, child_env in spawned:
+        assert argv[:2] == ["/usr/bin/sudo", "-n"] and argv[2].startswith("/pinned/")
+        assert child_env == plan_mod.ELEVATED_ENV
+        assert child_env["PATH"] == "/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def test_a_step_without_a_trusted_binary_is_not_run(monkeypatch, env):
+    _linux_plan(monkeypatch, "sudo", env["fake"]("sudo"))
+
+    def refuse(steps):
+        raise LookupError("apt-get was not found in /usr/sbin, /usr/bin, /sbin, /bin")
+
+    monkeypatch.setattr(plan_mod, "elevated_steps", refuse)
+    with pytest.raises(job_mod.SetupUnavailable, match = "terminal"):
+        job_mod.start(plan_mod.LINUX_INSTALL)
+    assert env["recorded"]() == [] and job_mod.current() is None
+
+
+def test_the_elevation_is_checked_again_right_before_starting(monkeypatch, env):
+    seen = []
+    _linux_plan(monkeypatch, "sudo", env["fake"]("sudo"))
+    monkeypatch.setattr(
+        plan_mod, "linux_elevation", lambda **kw: seen.append(kw) or ("sudo", env["fake"]("sudo"))
+    )
+    _settle(job_mod.start(plan_mod.LINUX_INSTALL))
+    assert seen == [{"force": True}]
+
+
+def test_the_runtime_operation_only_installs_the_runtime(monkeypatch, env):
+    install = env["fake"]("install-runtime")
+    plan = plan_mod.SetupPlan(
+        platform = "win32", action = plan_mod.WINDOWS_RUNTIME, steps = ((install,),)
+    )
+    monkeypatch.setattr(plan_mod, "windows_runtime_plan", lambda: plan)
+    monkeypatch.setattr(
+        plan_mod, "detect", lambda *a, **k: pytest.fail("the full plan is not used")
+    )
+    job = _settle(job_mod.start(plan_mod.WINDOWS_RUNTIME))
+    assert job.state == "succeeded" and env["recorded"]() == [[install]]
+    monkeypatch.setattr(
+        plan_mod, "windows_runtime_plan", lambda: plan_mod.SetupPlan(platform = "win32", reason = "x")
+    )
+    with pytest.raises(job_mod.SetupUnavailable):
+        job_mod.start(plan_mod.WINDOWS_RUNTIME)
+
+
+def test_setup_rechecks_the_tools_before_it_reads_as_finished(monkeypatch, env):
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "0")
+    order = []
+    monkeypatch.setattr(os_sandbox, "warm_tool_isolation", lambda: order.append("warm"))
+    _linux_plan(monkeypatch, "sudo", env["fake"]("sudo"))
+    job = job_mod.start(plan_mod.LINUX_INSTALL)
+    _settle(job)
+    assert job.state == "succeeded" and order == ["warm"]
+
+
+def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tmp_path):
+    gate = tmp_path / "open"
+    _linux_plan(monkeypatch, "sudo", env["fake"]("sudo", gate = gate))
+    prep_spawns = []
+    monkeypatch.setattr(mxc_host_prep_job, "_spawn", lambda argv: prep_spawns.append(argv) or None)
+    monkeypatch.setattr(mxc_probe, "host_prep_command", lambda: ["prepare"])
+    # Hold the prepare job's thread so it never touches the fake process.
+    monkeypatch.setattr(mxc_host_prep_job, "_run", lambda job, proc: None)
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def setup():
+        barrier.wait()
+        results["setup"] = job_mod.start(plan_mod.LINUX_INSTALL)
+
+    def prepare():
+        barrier.wait()
+        results["prepare"] = mxc_host_prep_job.start()
+
+    threads = [threading.Thread(target = setup), threading.Thread(target = prepare)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    try:
+        started_setup = job_mod.current() is not None
+        started_prep = bool(prep_spawns)
+        # Exactly one of the two elevated helpers started; the other answered with it.
+        assert started_setup != started_prep
+        assert results["setup"].id == results["prepare"].id
+    finally:
+        gate.write_text("")
+        if job_mod.current() is not None:
+            _settle(job_mod.current())

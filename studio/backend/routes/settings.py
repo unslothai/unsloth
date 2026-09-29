@@ -4437,7 +4437,8 @@ class SandboxSettingsPayload(BaseModel):
 class SandboxSetupPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    operation: Literal["linux-install", "windows-setup"]
+    # windows-runtime: the MXC runtime alone (Settings > Sandbox "Install runtime"), no UAC.
+    operation: Literal["linux-install", "windows-setup", "windows-runtime"]
     # Windows: also turn on "Allow OS isolation on this Windows version" (the owner agreed in the dialog).
     consent_dacl_fallback: StrictBool = False
 
@@ -4538,6 +4539,7 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
 
     from core.inference import os_sandbox
 
+    generation = os_sandbox.tool_isolation_generation()
     python = os_sandbox.capability_snapshot(
         force = force, execution_kind = "python", selected_executable = sys.executable
     )
@@ -4545,6 +4547,15 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     terminal = os_sandbox.capability_snapshot(
         force = force, execution_kind = "terminal", selected_executable = terminal_exe
     )
+    # The chat's "Full access in sandbox" gate reads the same answer.
+    for tool, capability in (("python", python), ("terminal", terminal)):
+        os_sandbox.note_tool_isolation(
+            tool,
+            capability.available,
+            backend = capability.backend,
+            reason = capability.reason,
+            generation = generation,
+        )
     return SandboxStatusResponse(
         platform = sys.platform,
         python = _sandbox_tool_status(python),
@@ -4575,13 +4586,23 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
-    """The cached status is shared; only a direct local request may be offered the setup button."""
+    """Blocking. The cached status is shared; only a direct local request may be offered the setup
+    button, and only then does Linux check whether it can elevate (the owner router already
+    admitted the caller)."""
+    from core.inference import sandbox_setup_plan
     from utils.client_ip import is_direct_local_request
 
-    if status.setup is None:
+    setup = status.setup
+    if setup is None:
         return status
-    can_run = bool(status.setup.action) and is_direct_local_request(request)
-    return status.model_copy(update = {"setup": status.setup.model_copy(update = {"can_run": can_run})})
+    local = bool(setup.action) and is_direct_local_request(request)
+    update: dict = {"can_run": False}
+    if local and setup.action == sandbox_setup_plan.LINUX_INSTALL:
+        elevation, _path = sandbox_setup_plan.linux_elevation()
+        update = {"can_run": elevation is not None, "elevation": elevation}
+    elif local:
+        update = {"can_run": True}
+    return status.model_copy(update = {"setup": setup.model_copy(update = update)})
 
 
 def _sandbox_status(refresh: bool = False) -> SandboxStatusResponse:
@@ -4635,7 +4656,8 @@ async def get_sandbox_status(
 ) -> SandboxStatusResponse:
     """What Python and the Terminal get from the OS sandbox on this machine, plus the Windows opt-in."""
     try:
-        return _for_request(await asyncio.to_thread(_sandbox_status, refresh), request)
+        status = await asyncio.to_thread(_sandbox_status, refresh)
+        return await asyncio.to_thread(_for_request, status, request)
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -4689,7 +4711,8 @@ async def update_sandbox_settings(
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
     )
-    return _for_request(status, request).model_copy(update = {"grants_restored": restored})
+    status = await asyncio.to_thread(_for_request, status, request)
+    return status.model_copy(update = {"grants_restored": restored})
 
 
 @_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
@@ -4776,37 +4799,40 @@ async def start_sandbox_setup(
                 "prompt appears there, not in this browser."
             ),
         )
-    platform_operation = (
-        sandbox_setup_plan.WINDOWS_SETUP
+    platform_operations = (
+        (sandbox_setup_plan.WINDOWS_SETUP, sandbox_setup_plan.WINDOWS_RUNTIME)
         if sys.platform == "win32"
-        else sandbox_setup_plan.LINUX_INSTALL
+        else (sandbox_setup_plan.LINUX_INSTALL,)
         if sys.platform.startswith("linux")
-        else None
+        else ()
     )
-    if payload.operation != platform_operation:
+    if payload.operation not in platform_operations:
         raise HTTPException(
             status_code = 409, detail = f"{payload.operation} does not apply to this computer."
         )
-    if (
+    consent = (
         payload.operation == sandbox_setup_plan.WINDOWS_SETUP
         and payload.consent_dacl_fallback
         and not mxc_policy.dacl_fallback_enabled()
-    ):
-        if saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"{mxc_policy.DACL_FALLBACK_ENV} is set in the environment Unsloth runs in, "
-                    "which decides this."
-                ),
-            )
-        await asyncio.to_thread(_sandbox_apply, SandboxSettingsPayload(allow_dacl_fallback = True))
-        sandbox_setup_plan.invalidate()
+    )
+    if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"{mxc_policy.DACL_FALLBACK_ENV} is set in the environment Unsloth runs in, "
+                "which decides this."
+            ),
+        )
     sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
     try:
         job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation)
     except sandbox_setup_job.SetupUnavailable as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if consent:
+        # Only once the setup is accepted: turned on first, the Python check can pass before the
+        # host is prepared, the plan then reads "already works", and preparation never runs.
+        await asyncio.to_thread(_sandbox_apply, SandboxSettingsPayload(allow_dacl_fallback = True))
+        sandbox_setup_plan.invalidate()
     _forget_sandbox_status()
     logger.info(
         "settings.sandbox_setup_started subject=%s operation=%s job=%s",

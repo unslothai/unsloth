@@ -271,6 +271,7 @@ def test_probe_cache_reset_forgets_the_cached_answer():
 
 def test_warmup_runs_off_the_calling_thread(monkeypatch):
     monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    monkeypatch.setattr(sys, "platform", "linux")
     seen = []
     done = threading.Event()
 
@@ -288,6 +289,16 @@ def test_warmup_runs_off_the_calling_thread(monkeypatch):
     assert all(name == "unsloth-sandbox-warmup" for _, name in seen)
 
 
+def test_no_startup_warmup_on_windows(monkeypatch):
+    # The MXC check launches a container and applies read grants: never at every server start.
+    monkeypatch.delenv(os_sandbox.WARMUP_DISABLE_ENV, raising = False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    called = []
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", lambda *a, **k: called.append(a))
+    assert os_sandbox.start_tool_isolation_warmup() is None
+    assert called == []
+
+
 # --- probe cache: stale-while-revalidate ---------------------------------------------------
 
 
@@ -301,6 +312,8 @@ class _Clock:
 
 @pytest.fixture
 def probe_env(monkeypatch):
+    # The re-probe runs in the background only while background probes are on (conftest turns them off).
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "0")
     sandbox_probe.reset_probe_cache()
     clock = _Clock()
     import types
@@ -381,6 +394,19 @@ def test_a_pass_past_the_grace_is_probed_in_the_foreground(probe_env):
     assert all(name != "unsloth-sandbox-reprobe" for name in calls)
 
 
+def test_a_stale_pass_is_reprobed_in_the_foreground_when_background_probes_are_off(
+    probe_env, monkeypatch
+):
+    clock, verdicts, gate, calls = probe_env
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "1")
+    verdicts.extend([(True, "old"), (False, "broke")])
+    sandbox_probe.probe(_Backend())
+    clock.now += sandbox_probe._CACHE_TTL_SECONDS + 1
+    assert sandbox_probe.probe(_Backend()) == (False, "broke")
+    assert all(name != "unsloth-sandbox-reprobe" for name in calls)
+    assert not sandbox_probe._refreshing
+
+
 def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
     clock, verdicts, gate, calls = probe_env
     verdicts.extend([(True, "ok"), (True, "from before the reset"), (False, "after")])
@@ -441,3 +467,144 @@ def test_capability_reports_the_cached_answers():
     assert body["terminal_os_isolated"] is False
     assert body["backend"] == "bubblewrap"
     assert body["reason"] == "no bash"
+
+
+# --- "off" skipped the prompt because the sandbox was on: that launch must not fall back ------
+
+
+@pytest.mark.parametrize(
+    "mode,tool,isolated,risky", list(itertools.product(MODES, TOOLS, ISOLATION, (True, False)))
+)
+def test_strict_launch_matrix(isolation, mode, tool, isolated, risky):
+    isolation["python"] = isolation["terminal"] = isolated
+    strict = tool_policy.requires_os_isolation(
+        confirm_tool_calls = True,
+        bypass_permissions = mode == "full",
+        permission_mode = mode,
+        name = tool,
+        arguments = {"risky": risky},
+        is_high_risk = _risk,
+    )
+    assert strict is (
+        mode == "off" and tool in ("python", "terminal") and isolated is True and risky
+    )
+
+
+def test_strict_launch_needs_an_armed_gate(isolation):
+    isolation["python"] = True
+    assert not tool_policy.requires_os_isolation(
+        confirm_tool_calls = False,
+        bypass_permissions = False,
+        permission_mode = "off",
+        name = "python",
+        arguments = {"risky": True},
+        is_high_risk = _risk,
+    )
+
+
+class _ModeRecordingExecuteTool:
+    def __init__(self):
+        self.modes = []
+
+    def __call__(
+        self,
+        name,
+        arguments,
+        *,
+        cancel_event = None,
+        timeout = None,
+        session_id = None,
+        thread_id = None,
+        rag_scope = None,
+        disable_sandbox = False,
+        tool_execution_mode = "auto",
+    ):
+        self.modes.append(tool_execution_mode)
+        return f"RESULT[{name}]"
+
+
+@pytest.mark.parametrize(
+    "mode,code,expected",
+    [
+        ("off", 'import os; os.remove(\\"x\\")', "required"),
+        ("off", "print(1)", "auto"),
+        ("auto", "print(1)", "auto"),
+    ],
+)
+def test_the_loop_launches_an_unasked_risky_call_strictly(mode, code, expected):
+    import uuid
+
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
+    turns = iter(
+        [f'<tool_call>{{"name": "python", "arguments": {{"code": "{code}"}}}}</tool_call>', "final"]
+    )
+
+    def single_turn(_messages):
+        try:
+            yield next(turns)
+        except StopIteration:
+            return
+
+    exec_fn = _ModeRecordingExecuteTool()
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            execute_tool = exec_fn,
+            session_id = f"strict-{uuid.uuid4().hex}",
+            confirm_tool_calls = True,
+            permission_mode = mode,
+        )
+    )
+    starts = [e for e in events if e["type"] == "tool_start"]
+    assert starts and starts[0]["awaiting_confirmation"] is False
+    assert exec_fn.modes == [expected]
+
+
+def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch):
+    from core.inference import tools
+
+    # The cache still says isolated; the launch-time check says the backend is gone.
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **_kw: os_sandbox.SandboxCapability(
+            backend = "bubblewrap",
+            available = False,
+            reason = "bwrap: setting up uid map: Permission denied",
+            protection_state = "unavailable",
+            limitations = (),
+            remediation = "Load the AppArmor profile.",
+        ),
+    )
+    tools._last_tool_execution_record = None
+    out = tools.execute_tool(
+        "python",
+        {"code": "print('RAN')"},
+        session_id = "__LOCALID_strict_refusal",
+        timeout = 60,
+        tool_execution_mode = "required",
+    )
+    assert "OS_ISOLATION_UNAVAILABLE" in out and "RAN" not in out
+    record = tools._last_tool_execution_record
+    assert record is None or record.effective_mode != "software_safeguards"
+    # The same call in auto falls back, which is exactly what the strict launch prevents.
+    auto = tools.execute_tool(
+        "python", {"code": "print('RAN')"}, session_id = "__LOCALID_strict_refusal", timeout = 60
+    )
+    assert "RAN" in auto
+
+
+def test_every_loop_launches_strictly_through_the_mode_parameter():
+    # The GGUF and external-provider loops are driven elsewhere; the wiring must be the same.
+    import inspect
+
+    from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop
+    for module in (studio_tool_loop, llama_cpp, safetensors_agentic):
+        source = inspect.getsource(module)
+        assert "requires_os_isolation(" in source, module.__name__
+        assert 'kwargs["tool_execution_mode"] = "required"' in source, module.__name__

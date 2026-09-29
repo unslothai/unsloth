@@ -134,6 +134,30 @@ def needs_tool_confirmation(
     return True
 
 
+def requires_os_isolation(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    arguments,
+    is_high_risk = None,
+) -> bool:
+    """Whether this call must launch with tool_execution_mode="required".
+
+    "off" skips the prompt for a risky python/terminal call only because the cached capability
+    said the OS sandbox is on. If that sandbox stopped working since, the launch must refuse
+    rather than fall back to software safeguards and run the risky call unasked.
+    """
+    if not confirm_tool_calls or bypass_permissions or permission_mode != "off":
+        return False
+    if name not in OS_SANDBOXED_TOOLS or off_mode_still_gates(name):
+        return False
+    if is_high_risk is None:
+        from core.inference.tools import is_high_risk_tool_call as is_high_risk
+    return bool(is_high_risk(name, arguments))
+
+
 def account_tool_stream(stream):
     from utils.account_context import current_account, is_owner_context, run_as
 

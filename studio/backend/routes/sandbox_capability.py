@@ -47,6 +47,17 @@ def _setup_fields_for(request: Request, isolated: bool) -> dict:
     return fields
 
 
+def _refresh(force: bool) -> None:
+    """Blocking: check the tools that have no answer yet (all of them when forced)."""
+    from core.inference import os_sandbox
+
+    if os_sandbox._background_probes_disabled():
+        return  # UNSLOTH_DISABLE_SANDBOX_WARMUP=1: answers come only from real launches
+    for tool in os_sandbox.ISOLATED_TOOLS:
+        if force or not os_sandbox.has_tool_isolation_answer(tool):
+            os_sandbox.refresh_tool_isolation(tool, force = force)
+
+
 def _capability() -> dict:
     from core.inference.os_sandbox import cached_tool_capability
 
@@ -70,8 +81,16 @@ def _capability() -> dict:
 
 @router.get("/capability", response_model = SandboxCapabilityResponse)
 async def sandbox_capability(
-    request: Request, current_subject: str = Depends(get_current_subject)
+    request: Request,
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ) -> SandboxCapabilityResponse:
+    """Right after a setup or at startup the cached answer may be missing: check before answering,
+    so "not isolated" is never a guess. A forced re-check is the owner's (it relaunches the probe)."""
+    from utils.account_context import is_owner_context
+
+    force = bool(refresh) and is_owner_context()
+    await asyncio.to_thread(_refresh, force)
     capability = _capability()
     isolated = capability["python_os_isolated"] and capability["terminal_os_isolated"]
     setup = await asyncio.to_thread(_setup_fields_for, request, isolated)

@@ -1269,6 +1269,7 @@ async def stream_with_studio_tools(
         account_tool_stream,
         needs_tool_confirmation,
         normalize_tool_permissions,
+        requires_os_isolation,
     )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
@@ -1722,6 +1723,14 @@ async def stream_with_studio_tools(
                 is_high_risk = is_high_risk_tool_call,
                 never_needs = never_needs_approval,
             )
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = arguments,
+                is_high_risk = is_high_risk_tool_call,
+            )
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1811,6 +1820,7 @@ async def stream_with_studio_tools(
                 output_callback: Any,
                 call = decision,
                 approved = host_access_approved,
+                strict = strict_isolation,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -1820,6 +1830,9 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                    kwargs["tool_execution_mode"] = "required"
                 # Provider loops share the local catalogue selector, so search_conversation is advertised here too
                 # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
                 # leaves the replaced response in them.

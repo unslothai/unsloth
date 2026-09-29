@@ -656,6 +656,7 @@ def run_safetensors_tool_loop(
         account_tool_stream,
         needs_tool_confirmation,
         normalize_tool_permissions,
+        requires_os_isolation,
         tool_call_may_prompt,
     )
 
@@ -1448,6 +1449,13 @@ def run_safetensors_tool_loop(
                 name = decision.tool_name,
                 arguments = decision.arguments,
             )
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+            )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
@@ -1533,6 +1541,7 @@ def run_safetensors_tool_loop(
                     _output_callback,
                     _decision = decision,
                     _approved = _host_access_approved,
+                    _strict = strict_isolation,
                 ):
                     kwargs = dict(
                         cancel_event = cancel_event,
@@ -1542,6 +1551,9 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                    if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "required"
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
                         kwargs["conversation_branch"] = request_branch
                     if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
