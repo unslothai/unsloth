@@ -110,7 +110,13 @@ export const AttachmentCardPreview: FC<{
   let body: ReactNode = null;
   if (preview.kind === "document") {
     body = visible ? (
-      <DocumentView file={file} kind={preview.document} name={file.name} contentType={file.type} />
+      <DocumentView
+        file={file}
+        kind={preview.document}
+        name={file.name}
+        contentType={file.type}
+        queued={true}
+      />
     ) : null;
   } else if (text !== null && preview.kind === "markdown") {
     body = (

@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type CSSProperties, type MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type DocumentKind, sheetDelimiter } from "./kind";
+import { queueParse } from "./parse-queue";
 import { useWidth } from "./use-width";
 import {
   type Deck,
@@ -511,25 +512,28 @@ export default function OfficeView({
   name,
   contentType,
   scale,
+  queued = false,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
   contentType: string;
   scale: number;
+  queued?: boolean;
 }) {
   const t = useT();
   const [state, setState] = useState<{ file: Blob; parsed?: Parsed; error?: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    parse(file, kind, name, contentType).then(
-      (parsed) => !cancelled && setState({ file, parsed }),
+    const run = () => parse(file, kind, name, contentType);
+    (queued ? queueParse(run, () => cancelled) : run()).then(
+      (parsed) => !cancelled && parsed && setState({ file, parsed }),
       () => !cancelled && setState({ file, error: true }),
     );
     return () => {
       cancelled = true;
     };
-  }, [file, kind, name, contentType]);
+  }, [file, kind, name, contentType, queued]);
   const current = state?.file === file ? state : null;
   if (current?.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;

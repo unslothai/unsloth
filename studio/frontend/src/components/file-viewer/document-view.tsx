@@ -14,19 +14,22 @@ export function DocumentView({
   name,
   contentType = "",
   scale = 1,
+  queued = false,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
   contentType?: string;
   scale?: number;
+  /** Office files wait for a free parse slot; for thumbnails. */
+  queued?: boolean;
 }) {
   return (
     <Suspense fallback={<Spinner className="m-auto size-6" />}>
       {kind === "pdf" ? (
         <PdfView file={file} scale={scale} />
       ) : (
-        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} />
+        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} queued={queued} />
       )}
     </Suspense>
   );
