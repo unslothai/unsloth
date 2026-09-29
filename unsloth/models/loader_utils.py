@@ -360,7 +360,6 @@ def exclude_no_placement_params(device_map, model_class, config):
         return best
 
     out = dict(base)
-    # Split from the most specific covering key outwards until none covers the table.
     for path in excluded_modules:
         while (key := owner(path)) is not None:
             device = out[key]
