@@ -16,6 +16,7 @@ import shutil
 import socket
 import stat
 import struct
+import subprocess
 import sys
 import sysconfig
 import tempfile
@@ -182,6 +183,7 @@ def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
         *sandbox_linux._ETC_FILES,
         *sandbox_linux._ETC_FILES_IF_TRUSTED,
         *sandbox_linux._NETWORK_FILES,
+        *sandbox_linux._java_distribution_etc_mounts(),
     }
     identity_dir = prepared.cleanup_paths[0]
     for flag in ("--bind", "--ro-bind", "--ro-bind-try"):
@@ -191,6 +193,43 @@ def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
             if source in named or os.path.dirname(source) == identity_dir:
                 continue
             assert os.path.basename(source) == "pyvenv.cfg", source
+
+
+def test_debian_openjdk_etc_config_is_mounted_when_present(prepared):
+    mounts = sandbox_linux._java_distribution_etc_mounts()
+    if not mounts:
+        pytest.skip("no distribution OpenJDK /etc config on this host")
+    sources = [source for source, _ in _pairs(prepared.argv, "--ro-bind-try")]
+    for path in mounts:
+        assert path in sources
+
+
+@pytest.mark.skipif(shutil.which("java") is None, reason = "java is not installed")
+@pytest.mark.skipif(shutil.which("javac") is None, reason = "javac is not installed")
+def test_jvm_crypto_initializes_inside_the_sandbox(tmp_path):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    source = tmp_path / "Digest.java"
+    source.write_text(
+        "class Digest { public static void main(String[] a) throws Exception {"
+        ' System.out.print(java.security.MessageDigest.getInstance("SHA-256").getAlgorithm());'
+        " } }",
+        encoding = "utf-8",
+    )
+    subprocess.run(["javac", str(source)], check = True, capture_output = True)
+    launch = sandbox_linux.prepare(_plan(tmp_path, argv = ("java", "Digest")))
+    try:
+        completed = subprocess.run(
+            launch.argv,
+            capture_output = True,
+            text = True,
+            env = launch.env,
+            check = False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "SHA-256"
+    finally:
+        launch.cleanup()
 
 
 def test_the_interpreter_contributes_only_a_handful_of_read_only_binds(prepared):

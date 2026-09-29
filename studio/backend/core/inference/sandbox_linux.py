@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import shutil
 import stat
@@ -152,12 +153,31 @@ _NETWORK_FILES = (
     "/etc/crypto-policies",
     "/var/lib/ca-certificates",
 )
+# Debian/Ubuntu OpenJDK packages symlink conf/ and lib/ entries into /etc/java-*; the jail's empty /etc
+# must expose them or JVM crypto init fails (Gradle's wrapper hits MessageDigest on startup).
+_JAVA_ETC_GLOBS = ("/etc/java-*", "/etc/ssl/certs/java")
 # Bound at the jail's own HOME with HF_HOME pinned to match.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
 # Excludes $HF_HOME/token and executable modules; the writable hub is a deliberate tradeoff (#5603).
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
+
+
+def _java_distribution_etc_mounts() -> tuple[str, ...]:
+    """Root-owned OpenJDK config trees that /usr/lib/jvm symlinks reach through /etc."""
+    selected: list[str] = []
+    for pattern in _JAVA_ETC_GLOBS:
+        for path in sorted(glob.glob(pattern)):
+            try:
+                info = os.stat(path, follow_symlinks = False)
+            except OSError:
+                continue
+            if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                continue
+            if stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):
+                selected.append(path)
+    return tuple(dict.fromkeys(selected))
 
 
 def _trusted_system_file(path: str) -> bool:
@@ -702,7 +722,12 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for root in silent_roots:
             argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
-        for path in (*_ETC_FILES, *trusted, *_NETWORK_FILES):
+        for path in (
+            *_ETC_FILES,
+            *trusted,
+            *_NETWORK_FILES,
+            *_java_distribution_etc_mounts(),
+        ):
             argv += ["--ro-bind-try", path, path]
         argv += ["--ro-bind", passwd, "/etc/passwd", "--ro-bind", group, "/etc/group"]
         for path in runtime_paths:
