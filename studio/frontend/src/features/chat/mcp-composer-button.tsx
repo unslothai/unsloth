@@ -118,9 +118,14 @@ export function McpComposerButton({
       listRefreshGenerationRef.current = generation;
       setServersLoaded(false);
       loadSystemOneSettings().then(
-        (settings) =>
-          setDecisionsUrl(settings.enabled ? settings.mcpUrl : null),
-        () => setDecisionsUrl(null),
+        (settings) => {
+          if (listRefreshGenerationRef.current !== generation) return;
+          setDecisionsUrl(settings.enabled ? settings.mcpUrl : null);
+        },
+        () => {
+          if (listRefreshGenerationRef.current !== generation) return;
+          setDecisionsUrl(null);
+        },
       );
       try {
         const rows = await listMcpServers({
@@ -195,6 +200,7 @@ export function McpComposerButton({
   const customServers = servers.filter(
     (s) =>
       !s.builtin_id &&
+      normalizeMcpUrl(s.url) !== "studio:decisions" &&
       !presets.some((p) => normalizeMcpUrl(p.url) === normalizeMcpUrl(s.url)),
   );
   const blenderEnabled = servers.some(

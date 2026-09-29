@@ -153,6 +153,8 @@ def _require_enabled() -> None:
 def _decide(
     checkpoint: catalog.Checkpoint, state: JSONContent, questions: dict[str, QuestionIn]
 ) -> dict:
+    if not questions:
+        raise _error(422, "invalid_request_error", "At least one question is required")
     state_chars = (
         len(state) if isinstance(state, str) else len(json.dumps(state, ensure_ascii = False))
     )

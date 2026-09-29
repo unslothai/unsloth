@@ -1776,6 +1776,8 @@ def test_decisions_mcp_answers_like_the_route(client):
 
 
 def test_decisions_mcp_reports_the_route_errors(monkeypatch, runtime):
+    result = _mcp_decide({"state": "x", "questions": {}})
+    assert result.is_error and "At least one question" in result.content[0].text
     long_state = "x" * (systemone.MAX_STATE_CHARS + 1)
     result = _mcp_decide({"state": long_state, "questions": QUESTIONS})
     assert result.is_error and "State is longer than" in result.content[0].text

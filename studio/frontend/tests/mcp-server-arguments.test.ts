@@ -830,3 +830,26 @@ test("the Decisions preset matches a row saved under another port", () => {
     assert.ok(!decisions.test(url), url);
   }
 });
+
+test("the Decisions row stays hidden while the Decision API is off", () => {
+  assert.match(
+    MCP_COMPOSER_BUTTON,
+    /const customServers = servers\.filter\([\s\S]*normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
+  );
+});
+
+test("an older Decision API settings response cannot replace a newer one", () => {
+  const refresh = MCP_COMPOSER_BUTTON.match(
+    /const refresh = useCallback\(([\s\S]*?)\n    \},\n    \[\],\n  \);/,
+  )?.[1];
+  assert.ok(refresh);
+  const settingsRequest = refresh.match(
+    /loadSystemOneSettings\(\)\.then\(([\s\S]*?)\n      \);/,
+  )?.[1];
+  assert.ok(settingsRequest);
+  assert.equal(
+    settingsRequest.match(/listRefreshGenerationRef\.current !== generation/g)
+      ?.length,
+    2,
+  );
+});
