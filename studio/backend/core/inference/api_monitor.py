@@ -548,7 +548,7 @@ class ApiMonitor:
                 entry.prompt_progress_cached = cached
             if time_ms is not None:
                 entry.prompt_progress_time_ms = time_ms
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def set_running_phase(self, entry_id: Optional[str], phase: Optional[str]) -> None:
         if not entry_id or phase not in ("prompt_processing", "token_generation"):
@@ -558,7 +558,7 @@ class ApiMonitor:
             if entry is None or entry.status != "running" or entry.kind != "request":
                 return
             entry.running_phase = phase
-            entry.updated_at = time.time()
+            _advance_updated_at(entry)
 
     def discard(self, entry_id: Optional[str]) -> None:
         """Drop a row that turned out not to be an event (an already-satisfied load)."""
