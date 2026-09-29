@@ -5345,6 +5345,7 @@ const Composer: FC<{
           <ComposerToolsMenu
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
+            audioUploadBusy={audioUpload.busy}
           />
           {/* While dictating, show only the "+"; hide the pill and tool toggles
               so the waveform is the sole status indicator. */}
@@ -6421,7 +6422,8 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
-}> = ({ side = "bottom", researchAvailable }) => {
+  audioUploadBusy: boolean;
+}> = ({ side = "bottom", researchAvailable, audioUploadBusy }) => {
   const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
@@ -6625,6 +6627,11 @@ const ComposerToolsMenu: FC<{
         toast.error("Finish dictating before running a list");
         return;
       }
+      // Starting the queue cancels an in-flight transcription, which would discard it.
+      if (audioUploadBusy) {
+        toast.error("Wait for the transcription to finish before running a list");
+        return;
+      }
       // Mid image edit, startQueue would bypass the overlay's prompt rewrite.
       if (generatedImageOverlay) {
         toast.error("Close the image editor before running a list", {
@@ -6647,7 +6654,7 @@ const ComposerToolsMenu: FC<{
         description: "Open a chat first, then run the list.",
       });
     },
-    [startQueue, generatedImageOverlay, menuIsDictating, setPromptStorageOpen],
+    [startQueue, generatedImageOverlay, menuIsDictating, audioUploadBusy, setPromptStorageOpen],
   );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
