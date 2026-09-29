@@ -69,7 +69,11 @@ def _split_scope(split_name: str | None) -> str:
 
 
 def _drop_invalid_text_rows(
-    dataset: Dataset, *, mode_title: str, split_scope: str
+    dataset: Dataset,
+    *,
+    mode_title: str,
+    split_scope: str,
+    allow_empty: bool = False,
 ) -> tuple[Dataset, list[RawTextNotice]]:
     # Lazy filter — drops rows whose 'text' is null/non-string/blank before they reach
     # the tokenizer. Works on both Dataset and streaming IterableDataset.
@@ -95,7 +99,8 @@ def _drop_invalid_text_rows(
     if not dropped_rows:
         return filtered_dataset, []
 
-    if len(filtered_dataset) == 0:
+    # An empty eval split falls through to the trainer, which warns and skips evaluation.
+    if len(filtered_dataset) == 0 and not allow_empty:
         raise ValueError(
             f"{mode_title} training requires at least one non-blank string 'text' value "
             f"in {split_scope}; all {dropped_rows} rows were null, non-string or blank."
@@ -162,6 +167,7 @@ def prepare_raw_text_dataset(
         dataset,
         mode_title = mode_title,
         split_scope = split_scope,
+        allow_empty = split_name == "eval",
     )
     notices.extend(invalid_row_notices)
 

@@ -45,3 +45,20 @@ def test_raw_blanks_are_dropped_before_eos_append(streaming):
     )
     assert [row["text"] for row in result.dataset] == ["hello<eos>", "world<eos>"]
     assert any("blank" in notice.message for notice in result.notices)
+
+
+def test_all_blank_raw_eval_split_is_left_for_the_trainer_to_skip():
+    result = prepare_raw_text_dataset(
+        Dataset.from_dict({"text": ["", "  "]}),
+        mode_label = "CPT",
+        split_name = "eval",
+        eos_token = "<eos>",
+        append_eos = True,
+    )
+    assert len(result.dataset) == 0
+    assert any("blank" in notice.message for notice in result.notices)
+
+
+def test_all_blank_raw_train_split_still_fails():
+    with pytest.raises(ValueError, match = "at least one non-blank string"):
+        prepare_raw_text_dataset(Dataset.from_dict({"text": ["", "  "]}), split_name = "train")
