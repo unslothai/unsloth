@@ -63,12 +63,14 @@ import {
 } from "./api/chat-generation-api";
 import {
   TEXT_ATTACHMENT_ACCEPT,
+  decodeHtmlAttachmentBytes,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
   extractOfficeAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
+  getPdfAttachmentTextError,
 } from "./attachment-content";
 import {
   type ChatAttachmentOriginal,
@@ -434,39 +436,74 @@ class VisionImageAdapter implements AttachmentAdapter {
 
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
+  private readonly texts = new Map<string, Promise<string | null>>();
 
   // Refused here, not at send: the composer empties itself before it awaits send(), so a ceiling that
   // only fires there discards the typed message too. The throw is invisible (nothing subscribes to
   // attachmentAddError and the picker never awaits addAttachment), so the toast is the only reason given.
-  add({ file }: { file: File }): Promise<PendingAttachment> {
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const sizeError = getDocumentAttachmentSizeError(file, "PDF");
     if (sizeError) {
       toast.error(sizeError);
       throw new Error(sizeError);
     }
-    return Promise.resolve({
+    const attachment = {
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    // A running chip parks Send while the PDF is read; without one, Send goes out without the PDF.
+    yield attachment;
+    const text = extractPdfAttachmentText(file).catch(() => null);
+    this.texts.set(attachment.id, text);
+    const error = pdfAttachmentError(file.name, await text);
+    // Removed or sent while reading: yielding again would put the chip back.
+    if (this.texts.get(attachment.id) !== text) return;
+    if (error) {
+      toast.error(error);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await extractPdfAttachmentText(attachment.file);
+    const pending = this.texts.get(attachment.id);
+    this.texts.delete(attachment.id);
+    const text = await (pending ??
+      extractPdfAttachmentText(attachment.file).catch(() => null));
+    // Rechecked: Code or a temporary chat can change after the attach check passed.
+    const textError = pdfAttachmentError(attachment.name, text);
+    if (textError && attachment.status.type !== "incomplete") {
+      toast.error(textError);
+    }
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      content: [
+        {
+          type: "text",
+          text: `[PDF: ${attachment.name}]\n${textError ?? text}`,
+        },
+      ],
       status: { type: "complete" },
     };
   }
 
-  remove(): Promise<void> {
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
     return Promise.resolve();
   }
 }
@@ -579,7 +616,8 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = extractHtmlAttachmentText(await attachment.file.text());
+    const bytes = new Uint8Array(await attachment.file.arrayBuffer());
+    const text = extractHtmlAttachmentText(decodeHtmlAttachmentBytes(bytes));
     return {
       id: attachment.id,
       type: "document",
@@ -875,6 +913,16 @@ function pythonToolRunsInStudio(): boolean {
       provider.apiType,
     ),
   }).local.includes("python");
+}
+
+function pythonToolOpensAttachments(): boolean {
+  return pythonToolRunsInStudio() && !useChatRuntimeStore.getState().incognito;
+}
+
+function pdfAttachmentError(name: string, text: string | null): string | null {
+  return text === null
+    ? `PDF file could not be read: ${name}`
+    : getPdfAttachmentTextError(name, text, pythonToolOpensAttachments());
 }
 
 class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
