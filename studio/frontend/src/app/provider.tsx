@@ -607,6 +607,8 @@ function DesktopChromeVarsEffect({
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
     set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
+    // The toaster sits outside the wrapper, and stacks under the find bar, which sits this far down.
+    set("--studio-content-top-inset", usesCustomTitlebar ? "34px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
@@ -620,6 +622,7 @@ function DesktopChromeVarsEffect({
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
+      set("--studio-content-top-inset", null);
       set("--studio-window-chrome-top", null);
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);

@@ -1523,6 +1523,11 @@ test("toasts clear the bar while it is open", () => {
   const toaster = '[data-sonner-toaster][data-y-position="top"]';
   const rule = cssRule(INDEX, `:root:has(.find-bar-surface) ${toaster}`);
   assert.match(rule, TOAST_UNDER_FIND_BAR);
+  // The toaster renders outside the chrome wrapper, so the bar's inset has to reach <html>.
+  assert.match(
+    readSrc("app/provider.tsx"),
+    /set\("--studio-content-top-inset", usesCustomTitlebar \? "34px" : null\);/,
+  );
 });
 
 test("the reveal looks again while the scroll is still moving", async () => {
