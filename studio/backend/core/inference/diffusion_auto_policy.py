@@ -528,3 +528,46 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
             "reason": reason,
         }
     return record
+
+
+def format_resolved_for_log(record: Optional[dict[str, dict[str, Any]]]) -> str:
+    """Resolved record as one ``name=value(source)`` log line."""
+    parts = []
+    for name, entry in (record or {}).items():
+        value = entry.get("value")
+        if entry.get("source") == "auto":
+            note = "auto"
+        else:
+            note = f"requested {entry.get('requested')}"
+            if entry.get("status") != RESOLVED_APPLIED:
+                note += f", {entry.get('status')}"
+        parts.append(f"{name}={value}({note})")
+    return " ".join(parts)
+
+
+def format_generation_for_log(
+    result: dict[str, Any],
+    *,
+    engine: str,
+    steps: Any = None,
+    strength: Any = None,
+    upscale: Any = None,
+    loras: Any = None,
+) -> str:
+    """One-line log summary of a generate() result."""
+    images = result.get("images") or ()
+    size = getattr(images[0], "size", None) if images else None
+    fields = {
+        "engine": engine,
+        "workflow": result.get("workflow"),
+        "images": len(images),
+        "size": f"{size[0]}x{size[1]}" if size else None,
+        "seeds": result.get("seeds") or result.get("seed"),
+        "steps": steps,
+        "strength": strength,
+        "upscale": upscale,
+        "loras": loras or result.get("active_loras") or None,
+        "reference_resolution": result.get("reference_resolution"),
+        "localized_edit": result.get("localized_edit"),
+    }
+    return " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)

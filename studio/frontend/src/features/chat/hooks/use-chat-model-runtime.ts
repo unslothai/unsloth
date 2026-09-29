@@ -33,6 +33,11 @@ import {
   serverWideReloadRequired,
 } from "../lib/server-wide-reload";
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
+import {
+  failureLogPath,
+  loadFailureLogFamily,
+  viewLogsAction,
+} from "@/features/settings/lib/view-logs-action";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
@@ -1439,8 +1444,6 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().params.checkpoint;
       const pendingConfig =
         typeof selection !== "string" ? selection.config : undefined;
-      // nativePathToken is excluded: a leased file is named by a label two files can share, and only a
-      // completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
@@ -1504,8 +1507,6 @@ export function useChatModelRuntime() {
           // no saved record the caller has already run applyModelLoadConfigToRuntime(null), which resets the
           // store to DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for the rest.
           residentRuntimeMatchesConfig(status, comparedConfig, {
-            // What the applier fills an unset field with, so the comparison is against what /load would send
-            // rather than against silence.
             speculativeType: readPersistedSpeculativeType(),
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
@@ -1541,10 +1542,13 @@ export function useChatModelRuntime() {
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
-            // Never a config field, so the store is the only place it can come from, and the reset clears it
-            splitRatio: resetsPerModelSettings
-              ? null
-              : useChatRuntimeStore.getState().splitRatio,
+            // Only a config page pick carries one; else the store (cleared on reset)
+            splitRatio:
+              pendingConfig?.tensorSplit !== undefined
+                ? pendingConfig.tensorSplit
+                : resetsPerModelSettings
+                  ? null
+                  : useChatRuntimeStore.getState().splitRatio,
             // What /load sends: a pick saved in another index namespace, or naming GPUs that are gone, is
             // reconciled to Automatic before it leaves.
             reconcileGpuIds: (ids, savedIndexKind) =>
@@ -1902,10 +1906,9 @@ export function useChatModelRuntime() {
           const previousServerTuning: ServerTuningValues =
             rollbackConfig ?? useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
-          const previousMlxKvBits =
-            rollbackConfig
-              ? (rollbackConfig.mlxKvBits ?? null)
-              : useChatRuntimeStore.getState().mlxKvBits;
+          const previousMlxKvQuant = rollbackConfig
+            ? (rollbackConfig.mlxKvQuant ?? null)
+            : useChatRuntimeStore.getState().mlxKvQuant;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do: the Hub rejects an invalid
             // Authorization header with 401 even for a public repo, so sending the raw stored token here would
@@ -2001,8 +2004,10 @@ export function useChatModelRuntime() {
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
           // Per-model, not a standing preference: eligibility is decided per model.
-          let loadMlxKvBits =
-            pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
+          let loadMlxKvQuant =
+            pendingLoadConfig
+              ? pendingLoadConfig.mlxKvQuant ?? null
+              : stateBeforeUnload.mlxKvQuant;
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -2040,7 +2045,10 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.gpuLayers ?? stateBeforeUnload.gpuLayers;
           let loadNCpuMoe =
             pendingLoadConfig?.nCpuMoe ?? stateBeforeUnload.nCpuMoe;
-          let loadSplitRatio = stateBeforeUnload.splitRatio;
+          let loadSplitRatio =
+            pendingLoadConfig?.tensorSplit !== undefined
+              ? pendingLoadConfig.tensorSplit
+              : stateBeforeUnload.splitRatio;
           // Reconcile the persisted pick against the GPUs present now, so a stale cross-host pick is
           // dropped before /load rather than rejected there. Warm the device cache first: a cold cache
           // would pass the pick through unvalidated.
@@ -2368,9 +2376,7 @@ export function useChatModelRuntime() {
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
               };
-              // Both payload-only. The store keeps its values: a width is dormant preset state off MLX, and a
-              // completed load rewrites both anyway.
-              loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -2389,7 +2395,7 @@ export function useChatModelRuntime() {
                   : null;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
-              loadSplitRatio = null;
+              loadSplitRatio = pendingLoadConfig?.tensorSplit ?? null;
             }
 
             // The Context Length the USER set for this load, captured before the clamp below can stand in for
@@ -2467,11 +2473,10 @@ export function useChatModelRuntime() {
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
-              mlx_kv_bits: loadMlxKvBits ?? null,
+              mlx_kv_quant: loadMlxKvQuant ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
-              // GGUF-only: slots mean nothing for a transformers load.
-              n_parallel: isGguf ? loadNParallel : null,
+              n_parallel: loadNParallel,
               reasoning_budget:
                 isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
               reasoning_budget_message:
@@ -2583,11 +2588,9 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed: non-GGUF never sends them and diffusion ignores --parallel,
-            // so a click-time count would mint a phantom override.
             const committedSlots =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNParallel ?? null)
                 : null;
             // same rule for the batch sizes: gguf-only llama-server flags
@@ -2843,7 +2846,7 @@ export function useChatModelRuntime() {
                   chat_template_override:
                     rollbackState.loadedChatTemplateOverride,
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
-                  mlx_kv_bits: rollbackState.loadedMlxKvBitsRequested,
+                  mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -2947,7 +2950,7 @@ export function useChatModelRuntime() {
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
                   // nParallel above.
-                  mlxKvBits: previousMlxKvBits,
+                  mlxKvQuant: previousMlxKvQuant,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
@@ -3355,12 +3358,25 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
+            const [summary, ...rest] = message.split("\n");
+            const detail = rest.join("\n").trim();
+            const runnerLogPath = failureLogPath(message);
+            const logsAction = runnerLogPath
+              ? viewLogsAction(
+                  loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
+                  runnerLogPath,
+                )
+              : undefined;
             if (loadToastDismissedRef.current) {
-              toast.error(message);
+              toast.error(summary, {
+                description: detail || undefined,
+                action: logsAction,
+              });
             } else {
-              toast.error(message, {
+              toast.error(summary, {
                 id: toastId,
-                description: undefined,
+                description: detail || undefined,
+                action: logsAction,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,

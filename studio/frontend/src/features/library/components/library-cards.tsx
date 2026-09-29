@@ -18,14 +18,17 @@ import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import { GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import {
+  CARD_SHADOW,
+  GLASS_CONTROL,
+  GLASS_SURFACE,
+  OVERLAY_CONTROL,
+  RAISED_SURFACE,
+} from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
-const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
-
-const CARD_SURFACE = cn(
+export const CARD_SURFACE = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   "group-hover/library-card:bg-neutral-100 group-hover/library-card:shadow-none dark:group-hover/library-card:bg-accent/60",
@@ -43,7 +46,7 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
 }
 
 // Audio and code glyphs are thin line art, so they get a larger size.
-const CARD_ICON_CLASS = "size-7";
+export const CARD_ICON_CLASS = "size-7";
 const LARGE_CARD_ICON_CLASS = "size-8.5";
 
 function cardIconClass(item: LibraryItem): string {
@@ -142,7 +145,7 @@ function CardFrame({
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-          selected && "ring-3 ring-foreground",
+          selected && "ring-2 ring-foreground",
           className,
         )}
       >
@@ -252,6 +255,9 @@ function FolderCard({
   );
 }
 
+// Extra row spacing only; card width is unchanged.
+const CARD_ROW_GAP = "gap-y-6";
+
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
   const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
   return useColumnCount(container, minWidth, max);
@@ -273,12 +279,26 @@ export function Masonry<T>({
   return (
     <div ref={container} className="flex items-start gap-5">
       {buckets.map((bucket, column) => (
-        <div key={column} className="flex min-w-0 flex-1 flex-col gap-5">
+        <div key={column} className={cn("flex min-w-0 flex-1 flex-col", CARD_ROW_GAP)}>
           {bucket.map((item) => (
             <div key={getKey(item)}>{render(item)}</div>
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+export function CardGrid({ children }: { children: ReactNode }) {
+  const container = useRef<HTMLDivElement>(null);
+  const columns = useCardColumns(container);
+  return (
+    <div
+      ref={container}
+      className={cn("grid gap-x-5", CARD_ROW_GAP)}
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+    >
+      {children}
     </div>
   );
 }
@@ -290,18 +310,12 @@ export function FolderGrid({
   folders: LibraryFolder[];
   counts: Map<string, number>;
 }) {
-  const container = useRef<HTMLDivElement>(null);
-  const columns = useCardColumns(container);
   return (
-    <div
-      ref={container}
-      className="grid gap-5"
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-    >
+    <CardGrid>
       {folders.map((folder) => (
         <FolderCard key={folder.id} folder={folder} itemCount={counts.get(folder.id) ?? 0} />
       ))}
-    </div>
+    </CardGrid>
   );
 }
 

@@ -626,7 +626,7 @@ _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
 # Named in one place: a managed account meets this refusal from save, send and recipe alike.
 MANAGED_PRIVATE_URL_HINT = (
-    " The installation owner can allow private and LAN addresses in Settings > General."
+    " The installation owner can allow private and LAN addresses in Settings > Accounts."
 )
 MANAGED_PUBLIC_ONLY_TEXT = "Managed accounts may only use public-network provider base URLs."
 

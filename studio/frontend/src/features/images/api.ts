@@ -93,6 +93,8 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  // Absent (sd.cpp engine) means "denoise".
+  phase?: "denoise" | "decode" | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -549,6 +551,11 @@ export async function fetchGalleryObjectUrl(
   // cannot work out from the URL.
   const blob = await fetchGalleryBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size };
+}
+
+/** Thumbnail URL for use with fetchGalleryObjectUrl. */
+export function galleryThumbnailUrl(url: string, thumb = 256): string {
+  return `${url}?thumb=${thumb}`;
 }
 
 // Diffusion LoRA training. Mirrors DiffusionTrainingStartRequest on the backend; only the paths

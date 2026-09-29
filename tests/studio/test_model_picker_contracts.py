@@ -14,9 +14,10 @@ backend pytest checks (which prove the backend logic).
 from __future__ import annotations
 
 import ast
+import itertools
 import re
 from pathlib import Path
-from tests.studio._js_source import assert_guard_holds
+from tests.studio._js_source import assert_guard_holds, blank_literals_and_comments
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -841,12 +842,106 @@ def test_model_load_guard_uses_shared_store_state():
     assert "loadingModelPick" in eject_body.split("ejectModel,", 1)[0]
 
 
+# The managed-repo check in front of the safetensors menu, read as one boolean input. A
+# changed pattern is an unknown token below, which fails loudly rather than being skipped.
+_LOCAL_PATH_TEST = r"/^([/\\~.]|[A-Za-z]:)/.test(repoId)"
+
+
+def _menu_guard_truth(src):
+    """The JSX guard in front of `<QuantOptionsMenu`, as a function of its boolean inputs.
+
+    Evaluated rather than matched: regrouping, a widened `isPartial`, or a new condition
+    anywhere in the guard all change or keep the answer exactly as the browser would.
+    Comments are blanked first, so a commented-out alternative cannot count.
+    """
+    blanked = blank_literals_and_comments(src)
+    before_menu = blanked.split("<QuantOptionsMenu", 1)[0]
+    guard = before_menu[before_menu.rindex("{") + 1 :].strip()
+    assert guard.endswith("&& ("), guard
+    guard = guard[: -len("&& (")].replace(_LOCAL_PATH_TEST, " localPath ")
+    tokens = re.findall(r"\|\||&&|!|\(|\)|[A-Za-z_]\w*|\S", guard)
+    names = sorted({t for t in tokens if re.fullmatch(r"[A-Za-z_]\w*", t)} - {"true", "false"})
+
+    def evaluate(env):
+        # Recursive descent with JavaScript's precedence: `||` < `&&` < `!` < atoms.
+        position = 0
+
+        def take(expected = None):
+            nonlocal position
+            assert position < len(tokens), f"guard ended early: {guard}"
+            token = tokens[position]
+            assert (
+                expected is None or token == expected
+            ), f"expected {expected!r}, got {token!r}: {guard}"
+            position += 1
+            return token
+
+        def peek():
+            return tokens[position] if position < len(tokens) else None
+
+        def either():
+            value = both()
+            while peek() == "||":
+                take()
+                value = both() or value
+            return value
+
+        def both():
+            value = negated()
+            while peek() == "&&":
+                take()
+                value = negated() and value
+            return value
+
+        def negated():
+            if peek() == "!":
+                take()
+                return not negated()
+            token = take()
+            if token == "(":
+                value = either()
+                take(")")
+                return value
+            if token in ("true", "false"):
+                return token == "true"
+            assert token in names, f"unexpected {token!r} in the menu guard: {guard}"
+            return env[token]
+
+        value = either()
+        assert position == len(tokens), f"unparsed {tokens[position:]} in the menu guard: {guard}"
+        return value
+
+    return names, evaluate
+
+
 def test_partial_safetensors_download_keeps_delete_menu():
     """A stopped partial safetensors download must keep its options menu (the Delete
     affordance) like the GGUF card does, or partial downloads can only be cleaned up by
     finishing or leaving them."""
     src = _read("features/hub/catalog/safetensors-download-card.tsx")
-    assert "(isDownloaded || (isPartial && !downloading))" in src
+    names, shows_menu = _menu_guard_truth(src)
+    for required in ("isDownloaded", "isPartial", "downloading", "localPath"):
+        assert required in names, (required, names)
+
+    def every(**fixed):
+        free = [name for name in names if name not in fixed]
+        for values in itertools.product((False, True), repeat = len(free)):
+            yield {**dict(zip(free, values)), **fixed}
+
+    # Downloaded or a stopped partial, in the managed cache: the menu is there whatever else holds.
+    for env in every(isDownloaded = True, localPath = False):
+        assert shows_menu(env), env
+    for env in every(isDownloaded = False, isPartial = True, downloading = False, localPath = False):
+        assert shows_menu(env), env
+    # A local folder is not a managed cache repo, so there is nothing for its Delete to remove.
+    for env in every(localPath = True):
+        assert not shows_menu(env), env
+    # A download still running is not a partial to clean up yet.
+    for env in every(isDownloaded = False, downloading = True):
+        assert not shows_menu(env), env
+    # Nothing cached and nothing running: no menu. Every input false also turns off any cache
+    # source added later (like companionPrefetch), so it stays free to widen the guard.
+    assert not shows_menu(dict.fromkeys(names, False)), names
 
 
 def test_pinned_validation_uses_cached_local_variant_listing():
@@ -1223,8 +1318,8 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
     assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
-    # The resident model's window, else this model's; request bounds would shorten it.
-    assert "(targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??" in page
+    assert "const mlxServedWindow = resolveMlxServedWindow(" in page
+    assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
     assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
@@ -2202,8 +2297,8 @@ def test_parallel_slots_setting_wired_end_to_end():
     # Click-time snapshot, /load body, validate preflight, cross-model reset and
     # failed-switch rollback all carry the value.
     assert "pendingLoadConfig?.nParallel" in runtime
-    # GGUF-gated, like the compare pane: a transformers load has no slots.
-    assert "n_parallel: isGguf ? loadNParallel : null," in runtime
+    # Both backends take a width: llama-server slots, or the MLX batch width.
+    assert "n_parallel: loadNParallel," in runtime
     assert "n_parallel: validateNParallel," in runtime
     assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
     assert "n_parallel: rollbackState.loadedNParallel," in runtime
@@ -2247,9 +2342,10 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     assert "n_parallel = payload.n_parallel," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert 'entry["n_parallel"] = n_parallel' in store
-    # GGUF-only, like the picker: a safetensors load has no llama-server slots.
-    gguf_block = store.split("    if is_gguf:", 1)[1]
-    assert 'kwargs["n_parallel"] = override["n_parallel"]' in gguf_block
+    # Ungated: MLX sizes its batch by the same width llama-server sizes its slots by.
+    shared, gguf_block = store.split("    if is_gguf:", 1)
+    assert '("n_parallel", "n_parallel"),' in shared
+    assert "n_parallel" not in gguf_block.split("\n\n", 1)[0]
 
 
 def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
@@ -2272,9 +2368,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # The cached-GGUF branch keeps the remembered override via the gated local...
     assert "nParallel: committedSlots," in gguf_branch
     assert "nParallel: null," not in gguf_branch
-    # ...
-    assert "nParallel: null," in non_gguf_branch
-    assert "loadedNParallel: null," in non_gguf_branch
+    # ...and so does the non-GGUF branch, now that an MLX load takes a width too.
+    assert "nParallel: committedSlots," in non_gguf_branch
+    assert "loadedNParallel: committedSlots," in non_gguf_branch
 
     fresh_default = adapter.split(
         "      return { loaded: false, blockedByTrustRemoteCode: false };", 1
@@ -2290,10 +2386,11 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     """The baseline is what a rollback re-sends and what preset capture reads, so a model
     that cannot have slots must not inherit the previous GGUF's count."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    # A non-GGUF load reports its width too, so only the explicit null echo means slotless.
     assert (
-        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
-    ), "the slotless clear must key on is_gguf or an explicit null echo"
-    clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
+        "status.requested_parallel_slots === null && {" in src
+    ), "the slotless clear must key on an explicit null echo"
+    clear = src.index("status.requested_parallel_slots === null && {")
     assert "loadedNParallel: null," in src[clear : clear + 200]
     # Never `!= null`: that also matches the absent field an older backend sends.
     assert "status.requested_parallel_slots !== null && {" not in src
@@ -2393,8 +2490,8 @@ def test_hydration_restores_a_remembered_slot_override():
         ": hydratingExistingModel)" in status
     ), "storage is read on a fresh store or a model change, never on a steady poll"
     assert (
-        "const rememberedNParallel = status.is_gguf && remembered?.remembered" in status
-    ), "slots are a llama.cpp knob; reading MLX's record must not seed one"
+        "const rememberedNParallel = remembered?.remembered" in status
+    ), "a remembered width seeds the control on either backend"
     assert (
         "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
     ), "the seed fires in both cases the clear leaves the control blank"
