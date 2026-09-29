@@ -87,6 +87,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from .diffusion_memory import (
+    DEFAULT_BASE_OVERHEAD_MIB,
+    MEMORY_MODE_AUTO,
+    OFFLOAD_GROUP,
+    OFFLOAD_MODEL,
+    OFFLOAD_NONE,
+    OFFLOAD_STREAMING,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_safetensors_dense_mib,
@@ -94,9 +100,11 @@ from .diffusion_memory import (
     file_size_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
+    plan_keeps_transformer_resident,
     raise_on_unified_memory_shortfall,
     reclaim_host_memory,
     reclaim_offload_host_memory,
+    refine_memory_plan_for_components,
     release_pinned_host_memory,
     settled_snapshot_device_memory,
 )
@@ -983,6 +991,9 @@ class _VideoLoadState:
     # MiniMax-H3 only: the pre-quantized denoiser streams block by block through group offloading and the rotating
     # components are sent to the host before it runs, so the floor is the largest single phase, not a sum.
     denoiser_streamed: bool = False
+    # Conventional families only: MiB of weights the offload tier holds on the device at once (see
+    # _video_offload_vram_floor_mib), None when nothing is offloaded. The generate-time floor reads it.
+    vram_floor_mib: Optional[int] = None
     resolved: Optional[dict] = None
 
 
@@ -1499,7 +1510,8 @@ def _video_seed_stays_resident(
     base_repo: Optional[str],
     reclaimable_mib: int = 0,
 ) -> bool:
-    """True when an artifact-sized plan keeps the denoiser resident; torchao rejects offload."""
+    """True when an artifact-sized plan keeps the denoiser resident (every component, or the denoiser with the text
+    encoders streamed); torchao weights do not ride a moving denoiser."""
     components = getattr(fam, "bf16_components_gb", None)
     if not components:
         return True
@@ -1527,10 +1539,9 @@ def _video_seed_stays_resident(
     )
     vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
     mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
-    model_dense_mib = int(
-        (denoiser_gb + components[1] * te_scale * dtype_scale + components[2] * vae_scale)
-        * mib_per_gb
-    )
+    text_encoder_gb = components[1] * te_scale * dtype_scale
+    companions_gb = text_encoder_gb + components[2] * vae_scale
+    model_dense_mib = int((denoiser_gb + companions_gb) * mib_per_gb)
     device_memory = settled_snapshot_device_memory(target)
     if reclaimable_mib > 0 and device_memory.free_mib is not None:
         free = device_memory.free_mib + int(reclaimable_mib)
@@ -1546,10 +1557,209 @@ def _video_seed_stays_resident(
             height = fam.resolution_presets[0][1],
             num_frames = fam.default_num_frames,
         ),
-        companion_dense_mib = None,
+        # The same split the loader plans with: a denoiser that fits beside the VAE while the text encoders stream
+        # still stays resident, and a seed is judged on that, not on every component summed.
+        companion_dense_mib = int(companions_gb * mib_per_gb),
+        text_encoder_dense_mib = int(text_encoder_gb * mib_per_gb),
         requested_mode = normalize_memory_mode(memory_mode),
     )
-    return planned.offload_policy == "none"
+    return plan_keeps_transformer_resident(planned)
+
+
+def _render_under_no_grad(state: Any) -> bool:
+    """Whether a render runs under ``torch.no_grad`` rather than ``torch.inference_mode``: a quantised denoiser whose
+    weights an offload hook moves or swaps during the render. torchao's weight subclasses fail that in-place swap under
+    inference_mode and pass under no_grad (int8 and fp8, model hook and group offload, probed); MiniMax-H3 switches only
+    for its streamed denoiser, its pinned one never moves. Everything else keeps inference_mode."""
+    if not getattr(state, "transformer_quant", None):
+        return False
+    if getattr(state, "denoiser_streamed", False):
+        return True
+    family = getattr(state, "family", None)
+    return not getattr(family, "modular_workflow", None) and (
+        getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
+    )
+
+
+def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
+    """The scheme a DiT that has to be offloaded runs as: auto takes int8, which has a torchao-free build whose plain
+    int8 buffers ride every offload hook, so memory decides where the DiT sits and never its precision. An explicit
+    scheme stays itself."""
+    scheme = normalize_transformer_quant(requested)
+    return TQ_INT8 if scheme == TQ_AUTO else scheme
+
+
+# The denoise-side base of estimate_video_runtime_mib: what a DiT forward holds beside its weights. The rest of that
+# estimate scales with the decoded clip, which exists only while the VAE decodes.
+_VIDEO_DENOISE_ACTIVATION_MIB = 4096
+
+
+def _video_prefer_whole_module(
+    plan: Any,
+    *,
+    denoiser_mib: Optional[int],
+    text_encoder_mib: Optional[int],
+    vae_mib: Optional[int],
+    runtime_mib: int,
+) -> Any:
+    """``plan``, or whole-module offload in its place where the planner streams the DiT block by block but every
+    component fits the card whole, one at a time.
+
+    A clip denoises for dozens of forwards. Whole-module offload pages the DiT onto the card once per CALL and it stays
+    there for the whole loop; streaming pays a host copy of every block on every forward. Measured on Wan2.2-TI2V-5B
+    held to 16 GiB (B200, 832x480x49, 10 steps): 0.14-0.28 s per DiT forward under whole-module offload against
+    0.28-0.33 s with the int8 DiT streamed, and 0.06 s for that int8 DiT resident, so streaming only wins a call of a
+    few steps. The image planner ranks the other way because an image denoise is short;
+    for video it is kept only where a component is too large to onload whole. ``denoiser_mib`` is ONE expert of a
+    dual-DiT family: they onload in turn. Each phase is checked on its own activations: the text encoder runs before
+    any video activation exists (base overhead only), the DiT beside the denoise-side share of the runtime estimate
+    (its fixed 4 GiB base; the rest of that estimate is the decoded clip, which only the VAE phase holds), and the VAE
+    beside the whole estimate. An explicit memory mode is left as asked."""
+    if (
+        getattr(plan, "offload_policy", None) != OFFLOAD_GROUP
+        or not bool(getattr(plan, "stream_transformer", True))
+        or getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO
+        or denoiser_mib is None
+        or text_encoder_mib is None
+        or vae_mib is None
+    ):
+        return plan
+    budget = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib")
+    if budget is None:
+        return plan
+    phases = (
+        int(text_encoder_mib) + DEFAULT_BASE_OVERHEAD_MIB,
+        int(denoiser_mib) + min(int(runtime_mib), _VIDEO_DENOISE_ACTIVATION_MIB) + DEFAULT_BASE_OVERHEAD_MIB,
+        int(vae_mib) + int(runtime_mib) + DEFAULT_BASE_OVERHEAD_MIB,
+    )
+    if max(phases) > int(budget):
+        return plan
+    return dataclasses.replace(
+        plan,
+        estimates = {**(plan.estimates or {}), "whole_module_fits_mib": max(phases)},
+        offload_policy = OFFLOAD_MODEL,
+        stream_text_encoders = False,
+        stream_transformer = True,
+        vae_tiling = True,
+        vae_slicing = True,
+        reasons = tuple(plan.reasons)
+        + (
+            f"every component fits the card whole (largest phase {max(phases)} MiB of {int(budget)}): "
+            "whole-module offload pages the DiT once per call instead of streaming it every step",
+        ),
+    )
+
+
+def _video_plan_rank(plan: Any) -> int:
+    """Where a plan sits in the video speed order, fastest first: every component resident (0), the denoiser resident
+    with the text encoders streamed (1), whole-module offload where every component fits whole (2, see
+    _video_prefer_whole_module), the denoiser streamed with its companions resident (3), denoiser and text encoders
+    streamed (4), whole-module offload of a component that may not fit (5), leaf streaming (6)."""
+    policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
+    if policy == OFFLOAD_NONE:
+        return 0
+    if policy == OFFLOAD_GROUP:
+        if not bool(getattr(plan, "stream_transformer", True)):
+            return 1
+        return 4 if bool(getattr(plan, "stream_text_encoders", False)) else 3
+    if policy == OFFLOAD_MODEL:
+        fits = (getattr(plan, "estimates", None) or {}).get("whole_module_fits_mib") is not None
+        return 2 if fits else 5
+    return 6
+
+
+def _video_plan_label(plan: Any) -> str:
+    """The placement a plan engages, in the words the resolved record and the logs use."""
+    return (
+        "every component resident",
+        "denoiser resident, text encoders streamed",
+        "whole-module CPU offload, each component fits whole",
+        "denoiser streamed block by block, companions resident",
+        "denoiser and text encoders streamed",
+        "whole-module CPU offload",
+        "denoiser blocks and text-encoder layers streamed",
+    )[_video_plan_rank(plan)]
+
+
+_VIDEO_DENOISER_ATTRS = ("transformer", "transformer_2", "unconditional_transformer")
+
+
+def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
+    """MiB of weights that must sit on the device TOGETHER under ``plan``'s tier, measured off the loaded modules (the
+    payload, so a quantised denoiser counts its real bytes), or None when nothing is offloaded or it cannot be read.
+
+    Whole-module offload onloads one component at a time, so its floor is the largest one; the group tiers hold what
+    they do not stream; leaf streaming holds only the components it has no hook for. A streamed block group is small
+    against these and is left to the activation allowance."""
+    policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
+    if policy == OFFLOAD_NONE:
+        return None
+    try:
+        from itertools import chain
+
+        import torch
+
+        from .diffusion_prequant import tensor_payload_bytes
+
+        components = getattr(pipe, "components", None)
+        if not isinstance(components, dict):
+            return None
+        sizes: dict[str, int] = {}
+        seen: set[int] = set()
+        for name, module in components.items():
+            if not isinstance(module, torch.nn.Module):
+                continue
+            total = 0
+            for tensor in chain(module.parameters(), module.buffers()):
+                if id(tensor) in seen or getattr(tensor, "is_meta", False):
+                    continue
+                seen.add(id(tensor))
+                total += tensor_payload_bytes(tensor)
+            sizes[str(name)] = total
+        if not sizes:
+            return None
+        denoisers = {n for n in sizes if n in _VIDEO_DENOISER_ATTRS}
+        encoders = {n for n in sizes if n.startswith("text_encoder")}
+        if policy == OFFLOAD_MODEL:
+            held = max(sizes.values())
+        elif policy == OFFLOAD_GROUP:
+            streamed = set() if not bool(getattr(plan, "stream_transformer", True)) else set(denoisers)
+            if bool(getattr(plan, "stream_text_encoders", False)):
+                streamed |= encoders
+            held = sum(size for name, size in sizes.items() if name not in streamed)
+        elif policy == OFFLOAD_STREAMING:
+            held = sum(size for name, size in sizes.items() if name not in denoisers | encoders)
+        else:
+            return None
+        return int(held // (1024 * 1024))
+    except Exception:  # noqa: BLE001 -- an unreadable pipeline keeps today's unchecked behaviour
+        return None
+
+
+def video_offload_shortfall_message(
+    *,
+    family: str,
+    floor_mib: int,
+    available_mib: int,
+    placement: str,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    frames: Optional[int] = None,
+) -> Optional[str]:
+    """The refusal for an offloaded video load whose co-resident weights plus the activation minimum exceed what the
+    device has, or None when it fits. The floor is weights only plus the base overhead, so it refuses only what has no
+    chance of running, never a clip that a tiled decode might still fit."""
+    required = int(floor_mib) + DEFAULT_BASE_OVERHEAD_MIB
+    if int(available_mib) >= required:
+        return None
+    shape = f" for {width}x{height} at {frames} frames" if width and height and frames else ""
+    return (
+        f"{family} needs about {required / 1024:.1f} GiB of available VRAM{shape} under this load's "
+        f"placement ({placement}: {floor_mib / 1024:.1f} GiB of weights on the GPU at once plus "
+        f"{DEFAULT_BASE_OVERHEAD_MIB / 1024:.0f} GiB for activations); {available_mib / 1024:.1f} GiB is "
+        "available. Free VRAM held by other processes, set the text encoder or DiT precision lower, "
+        "or pick a smaller model."
+    )
 
 
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
@@ -4873,6 +5083,14 @@ class VideoBackend:
                     text_encoder_gb,
                     components[1],
                 )
+            # The companion / text-encoder split the image loader plans with. Without it the planner can only choose
+            # between every component resident and whole-module offload, so a DiT that fits beside the VAE while the
+            # text encoders (run once, before step 0) stream was paged whole every step, and a DiT too large to onload
+            # whole had no streamed tier to fall back to.
+            companion_mib = (
+                int(scaled_companions_gb * mib_per_gb) if components is not None else None
+            )
+            text_encoder_mib = int(scaled_te_gb * mib_per_gb) if components is not None else None
             if kind == "pipeline":
                 transformer_gb = (
                     components[0] * dtype_scale if denoiser_gb is None else float(denoiser_gb)
@@ -4882,62 +5100,98 @@ class VideoBackend:
                     if components is not None
                     else None
                 )
-                companion_mib = None
             else:
-                companion_mib = (
-                    int(scaled_companions_gb * mib_per_gb) if components is not None else None
-                )
                 # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick
                 # OFFLOAD_NONE and OOM.
                 model_dense_mib = (
                     transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
                 )
-            planned = plan_diffusion_memory(
-                target = target,
-                device_memory = device_memory,
-                model_dense_mib = model_dense_mib,
-                runtime_headroom_mib = runtime_mib,
-                companion_dense_mib = companion_mib,
-                requested_mode = normalize_memory_mode(memory_mode),
+            experts = 2 if getattr(fam, "is_moe", False) else 1
+            vae_mib = int(scaled_vae_gb * mib_per_gb) if components is not None else None
+            dit_mib = (
+                int(transformer_gb * mib_per_gb) if components is not None else None
+            ) if kind == "pipeline" else transformer_mib
+            planned = _video_prefer_whole_module(
+                plan_diffusion_memory(
+                    target = target,
+                    device_memory = device_memory,
+                    model_dense_mib = model_dense_mib,
+                    runtime_headroom_mib = runtime_mib,
+                    companion_dense_mib = companion_mib,
+                    text_encoder_dense_mib = text_encoder_mib,
+                    requested_mode = normalize_memory_mode(memory_mode),
+                ),
+                denoiser_mib = None if dit_mib is None else dit_mib // experts,
+                text_encoder_mib = text_encoder_mib,
+                vae_mib = vae_mib,
+                runtime_mib = runtime_mib,
             )
-            # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not
-            # need, so re-plan with the scheme factor and keep resident if it fits.
+            # Parity with the image dense-quant path: the bf16-table plan can offload a DiT the quantised one would
+            # not need to, so re-plan with the scheme factor and take the faster placement.
             dense_plan = planned
             replanned_for_quant = False
+            requested_scheme = normalize_transformer_quant(transformer_quant)
+            # auto keeps a bf16 DiT that stays resident (text encoders streamed or not): quantising it costs accuracy
+            # for little speed. An explicit scheme may still reach a plan with nothing streamed.
+            worth_replanning = (
+                not plan_keeps_transformer_resident(planned)
+                if requested_scheme == TQ_AUTO
+                else planned.offload_policy != OFFLOAD_NONE
+            )
             # Not for a unified-memory shortfall: runtime quant still peaks at the dense bf16 DiT.
             if (
                 kind == "pipeline"
                 and denoiser_gb is None
-                and planned.offload_policy != "none"
-                and normalize_transformer_quant(transformer_quant) is not None
+                and worth_replanning
+                and requested_scheme is not None
                 and (
                     dense_transformer_supported(target)
                     or native_quant_scheme(target, transformer_quant, family = fam.name) is not None
+                    or native_quant_scheme(
+                        target, _auto_offload_scheme(transformer_quant), family = fam.name, offload = True
+                    )
+                    is not None
                 )
                 and components is not None
             ):
-                scheme_preview = native_quant_scheme(
-                    target, transformer_quant, family = fam.name
-                ) or select_transformer_quant_scheme(target, transformer_quant, family = fam.name)
+                scheme_preview = (
+                    native_quant_scheme(target, transformer_quant, family = fam.name)
+                    or (
+                        select_transformer_quant_scheme(target, transformer_quant, family = fam.name)
+                        if dense_transformer_supported(target)
+                        else None
+                    )
+                    or native_quant_scheme(
+                        target, _auto_offload_scheme(transformer_quant), family = fam.name, offload = True
+                    )
+                )
                 factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
                 if factor is not None:
                     quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
-                    replanned = plan_diffusion_memory(
-                        target = target,
-                        device_memory = device_memory,
-                        model_dense_mib = quant_mib,
-                        runtime_headroom_mib = runtime_mib,
-                        companion_dense_mib = None,
-                        requested_mode = normalize_memory_mode(memory_mode),
+                    replanned = _video_prefer_whole_module(
+                        plan_diffusion_memory(
+                            target = target,
+                            device_memory = device_memory,
+                            model_dense_mib = quant_mib,
+                            runtime_headroom_mib = runtime_mib,
+                            companion_dense_mib = companion_mib,
+                            text_encoder_dense_mib = text_encoder_mib,
+                            requested_mode = normalize_memory_mode(memory_mode),
+                        ),
+                        denoiser_mib = int(components[0] * factor * mib_per_gb) // experts,
+                        text_encoder_mib = text_encoder_mib,
+                        vae_mib = vae_mib,
+                        runtime_mib = runtime_mib,
                     )
-                    if replanned.offload_policy == "none":
+                    if _video_plan_rank(replanned) < _video_plan_rank(planned):
                         if log:
                             logger.info(
-                                "video.transformer_quant: %s fits resident (%d MiB steady); "
-                                "dropping the bf16 plan's '%s' offload",
+                                "video.transformer_quant: %s (%d MiB steady) places the DiT as '%s' "
+                                "instead of the bf16 plan's '%s'",
                                 scheme_preview,
                                 quant_mib,
-                                planned.offload_policy,
+                                _video_plan_label(replanned),
+                                _video_plan_label(planned),
                             )
                         planned = replanned
                         replanned_for_quant = True
@@ -4969,8 +5223,15 @@ class VideoBackend:
         plan, bf16_plan, quant_replanned = _plan_for_te_scale(
             te_scale, log = True, denoiser_gb = denoiser_seed_gb
         )
-        if denoiser_seed_scheme is not None and plan.offload_policy != "none":
-            # Offload hooks use Module.to(), which torchao tensors reject: re-plan at bf16.
+        if denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
+            # A hosted checkpoint is torchao weights, kept only where the DiT stays resident (the text encoders may
+            # stream around it); a DiT that has to move is re-planned at bf16 and quantised torchao-free below.
+            logger.info(
+                "video.denoiser_prequant: the %s denoiser would have to be offloaded ('%s') on this "
+                "card, so the hosted checkpoint is not seeded",
+                denoiser_seed_scheme,
+                _video_plan_label(plan),
+            )
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
@@ -5026,7 +5287,7 @@ class VideoBackend:
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(
                 settled_te_scale, log = False, denoiser_gb = denoiser_seed_gb
             )
-            if denoiser_seed_scheme is not None and plan.offload_policy != "none":
+            if denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
                 denoiser_seed_scheme = None
                 denoiser_seed_gb = None
                 plan, bf16_plan, quant_replanned = _plan_for_te_scale(settled_te_scale, log = False)
@@ -5116,7 +5377,7 @@ class VideoBackend:
                 ltx23_override = None
                 ltx23_scheme = normalize_transformer_quant(transformer_quant)
                 seeded = None
-                if ltx23_prequant_pick and plan.offload_policy == "none":
+                if ltx23_prequant_pick and plan_keeps_transformer_resident(plan):
                     from .video_ltx2 import load_ltx23_prequant_transformer
                     seeded = load_ltx23_prequant_transformer(
                         fam,
@@ -5138,9 +5399,10 @@ class VideoBackend:
                 elif ltx23_prequant_pick:
                     # Decline before the dense assembly loads the 44 GB bf16 DiT only to refuse it.
                     ltx23_reason = (
-                        f"this GPU's '{plan.offload_policy}' memory plan offloads the DiT even at fp8 size, and "
-                        "torchao quantised tensors cannot be moved by the offload hooks"
-                        if plan.offload_policy != "none"
+                        f"this GPU's memory plan ({_video_plan_label(plan)}) offloads the DiT even at fp8 "
+                        "size, and the hosted fp8 DiT is kept resident only (the text encoders may stream "
+                        "around it)"
+                        if not plan_keeps_transformer_resident(plan)
                         else "the hosted fp8 DiT (unsloth/LTX-2.3-FP8) could not be loaded"
                         + (" from the local cache" if local_files_only else "")
                     )
@@ -5219,10 +5481,19 @@ class VideoBackend:
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
         transformer_quant_source: Optional[str] = None
-        video_offload = plan.offload_policy != "none"
+        # Whether the DiT itself moves. The text encoders streaming around a resident DiT do not count: nothing moves
+        # the DiT's weights, so a torchao build stays valid there.
+        video_offload = not plan_keeps_transformer_resident(plan)
         native_scheme = (
             native_quant_scheme(
-                target, transformer_quant_pinned, family = fam.name, offload = video_offload
+                target,
+                # An auto DiT that has to move runs the torchao-free int8: keeping it bf16 there was the downgrade, and
+                # the torchao build does not survive the hooks.
+                _auto_offload_scheme(transformer_quant)
+                if video_offload and transformer_quant_pinned is None
+                else transformer_quant_pinned,
+                family = fam.name,
+                offload = video_offload,
             )
             # A seeded denoiser is a torchao checkpoint; the torchao-free path must not claim it.
             if kind == "pipeline" and not denoiser_injected
@@ -5242,7 +5513,9 @@ class VideoBackend:
             and normalize_transformer_quant(transformer_quant) == TQ_AUTO
             and not quant_replanned
             and not denoiser_injected
-            and plan.offload_policy == "none"
+            # Resident with every component, or with the text encoders streamed around it: either way each step runs
+            # the bf16 DiT at resident speed.
+            and plan_keeps_transformer_resident(plan)
             # An unmeasured budget also plans "none" without proving a fit.
             and plan.estimates.get("safe_device_budget_mib") is not None
             and plan.estimates.get("resident_required_mib") is not None
@@ -5285,22 +5558,24 @@ class VideoBackend:
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
-            and plan.offload_policy != "none"
+            and video_offload
             and native_scheme is None
         ):
-            # Offload hooks move modules with Module.to(), which torchao quantized tensors reject. Skip quant
-            # (dense-under-offload beats a crash); forceable via a resident mode.
+            # The offload hooks swap a moving DiT's tensors in place, which torchao's weight subclasses do not
+            # survive under the render's inference mode, and streaming a compiled torchao DiT is not validated. int8
+            # has a torchao-free build for exactly this (taken above); any other torchao scheme is skipped (dense under
+            # offload beats a crash) and an explicit one refuses below.
             logger.info(
-                "video.transformer_quant: skipped (offload policy '%s' moves the "
-                "DiT via Module.to(), unsupported for torchao quantized tensors); "
-                "pin a resident memory mode to combine quant with this model",
-                plan.offload_policy,
+                "video.transformer_quant: skipped (the memory plan offloads the DiT: %s; only "
+                "int8 runs torchao-free there)",
+                _video_plan_label(plan),
             )
             quant_skipped_for_offload = True
             transformer_quant_decline = (
-                f"the memory plan picked '{plan.offload_policy}' offload, which moves the DiT via "
-                "Module.to(); torchao quantized tensors reject that. Pin a resident memory mode "
-                "(Fast) to combine quant with this model"
+                f"this GPU's memory plan moves the DiT ({_video_plan_label(plan)}), and "
+                f"'{normalize_transformer_quant(transformer_quant)}' is built as torchao weights here, "
+                "which Studio keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
+                "int8, or a resident memory mode (Fast) on a card that holds the quantised DiT"
             )
         elif (
             kind == "pipeline"
@@ -5330,7 +5605,8 @@ class VideoBackend:
                 scheme = quantize_transformer(
                     view,
                     target,
-                    mode = transformer_quant,
+                    # native_scheme is concrete where auto resolved to the torchao-free int8 for a moving DiT.
+                    mode = native_scheme or transformer_quant,
                     family = fam.name,
                     logger = logger,
                     **native_kwargs,
@@ -5589,6 +5865,26 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
+            # Whole-module offload onloads each component whole, so one larger than the card is a certain OOM at its
+            # first forward. Measured off the loaded modules (the table only knew the bf16 sizes), it becomes leaf
+            # streaming where the components streaming cannot hook still fit; torchao DiTs never reach this tier.
+            refined = refine_memory_plan_for_components(pipe, plan)
+            if refined is not plan:
+                logger.info("video.memory: %s", refined.reasons[-1])
+                plan = refined
+            vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
+            free_mib = getattr(getattr(plan, "device_memory", None), "free_mib", None)
+            if vram_floor_mib is not None and free_mib is not None:
+                shortfall = video_offload_shortfall_message(
+                    family = fam.name,
+                    floor_mib = vram_floor_mib,
+                    available_mib = int(free_mib),
+                    placement = _video_plan_label(plan),
+                )
+                if shortfall is not None:
+                    del pipe
+                    clear_gpu_cache()
+                    raise RuntimeError(shortfall)
             offload_policy, vae_tiling = apply_memory_plan(
                 pipe,
                 plan,
@@ -5614,7 +5910,8 @@ class VideoBackend:
                     "memory_mode": (
                         memory_mode,
                         plan.requested_mode,
-                        f"planned '{plan.offload_policy}' offload from the family size table",
+                        f"planned '{plan.offload_policy}' offload ({_video_plan_label(plan)}) from the "
+                        "family size table",
                     ),
                     "speed_mode": (
                         speed_mode,
@@ -5724,6 +6021,14 @@ class VideoBackend:
                     cache_threshold = transformer_cache_threshold,
                     transformer_quant = transformer_quant_engaged,
                     text_encoder_quant = text_encoder_quant_engaged,
+                    vram_floor_mib = (
+                        vram_floor_mib
+                        if offload_policy == plan.offload_policy
+                        # A group plan that fell back to whole-module offload holds a different set at once.
+                        else _video_offload_vram_floor_mib(
+                            pipe, dataclasses.replace(plan, offload_policy = offload_policy)
+                        )
+                    ),
                     resolved = resolved,
                 )
                 self._precommit_globals = None
@@ -7254,6 +7559,42 @@ class VideoBackend:
                                 f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
                                 "available. Load the GGUF artifact instead."
                             )
+                elif (
+                    state.engine == "diffusers"
+                    and not fam.modular_workflow
+                    and getattr(state, "vram_floor_mib", None) is not None
+                    and str(state.device).startswith("cuda")
+                    and hasattr(torch, "cuda")
+                    and hasattr(torch.cuda, "mem_get_info")
+                ):
+                    # The conventional families' floor: the weights this load's offload tier holds on the card at once,
+                    # plus the activation minimum. Without it a card that cannot even hold them (a bf16 A14B expert
+                    # onloaded whole on 24 GB) was admitted and died at the first onload, minutes into the pull.
+                    from utils.hardware import trusted_mem_get_info
+
+                    ordinal = getattr(state, "placed_ordinal", None)
+                    device_obj = (
+                        torch.device("cuda", int(ordinal))
+                        if ordinal is not None
+                        else torch.device(state.device)
+                    )
+                    free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
+                    reserved_bytes = (
+                        torch.cuda.memory_reserved(device_obj)
+                        if hasattr(torch.cuda, "memory_reserved")
+                        else 0
+                    )
+                    shortfall = video_offload_shortfall_message(
+                        family = fam.name,
+                        floor_mib = int(state.vram_floor_mib),
+                        available_mib = int((free_bytes + reserved_bytes) // (1024 * 1024)),
+                        placement = f"'{state.offload_policy}' offload",
+                        width = width,
+                        height = height,
+                        frames = frames,
+                    )
+                    if shortfall is not None:
+                        raise RuntimeError(shortfall)
 
                 # MPS seeds from the CPU generator too: diffusers reproduces a Metal seed only that way, and the
                 # pipelines move the noise to the device themselves.
@@ -7535,10 +7876,16 @@ class VideoBackend:
                 # A torchao denoiser streamed by group offloading moves weights inside the render, and torchao's aliasing
                 # check fails such a move under inference_mode (the image loader makes the same switch for the same
                 # reason). Resident and bf16 loads keep inference_mode.
+                # The same holds for a conventional family's quantised DiT under any offload hook: torchao's weights
+                # fail the hooks' in-place swap under inference_mode and pass under no_grad (probed for int8 and fp8,
+                # model hook and group offload). The torchao-free int8 is plain buffers and would pass either way; it
+                # takes no_grad too, which changes no value.
                 grad_ctx = (
                     torch.no_grad()
                     if state.transformer_quant and getattr(state, "denoiser_streamed", False)
                     else torch.inference_mode()
+                    if not _render_under_no_grad(state)
+                    else torch.no_grad()
                 )
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
