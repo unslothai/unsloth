@@ -3727,6 +3727,8 @@ class _VisionBatchSession:
                 defaults = GenerationDefaults(
                     prefill_batch_size = 1,
                     completion_batch_size = width,
+                    # Rows quantize their own caches where the single path's decode does.
+                    **backend._kv_runtime_quant_kwargs(),
                 ),
             )
         except BaseException:
@@ -3771,7 +3773,7 @@ class _VisionBatchSession:
         try:
             row_number = self.stream.add(
                 GenerationRequest(
-                    prompt = plan.prompt,
+                    prompt = backend._vlm_batch_prompt(plan.prompt),
                     image = plan.images[0] if plan.images else None,
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
@@ -6128,8 +6130,8 @@ class MLXInferenceBackend:
     def _kv_policy_batch_reason(self, resident = False):
         if self._kv_quant_bits() is None and not getattr(self, "_kv_context_budget", None):
             return None
-        # Only resident vision rows carry their own cache, where a uniform quantization lives.
-        if resident and self._is_vlm and not getattr(self, "_turboquant", False):
+        # Only resident vision rows carry their own cache, where the quantization lives.
+        if resident and self._is_vlm:
             return _row_quantized_cache_gap()
         return "the load quantizes or budgets its KV cache, which a batch does not carry"
 
@@ -6276,6 +6278,20 @@ class MLXInferenceBackend:
             finally:
                 session.close()
 
+    def _vlm_batch_prompt(self, prompt):
+        from unsloth_zoo.mlx.generate import vlm_batch_adds_special_tokens
+
+        bos = getattr(self._tokenizer, "bos_token", None)
+        if (
+            not self._reads_vision_input()
+            and bos
+            and prompt.startswith(bos)
+            and vlm_batch_adds_special_tokens(self._model, self._processor)
+        ):
+            # The single path encodes a text load's prompt itself, keeping only the template's BOS.
+            return prompt[len(bos) :]
+        return prompt
+
     def _generate_vlm_batch(
         self,
         requests,
@@ -6295,7 +6311,7 @@ class MLXInferenceBackend:
         plans = [self._plan_vlm_request(request) for request in requests]
         batch = [
             GenerationRequest(
-                prompt = plan.prompt,
+                prompt = self._vlm_batch_prompt(plan.prompt),
                 image = plan.images[0] if plan.images else None,
                 max_tokens = plan.max_tokens,
                 sampling = SamplingParams(**plan.sampling),

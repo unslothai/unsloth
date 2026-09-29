@@ -8,6 +8,7 @@ import copy
 import json
 import subprocess
 import sys
+import threading
 import types
 from collections import Counter
 from contextlib import contextmanager
@@ -5884,6 +5885,50 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     ), "a row the engine has already retired is not handed back again"
 
 
+def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypatch):
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._tokenizer.bos_token = "<s>"
+    backend._plan_vlm_request = lambda request: SimpleNamespace(
+        prompt = "<s>hi",
+        images = None,
+        max_tokens = 4,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+        stream = None,
+    )
+    session = _open_vision_session([])
+    session.backend, session._adapter_state, session._resumes_rows = backend, None, False
+    added = []
+    session.stream = SimpleNamespace(
+        add = lambda request: added.append(request.prompt) or len(added) - 1
+    )
+
+    def stream_batch(model, processor, batch, defaults):
+        added.extend(request.prompt for request in batch)
+        raise LookupError
+
+    monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    backend._reads_vision, backend._generation_lock = False, threading.Lock()
+    with pytest.raises(LookupError):
+        next(backend._generate_vlm_batch([{}]))
+    for reads_vision in (False, True):
+        backend._reads_vision = reads_vision
+        session.admit({}, reads_vision)
+    # Where the batch adds no special tokens the template's BOS is the only one.
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: False)
+    backend._reads_vision = False
+    session.admit({}, "gemma")
+    # A vision load's single path lets mlx-vlm tokenize, so its rows do too.
+    assert added == ["hi", "hi", "<s>hi", "<s>hi"]
+
+
 def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):
     from core.inference import mlx_inference
 
@@ -5892,6 +5937,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
     monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
     monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: None, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
     backend = _vlm_backend(monkeypatch, markers = None)
     store = mlx_inference.VLMPromptSnapshotStore(max_bytes = 10**9)
     for key in ("m", "m|img"):
@@ -6032,7 +6078,7 @@ def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):
         assert backend.batch_unavailable_reason([{}, {}]) is not None
 
 
-def test_a_uniformly_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
+def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     engine = _batch_engine(monkeypatch)
@@ -6049,12 +6095,33 @@ def test_a_uniformly_quantized_vision_load_batches_only_as_resident_rows(monkeyp
     assert backend.resident_unavailable_reason({}) is None
     assert backend.batch_unavailable_reason([{}, {}]) is not None
     backend._turboquant = True
-    assert backend.resident_unavailable_reason({}) is not None
-    backend._turboquant = False
+    assert backend.resident_unavailable_reason({}) is None
+    assert backend.batch_unavailable_reason([{}, {}]) is not None
     monkeypatch.setattr(
         engine, "row_quantized_prompt_cache_unavailable_reason", lambda: "old mlx-vlm"
     )
     assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
+
+
+def test_a_turboquant_vision_batch_quantizes_rows_as_the_single_path_does(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    monkeypatch.setattr(
+        engine, "BatchStream", lambda model, processor, defaults: defaults, raising = False
+    )
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    backend._model = backend._processor = object()
+    backend._kv_quant, backend._turboquant = {"kv_bits": 3.5}, True
+    defaults = mlx_inference._VisionBatchSession(backend, width = 2).stream
+    assert (defaults.kv_bits, defaults.kv_quant_scheme, defaults.quantized_kv_start) == (
+        3.5,
+        "turboquant",
+        0,
+    )
+    backend._kv_quant, backend._turboquant = {"kv_bits": 4}, False
+    assert not hasattr(mlx_inference._VisionBatchSession(backend, width = 2).stream, "kv_bits")
 
 
 def test_a_batched_vision_row_keeps_to_the_context_budget(monkeypatch):
