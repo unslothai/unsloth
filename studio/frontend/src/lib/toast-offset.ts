@@ -7,12 +7,17 @@ const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 export const CHAT_SETTINGS_INSET_VAR = "--studio-chat-settings-inset";
-// Widest corner card scales with --ui-space-scale; the rail's 28px + 16px gutters do not.
+// Widest corner card scales with --ui-space-scale; the download panel and the rail's 28px + 16px
+// gutters do not.
 const CORNER_CARD_MAX_WIDTH = 448;
+const DOWNLOAD_PANEL_WIDTH = 400;
 const CORNER_CARD_GUTTERS = 44;
 
 export function chatSettingsInsetMinColumn(uiSpaceScale = 1): number {
-  return CORNER_CARD_MAX_WIDTH * uiSpaceScale + CORNER_CARD_GUTTERS;
+  return (
+    Math.max(CORNER_CARD_MAX_WIDTH * uiSpaceScale, DOWNLOAD_PANEL_WIDTH) +
+    CORNER_CARD_GUTTERS
+  );
 }
 
 const HEADER_ROUTES = new Set(["/chat", "/images", "/video"]);

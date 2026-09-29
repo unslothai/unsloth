@@ -206,3 +206,10 @@ test("a larger UI scale needs a wider chat column before the inset applies", () 
   watchChatSettingsInset(scaled.root, scaled.panel, 320, 1.8, scaled.Observer);
   assert.equal(scaled.vars.has("--studio-chat-settings-inset"), false);
 });
+
+test("a smaller UI scale still leaves room for the fixed-width download panel", () => {
+  // 1024 - 280 sidebar = 744 row; 744 - 340 = 404 < 400 + 44, though 448 * 0.8 + 44 = 402.4 fits.
+  const dom = fakeInsetDom(744, 340);
+  watchChatSettingsInset(dom.root, dom.panel, 340, 0.8, dom.Observer);
+  assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
+});
