@@ -82,11 +82,17 @@ configure_amdgpu_asic_id_table_path()
 patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
+# Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
+fix_torchao_torch_symbol_skew()
+# Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
+from ._torchao_nodist import fix_torchao_without_torch_distributed
+
+fix_torchao_without_torch_distributed()
+del fix_torchao_without_torch_distributed
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
-fix_torchao_torch_symbol_skew()
 # The above fixes THIS process only; vLLM's model-architecture inspector is a subprocess that
 # imports torchao itself and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
@@ -264,6 +270,7 @@ from .import_fixes import (
     fix_transformers_config_only_remote_code,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
+    fix_transformers5_remote_code_model_api,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -339,6 +346,7 @@ fix_transformers_is_torch_fx_available()
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
 fix_transformers5_image_processing_reexports()
+fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -400,6 +408,7 @@ del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
+del fix_transformers5_remote_code_model_api
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue

@@ -1918,6 +1918,9 @@ def _decompress_compressed_tensors_model(model):
         method = getattr(quant_config, "quant_method", None)
     if getattr(method, "value", method) != "compressed-tensors":
         return False
+    # MXFP4 kept packed on purpose (all-or-nothing plan): decompress_model would drop weight_packed.
+    if any(getattr(module, "_unsloth_mxfp4_packed_linear", False) for module in model.modules()):
+        return False
     if not any(
         str(getattr(getattr(module, "quantization_status", None), "value", "")) == "compressed"
         for module in model.modules()
@@ -2382,6 +2385,10 @@ def check_and_disable_bitsandbytes_loading(
 
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
+
+    if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
+        from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+        install_compressed_tensors_keep_packed()
 
     # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (

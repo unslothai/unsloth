@@ -6,8 +6,10 @@
 The saved values are applied as ``HF_ENDPOINT`` / ``HF_DATASETS_SERVER``, which
 everything in Unsloth -- huggingface_hub, datasets, the browser via /api/health,
 and every worker process spawned afterwards -- already follows. Until the owner
-saves, whatever the operator exported stays in effect. ModelScope as the source
-points ``HF_ENDPOINT`` at the loopback adapter in ``hub.modelscope``.
+saves, whatever the operator exported stays in effect; where Hugging Face is
+restricted, with nothing saved or exported, the source defaults to ModelScope.
+ModelScope as the source points ``HF_ENDPOINT`` at the loopback adapter in
+``hub.modelscope``.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ class HubSettings:
     datasets_server_follows_endpoint: bool
     saved: bool
     source: str = HUGGINGFACE
+    source_automatic: bool = False
 
 
 def _capture_operator_env() -> dict[str, str | None]:
@@ -75,7 +78,8 @@ def operator_hf_endpoint() -> str:
     return _operator_endpoint() or DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]
 
 
-def _read_stored() -> dict:
+def _read_stored() -> dict | None:
+    """The saved hub settings: ``{}`` before the database exists, None when it cannot be read."""
     keys = [HF_ENDPOINT_KEY, DATASETS_SERVER_FOLLOWS_KEY, SOURCE_KEY]
     try:
         from utils.account_context import OWNER, run_as
@@ -85,6 +89,8 @@ def _read_stored() -> dict:
             from utils.paths.storage_roots import studio_db_path
 
             path = run_as(OWNER, studio_db_path)
+            if not path.exists():
+                return {}
             with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
                 rows = conn.execute(
                     "SELECT key, value_json FROM app_settings WHERE key IN (?, ?, ?)", keys
@@ -95,15 +101,34 @@ def _read_stored() -> dict:
         return run_as(OWNER, get_app_settings, keys)
     except Exception as exc:  # noqa: BLE001 - a missing or unreadable db keeps the environment's values
         logger.debug("hub settings read failed (%s)", exc)
-        return {}
+        return None
+
+
+def _automatic_modelscope(stored: dict) -> bool:
+    """ModelScope by default where Hugging Face is restricted, until a source or an endpoint is saved or exported."""
+    from utils.region import mirror_fallback_enabled
+    return (
+        SOURCE_KEY not in stored
+        and HF_ENDPOINT_KEY not in stored
+        and not (_capture_operator_env()["HF_ENDPOINT"] or "").strip()
+        and mirror_fallback_enabled()
+    )
 
 
 def get_hub_settings() -> HubSettings:
     stored = _read_stored()
-    source = stored.get(SOURCE_KEY) if stored.get(SOURCE_KEY) in SOURCES else HUGGINGFACE
+    # A failed read may hide a saved choice, so it never selects the automatic default.
+    automatic = stored is not None and _automatic_modelscope(stored)
+    stored = stored or {}
+    if automatic:
+        source = MODELSCOPE
+    else:
+        source = stored.get(SOURCE_KEY) if stored.get(SOURCE_KEY) in SOURCES else HUGGINGFACE
     endpoint = stored.get(HF_ENDPOINT_KEY)
     if not isinstance(endpoint, str):
-        return HubSettings(_operator_endpoint(), False, saved = False, source = source)
+        return HubSettings(
+            _operator_endpoint(), False, saved = False, source = source, source_automatic = automatic
+        )
     try:
         endpoint = validate_hub_endpoint(endpoint)
     except ValueError:
@@ -131,6 +156,16 @@ def set_hub_source(source: str) -> HubSettings:
     upsert_app_settings({SOURCE_KEY: source}, read_back = False)
     apply_hub_settings()
     return get_hub_settings()
+
+
+def claim_automatic_source() -> bool:
+    """Save the automatic ModelScope default. True only for the call that saved it, whose client tells the owner."""
+    if not get_hub_settings().source_automatic or active_source() != MODELSCOPE:
+        return False
+    from storage.studio_db import compare_and_set_app_setting
+
+    # An endpoint saved since the read above is a choice too: the claim must not override it.
+    return compare_and_set_app_setting(SOURCE_KEY, None, MODELSCOPE, absent = (HF_ENDPOINT_KEY,))
 
 
 def set_hub_settings(hf_endpoint: str, datasets_server_follows_endpoint: bool) -> HubSettings:

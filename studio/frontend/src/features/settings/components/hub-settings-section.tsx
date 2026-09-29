@@ -8,7 +8,7 @@ import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { DEFAULT_HF_ENDPOINT, type HubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type HubEndpointSettings,
   type HubSettings,
@@ -17,6 +17,7 @@ import {
   updateHubSettings,
   updateHubSource,
 } from "../api/hub-settings";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -32,6 +33,20 @@ export function HubSettingsSection() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+
+  useEffect(() => {
+    if (scrollTarget !== "general-hub") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("general-hub");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +119,7 @@ export function HubSettingsSection() {
     });
 
   return (
-    <SettingsSection title={t("settings.general.hub.sectionTitle")}>
+    <SettingsSection ref={sectionRef} title={t("settings.general.hub.sectionTitle")}>
       <SettingsRow
         alignTop={true}
         label={t("settings.general.hub.source")}

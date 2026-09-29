@@ -9,6 +9,7 @@ import structlog
 import tempfile
 from loggers import get_logger
 import os
+import sys
 import shutil
 import contextlib
 from pathlib import Path
@@ -368,12 +369,40 @@ def _compressed_export_supported():
 
 
 def _torchao_export_supported():
-    """True if the installed unsloth build has the portable torchao FP8/INT8 export path."""
+    """True if the installed unsloth build has the portable torchao FP8/INT8 export path and a real
+    torchao to run it; False where torchao is stubbed (its config classes return None)."""
     try:
+        if _torchao_runtime_unavailable():
+            return False
         import unsloth.save as _us
         return hasattr(_us, "_normalize_torchao_method")
     except Exception:
         return False
+
+
+def _torchao_runtime_unavailable():
+    try:
+        from core._torchao_stub import _is_windows_rocm, is_stubbed
+        if is_stubbed("torchao"):
+            return True
+        # Windows ROCm only gets real torchao through install_torchao_windows_rocm_real_or_stub().
+        return _is_windows_rocm() and "torchao" not in sys.modules
+    except Exception:
+        return False
+
+
+def _is_torchao_alias(alias):
+    """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
+    ROCm guard catches it before it is misread as compressed-tensors."""
+    if not alias:
+        return False
+    try:
+        import unsloth.save as _us
+        if _us._normalize_torchao_method(alias) is not None:
+            return True
+    except Exception:
+        pass
+    return str(alias).lower().startswith("torchao")
 
 
 def _has_nvidia_gpu():
@@ -573,6 +602,32 @@ def _open_hub_repo(hf_api, repo_id, private):
     repo_id = getattr(repo_url, "repo_id", repo_id)
     if private:
         _ensure_hub_repo_private(hf_api, repo_id)
+    return repo_id
+
+
+def _push_mlx_merged(
+    model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
+):
+    """Upload an MLX merged save; returns the repo id the Hub resolved."""
+    with contextlib.ExitStack() as stack:
+        upload_dir = output_path
+        if not output_is_fresh:
+            # A reused folder can hold leftovers, so upload a clean second save; without a
+            # local save this is the only one.
+            upload_dir = stack.enter_context(
+                _staging_dir(Path(output_path).parent)
+                if output_path
+                else tempfile.TemporaryDirectory()
+            )
+            model.save_pretrained_merged(upload_dir, tokenizer, save_method = save_method)
+        hf_api = HfApi(token = hf_token)
+        repo_id = _open_hub_repo(hf_api, repo_id, private)
+        hf_api.upload_folder(
+            folder_path = upload_dir,
+            repo_id = repo_id,
+            repo_type = "model",
+            ignore_patterns = _HUB_UPLOAD_IGNORE,
+        )
     return repo_id
 
 
@@ -943,6 +998,17 @@ class ExportBackend:
             "NVFP4 (compressed-tensors)": "nvfp4",
         }
         compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
+
+        # Fail fast: a stubbed torchao otherwise crashes in transformers with TorchAoConfig(quant_type=None).
+        if _is_torchao_alias(compressed_alias) and _torchao_runtime_unavailable():
+            return (
+                False,
+                "Portable torchao FP8/INT8 export needs torchao, which could not be loaded "
+                "on this Windows ROCm build. Update Unsloth to install it, or use "
+                "16-bit merged or GGUF quantization instead.",
+                None,
+            )
+
         compressed_suffix: Optional[str] = None
         # Classify the alias: torchao-portable vs compressed-tensors.
         torchao_info = None
@@ -1085,28 +1151,16 @@ class ExportBackend:
                 logger.info(f"Pushing merged model to Hub: {repo_id}")
 
                 if _IS_MLX:
-                    if save_directory:
-                        self.current_model.push_to_hub_merged(
-                            repo_id,
-                            self.current_tokenizer,
-                            save_directory = save_directory,
-                            token = hf_token,
-                            private = private,
-                        )
-                    else:
-                        with tempfile.TemporaryDirectory() as tmp_dir:
-                            self.current_model.save_pretrained_merged(
-                                tmp_dir,
-                                self.current_tokenizer,
-                                save_method = mlx_save_method,
-                            )
-                            self.current_model.push_to_hub_merged(
-                                repo_id,
-                                self.current_tokenizer,
-                                save_directory = tmp_dir,
-                                token = hf_token,
-                                private = private,
-                            )
+                    repo_id = _push_mlx_merged(
+                        self.current_model,
+                        self.current_tokenizer,
+                        save_method = mlx_save_method,
+                        output_path = output_path,
+                        output_is_fresh = save_dir_was_empty,
+                        repo_id = repo_id,
+                        hf_token = hf_token,
+                        private = private,
+                    )
                 else:
                     uploaded = False
                     if output_path and Path(output_path).is_dir():
@@ -1241,28 +1295,16 @@ class ExportBackend:
                 logger.info(f"Pushing base model to Hub: {repo_id}")
 
                 if _IS_MLX:
-                    if save_directory:
-                        self.current_model.push_to_hub_merged(
-                            repo_id,
-                            self.current_tokenizer,
-                            save_directory = save_directory,
-                            token = hf_token,
-                            private = private,
-                        )
-                    else:
-                        with tempfile.TemporaryDirectory() as tmp_dir:
-                            self.current_model.save_pretrained_merged(
-                                tmp_dir,
-                                self.current_tokenizer,
-                                save_method = "merged_16bit",
-                            )
-                            self.current_model.push_to_hub_merged(
-                                repo_id,
-                                self.current_tokenizer,
-                                save_directory = tmp_dir,
-                                token = hf_token,
-                                private = private,
-                            )
+                    _push_mlx_merged(
+                        self.current_model,
+                        self.current_tokenizer,
+                        save_method = "merged_16bit",
+                        output_path = output_path,
+                        output_is_fresh = save_dir_was_empty,
+                        repo_id = repo_id,
+                        hf_token = hf_token,
+                        private = private,
+                    )
                 else:
                     base_model = (
                         base_model_id or self.current_model.config._name_or_path or "unknown"

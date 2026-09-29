@@ -36,6 +36,14 @@ export type SystemOneDownloadPlan = {
   error: string | null;
 };
 
+export type SystemOneSettingsPatch = {
+  enabled?: boolean;
+  model?: string;
+  device?: SystemOneDevice;
+  expectedEnabled?: boolean;
+  expectedModel?: string;
+};
+
 type ApiSystemOneSettings = {
   enabled: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -70,6 +78,17 @@ type ApiSystemOneDownloadPlan = {
 };
 
 const SETTINGS_PATH = "/api/settings/systemone";
+
+function toApiPatch(patch: SystemOneSettingsPatch) {
+  const { expectedEnabled, expectedModel, ...settings } = patch;
+  return {
+    ...settings,
+    ...(expectedEnabled !== undefined && {
+      expected_enabled: expectedEnabled,
+    }),
+    ...(expectedModel !== undefined && { expected_model: expectedModel }),
+  };
+}
 
 function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
   return {
@@ -107,19 +126,35 @@ export async function loadSystemOneSettings(): Promise<SystemOneSettings> {
   );
 }
 
-export async function updateSystemOneSettings(patch: {
-  enabled?: boolean;
-  model?: string;
-  device?: SystemOneDevice;
-}): Promise<SystemOneSettings> {
+export async function updateSystemOneSettings(
+  patch: SystemOneSettingsPatch,
+): Promise<SystemOneSettings> {
   return readSettings(
     await authFetch(SETTINGS_PATH, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(toApiPatch(patch)),
     }),
     "Failed to save Decision API settings",
   );
+}
+
+export async function validateSystemOneSettings(
+  patch: SystemOneSettingsPatch,
+): Promise<void> {
+  const res = await authFetch(`${SETTINGS_PATH}/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(toApiPatch(patch)),
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(
+        res,
+        "Couldn't validate the Decision API setting.",
+      ),
+    );
+  }
 }
 
 export async function unloadSystemOneModel(): Promise<SystemOneSettings> {
@@ -129,8 +164,11 @@ export async function unloadSystemOneModel(): Promise<SystemOneSettings> {
   );
 }
 
-export async function resolveSystemOneDownload(): Promise<SystemOneDownloadPlan> {
-  const res = await authFetch(`${SETTINGS_PATH}/resolve`);
+export async function resolveSystemOneDownload(
+  model?: string,
+): Promise<SystemOneDownloadPlan> {
+  const query = model ? `?${new URLSearchParams({ model })}` : "";
+  const res = await authFetch(`${SETTINGS_PATH}/resolve${query}`);
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to check the Decision API model"),
