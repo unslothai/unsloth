@@ -4,7 +4,6 @@
 import asyncio
 import json
 import sys
-import urllib.parse
 import uuid
 from typing import Annotated, Optional
 from urllib.parse import urlparse
@@ -25,6 +24,8 @@ from core.inference.mcp_client import (
     UI_RESOURCE_SCHEME,
     cache_tools,
     call_tool_structured_sync,
+    get_cached_tools,
+    in_failure_cooloff,
     clear_oauth_tokens_async,
     close_mcp_sessions,
     invalidate_tool_cache,
@@ -39,8 +40,8 @@ from core.inference.mcp_client import (
     serialize_mcp_server_mutation,
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
-    tool_app_callable,
-    ui_resource_uris_for_tools,
+    tool_ui_resource_uri,
+    tool_visible_to,
 )
 from core.inference.mcp_config_import import parse_mcp_config
 from models.mcp_servers import (
@@ -589,8 +590,8 @@ async def test_mcp_server(
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
-_UI_TOOL_CALL_TIMEOUT = 60.0
-_UI_RESOURCE_TIMEOUT = 60.0
+_UI_TIMEOUT = 60.0
+UI_TOOL_APPROVAL_REQUIRED = "approval_required"
 
 
 def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
@@ -609,8 +610,8 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
 
 def _row_still_matches(server_id: str, server: dict) -> bool:
     current = mcp_servers_db.get_server(server_id)
-    return current is not None and not any(
-        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    return current is not None and all(
+        current.get(k) == server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
     )
 
 
@@ -618,87 +619,46 @@ def _row_still_matches(server_id: str, server: dict) -> bool:
 _discovery_locks: dict = {}
 
 
-def _discovery_lock(server_id: str):
-    lock = _discovery_locks.get(server_id)
-    if lock is None:
-        lock = _discovery_locks[server_id] = asyncio.Lock()
-    return lock
-
-
-async def _declared_ui_resources(server: dict) -> dict:
+async def _declared_ui_resources(server: dict) -> set:
     """Only server-declared templates are fetchable (the uri comes from the browser); rediscovers once on a cold cache."""
-    from core.inference.mcp_client import get_cached_tools, in_failure_cooloff
-
     server_id = server["id"]
-    tools = get_cached_tools(server_id)
-    if tools is None and not in_failure_cooloff(server_id):
-        async with _discovery_lock(server_id):
-            tools = await _discover_ui_tools(server, server_id)
-    return ui_resource_uris_for_tools(tools or [])
+    async with _discovery_locks.setdefault(server_id, asyncio.Lock()):
+        tools = get_cached_tools(server_id)
+        if tools is None and not in_failure_cooloff(server_id):
+            use_oauth = bool(server.get("use_oauth"))
+            url = server["url"]
+            try:
+                tools = await list_tools_async(
+                    url = url,
+                    headers = parse_server_headers(server),
+                    timeout = probe_timeout(url, use_oauth),
+                    use_oauth = use_oauth,
+                )
+            except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
+                tools = None
+            # A row edited mid-probe: the old endpoint's answer must neither authorize a read nor be cached.
+            if not _row_still_matches(server_id, server):
+                tools = None
+            elif tools is None:
+                record_probe_failure(server_id, use_oauth)
+            else:
+                cache_tools(server_id, tools)
+    return {
+        tool_ui_resource_uri(t) for t in tools or [] if isinstance(t, dict) and t.get("name")
+    } - {None}
 
 
-async def _discover_ui_tools(server: dict, server_id: str):
-    from core.inference.mcp_client import get_cached_tools, in_failure_cooloff
-
-    tools = get_cached_tools(server_id)
-    if tools is not None or in_failure_cooloff(server_id):
-        return tools
-    use_oauth = bool(server.get("use_oauth"))
-    try:
-        probed = await list_tools_async(
-            url = server["url"],
-            headers = parse_server_headers(server),
-            timeout = probe_timeout(server["url"], use_oauth),
-            use_oauth = use_oauth,
-        )
-    except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
-        probed = None
-        if _row_still_matches(server_id, server):
-            record_probe_failure(server_id, use_oauth)
-    else:
-        if _row_still_matches(server_id, server):
-            cache_tools(server_id, probed)
-        else:
-            # The row moved mid-probe: the old endpoint's declarations must not authorize a read.
-            probed = None
-    return probed
-
-
-def _config_check_for(server_id: str, url: str, headers: Optional[dict]):
-    def _current() -> bool:
-        row = mcp_servers_db.get_server(server_id)
-        return (
-            row is not None
-            and bool(row.get("is_enabled"))
-            and row.get("url") == url
-            and parse_server_headers(row) == headers
-        )
-
-    return _current
-
-
-def _ui_stdio_scope(thread_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
-    """execute_tool's key format, so a widget reaches the chat's own subprocess."""
-    if not thread_id:
-        return None
-    return "s={}:t={}".format(
-        urllib.parse.quote(session_id or "", safe = ""),
-        urllib.parse.quote(thread_id, safe = ""),
-    )
-
-
-UI_TOOL_APPROVAL_REQUIRED = "approval_required"
-
-
-def _ui_call_needs_approval(
-    mode: Optional[str], server_id: str, tool_name: str, args: dict
-) -> bool:
-    if mode in ("off", "full"):
-        return False
-    if mode == "auto":
-        from core.inference.tools import MCP_TOOL_PREFIX, is_potentially_unsafe_tool_call
-        return is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", args)
-    return True
+def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
+    from core.inference.tools import mcp_session_scope
+    return {
+        "url": server["url"],
+        "headers": parse_server_headers(server),
+        "timeout": _UI_TIMEOUT,
+        "use_oauth": bool(server.get("use_oauth")),
+        # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
+        "scope": mcp_session_scope(session_id, thread_id),
+        "config_check": lambda: _row_still_matches(server_id, server),
+    }
 
 
 @router.get("/{server_id}/ui-resource", response_model = McpUiResourceResponse)
@@ -714,23 +674,13 @@ async def read_mcp_ui_resource(
     uri = (uri or "").strip()
     if not uri.startswith(UI_RESOURCE_SCHEME):
         raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
-    declared = await _declared_ui_resources(server)
-    if uri not in set(declared.values()):
+    if uri not in await _declared_ui_resources(server):
         raise HTTPException(
-            status_code = 404,
-            detail = "No tool on this MCP server declares that UI resource",
+            status_code = 404, detail = "No tool on this MCP server declares that UI resource"
         )
-    headers = parse_server_headers(server)
     try:
         contents = await asyncio.to_thread(
-            read_resource_sync,
-            url = server["url"],
-            headers = headers,
-            uri = uri,
-            timeout = _UI_RESOURCE_TIMEOUT,
-            use_oauth = bool(server.get("use_oauth")),
-            scope = _ui_stdio_scope(thread_id, session_id),
-            config_check = _config_check_for(server_id, server["url"], headers),
+            read_resource_sync, uri = uri, **_ui_call_kwargs(server_id, server, thread_id, session_id)
         )
     except Exception as exc:  # noqa: BLE001
         raise log_and_http_error(
@@ -740,12 +690,7 @@ async def read_mcp_ui_resource(
             event = "mcp_servers.ui_resource_failed",
             log = logger,
         )
-    return McpUiResourceResponse(
-        uri = contents["uri"],
-        mime_type = contents["mimeType"],
-        text = contents["text"],
-        ui = contents.get("ui") or {},
-    )
+    return McpUiResourceResponse(**contents)
 
 
 @router.post("/{server_id}/ui-tool-call", response_model = McpUiToolCallResult)
@@ -756,6 +701,13 @@ async def call_mcp_ui_tool(
     via_api_key: ViaApiKey = False,
 ):
     """Widget is untrusted: server_id comes from the host frame, the tool must be discovered with "app" visibility, and it passes the confirm gate."""
+    from core.inference.tools import (
+        _STUDIO_CREDENTIAL_BLOCKED,
+        MCP_TOOL_PREFIX,
+        _mcp_arguments_reference_studio_credential,
+        is_potentially_unsafe_tool_call,
+        mcp_tool_definition,
+    )
     from state.tool_policy import get_tool_policy
 
     if get_tool_policy() is False:
@@ -764,46 +716,33 @@ async def call_mcp_ui_tool(
     tool_name = (payload.tool_name or "").strip()
     if not tool_name:
         raise HTTPException(status_code = 400, detail = "tool_name must not be empty")
-
-    from core.inference.tools import mcp_tool_definition
-
     tool = mcp_tool_definition(server_id, tool_name)
     if tool is None:
         raise HTTPException(
-            status_code = 404,
-            detail = f"MCP server has no discovered tool named '{tool_name}'",
+            status_code = 404, detail = f"MCP server has no discovered tool named '{tool_name}'"
         )
-    if not tool_app_callable(tool):
+    if not tool_visible_to(tool, "app"):
         raise HTTPException(
-            status_code = 403,
-            detail = f"Tool '{tool_name}' is not callable by an MCP app",
+            status_code = 403, detail = f"Tool '{tool_name}' is not callable by an MCP app"
         )
     arguments = payload.arguments or {}
     # Same refusal execute_tool applies to the model's MCP calls, in every permission mode.
-    from core.inference.tools import (
-        _STUDIO_CREDENTIAL_BLOCKED,
-        _mcp_arguments_reference_studio_credential,
-    )
-
     if _mcp_arguments_reference_studio_credential(arguments):
         raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
-    if not payload.approved and _ui_call_needs_approval(
-        payload.permission_mode, server_id, tool_name, arguments
-    ):
+    mode = payload.permission_mode
+    # An unstated or unknown mode asks; "auto" asks only for what the model's call would be asked for.
+    needs_approval = mode not in ("off", "full") and (
+        mode != "auto"
+        or is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", arguments)
+    )
+    if needs_approval and not payload.approved:
         raise HTTPException(status_code = 409, detail = UI_TOOL_APPROVAL_REQUIRED)
-
-    headers = parse_server_headers(server)
     try:
         result = await asyncio.to_thread(
             call_tool_structured_sync,
-            url = server["url"],
-            headers = headers,
             name = tool_name,
             args = arguments,
-            timeout = _UI_TOOL_CALL_TIMEOUT,
-            use_oauth = bool(server.get("use_oauth")),
-            scope = _ui_stdio_scope(payload.thread_id, payload.session_id),
-            config_check = _config_check_for(server_id, server["url"], headers),
+            **_ui_call_kwargs(server_id, server, payload.thread_id, payload.session_id),
         )
     except Exception as exc:  # noqa: BLE001
         raise log_and_http_error(
@@ -813,9 +752,4 @@ async def call_mcp_ui_tool(
             event = "mcp_servers.ui_tool_call_failed",
             log = logger,
         )
-    return McpUiToolCallResult(
-        content = result.get("content") or [],
-        structured_content = result.get("structuredContent"),
-        is_error = bool(result.get("isError")),
-        meta = result.get("_meta"),
-    )
+    return McpUiToolCallResult(**result)
