@@ -225,7 +225,6 @@ export function WindowTitlebar({
     showSidebarSurface && !pinned
       ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
       : sidebarWidth;
-  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -357,32 +356,25 @@ export function WindowTitlebar({
 
   return (
     <>
-      {showSidebarSurface && (
+      {showSidebarSurface && pinned && (
         <div
           data-slot="window-titlebar-decoration"
-          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
-          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
-          // document element, where it would restyle the whole document once per drag frame.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
+          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
         >
-          {pinned && (
-            <div
-              className="absolute top-0 size-3 -translate-x-px bg-sidebar"
-              style={{ left: sidebarWidth }}
-            />
-          )}
+          {/* Mask only the outside of the corner, never a horizontal strip over the page. */}
           <div
-            className="absolute top-0 h-px bg-sidebar-border"
-            style={{ left: contentBorderLeft, right: 0 }}
+            className="absolute top-0 size-[12px]"
+            style={{
+              left: sidebarWidth,
+              background: "radial-gradient(circle at bottom right, transparent 12px, var(--sidebar) 12px)",
+            }}
           />
-          {pinned && (
-            <div
-              className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
-              style={{ left: sidebarWidth }}
-            />
-          )}
+          <div
+            className="absolute top-0 right-0 h-[calc(100dvh-var(--studio-custom-titlebar-height))] rounded-tl-[12px] border-l border-t border-sidebar-border/80 border-t-sidebar-border/90 dark:border-white/10 dark:border-t-white/15"
+            style={{ left: sidebarWidth }}
+          />
         </div>
       )}
       <header

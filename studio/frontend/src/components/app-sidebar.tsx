@@ -4961,6 +4961,8 @@ export function AppSidebar() {
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
         usesNativeMacTitlebar &&
           "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+        usesDesktopTitlebar && !usesNativeMacTitlebar && pinned &&
+          "[&_[data-sidebar=sidebar]]:border-r-0",
       )}
     >
       <SidebarHeader
