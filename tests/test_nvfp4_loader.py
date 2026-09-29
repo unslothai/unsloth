@@ -433,5 +433,5 @@ def test_float8_lora_adapters_are_upcast_on_every_peft():
         model.save_pretrained(d)
         fresh = torch.nn.Sequential(torch.nn.Linear(32, 32, bias = False)).cuda()
         fresh[0].weight.data = fresh[0].weight.data.to(torch.float8_e4m3fn)
-        fresh = PeftModel.from_pretrained(fresh, d)
+        fresh = PeftModel.from_pretrained(fresh, d, torch_device = "cuda")
     assert all(p.dtype == torch.float32 for n, p in fresh.named_parameters() if "lora_" in n)

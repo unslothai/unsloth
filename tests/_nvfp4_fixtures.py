@@ -340,7 +340,7 @@ def run_lora_case(path, arch, api, out_dir):
     want = settled(model)
     model.save_pretrained(os.path.join(out_dir, "lora"))
     fresh, _ = Fast.from_pretrained(path, max_seq_length = 64, load_in_4bit = False, dtype = dtype)
-    fresh = PeftModel.from_pretrained(fresh, os.path.join(out_dir, "lora"))
+    fresh = PeftModel.from_pretrained(fresh, os.path.join(out_dir, "lora"), torch_device = "cuda")
     fresh.eval()
     got = settled(fresh)
     adapters = lambda m: {
