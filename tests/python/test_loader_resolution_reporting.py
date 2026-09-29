@@ -149,7 +149,6 @@ def test_training_forwards_observer_through_each_loader_and_retry():
 
 @pytest.mark.parametrize("cls", ["FastLanguageModel", "FastModel"])
 def test_stripped_prequant_base_can_use_the_legacy_lowercase_cache(cls):
-    # Without prequants the loader strips the suffix, so the base may only be cached lowercased.
     function = _loader(cls)
     start = next(
         i for i, n in enumerate(function.body) if ast.unparse(n) == "old_model_name = model_name"

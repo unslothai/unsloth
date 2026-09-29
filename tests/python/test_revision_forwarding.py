@@ -175,7 +175,6 @@ def test_revision_survives_when_the_repo_is_unchanged():
 
 
 def test_revision_survives_a_spelling_only_change():
-    # Hub ids are case-insensitive: unsloth/qwen3-30b-a3b resolving to unsloth/Qwen3-30B-A3B is the same repo.
     assert _load_gate()("release", "unsloth/Qwen3-30B-A3B", "unsloth/qwen3-30b-a3b") == "release"
 
 
@@ -470,7 +469,6 @@ def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
 
 
 def test_a_case_only_tokenizer_name_keeps_the_model_ref():
-    # Hub ids are case-insensitive: the tokenizer names the same repo the pinned weights come from.
     gate = _load_tokenizer_gate()
     requested, resolved = "unsloth/qwen3-30b-a3b", "unsloth/Qwen3-30B-A3B"
     assert gate(requested, resolved, requested, "v2", "v2") == "v2"

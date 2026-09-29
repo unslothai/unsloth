@@ -152,7 +152,6 @@ class TestGetModelName(unittest.TestCase):
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_artifactory_report_preserves_repo_id_case(self):
-        # #2506: case-sensitive HF_ENDPOINT mirrors 401/404 on a lowercased repo id.
         self.assertEqual(
             get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
             "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
@@ -186,7 +185,6 @@ class TestGetModelName(unittest.TestCase):
                         ),
                         expected,
                     )
-        # A config-only canonical snapshot does not hide a legacy one with weights.
         files = {
             (canonical, "config.json"),
             (canonical.lower(), "config.json"),
@@ -205,7 +203,6 @@ class TestGetModelName(unittest.TestCase):
                 get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
                 canonical.lower(),
             )
-            # Canonical weights without a config are not loadable either.
             files = {
                 (canonical, "model.safetensors"),
                 (canonical.lower(), "config.json"),
@@ -215,13 +212,11 @@ class TestGetModelName(unittest.TestCase):
                 get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
                 canonical.lower(),
             )
-            # A mapping that resolves back to the input was also cached lowercased before.
             files = {("unsloth/qwen3-30b-a3b", "config.json")}
             self.assertEqual(
                 get_model_name("unsloth/Qwen3-30B-A3B", load_in_4bit = True),
                 "unsloth/qwen3-30b-a3b",
             )
-        # A case-only change keeps the revision, so the probe checks it, not main.
         with (
             patch(
                 "huggingface_hub.try_to_load_from_cache",
@@ -237,7 +232,6 @@ class TestGetModelName(unittest.TestCase):
                 get_model_name("unsloth/qwen3-30b-a3b", load_in_4bit = True, revision = "release"),
                 "unsloth/qwen3-30b-a3b",
             )
-        # A real remap loads the mirror's main, so its legacy cache is probed there.
         with (
             patch(
                 "huggingface_hub.try_to_load_from_cache",
@@ -253,7 +247,6 @@ class TestGetModelName(unittest.TestCase):
                 ),
                 canonical.lower(),
             )
-        # Online never consults the cache: the canonical id is always returned.
         with (
             patch("huggingface_hub.try_to_load_from_cache", side_effect = AssertionError),
             patch.dict("os.environ", {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}),

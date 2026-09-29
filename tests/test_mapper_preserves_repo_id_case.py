@@ -56,7 +56,6 @@ def test_lowercase_lookup_returns_upstream_casing():
 
 
 def test_case_insensitive_lookup_still_works():
-    # __get_model_name only looks up model_name.lower(), so the lowered keys must stay.
     mapper = _load_mapper()
     for mapping in (mapper.INT_TO_FLOAT_MAPPER, mapper.FLOAT_TO_INT_MAPPER):
         lowered = [key for key in mapping if key == key.lower()]
@@ -76,7 +75,6 @@ def _declared_repo_ids(mapper):
 
 
 def test_every_resolved_value_is_a_declared_repo_id():
-    # A .lower() on any value yields an id written nowhere in the registry.
     mapper = _load_mapper()
     declared = _declared_repo_ids(mapper)
     for name in ("INT_TO_FLOAT_MAPPER", "FLOAT_TO_INT_MAPPER"):
