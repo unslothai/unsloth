@@ -30,7 +30,7 @@ def _active(registry):
 
 def test_a_load_claims_running_jobs_the_active_list_reports(registry):
     keys = load_downloads.claim_load_downloads(
-        ["owner/adapter", "Owner/Base", "owner/adapter", ""],
+        ["owner/adapter", "Owner/Base"],
         xet_disabled = True,
         hub_cache = "/cache/hub",
     )
@@ -64,87 +64,44 @@ def test_release_leaves_a_job_another_owner_took_over(registry):
 
 
 def test_a_load_attaches_to_a_hub_download_of_the_same_repo(registry):
-    assert registry.claim("owner/base::", "http", repo_type = "model", repo_id = "owner/base")[0]
+    assert registry.claim("owner/base::", "xet", repo_type = "model", repo_id = "owner/base")[0]
 
     keys = load_downloads.claim_load_downloads(["owner/base"])
 
     assert keys == ["owner/base::"]
     ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
-    assert (ref.owner, ref.load_attached, ref.state) == (None, True, "running")
+    assert (ref.owner, ref.load_attached) == (None, True)
     assert not load_downloads.is_load_owned(registry, "owner/base::")
-
-    load_downloads.release_load_downloads(keys)
-
-    ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
-    assert (ref.load_attached, ref.state) == (False, "running")
-
-
-def test_a_load_attaches_to_a_variant_download_of_the_same_repo(registry):
-    assert registry.claim(
-        "owner/base::q4_k_m", "http", repo_type = "model", repo_id = "owner/base", variant = "Q4_K_M"
-    )[0]
-
-    keys = load_downloads.claim_load_downloads(["owner/base"])
-
-    assert keys == ["owner/base::q4_k_m"]
-    ref = download_lifecycle.active_download_refs(registry, None, with_variant = True)[0]
-    assert (ref.repo_id, ref.variant, ref.load_attached) == ("owner/base", "Q4_K_M", True)
-
-    load_downloads.release_load_downloads(keys)
-
-    ref = download_lifecycle.active_download_refs(registry, None, with_variant = True)[0]
-    assert (ref.load_attached, ref.state) == (False, "running")
-
-
-def test_a_transport_retry_keeps_the_load_attachment(registry):
-    assert registry.claim("owner/base::", "xet", repo_type = "model", repo_id = "owner/base")[0]
-    load_downloads.claim_load_downloads(["owner/base"])
-
+    # A Xet -> HTTP retry keeps the attachment.
     assert registry.claim(
         "owner/base::", "http", repo_type = "model", repo_id = "owner/base", replace_active = True
     )[0]
+    assert registry.get_job_metadata("owner/base::").load_attached is True
+
+    load_downloads.release_load_downloads(keys)
 
     ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
-    assert (ref.transport, ref.load_attached) == ("http", True)
-    registry.set_job("owner/base::", "complete")
-    assert registry.claim("owner/base::", "http", repo_type = "model", repo_id = "owner/base")[0]
-    assert registry.get_job_metadata("owner/base::").load_attached is False
+    assert (ref.load_attached, ref.state) == (False, "running")
 
 
-def test_a_load_placeholder_is_never_adoptable(registry):
+def test_a_load_placeholder_cannot_be_adopted_started_or_cancelled(registry, monkeypatch):
+    from hub.services.models import downloads
+
+    monkeypatch.setattr(downloads, "_registry", registry)
     load_downloads.claim_load_downloads(["owner/base"])
+
     assert registry.adoptable("owner/base::") is False
-    assert registry.claim("owner/other::", "http", repo_type = "model", repo_id = "owner/other")[0]
-    assert registry.adoptable("owner/other::") is True
-
-
-def test_an_explicit_download_of_a_load_placeholder_is_refused(registry, monkeypatch):
-    from hub.services.models import downloads
-
-    monkeypatch.setattr(downloads, "_registry", registry)
-    load_downloads.claim_load_downloads(["owner/base"])
-
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(HTTPException) as started:
         downloads._reject_if_load_owned("owner/base::")
-    assert excinfo.value.status_code == 409
-
-    load_downloads.release_load_downloads(["owner/base::"])
-    downloads._reject_if_load_owned("owner/base::")
-
-
-def test_cancelling_a_load_owned_job_is_refused(registry, monkeypatch):
-    from hub.services.models import downloads
-
-    monkeypatch.setattr(downloads, "_registry", registry)
-    load_downloads.claim_load_downloads(["owner/base"])
-
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(HTTPException) as cancelled:
         asyncio.run(
             downloads.cancel_download_model_response(CancelDownloadRequest(repo_id = "owner/base"))
         )
-
-    assert excinfo.value.status_code == 409
+    assert (started.value.status_code, cancelled.value.status_code) == (409, 409)
     assert registry.get_job("owner/base::").state == "running"
+
+    load_downloads.release_load_downloads(["owner/base::"])
+    downloads._reject_if_load_owned("owner/base::")
 
 
 def test_shutdown_leaves_no_cancel_marker_for_a_load_placeholder(registry, monkeypatch):

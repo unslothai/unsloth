@@ -825,7 +825,8 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
-_LOAD_DOWNLOAD_OWNER = "load"
+# How often the progress reader re-lists the repos a load announced; each listed repo costs a cache scan per poll.
+_LOAD_DOWNLOAD_LIST_INTERVAL_S = 5.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_PORT_PREFIX = "UNSLOTH_START_PORT: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
@@ -957,27 +958,6 @@ def _normalized_variant(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
-def _in_flight_bytes(reading: dict) -> int:
-    """Bytes in a repo's incomplete files: what the endpoint counts as a live transfer."""
-    downloaded = max(0, int(reading.get("downloaded_bytes") or 0))
-    completed = max(0, int(reading.get("completed_bytes") or 0))
-    return downloaded - completed
-
-
-def _active_reading(
-    readings: list[tuple[str, dict]],
-    grown: "frozenset[str]" = frozenset(),
-    last: Optional[str] = None,
-) -> tuple[str, dict]:
-    """The one repo the progress line follows: substitute bases are alternatives, so their totals never sum."""
-    # A repo seen to move beats a bigger abandoned `.incomplete` blob.
-    moved = [item for item in readings if item[0] in grown and _in_flight_bytes(item[1]) > 0]
-    active = max(moved or readings, key = lambda item: _in_flight_bytes(item[1]))
-    if _in_flight_bytes(active[1]) > 0:
-        return active
-    return next((item for item in readings if item[0] == last), readings[0])
-
-
 class _ModelDownloadProgress:
     """Best-effort polling of the model download endpoints."""
 
@@ -994,10 +974,14 @@ class _ModelDownloadProgress:
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
+        # Repos the load announced (its base, the base the loader substitutes): bytes summed for liveness.
         self._repo_bytes: dict[str, int] = {}
         self._companions: list[str] = []
-        self._companions_listed = True
-        self._active_repo: Optional[str] = None
+        self._finished: dict[
+            str, dict
+        ] = {}  # Complete companions: final reading kept, never re-read.
+        self._listed_at: Optional[float] = None
+        self._active_repo = model
 
     def _is_gguf(self) -> bool:
         return bool(self._variant) or "gguf" in self._model.lower()
@@ -1042,27 +1026,24 @@ class _ModelDownloadProgress:
                 pass
 
     def _companion_repos(self) -> list[str]:
-        if not self._companions_listed:
+        now = time.monotonic()
+        if self._listed_at is not None and now - self._listed_at < _LOAD_DOWNLOAD_LIST_INTERVAL_S:
             return self._companions
+        self._listed_at = now
         try:
-            listing = _http_json(
-                "GET",
-                f"{self._base}{self._progress_prefix}/active-downloads",
-                self._key,
-                timeout = 10,
-            )
+            url = f"{self._base}{self._progress_prefix}/active-downloads"
+            listing = _http_json("GET", url, self._key, timeout = 10)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                self._companions_listed = False
+                self._listed_at = float("inf")  # Older server: no load-owned jobs to find.
             return self._companions
         except Exception:
             return self._companions
         for item in listing.get("downloads") or []:
             repo = str(item.get("repo_id") or "")
-            loading = item.get("owner") == _LOAD_DOWNLOAD_OWNER or bool(item.get("load_attached"))
-            if not loading or repo.lower() == self._model.lower():
+            if not (item.get("owner") == "load" or item.get("load_attached")):
                 continue
-            if repo and repo not in self._companions:
+            if repo and repo.lower() != self._model.lower() and repo not in self._companions:
                 self._companions.append(repo)
         return self._companions
 
@@ -1081,12 +1062,6 @@ class _ModelDownloadProgress:
             url = f"{self._base}{self._progress_prefix}/download-progress?{params}"
         return _http_json("GET", url, self._key, timeout = 10)
 
-    def _companion_reading(self, repo: str) -> Optional[dict]:
-        try:
-            return self._read(repo)
-        except Exception:
-            return None
-
     def poll(self) -> None:
         if not self._configured:
             self._configure()
@@ -1103,27 +1078,34 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            companions = [(repo, self._companion_reading(repo)) for repo in self._companion_repos()]
-            readings = [(self._model, reading)] + [
-                (repo, item) for repo, item in companions if item is not None
-            ]
-            grown = frozenset(
-                repo
-                for repo, item in readings
-                if repo in self._repo_bytes
-                and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
-            )
-            # Only ever rises, so a dip and recovery never counts as fresh growth.
-            for repo, item in readings:
-                self._repo_bytes[repo] = max(
-                    self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
-                )
+            readings = {self._model: reading}
+            for repo in self._companion_repos():
+                if repo in self._finished:
+                    readings[repo] = self._finished[repo]
+                    continue
+                try:
+                    readings[repo] = item = self._read(repo)
+                except Exception:
+                    continue
+                if (
+                    0
+                    < int(item.get("expected_bytes") or 0)
+                    <= int(item.get("completed_bytes") or 0)
+                ):
+                    self._finished[repo] = item
+            # The line follows whichever repo grew most; a repo first seen already large (a cached base) has not grown.
+            growth = 0
+            for repo, item in readings.items():
+                current = max(0, int(item.get("downloaded_bytes") or 0))
+                if current - self._repo_bytes.get(repo, current) > growth:
+                    growth, self._active_repo = current - self._repo_bytes[repo], repo
+                # Only ever rises, so a dip and recovery never counts as fresh growth.
+                self._repo_bytes[repo] = max(self._repo_bytes.get(repo, 0), current)
             self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            active_repo, active = _active_reading(readings, grown, self._active_repo)
-            self._active_repo = active_repo
-            self._display.update(active, active_repo)
+            active = self._active_repo if self._active_repo in readings else self._model
+            self._display.update(readings[active], active)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing

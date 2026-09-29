@@ -3,6 +3,7 @@
 
 from typing import Optional, Sequence
 
+from hub.services import download_lifecycle
 from hub.utils import download_registry
 from hub.utils.hf_cache_state import TRANSPORT_HTTP, TRANSPORT_XET
 
@@ -30,9 +31,7 @@ def claim_load_downloads(
     registry = download_registry.get_models_registry()
     transport = TRANSPORT_HTTP if xet_disabled else TRANSPORT_XET
     keys: list[str] = []
-    for repo_id in dict.fromkeys(str(repo).strip() for repo in repo_ids if repo):
-        if not repo_id:
-            continue
+    for repo_id in repo_ids:
         key = _job_key(repo_id)
         accepted, _state = registry.claim(
             key,
@@ -43,6 +42,8 @@ def claim_load_downloads(
             owner = LOAD_OWNER,
         )
         if accepted:
+            # The load runs as its caller, so a managed account sees its own load's downloads.
+            download_lifecycle.record_download_account(registry, key)
             keys.append(key)
             continue
         for ref in registry.active_job_refs(repo_id):
