@@ -865,6 +865,21 @@ def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def _write_pipeline(
+    root,
+    class_name,
+    cls,
+    index = "model_index.json",
+    **extra,
+):
+    """A minimal complete local pipeline: a manifest naming one transformer plus its weights."""
+    (root / "transformer").mkdir(parents = True, exist_ok = True)
+    manifest = {"_class_name": class_name, **extra, "transformer": ["diffusers", cls]}
+    (root / index).write_text(json.dumps(manifest))
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+
+
 def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     backend = VideoBackend()
     d = tmp_path / "ltx-local"
@@ -876,15 +891,7 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     (d / "model_index.json").write_text("{}")
     with pytest.raises(ValueError, match = "valid model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    (d / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "LTX2Pipeline",
-                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
-            }
-        )
-    )
-    (d / "transformer" / "config.json").write_text("{}")
+    _write_pipeline(d, "LTX2Pipeline", "LTX2VideoTransformer3DModel")
     fam = backend.validate_load_request(str(d), family_override = "ltx-2")
     assert fam.name == "ltx-2"
 
@@ -912,12 +919,7 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
     root = tmp_path / "opaque-h3"
     root.mkdir()
     (root / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "LTX2Pipeline",
-                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
-            }
-        )
+        json.dumps({"_class_name": "LTX2Pipeline", "transformer": ["diffusers", "LTX2Transformer"]})
     )
 
     original_import = builtins.__import__
@@ -939,18 +941,13 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
     (root / "modular_model_index.json").write_text("{}")
     with pytest.raises(ValueError, match = "valid modular_model_index.json"):
         backend.validate_load_request(str(root), family_override = "minimax-h3")
-    (root / "modular_model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "ModularPipeline",
-                "_blocks_class_name": "HunyuanVideo15PipelineBlocks",
-                "transformer": ["diffusers", "MiniMaxH3Transformer3DModel"],
-            }
-        )
+    _write_pipeline(
+        root,
+        "ModularPipeline",
+        "MiniMaxH3Transformer3DModel",
+        "modular_model_index.json",
+        _blocks_class_name = "HunyuanVideo15PipelineBlocks",
     )
-    (root / "transformer").mkdir()
-    (root / "transformer" / "config.json").write_text("{}")
-    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     assert (
         backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
     )
@@ -1025,20 +1022,10 @@ def test_detect_load_family_filename_fallback():
 
 
 def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
-    fam = _detect_load_family(
-        "/cache/snapshots/deadbeef",
-        None,
-        None,
-        "MiniMaxAI/MiniMax-H3",
-    )
+    fam = _detect_load_family("/cache/snapshots/deadbeef", None, None, "MiniMaxAI/MiniMax-H3")
     assert fam is not None and fam.name == "minimax-h3"
-
-    fam = _detect_load_family(
-        "/cache/wan2.2/snapshots/deadbeef",
-        None,
-        None,
-        "Lightricks/LTX-2",
-    )
+    # The logical id outranks a family token in the physical path.
+    fam = _detect_load_family("/cache/wan2.2/snapshots/deadbeef", None, None, "Lightricks/LTX-2")
     assert fam is not None and fam.name == "ltx-2"
 
 
@@ -1788,21 +1775,8 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
 
 def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_runtime, tmp_path):
     snapshot = tmp_path / "deadbeef"
-    snapshot.mkdir()
-    (snapshot / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "LTXPipeline",
-                "transformer": ["diffusers", "LTXVideoTransformer3DModel"],
-            }
-        )
-    )
-    (snapshot / "transformer").mkdir()
-    (snapshot / "transformer" / "config.json").write_text("{}")
-    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
-
-    backend = VideoBackend()
-    status = backend.load_pipeline(
+    _write_pipeline(snapshot, "LTXPipeline", "LTXVideoTransformer3DModel")
+    status = VideoBackend().load_pipeline(
         str(snapshot),
         display_repo_id = "Lightricks/LTX-2-Distilled",
         model_kind = "pipeline",

@@ -416,17 +416,11 @@ def supported_video_family_names() -> tuple[str, ...]:
 def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[VideoFamily, ...]:
     """Video-family overrides whose pipeline can be built by installed Diffusers."""
     from .diffusion_families import family_selectable
-
-    target = (device or "").strip().lower()
     return tuple(
         fam
         for fam in _FAMILIES
-        if family_selectable(fam) and not (target == "mps" and fam.modular_workflow)
+        if family_selectable(fam) and not (device == "mps" and fam.modular_workflow)
     )
-
-
-def pipeline_available_video_family_names(*, device: Optional[str] = None) -> tuple[str, ...]:
-    return tuple(fam.name for fam in pipeline_available_video_families(device = device))
 
 
 def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:

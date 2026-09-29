@@ -767,17 +767,11 @@ def _assert_local_base_is_pipeline(
 
     ``allow_modular`` accepts ``modular_model_index.json`` as well, for a caller whose loader is
     ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
-    pipeline (MiniMax-H3 ships no ``model_index.json`` at all), and the local-model scanners
-    already count either index. Off by default -- a conventional ``DiffusionPipeline`` load still
-    needs the conventional index, and accepting a modular directory there would only move the
-    failure back into the loader.
+    pipeline (MiniMax-H3 ships no ``model_index.json`` at all). Off by default: a conventional
+    ``DiffusionPipeline`` load still needs the conventional index.
 
-    ``excluded_components`` are constructor components supplied by the caller rather than loaded
-    from the base. This keeps transformer-only checkpoint companions space-efficient without
-    weakening the completeness rule for a selected full pipeline.
-
-    ``config_only_model_components`` is for whole-pipeline single-file checkpoints whose weights
-    come from the checkpoint while the companion base supplies their component configs."""
+    ``excluded_components`` are supplied by the caller (the checkpoint's denoiser), not the base;
+    ``config_only_model_components`` means the base only supplies component configs."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -804,6 +798,11 @@ def _assert_local_base_is_pipeline(
             f"Local base_repo is not a diffusers pipeline directory "
             f"(no valid {' or '.join(indexes)}): {base}"
         )
+
+
+def _family_override_resolved(family_override: Optional[str], fam: Any) -> tuple:
+    reason = "detected from the model" if family_override is None else "requested"
+    return (family_override, fam.name, reason)
 
 
 def _repo_access_message(repo: str, *, gated: bool) -> str:
@@ -2707,15 +2706,12 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
-        overridden_components = (
-            (fam.denoiser_attr,)
-            if kind == "gguf" or (kind == "single_file" and not fam.single_file_is_pipeline)
-            else ()
+        whole_file = kind == "single_file" and fam.single_file_is_pipeline
+        excluded = (
+            (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
         )
         _assert_local_base_is_pipeline(
-            base_repo,
-            excluded_components = overridden_components,
-            config_only_model_components = kind == "single_file" and fam.single_file_is_pipeline,
+            base_repo, excluded_components = excluded, config_only_model_components = whole_file
         )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
@@ -2833,9 +2829,6 @@ class DiffusionBackend:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        display_repo_id = (
-            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
-        ) or None
         # Resolve once, here: re-ranking after free VRAM moves can approve one card and place weights on another.
         if gpu_ordinal is None:
             gpu_ordinal = (
@@ -4998,9 +4991,6 @@ class DiffusionBackend:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
         hf_token = hf_token or None
-        display_repo_id = (
-            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
-        ) or None
 
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
@@ -6783,13 +6773,7 @@ class DiffusionBackend:
                     # explicit.
                     resolved = build_resolved_record(
                         {
-                            "family_override": (
-                                family_override,
-                                fam.name,
-                                "detected from the model"
-                                if family_override is None
-                                else "requested",
-                            ),
+                            "family_override": _family_override_resolved(family_override, fam),
                             "speed_mode": (
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
@@ -7542,12 +7526,10 @@ class DiffusionBackend:
         already handled in the plan.
 
         Left alone entirely for single-file/GGUF kinds, whose on-disk size IS their resident size,
-        on any target that is not sized in bf16, and for a LOCAL directory outside the Hugging Face
-        cache: the table is keyed on upstream repo ids, so an arbitrary local checkpoint can only
-        ever reach the coarse family entry, and a family covering more than one size (a local
-        FLUX.2-klein 9B against klein's 4B default) would be lowered to a number less than half what
-        it loads. On disk is the measured truth there. A ``models--*/snapshots/*`` path can recover
-        its Hub provenance and earns the substitution only when the exact id is recognised."""
+        on any target not sized in bf16, and for a LOCAL directory: the table is keyed on upstream
+        repo ids, so a local checkpoint can only reach the coarse family entry, and a family
+        covering more than one size would be lowered to a number less than half what it loads.
+        A snapshot inside a configured HF cache is sized by the repo id it came from."""
         try:
             # A whole-pipeline single file (SDXL) carries the U-Net, VAE and text encoders itself, and the base repo
             # is read for config only, but the plan still adds the base's cached companion weights, so a user who once
@@ -7567,10 +7549,17 @@ class DiffusionBackend:
                 return plan
             if kind != "pipeline":
                 return plan
-            local_base = _is_local_path(base)
-            table_base = self._configured_hf_cache_repo_id(base) if local_base else base
-            if local_base and table_base is None:
-                return plan
+            table_base = base
+            if _is_local_path(base):
+                from utils.hf_cache_settings import known_hf_hub_caches
+
+                table_base = hf_cache_repo_id(base)
+                snapshot = Path(base).expanduser().resolve()
+                if table_base is None or not any(
+                    snapshot.is_relative_to(Path(root).expanduser().resolve())
+                    for root in known_hf_hub_caches()
+                ):
+                    return plan
             import torch
 
             if getattr(target, "dtype", None) not in (torch.bfloat16, torch.float16):
@@ -7613,25 +7602,6 @@ class DiffusionBackend:
             )
         except Exception:  # noqa: BLE001 - sizing aid only; refuse on the plan as built
             return plan
-
-    @staticmethod
-    def _configured_hf_cache_repo_id(path: str) -> Optional[str]:
-        """Recover a repo id only from a snapshot below a configured HF cache root."""
-        repo_id = hf_cache_repo_id(path)
-        if repo_id is None:
-            return None
-        try:
-            from utils.hf_cache_settings import known_hf_hub_caches
-            candidate = Path(path).expanduser().resolve(strict = False)
-            for root in known_hf_hub_caches():
-                try:
-                    candidate.relative_to(Path(root).expanduser().resolve(strict = False))
-                    return repo_id
-                except (OSError, RuntimeError, ValueError):
-                    continue
-        except Exception:  # noqa: BLE001 -- an unreadable cache setting keeps measured sizing
-            return None
-        return None
 
     def declared_footprint_shortfall(
         self,
