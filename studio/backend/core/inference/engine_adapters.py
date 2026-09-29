@@ -237,16 +237,17 @@ def launch_arguments(
 
 
 def memory_reserve_mib(engine: str, options: dict | None) -> int:
-    """MiB left outside the engine's budget. vLLM with TorchAO weights exceeds its own
-    reservation in sampler warmup (2.4-4.8 GiB measured on an idle B200 at 0.97), so it
-    gets 6 GiB more; every other load keeps the 512 MiB driver reserve."""
+    """MiB left outside the engine's budget, for what each engine allocates past it. On a 24 GB L4
+    with Qwen2.5-0.5B, vLLM's sampler warmup failed at 512 MiB and passed from 1536 (it scales with
+    the vocabulary, so larger ones need more); SGLang's CUDA graphs and NCCL buffers died mid-request
+    at 512 and passed from 2048. vLLM with TorchAO weights overruns by 2.4-4.8 GiB more (B200)."""
     options = options or {}
     precision = options.get("precision", "auto")
     torchao = engine == "vllm" and (
         precision in ("int8", "fp8")
         or (precision == "int4" and options.get("parallelism", "tensor") == "pipeline")
     )
-    return 512 + (6144 if torchao else 0)
+    return (3072 if engine == "vllm" else 4096) + (6144 if torchao else 0)
 
 
 def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512) -> float:

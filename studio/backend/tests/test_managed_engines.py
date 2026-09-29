@@ -1983,18 +1983,38 @@ def test_managed_load_runs_the_worker_security_gates(monkeypatch, trust_remote_c
 @pytest.mark.parametrize(
     "engine, options, reserve",
     [
-        ("vllm", {"precision": "int8"}, 512 + 6144),
-        ("vllm", {"precision": "fp8"}, 512 + 6144),
-        ("vllm", {"precision": "int4", "parallelism": "pipeline"}, 512 + 6144),
-        ("vllm", {"precision": "int4"}, 512),
-        ("vllm", {"precision": "bf16"}, 512),
-        ("vllm", None, 512),
-        ("sglang", {"precision": "int8"}, 512),
+        ("vllm", {"precision": "int8"}, 3072 + 6144),
+        ("vllm", {"precision": "fp8"}, 3072 + 6144),
+        ("vllm", {"precision": "int4", "parallelism": "pipeline"}, 3072 + 6144),
+        ("vllm", {"precision": "int4"}, 3072),
+        ("vllm", {"precision": "bf16"}, 3072),
+        ("vllm", None, 3072),
+        ("sglang", {"precision": "int8"}, 4096),
+        ("sglang", None, 4096),
     ],
 )
 def test_only_vllm_torchao_loads_keep_extra_headroom(engine, options, reserve):
     from core.inference.engine_adapters import memory_reserve_mib
     assert memory_reserve_mib(engine, options) == reserve
+
+
+@pytest.mark.parametrize(
+    "engine, highest_passing",
+    # The fractions that passed chat, stream and a forced tool call on a Colab L4 (23034 MiB,
+    # 22564 free, Qwen2.5-0.5B); the old 512 MiB reserve gave 0.957, which failed on both.
+    [("vllm", 0.912), ("sglang", 0.890)],
+)
+def test_a_24_gb_card_leaves_the_headroom_measured_on_an_l4(monkeypatch, engine, highest_passing):
+    from types import SimpleNamespace
+    from core.inference import engine_adapters
+    from utils import vram_budget_settings
+
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22564")
+    )
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
+    reserve = engine_adapters.memory_reserve_mib(engine, None)
+    assert engine_adapters.gpu_memory_fraction([0], reserve) < highest_passing
 
 
 def test_a_spelled_out_text_response_format_is_not_structured_output():
