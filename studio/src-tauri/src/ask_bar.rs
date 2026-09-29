@@ -223,7 +223,6 @@ mod macos {
         .transparent(true)
         .resizable(false)
         .skip_taskbar(true)
-        .always_on_top(true)
         .shadow(false)
         .focused(false)
         .build()
@@ -301,6 +300,8 @@ mod macos {
                 let panel = ns_window as *mut NSPanel;
                 if !panel.is_null() {
                     unsafe {
+                        // Re-asserted per show: window setup can leave it at the floating level.
+                        (*panel).setLevel(PANEL_LEVEL);
                         (*panel).orderFrontRegardless();
                         (*panel).makeKeyWindow();
                     }
