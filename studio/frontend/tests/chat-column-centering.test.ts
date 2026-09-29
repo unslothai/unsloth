@@ -4,13 +4,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrcAsync } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrcAsync } from "./helpers/kit.ts";
 
 // The chat column is centred by margin, so every inset around it has to be
 // symmetric. A one-sided scrollbar gutter counts as an inset.
 
 test("the thread viewport reserves its scrollbar gutter on both edges", async () => {
-  const css = await readSrcAsync("index.css");
+  const css = atDefaultUiScale(await readSrcAsync("index.css"));
 
   const at = css.indexOf(".aui-thread-viewport {");
   assert.notEqual(at, -1);
@@ -23,8 +23,8 @@ test("the thread viewport reserves its scrollbar gutter on both edges", async ()
 });
 
 test("nothing around the composer re-adds a one-sided inset", async () => {
-  const chatPage = await readSrcAsync("features/chat/chat-page.tsx");
-  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
+  const chatPage = atDefaultUiScale(await readSrcAsync("features/chat/chat-page.tsx"));
+  const thread = atDefaultUiScale(await readSrcAsync("components/assistant-ui/thread.tsx"));
 
   // The compare-mode wrapper mirrored the old one-sided gutter.
   assert.doesNotMatch(chatPage, /pl-5 pr-5 md:pr-\[30px\]/);

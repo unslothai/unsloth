@@ -93,13 +93,62 @@
     return normText(raw);
   };
 
+  // A CODE FENCE'S HIGHLIGHT STATE IS SCROLL HISTORY, NOT RENDERING. `code-fence-defer.tsx` (#9462,
+  // default since #9567) renders an unreached fence as a plain shell carrying
+  // `data-unsloth-fence-deferred="true"` and upgrades it to token spans the first time it comes within
+  // one viewport of the reader, one way only, for the rest of its mount. So two runs of ONE build that
+  // scrolled differently serialise the same fence as a shell on one arm and as spans on the other.
+  // Observed on the r100K fast film after `reasoning_toggle`: the viewport either stays near the tail
+  // (scrollTop ~50,740) or lands ~20,000px higher (~28,000-34,000), in 78 of 172 recorded cells, on
+  // one build. The higher landing latches the fences of msg11/13/15, their signatures grow from
+  // 174,956/65,402/325,362 to 283,962/373,775/~2,000,000 characters, and every later action in the
+  // cell carries that until `thread_reopen` remounts the thread. A null control whose cells all
+  // happened to stay low then calls those actions stable, and a backend-only pull request fails.
+  // So each message also carries its fences, read in the SAME walk: whether each was latched, its
+  // full digest, its language, and a digest of its TEXT alone, plus a digest of the message with
+  // every fence replaced by a marker. The text is read as LINES, since that is all the two forms
+  // disagree on: the shell is one text node split by newlines, the highlighted fence one element
+  // per line with none between them (a blank line holding a lone "\n"). Both are brought to lines
+  // joined by one newline, trailing blank lines dropped, and every other character is kept as
+  // written, so `x = 1` against `x=1`, an indentation change, a space inside a string, a line break
+  // moved within the code and a changed duration or id literal all still differ. `analysis/parity.fence_latch_residue` compares a fence
+  // latched on both arms, or on neither, in full, and one latched on ONE arm on its language and
+  // text.
+  const FENCE_ATTR = "data-streamdown";
+  const FENCE_ROOT = "code-block";
+  const FENCE_BODY = "code-block-body";
+  const FENCE_DEFERRED_ATTR = "data-unsloth-fence-deferred";
+  const FENCE_MARKER = "<!fence>";
+
+  // Marks where the walk met an element directly inside a fence body's <code>: one per line of a
+  // highlighted fence. The shell's <code> holds only text, so it never carries one.
+  const FENCE_LINE = "\u0001";
+  const fenceText = (raw) => {
+    const s = raw || "";
+    const lines = s.includes(FENCE_LINE)
+      ? s
+          .split(FENCE_LINE)
+          .filter((line, k) => k > 0 || line !== "")
+          .map((line) => line.replace(/\r?\n/g, ""))
+      : s.split(/\r?\n/);
+    // Not normText: its placeholders are for UI prose, and inside code `"295ms"`, a timestamp or an id literal is
+    // the content itself.
+    return lines.join("\n").replace(/\n+$/, "");
+  };
+
   // `dropAttrs` is a Set of attributes this digest does not compare AT ALL, unlike VOLATILE_ATTRS
   // which keeps the presence. `elide` is a Set of ELEMENTS whose subtree is not serialised: a marker
   // carrying the tag and `data-role` goes in their place, so presence, position and role still
   // compare and a vanished message still moves the digest. Both off by default.
-  const signature = (root, dropAttrs, elide) => {
-    if (!root) return "";
+  // `fences`, when an array, receives one `{start, end, latched, text}` per OUTERMOST code fence met,
+  // `start`/`end` indexing the returned parts; it changes nothing about the parts themselves, so the
+  // digest a caller already compares is byte-identical with or without it.
+  const walkParts = (root, dropAttrs, elide, fences) => {
+    if (!root) return [];
     const parts = [];
+    // The fence being walked, if any: nested fences are part of their outer fence's reading.
+    let fence = null;
+    let inBody = false;
     const walk = (el, depth) => {
       // A depth cap is a TRUNCATION, so the marker is left in the signature and anything deeper reads
       // as "not walked" rather than as absent.
@@ -111,6 +160,27 @@
           " role=" + ((el.getAttribute && el.getAttribute("data-role")) || "?") + ">"
         );
         return;
+      }
+      // Opened BEFORE the tag is written, so `start` covers the fence's own element.
+      let opened = false;
+      let bodyHere = false;
+      if (fences && el.getAttribute) {
+        const role = el.getAttribute(FENCE_ATTR);
+        if (fence === null && role === FENCE_ROOT) {
+          fence = {
+            start: parts.length,
+            latched: el.getAttribute(FENCE_DEFERRED_ATTR) !== "true",
+            // On the fence root in both forms, so a language change is seen without the markup.
+            lang: el.getAttribute("data-language"),
+            all: "",
+            body: null,
+          };
+          opened = true;
+        } else if (fence !== null && !inBody && role === FENCE_BODY) {
+          if (fence.body === null) fence.body = "";
+          inBody = true;
+          bodyHere = true;
+        }
       }
       parts.push("<" + el.tagName.toLowerCase());
       const names = [];
@@ -142,17 +212,70 @@
       };
       for (const child of el.childNodes) {
         if (child.nodeType === 3) {
-          run += child.nodeValue == null ? "" : child.nodeValue;
+          const v = child.nodeValue == null ? "" : child.nodeValue;
+          run += v;
+          if (fence !== null) {
+            fence.all += v;
+            if (inBody) fence.body += v;
+          }
         } else if (child.nodeType === 1) {
           flush();
+          if (fence !== null && inBody && el.tagName === "CODE") fence.body += FENCE_LINE;
           walk(child, depth + 1);
         }
       }
       flush();
       parts.push("</" + el.tagName.toLowerCase() + ">");
+      if (bodyHere) inBody = false;
+      if (opened) {
+        // THE BODY'S TEXT WHEN THERE IS A BODY: the header carries the language label on both forms,
+        // but a highlighted fence also mounts a copy and download bar the shell does not.
+        fences.push({
+          start: fence.start,
+          end: parts.length,
+          latched: fence.latched,
+          lang: fence.lang,
+          text: fenceText(fence.body === null ? fence.all : fence.body),
+        });
+        fence = null;
+      }
     };
     walk(root, 0);
-    return parts.join("");
+    return parts;
+  };
+
+  const signature = (root, dropAttrs, elide) => walkParts(root, dropAttrs, elide).join("");
+
+  // ONE WALK, THREE READINGS of a message: the signature every caller already compares, unchanged;
+  // each fence's latch state, full digest and text digest; and the message with every fence
+  // replaced by one marker, so what surrounds the fences is still compared exactly.
+  // `fences` is absent from the result when the message has none, which keeps a fence-free payload
+  // byte-identical to what this instrument wrote before.
+  const messageReading = (el) => {
+    const marks = [];
+    const parts = walkParts(el, undefined, undefined, marks);
+    const sig = parts.join("");
+    const out = { sig };
+    if (marks.length) {
+      const rest = [];
+      let at = 0;
+      const fences = [];
+      for (const m of marks) {
+        for (let k = at; k < m.start; k++) rest.push(parts[k]);
+        rest.push(FENCE_MARKER);
+        at = m.end;
+        fences.push({
+          latched: m.latched,
+          lang: m.lang,
+          digest: hash(parts.slice(m.start, m.end).join("")),
+          text: hash(m.text),
+        });
+      }
+      for (let k = at; k < parts.length; k++) rest.push(parts[k]);
+      out.fences = fences;
+      out.digest_unfenced = hash(rest.join(""));
+    }
+    return out;
   };
 
   // The bounded computed-style probe: three properties on at most `STYLE_CAP` elements, digested
@@ -511,6 +634,7 @@
     normText,
     normUrl,
     signature,
+    messageReading,
     hash,
 
     // One digest for the whole thread plus one PER MESSAGE, so a mismatch says which message moved
@@ -571,13 +695,20 @@
         const messages = [];
         const in_flight = [];
         for (let i = 0; i < nodes.length; i++) {
-          const sig = signature(nodes[i]);
+          const reading = messageReading(nodes[i]);
+          const sig = reading.sig;
           const row = {
             i,
             role: nodes[i].getAttribute("data-role") || "?",
             digest: hash(sig),
             chars: sig.length,
           };
+          // See FENCE_ATTR above: what lets the comparison tell a fence the reader scrolled past on one
+          // arm from a fence that renders differently.
+          if (reading.fences) {
+            row.fences = reading.fences;
+            row.digest_unfenced = reading.digest_unfenced;
+          }
           if (inFlight.has(nodes[i])) {
             row.in_flight = true;
             in_flight.push(i);

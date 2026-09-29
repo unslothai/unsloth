@@ -16,12 +16,21 @@ estimate for a lease that runs up to 25 growing rounds.
 
 import base64
 import copy
+import io
+import wave
 
+import numpy as np
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import routes.inference as inference_route
+from auth.authentication import get_current_subject
 
 from models.inference import AnthropicMessagesRequest
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    _openai_llama_admission_media_tokens,
     _openai_llama_admission_messages_for_estimate,
     _openai_llama_admission_tokens,
 )
@@ -368,6 +377,236 @@ class TestMediaIsCharged:
             assert cost > 2000, f"{field} was charged {cost}, i.e. nothing for the media"
 
 
+def _wav_b64(seconds: float, rate: int = 16000) -> str:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * int(seconds * rate))
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _mp3_b64(frames: int) -> str:
+    # MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417-byte frames of 1152 samples.
+    frame = b"\xff\xfb\x90\x00" + b"\x00" * 413
+    return base64.b64encode(frame * frames).decode()
+
+
+class TestAnAudioTurnIsChargedByItsDuration:
+    """A recording was charged len(base64) // 4, so four seconds of 16 kHz WAV filled a 32768
+    cache and every other chat queued behind it. mtmd charges audio by duration, not bytes."""
+
+    class _Backend:
+        base_url = "http://llama-audio"
+        effective_parallel_slots = 4
+        _kv_cache_context_total = 32768
+        context_length = 32768
+        _mmproj_projector_type = None
+        _extra_args = None
+
+    def test_an_audio_chat_does_not_reserve_the_whole_cache(self):
+        audio = _wav_b64(20)
+        assert len(audio) > 800_000
+        budget = 32768
+        payload = _Payload(
+            messages = [{"role": "user", "content": "transcribe"}],
+            audio_base64 = audio,
+            max_tokens = 256,
+        )
+        cost = _openai_llama_admission_tokens(payload, budget = budget, capacity = 4)
+        assert cost < budget // 4, f"20 s of audio reserved {cost} of {budget}"
+
+    def test_a_text_chat_is_admitted_beside_an_audio_chat(self):
+        async def scenario():
+            queue = LlamaAdmissionQueue("media")
+            config = LlamaAdmissionConfig()
+            leases = []
+            for fields in (
+                {"audio_base64": _wav_b64(5), "content": "transcribe"},
+                {"content": "hi"},
+            ):
+                payload = _Payload(
+                    messages = [{"role": "user", "content": fields.pop("content")}],
+                    max_tokens = 256,
+                    **fields,
+                )
+                reservation = queue.reserve(
+                    capacity = 4,
+                    config = config,
+                    budget = 32768,
+                    tokens = _openai_llama_admission_tokens(payload, budget = 32768, capacity = 4),
+                )
+                leases.append(reservation.lease_nowait())
+            return leases
+
+        audio, text = asyncio.run(scenario())
+        assert audio is not None
+        assert text is not None, "a text chat queued behind a 5 s recording"
+
+    @pytest.mark.parametrize(
+        "audio, seconds",
+        [
+            (_wav_b64(1), 1.0),
+            ("data:audio/wav;base64," + _wav_b64(45), 45.0),
+            (_mp3_b64(383), 383 * 1152 / 44100),
+        ],
+        ids = ["wav-1s", "wav-data-uri-45s", "mp3-10s"],
+    )
+    def test_the_charge_bounds_every_audio_projector(self, audio, seconds):
+        cost = _openai_llama_admission_media_tokens(_Payload(audio_base64 = audio))
+        # 25 embeddings a second, and a Whisper encoder pads each clip to a whole 30 s window.
+        whisper_windows = int(seconds // 30) + 1
+        assert cost >= max(25 * seconds, 750 * whisper_windows)
+        assert cost <= 25 * (seconds + 30) + 256
+
+    @pytest.mark.parametrize(
+        "audio",
+        [
+            _image_b64(8),
+            base64.b64encode(b"RIFF\x00\x00\x00\x00WAVEjunk" + b"\x00" * 4096).decode(),
+            "not base64 at all!",
+        ],
+        ids = ["not-audio", "wav-without-data-chunk", "not-base64"],
+    )
+    def test_audio_without_a_stated_duration_keeps_the_byte_charge(self, audio):
+        cost = _openai_llama_admission_media_tokens(_Payload(audio_base64 = audio))
+        assert cost == max(1, len(audio) // 4)
+
+    def test_video_keeps_the_byte_charge(self):
+        clip = _wav_b64(20)
+        cost = _openai_llama_admission_media_tokens(_Payload(video_base64 = clip, messages = []))
+        assert cost == len(clip) // 4
+
+    def test_a_tool_round_does_not_price_the_injected_recording_as_text(self):
+        from routes.inference import _openai_llama_admission_recost
+
+        class _Reservation:
+            def __init__(self, lease):
+                self._lease = lease
+
+            def lease_nowait(self):
+                return self._lease
+
+        audio = _wav_b64(3)
+        payload = _Payload(
+            messages = [{"role": "user", "content": "transcribe"}],
+            audio_base64 = audio,
+            enable_tools = True,
+            max_tokens = 256,
+        )
+        # What _inject_audio_part hands the tool loop.
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "transcribe"},
+                    {"type": "input_audio", "input_audio": {"data": audio, "format": "wav"}},
+                ],
+            }
+        ]
+
+        async def run():
+            queue = LlamaAdmissionQueue("test")
+            reservation = queue.reserve(
+                capacity = 4,
+                config = LlamaAdmissionConfig(),
+                budget = 32768,
+                tokens = _openai_llama_admission_tokens(
+                    payload, budget = 32768, capacity = 4, tool_loop = True
+                ),
+            )
+            lease = reservation.lease_nowait()
+            assert lease is not None
+            _openai_llama_admission_recost(
+                _Reservation(lease),
+                conversation,
+                request = None,
+                llama_backend = self._Backend(),
+                payload = payload,
+                output_tokens = 256,
+            )
+            return queue.snapshot().committed
+
+        committed = asyncio.run(run())
+        assert committed <= 32768 // 4, f"round zero re-costed a 3 s recording to {committed}"
+
+    def test_the_recording_is_decoded_off_the_event_loop(self, monkeypatch):
+        import threading
+
+        import routes.inference as inference_route
+
+        on_loop = []
+        estimate = inference_route._openai_llama_admission_estimate
+
+        def spy(**kwargs):
+            on_loop.append(threading.current_thread() is threading.main_thread())
+            return estimate(**kwargs)
+
+        monkeypatch.setattr(inference_route, "_openai_llama_admission_estimate", spy)
+        payload = _Payload(
+            messages = [{"role": "user", "content": "transcribe"}],
+            audio_base64 = _wav_b64(1),
+            max_tokens = 64,
+        )
+
+        async def run():
+            reservation, _ = await inference_route._openai_llama_admission_reserve_async(
+                request = None, llama_backend = self._Backend(), payload = payload
+            )
+            reservation.cancel()
+
+        asyncio.run(run())
+        assert on_loop == [False]
+
+    # An ogg header states no length, so only the WAV it is transcoded to can be measured.
+    @pytest.mark.parametrize(
+        "raw",
+        [inference_route._mono_f32_to_wav_bytes(np.zeros(320_000), 16000), b"OggS" * 4**8],
+        ids = ["wav", "ogg"],
+    )
+    def test_an_audio_chat_reserves_a_bound_on_its_duration(self, monkeypatch, raw):
+        from .llama_backend_double import FakeLlamaCppBackend
+
+        class _AudioGguf(FakeLlamaCppBackend):
+            is_vision = _has_audio_input = True
+            _kv_cache_context_total = context_length = 32768
+
+            def generate_chat_completion(self, **_kwargs):
+                yield "ok"
+
+            def count_chat_tokens(self, *_args, **_kwargs):
+                return 12
+
+            def _request_reasoning_kwargs(self, *_args):
+                return None
+
+        charged, tokens = [], inference_route._openai_llama_admission_tokens
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", _AudioGguf)
+        monkeypatch.setattr(
+            inference_route,
+            "_openai_llama_admission_tokens",
+            lambda *a, **kw: charged.append(tokens(*a, **kw)) or charged[-1],
+        )
+        monkeypatch.setattr(
+            inference_route, "_decode_audio_mono", lambda _raw: (np.zeros(20 * 16000), 16000)
+        )
+        app = FastAPI()
+        app.include_router(inference_route.router, prefix = "/v1")
+        app.dependency_overrides[get_current_subject] = lambda: "tester"
+        body = {
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "hi"}],
+            "audio_base64": base64.b64encode(raw).decode(),
+        }
+
+        response = TestClient(app).post("/v1/chat/completions", json = body)
+
+        assert response.status_code == 200, response.text
+        # 25/s over the clip and a trailing 30 s window, the wrapper, output, and the prompt.
+        assert 0 <= charged[0] - (25 * (20 + 30) + 128 + 256) < 32, charged
+
+
 class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
     """/v1/messages reserves from the RAW Anthropic request, so its own image block has to
     be compacted too. #9842 fixed this for /v1/chat/completions and left this surface
@@ -553,8 +792,8 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
 
 class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
     """`tool_result` content is an untyped list, so an image is only one of the block types
-    that reach it. A document, a search result and a nested `tool_result` are dropped by
-    the same translation filter, and each was charged its base64 as prompt text -- the
+    that reach it. A PDF document, a malformed search result and a nested `tool_result` send
+    at most a short note, and each was charged its base64 as prompt text -- the
     whole of a 32768-token cache for a request that sends a couple of hundred characters.
     """
 
@@ -640,6 +879,41 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 assert "the tool answered" in str(
                     estimate_messages
                 ), f"{where}: the text beside it IS sent, so dropping it under-reserves"
+
+    def test_search_result_and_document_text_is_charged_where_it_is_sent(self):
+        search_result = {
+            "type": "search_result",
+            "source": "kb://vault",
+            "title": "Vault",
+            "content": [{"type": "text", "text": "PURPLE-ELEPHANT-42 " * 200}],
+        }
+        document = {
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain", "data": "MEMO-BODY " * 200},
+            "title": "Memo",
+        }
+        for block, header in (
+            (search_result, "Title: Vault\nSource: kb://vault\n"),
+            (document, "Title: Memo\n"),
+        ):
+            for payload in (
+                self._request(block, text_first = True),
+                AnthropicMessagesRequest(
+                    model = "default",
+                    max_tokens = 128,
+                    messages = [{"role": "user", "content": [block]}],
+                ),
+            ):
+                sent = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
+                rendered = sent[-1]["content"].rsplit("the tool answered\n", 1)[-1]
+                estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
+                    payload.messages
+                )
+                assert rendered.startswith(header)
+                assert rendered in str(estimate_messages).replace("\\n", "\n")
+                assert image_parts == 0
+                cost = _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)
+                assert cost > len(rendered) // 8
 
     def test_a_tool_result_the_translation_does_forward_is_still_charged(self):
         """The other side of the boundary: string `tool_result` content is forwarded

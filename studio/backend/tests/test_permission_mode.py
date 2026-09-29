@@ -2761,6 +2761,50 @@ def test_auto_mode_gates_high_risk_calls():
     assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
 
 
+class _ApprovalRecordingExecuteTool(_FakeExecuteTool):
+    def __init__(self):
+        super().__init__()
+        self.approved_seen = []
+
+    def __call__(
+        self,
+        name,
+        arguments,
+        *,
+        host_access_approved = False,
+        **kwargs,
+    ):
+        self.approved_seen.append(host_access_approved)
+        return super().__call__(name, arguments, disable_sandbox = kwargs.get("disable_sandbox"))
+
+
+@pytest.mark.parametrize(
+    "code, decisions, approved",
+    [
+        # Gated and allowed: the user saw the host path and let it through.
+        ('open(\\"/srv/data.csv\\").read()', ["allow"], [True]),
+        # Not gated in auto, so nobody approved anything.
+        ("print(1)", [], [False]),
+    ],
+)
+def test_the_approval_reaches_the_executor(code, decisions, approved):
+    exec_fn = _ApprovalRecordingExecuteTool()
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
+    decision_iter = iter(decisions)
+    for ev in run_safetensors_tool_loop(
+        single_turn = _multi_turn([_tool_call("python", f'{{"code": "{code}"}}'), "final"]),
+        messages = [{"role": "user", "content": "hi"}],
+        tools = _DEFAULT_TOOLS,
+        execute_tool = exec_fn,
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "auto",
+    ):
+        if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
+            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = session)
+    assert exec_fn.approved_seen == approved
+
+
 def test_auto_mode_does_not_gate_ordinary_mutation():
     # The core of "Approve for me": an ordinary in-workdir write is not high risk,
     # so auto runs it without a prompt even though it is not read-only.
@@ -2786,6 +2830,27 @@ def test_ask_mode_gates_even_safe_calls():
     )
     starts = _tool_starts(events)
     assert starts and starts[0]["awaiting_confirmation"] is True
+
+
+@pytest.mark.parametrize(("name", "gated"), [("search_conversation", False), ("web_search", True)])
+def test_ask_mode_never_gates_conversation_recall(name, gated):
+    """Every other tool, read-only ones included, still asks."""
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
+    events = []
+    for ev in run_safetensors_tool_loop(
+        single_turn = _multi_turn([_tool_call(name, '{"query": "the rust code"}'), "final"]),
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": name}}],
+        execute_tool = _FakeExecuteTool(),
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    ):
+        events.append(ev)
+        if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
+            resolve_tool_decision(ev["approval_id"], "allow", session_id = session)
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is gated
 
 
 def test_unset_mode_behaves_as_auto():
@@ -3254,6 +3319,33 @@ def test_auto_mode_prompts_on_dangerous_python_work(code):
 @pytest.mark.parametrize("name", _DANGEROUS_MCP)
 def test_auto_mode_prompts_on_dangerous_mcp_work(name):
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}{name}", {"code": "x"}) is True
+
+
+# An MCP name may separate its terms with any character the spec allows, and those names now ship to the
+# model under an alias instead of being dropped. The classifier reads the raw name, so a verb behind a "."
+# or a " " has to weigh exactly as much as the same verb behind a "_".
+@pytest.mark.parametrize(
+    "dotted, underscored",
+    [
+        ("get_file.delete", "get_file_delete"),
+        ("read_file.secret", "read_file_secret"),
+        ("delete.catalog-entity", "delete_catalog_entity"),
+        ("fetch:api.key", "fetch_api_key"),
+        ("get file/secret", "get_file_secret"),
+        ("catalog.get-catalog-entity", "catalog_get_catalog_entity"),
+        ("list.issues", "list_issues"),
+        ("search.catalog-entities", "search_catalog_entities"),
+    ],
+)
+def test_a_separator_never_changes_what_an_mcp_name_classifies_as(dotted, underscored):
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "0123456789abcdef", "display_name": "S"}
+    specs = _mcp_specs_for_server(server, [{"name": dotted}])
+    alias = specs[0]["function"]["name"]
+    plain = f"{MCP_TOOL_PREFIX}{server['id']}__{underscored}"
+    assert is_high_risk_tool_call(alias, {}) is is_high_risk_tool_call(plain, {})
+    assert is_potentially_unsafe_tool_call(alias, {}) is is_potentially_unsafe_tool_call(plain, {})
 
 
 # The reported sandbox escape (HF discussion #107, Desktop v0.1.808-beta): the session sandbox directory is a working

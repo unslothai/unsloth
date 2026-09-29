@@ -1,9 +1,11 @@
 """Binary selection logic in install_llama_prebuilt.py; all I/O monkeypatched."""
 
+import hashlib
 import importlib.util
 import inspect
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import sys
@@ -33,6 +35,12 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 LinuxCudaSelection = INSTALL_LLAMA_PREBUILT.LinuxCudaSelection
 UPSTREAM_REPO = INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO
+
+
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
 
 pick_windows_cuda_runtime = INSTALL_LLAMA_PREBUILT.pick_windows_cuda_runtime
 compatible_windows_runtime_lines = INSTALL_LLAMA_PREBUILT.compatible_windows_runtime_lines
@@ -94,10 +102,19 @@ def load_studio_run_module(monkeypatch):
     startup_banner.stdout_supports_color = lambda: False
     monkeypatch.setitem(sys.modules, "startup_banner", startup_banner)
 
+    # run.py exports UNSLOTH_STUDIO_HOME and UNSLOTH_LLAMA_CPP_PATH at module scope and this
+    # helper execs it in-process, so without monkeypatch they outlive the test.
+    for _leaked in ("UNSLOTH_STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
+        monkeypatch.setenv(_leaked, os.environ.get(_leaked, ""))
+        monkeypatch.delenv(_leaked)
+
     paths = types.ModuleType("utils.paths")
     paths.__path__ = []
     storage_roots = types.ModuleType("utils.paths.storage_roots")
     storage_roots.studio_root = lambda: PACKAGE_ROOT / ".studio-test-root"
+    # Imported at module scope too, so the stub carries it. None keeps these tests on the
+    # legacy-default path they were written for.
+    storage_roots.unsloth_home = lambda: None
     paths.storage_roots = storage_roots
     monkeypatch.setitem(sys.modules, "utils.paths", paths)
     monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage_roots)
@@ -2472,7 +2489,12 @@ class TestDirectUpstreamWindowsAmdTakesVulkan:
         return {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
 
@@ -2543,7 +2565,12 @@ class TestDirectUpstreamBlackwellPin:
         return {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
 
@@ -3019,6 +3046,137 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         assert result[0].runtime_line == "cuda12"
 
 
+class TestPublishedLegacyNamedArm64BundlesAreOrdered:
+    """The legacy-minor ordering synthesised -x64.zip names and called windows_cuda_attempts
+    without the arch, so an approved llama-<tag>-bin-win-cuda-13.1-arm64.zip produced no
+    runtime line and was skipped for the unchecksummed upstream fallback."""
+
+    TAG = "b8508"
+
+    def _release(
+        self,
+        minors_lines,
+        ranks = None,
+        cudart = False,
+    ):
+        artifacts = [
+            make_artifact(
+                f"llama-{self.TAG}-bin-win-cuda-{minor}-arm64.zip",
+                install_kind = "windows-arm64-cuda",
+                runtime_line = line,
+                supported_sms = ["75", "80", "86", "89", "90", "100", "120"],
+                max_sm = 120,
+                rank = (ranks or {}).get(minor, 100),
+            )
+            for minor, line in minors_lines
+        ]
+        release = make_release(artifacts, upstream_tag = self.TAG)
+        if cudart:
+            for minor, _ in minors_lines:
+                name = f"cudart-llama-bin-win-cuda-{minor}-arm64.zip"
+                release.assets[name] = f"https://example.com/{name}"
+        return release
+
+    def _host(self, driver):
+        return make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = driver, compute_caps = ["120"]
+        )
+
+    def test_the_arm64_legacy_bundle_is_selected(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.1", "cuda13"), ("12.8", "cuda12")])
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result, "no attempt at all: the arch was lost in the legacy ordering"
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
+
+    def test_the_minor_gate_applies_to_arm64_too(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.8", "cuda12")])
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result and result[0].runtime_line == "cuda12"
+        assert all(not a.name.endswith("13.3-arm64.zip") for a in result)
+
+    def test_the_artifact_gate_reads_the_arm64_name(self, monkeypatch):
+        """Two legacy minors on one line, the higher one ranked first: the line survives on
+        the lower minor, and the per-artifact gate must parse the -arm64 name to drop the
+        higher one; an x64 spelling never matches, and the preferred 13.3 build slips through."""
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        release = self._release([("13.3", "cuda13"), ("13.1", "cuda13")], ranks = {"13.3": 10})
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        names = [a.name for a in result]
+        assert names == [f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"], names
+
+    def test_the_cudart_bundle_pairs_by_the_arm64_name(self, monkeypatch):
+        """The same match feeds the cudart pairing: the arm64 runtime archive rides along."""
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        release = self._release([("13.1", "cuda13")], cudart = True)
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result and result[0].runtime_name == f"cudart-llama-bin-win-cuda-13.1-arm64.zip"
+
+    def test_the_explicit_arch_wins_over_the_host(self, monkeypatch):
+        """The arch argument is the contract: it must reach the legacy ordering rather than
+        being re-derived from the host, or an x64 host resolving arm64 bundles finds none."""
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.1", "cuda13"), ("12.8", "cuda12")])
+        host = make_host(
+            system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1), compute_caps = ["120"]
+        )
+        result = published_windows_cuda_attempts(host, release, None, arch = "arm64")
+        assert result and result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
+
+
+class TestAnUpstreamLookupFailureCostsOnlyCuda:
+    """On a Windows ARM64 NVIDIA host with no approved CUDA bundle, the upstream asset list is
+    fetched from the release API. A rate limit or an outage there raised out of the planner,
+    which catches only PrebuiltFallback, so the whole install aborted although the published
+    ARM64 CPU bundle was there to fall through to. It now costs the CUDA bundle only, like the
+    digest fetch beside it."""
+
+    TAG = "b8508"
+    CPU = "app-b8508-windows-arm64-cpu.zip"
+
+    def _plan(self, monkeypatch, assets):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", assets)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "github_release_asset_digests", lambda repo, tag: {}
+        )
+        monkeypatch.delenv("UNSLOTH_LLAMA_ARM64_CUDA", raising = False)
+        host = make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = (13, 4), compute_caps = ["121"]
+        )
+        release = make_release(
+            [
+                make_artifact(
+                    self.CPU,
+                    install_kind = "windows-arm64",
+                    runtime_line = None,
+                    bundle_profile = "windows-cpu-arm64",
+                )
+            ],
+            upstream_tag = self.TAG,
+        )
+        return resolve_release_asset_choice(host, self.TAG, release, make_checksums([self.CPU]))
+
+    def test_an_api_failure_falls_through_to_the_cpu_bundle(self, monkeypatch):
+        def _boom(repo, tag):
+            raise RuntimeError("429 rate limited")
+
+        result = self._plan(monkeypatch, _boom)
+        assert [a.name for a in result] == [self.CPU]
+        assert result[0].install_kind == "windows-arm64"
+
+    def test_an_empty_listing_lands_in_the_same_place(self, monkeypatch):
+        result = self._plan(monkeypatch, lambda repo, tag: {})
+        assert [a.name for a in result] == [self.CPU]
+
+
 # ===========================================================================
 # N.1e. resolve_release_asset_choice -- pin on the published install path
 # ===========================================================================
@@ -3334,7 +3492,12 @@ class TestWindowsMaskedNvidiaTakesCuda:
         release = {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
         plan = direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
@@ -3976,6 +4139,7 @@ class TestResolveSimpleMacosPin:
                     {
                         "name": name,
                         "browser_download_url": f"https://example.com/{name}",
+                        "digest": f"sha256:{_fixture_digest(name)}",
                     }
                 ],
             }
@@ -4138,10 +4302,12 @@ class TestCpuFallback:
                 {
                     "name": f"llama-{tag}-bin-ubuntu-arm64.tar.gz",
                     "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                    "digest": f"sha256:{_fixture_digest('arm64')}",
                 },
                 {
                     "name": f"llama-{tag}-bin-ubuntu-x64.tar.gz",
                     "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-x64.tar.gz",
+                    "digest": f"sha256:{_fixture_digest('x64')}",
                 },
             ],
         }
@@ -4288,8 +4454,7 @@ class TestCudaDriverToolkitMismatchMessage:
             "exceeds driver CUDA major 12 (12.9)."
         ) in output
         assert (
-            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install "
-            "a CUDA 12.x toolkit."
+            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install a CUDA 12.x toolkit."
         ) in output
         assert "prebuilt CUDA bundle" in output
 
@@ -4719,3 +4884,162 @@ class TestExactSourceAssetUrl:
             checksums, source_repo, source_archive, exact_source, self.INSTALL_TAG
         )
         assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+
+# ===========================================================================
+class TestDirectUpstreamRequiresAssetDigests:
+    """The upstream planner must bind every attempt to a digest.
+
+    It used to leave expected_sha256 None, which download_file_verified treats as a pass,
+    so an archive the installer reroutes to by itself (Linux ARM64 Vulkan, any
+    --published-repo) was extracted, chmod 0o755'd and executed unverified.
+    """
+
+    TAG = "b9365"
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _release(self, *, with_digests):
+        name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+        asset = {"name": name, "browser_download_url": f"https://example.com/{name}"}
+        if with_digests:
+            asset["digest"] = f"sha256:{_fixture_digest(name)}"
+        return {"tag_name": self.TAG, "assets": [asset]}
+
+    def test_every_attempt_carries_the_published_digest(self):
+        plan = direct_upstream_release_plan(
+            self._release(with_digests = True), self._host(), UPSTREAM_REPO, "latest"
+        )
+        assert plan.attempts
+        for attempt in plan.attempts:
+            assert attempt.expected_sha256, f"{attempt.name} would be installed unverified"
+
+    def test_a_release_with_no_published_digest_is_refused(self):
+        """Fail closed, exactly as the fork path does when no checksum covers an asset."""
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(
+                self._release(with_digests = False), self._host(), UPSTREAM_REPO, "latest"
+            )
+
+    def test_an_asset_whose_digest_names_another_algorithm_is_not_accepted(self):
+        release = self._release(with_digests = False)
+        release["assets"][0]["digest"] = "md5:" + "0" * 32
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
+
+
+# ===========================================================================
+class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
+    """Requiring a digest must not quietly disable the smoke test it replaces.
+
+    validate_prebuilt_choice skips the test for any attempt carrying a sha256. Upstream
+    attempts reached it with None and so always ran it; binding them to a release digest
+    would have flipped that off for every upstream install.
+    """
+
+    TAG = "b9365"
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _release(self):
+        name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {
+                    "name": name,
+                    "browser_download_url": f"https://example.com/{name}",
+                    "digest": f"sha256:{_fixture_digest(name)}",
+                }
+            ],
+        }
+
+    def test_upstream_attempts_are_marked_as_carrying_an_unmanifested_digest(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert plan.attempts
+        for attempt in plan.attempts:
+            assert attempt.expected_sha256, attempt.name
+            assert (
+                attempt.unmanifested_digest
+            ), f"{attempt.name} would skip the smoke test on the strength of a release digest"
+
+    def test_the_smoke_test_still_runs_for_every_upstream_attempt(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+        assert not INSTALL_LLAMA_PREBUILT.staged_validation_enabled()
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        for attempt in plan.attempts:
+            assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(
+                attempt
+            ), f"{attempt.name} lost the functional smoke test it ran while hashless"
+
+    def test_a_manifest_approved_bundle_still_skips_it(self, monkeypatch):
+        """The negative control: the expensive-path gate must still be reachable."""
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+        approved = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = self.TAG,
+            name = "llama-app-bin-win-cuda-x64.zip",
+            url = "https://example.com/a.zip",
+            source_label = "published",
+            expected_sha256 = "a" * 64,
+        )
+        assert not INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(approved)
+        monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", "1")
+        assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(approved)
+
+    def test_a_hashless_bundle_is_still_always_validated(self):
+        hashless = AssetChoice(
+            repo = "somebody/llama.cpp",
+            tag = self.TAG,
+            name = "llama-whatever.zip",
+            url = "https://example.com/w.zip",
+            source_label = "upstream",
+        )
+        assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(hashless)
+
+    def test_probe_preresolution_agrees_with_the_validation_decision(self):
+        """All three gates must read the same predicate.
+
+        A gate left on `expected_sha256 is None` while validation tests something wider
+        would validate upstream attempts with an unresolved probe, which the probe gates'
+        own comments say demotes a healthy GPU pick to CPU.
+        """
+        source = pathlib.Path(INSTALL_LLAMA_PREBUILT.__file__).read_text(encoding = "utf-8")
+        stale = [
+            line.strip()
+            for line in source.splitlines()
+            if "expected_sha256 is None" in line
+            and "prebuilt_needs_functional_validation" not in line
+        ]
+        # The predicate's own first clause is the single legitimate reader.
+        assert stale == ["if choice.expected_sha256 is None:"], stale
+
+    def test_every_upstream_attempt_resolves_the_probe_up_front(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert any(
+            INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(a) for a in plan.attempts
+        ), "the probe would be resolved lazily inside the per-candidate handler"

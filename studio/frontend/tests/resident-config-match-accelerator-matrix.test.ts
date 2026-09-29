@@ -63,7 +63,7 @@ const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -113,7 +113,7 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
   // default load leaves the width unrequested; a pinned width is swept below like any other
   // field, and is not part of the base for the same reason placement is not.
   "apple-mlx": {
-    mlx_kv_bits_requested: null,
+    mlx_kv_quant_requested: null,
   },
 };
 
@@ -150,10 +150,10 @@ const FIELDS: FieldCase[] = [
     different: "f16",
   },
   {
-    key: "mlxKvBits",
-    statusKey: "mlx_kv_bits_requested",
-    same: 8,
-    different: 4,
+    key: "mlxKvQuant",
+    statusKey: "mlx_kv_quant_requested",
+    same: "8",
+    different: "tq-4",
   },
   {
     key: "speculativeType",
@@ -324,12 +324,20 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
   }
 }
 
-test("placement compares as a set on a multi-GPU host, not as an order", () => {
-  // The backend narrows and reorders the pool at fit time, so only membership counts.
+test("placement compares as an order on a multi-GPU host, not as a set", () => {
+  // The picker's order is the order the backend pins, so the same cards in a
+  // different order are a different placement and the runner has to restart.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
       { ...BLANK, selectedGpuIds: [1, 0] },
+    ),
+    false,
+  );
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
+      { ...BLANK, selectedGpuIds: [0, 1] },
     ),
     true,
   );
@@ -465,6 +473,8 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
+    // Compared through standing.splitRatio, which the caller seeds from it.
+    "tensorSplit",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),
