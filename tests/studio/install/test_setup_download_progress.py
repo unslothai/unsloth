@@ -42,7 +42,10 @@ def run_download(tmp_path, component, env, exit_code):
     )
     script = tmp_path / "run.sh"
     script.write_text(
-        verbose + "\n" + output_filter + '\n_NODE_PY="$1"\nSCRIPT_DIR="$2"\nNODE_DIR="$2"\n'
+        verbose
+        + "\n"
+        + output_filter
+        + '\n_mirror_switch() { return 1; }\n_NODE_PY="$1"\nSCRIPT_DIR="$2"\nNODE_DIR="$2"\n'
         '_PREBUILT_CMD=("$1" "$2/install_node_prebuilt.py")\n'
         '_WHISPER_CMD=("${_PREBUILT_CMD[@]}")\n'
         + source[start:end]
