@@ -241,6 +241,13 @@ const pickModule = loadWithStubs<PickModule>(
   },
 );
 
+test("re-picking Full access in sandbox without a sandbox is the way back to setup", () => {
+  assert.equal(pickModule.samePickIsIgnored("off", "off", true), false);
+  assert.equal(pickModule.samePickIsIgnored("off", "off", false), true);
+  assert.equal(pickModule.samePickIsIgnored("auto", "auto", true), true);
+  assert.equal(pickModule.samePickIsIgnored("ask", "auto", true), false);
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {

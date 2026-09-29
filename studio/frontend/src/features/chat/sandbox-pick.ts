@@ -10,6 +10,17 @@ import type { PermissionMode } from "./stores/chat-runtime-store";
 
 let sandboxedPicks = 0;
 
+/** Picking the row that is already selected does nothing, except "Full access in sandbox" on a
+ *  computer without a working OS sandbox (e.g. restored from a saved chat): that pick is the way
+ *  back to the setup dialog. */
+export function samePickIsIgnored(
+  value: PermissionMode,
+  current: PermissionMode,
+  sandboxUnavailable: boolean,
+): boolean {
+  return value === current && !(value === "off" && sandboxUnavailable);
+}
+
 /** "Full access in sandbox" only holds with a working OS sandbox, so picking it without one
  *  offers the setup instead of applying it; nothing is installed until the owner asks. A read
  *  that comes back after the user moved on (another pick, or another mode) does nothing. */

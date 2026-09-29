@@ -34,7 +34,10 @@ import {
   loadSandboxCapability,
   sandboxReady,
 } from "./api/sandbox-capability";
-import { pickSandboxedMode as pickSandboxedModeWith } from "./sandbox-pick";
+import {
+  pickSandboxedMode as pickSandboxedModeWith,
+  samePickIsIgnored,
+} from "./sandbox-pick";
 import {
   SandboxSetupDialog,
   useSandboxSetupDialogStore,
@@ -149,7 +152,7 @@ export function PermissionModeMenuItems({
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
-            if (option.value === permissionMode) {
+            if (samePickIsIgnored(option.value, permissionMode, sandboxUnavailable)) {
               return;
             }
             if (option.value === "full") {
