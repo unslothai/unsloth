@@ -647,6 +647,7 @@ class SystemOneSettingsResponse(BaseModel):
     loading_model: Optional[str] = None
     installing: bool = False
     error: Optional[str] = None
+    mcp_url: str
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -1375,8 +1376,9 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
-def _systemone_response() -> SystemOneSettingsResponse:
+def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
+    from routes.systemone import MCP_PATH
 
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
@@ -1384,6 +1386,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
+    port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
@@ -1403,6 +1406,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
+        mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
     )
 
 
@@ -1439,14 +1443,16 @@ def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
 
 @_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
-    return _systemone_response()
+    return _systemone_response(request)
 
 
 @_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
 def update_systemone_settings(
-    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+    payload: SystemOneSettingsPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
@@ -1459,7 +1465,7 @@ def update_systemone_settings(
             except laya_runtime.Unavailable as exc:
                 raise HTTPException(status_code = 409, detail = exc.message) from None
             systemone_settings.save(values)
-    return _systemone_response()
+    return _systemone_response(request)
 
 
 @_owner_settings_router.post("/systemone/validate", status_code = 204)
@@ -1491,14 +1497,14 @@ def resolve_systemone_download(
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
 def unload_systemone_model(
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     try:
         laya_runtime.unload()
     except laya_runtime.Unavailable as exc:
         raise HTTPException(status_code = 409, detail = exc.message) from None
-    return _systemone_response()
+    return _systemone_response(request)
 
 
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
