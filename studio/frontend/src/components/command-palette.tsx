@@ -47,7 +47,7 @@ import {
   TestTube01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Moon } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -144,9 +144,14 @@ export function CommandPalette() {
   // Auth routes unmount the palette; close it so it does not come back open.
   useEffect(() => () => useCommandPaletteStore.getState().setOpen(false), []);
 
-  // A chord (⌘, / ⌘K) can open Settings or chat search over the palette; it gives way to them.
+  // A chord pressed over the palette (⌘, / ⌘K, a workspace or new chat) acts behind it; it gives way.
   const settingsOpen = useSettingsDialogStore((s) => s.open);
   const chatSearchOpen = useChatSearchStore((s) => s.isOpen);
+  const href = useRouterState({ select: (s) => s.location.href });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: href is the trigger, not an input.
+  useEffect(() => {
+    useCommandPaletteStore.getState().close();
+  }, [href]);
   useEffect(() => {
     if (settingsOpen || chatSearchOpen) {
       useCommandPaletteStore.getState().close();

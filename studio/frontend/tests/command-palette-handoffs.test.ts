@@ -60,3 +60,14 @@ test("reopening during the exit animation clears the previous query", () => {
     /if \(isOpen !== wasOpen\) \{\s*setWasOpen\(isOpen\);\s*if \(isOpen\) setQuery\(""\);/,
   );
 });
+
+test("a chord that navigates behind the palette closes it", () => {
+  assert.match(
+    palette,
+    /useRouterState\(\{ select: \(s\) => s\.location\.href \}\)/,
+  );
+  assert.match(
+    palette,
+    /useEffect\(\(\) => \{\s*useCommandPaletteStore\.getState\(\)\.close\(\);\s*\}, \[href\]\);/,
+  );
+});
