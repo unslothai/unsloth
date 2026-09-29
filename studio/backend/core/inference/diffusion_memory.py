@@ -1033,10 +1033,13 @@ def _torchao_weight_classes(module: Any) -> set[str]:
     return classes
 
 
-def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+def _torchao_group_offload_kwargs(
+    module: Any, kwargs: dict[str, Any], pinned_mib: Optional[list] = None
+) -> dict[str, Any]:
     """``apply_group_offloading`` kwargs a torchao-weighted ``module`` survives. Weights are frozen first: swap_tensors
     on a requires_grad torchao weight hits an unimplemented ``aten.view``. Lazy pinning refuses torchao, so the copy
-    stream needs an up-front pin, else it is dropped."""
+    stream needs an up-front pin, else it is dropped. ``pinned_mib`` is a one-item running total shared across the
+    modules of one install, so several denoisers never pin more than the budget between them."""
     classes = _torchao_weight_classes(module)
     if not classes:
         return kwargs
@@ -1056,7 +1059,11 @@ def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[s
             if forced in ("0", "off", "false", "no") or _pinned_memory_capped()
             else _pin_budget_mib()
         )
-        if budget is not None and _module_host_mib(module) <= budget:
+        need = _module_host_mib(module)
+        already = pinned_mib[0] if pinned_mib else 0
+        if budget is not None and already + need <= budget:
+            if pinned_mib is not None:
+                pinned_mib[0] = already + need
             return {**kwargs, "low_cpu_mem_usage": False}
     safe = {
         k: v
@@ -1921,8 +1928,14 @@ def _apply_group_offload(
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
+        # Encoders the plan pins count against the same budget as any torchao denoiser pinned below.
+        pinned_mib = [
+            sum(_module_host_mib(m) for m in streamed_encoders.values())
+            if stream_text_encoders and pin_streamed[1]
+            else 0
+        ]
         for module in streamed.values():
-            apply_group_offloading(module, **_torchao_group_offload_kwargs(module, gkwargs))
+            apply_group_offloading(module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib))
             installed += 1
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
@@ -1961,7 +1974,7 @@ def _apply_group_offload(
                             if "low_cpu_mem_usage" in _params and use_stream:
                                 dkwargs["low_cpu_mem_usage"] = True
                             apply_group_offloading(
-                                dit, **_torchao_group_offload_kwargs(dit, dkwargs)
+                                dit, **_torchao_group_offload_kwargs(dit, dkwargs, pinned_mib)
                             )
                             installed += 1
                     transformer_demoted = True
@@ -2473,6 +2486,7 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
             if isinstance(component, torch.nn.Module):
                 component.to(onload)
 
+        pinned_mib = [0]
         for module, offload_type in streamed.values():
             kwargs: dict[str, Any] = {
                 "onload_device": onload,
@@ -2489,7 +2503,7 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 kwargs["record_stream"] = False
             if use_stream and "low_cpu_mem_usage" in params:
                 kwargs["low_cpu_mem_usage"] = True
-            apply_group_offloading(module, **_torchao_group_offload_kwargs(module, kwargs))
+            apply_group_offloading(module, **_torchao_group_offload_kwargs(module, kwargs, pinned_mib))
             installed += 1
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)

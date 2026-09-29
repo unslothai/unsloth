@@ -726,3 +726,28 @@ def test_runtime_pinning_honours_the_same_override_as_the_planner(
         linear, {"use_stream": True, "low_cpu_mem_usage": True}
     )
     assert kwargs["use_stream"] is keeps_stream
+
+
+def test_several_torchao_denoisers_share_one_pin_budget(monkeypatch):
+    """Ideogram 4 streams two torchao transformers: each fits the budget alone, together they do not."""
+    first, second = _int8_linear(2048, 2048), _int8_linear(2048, 2048)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(mem, "install_group_offload_torchao_swap_retry", lambda: None)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 6)
+    base = {"use_stream": True, "low_cpu_mem_usage": True}
+    pinned = [0]
+    kept = [mem._torchao_group_offload_kwargs(m, dict(base), pinned) for m in (first, second)]
+    assert kept[0]["low_cpu_mem_usage"] is False
+    assert kept[1].get("low_cpu_mem_usage") is not False
+    assert pinned[0] <= 6
+
+
+def test_every_group_offload_site_shares_the_pin_total():
+    import inspect
+
+    import re
+
+    source = inspect.getsource(mem)
+    calls = re.findall(r"(?<!def )_torchao_group_offload_kwargs\(([^)]*)\)", source)
+    assert calls and all("pinned_mib" in args for args in calls)
