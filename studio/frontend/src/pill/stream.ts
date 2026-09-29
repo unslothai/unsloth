@@ -3,9 +3,7 @@
 
 // Not from features/chat: it drags the full chat page into the pill bundle.
 
-// Leaf import: the auth barrel pulls ~156 kB of pages into the pill bundle.
-// eslint-disable-next-line no-restricted-imports
-import { authFetch } from "@/features/auth/api";
+import { pillFetch } from "./api";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -33,7 +31,7 @@ export async function* streamCompletion(
   payload: StreamRequest,
   signal: AbortSignal,
 ): AsyncGenerator<string> {
-  const response = await authFetch("/v1/chat/completions", {
+  const response = await pillFetch("/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

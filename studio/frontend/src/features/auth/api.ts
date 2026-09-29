@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { accountTransitionPending } from "@/lib/account-transition";
-import { apiBaseReady, apiUrl, getApiPort, isTauri } from "@/lib/api-base";
+import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -360,8 +360,6 @@ export async function authFetch(
   // request now would carry this tab's account content under the next account's credentials.
   if (accountTransitionPending())
     throw new Error("Another tab is switching accounts; this tab will reload.");
-  // Never fetch the ':0' placeholder: WKWebView hangs such requests forever.
-  await apiBaseReady();
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   addBrowserTimezoneHeaders(headers);

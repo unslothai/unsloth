@@ -340,9 +340,6 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             let access = null, refresh = null, passwordChange = false;
             export const apiUrl = (path) => path;
             export const isTauri = false;
-            // Pre-resolved off the desktop, exactly as api-base does when there
-            // is no backend port to wait for.
-            export const apiBaseReady = () => Promise.resolve();
             // Read by the Tauri transport-failure path before it asks the native health
             // check. This stub is the web build (isTauri false), where that path is never
             // taken, but the import is unconditional and an ES module import of a name the

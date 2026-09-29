@@ -6,6 +6,7 @@
 import { authFetch } from "@/features/auth/api";
 import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
 import type { PillSettings } from "@/features/system-pill";
+import { apiBaseReady } from "@/lib/api-base";
 
 export type { PillSettings };
 
@@ -19,15 +20,21 @@ export type InferenceStatus = {
 
 let cachedSettings: PillSettings | null = null;
 
+// Never fetch the ':0' placeholder: WKWebView hangs such requests forever.
+export async function pillFetch(input: string, init?: RequestInit): Promise<Response> {
+  await apiBaseReady();
+  return authFetch(input, init);
+}
+
 async function authFetchBootTolerant(
   path: string,
   signal?: AbortSignal,
 ): Promise<Response> {
-  let response = await authFetch(path, { signal });
+  let response = await pillFetch(path, { signal });
   for (let attempt = 0; response.status === 401 && attempt < 5; attempt++) {
     if (signal?.aborted) return response;
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    response = await authFetch(path, { signal });
+    response = await pillFetch(path, { signal });
   }
   return response;
 }
@@ -61,7 +68,7 @@ export async function requestModelLoad(
   signal?: AbortSignal,
 ): Promise<void> {
   // The 200 is committed early by keepalive padding; only the body reports load completion (_deferred_error). /status misses llama.cpp loads.
-  const response = await authFetch("/api/inference/load", {
+  const response = await pillFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
