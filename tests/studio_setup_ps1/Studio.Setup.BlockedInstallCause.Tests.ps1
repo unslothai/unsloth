@@ -66,9 +66,10 @@ BeforeAll {
         -Marker '$whisperExit -eq 3' -ClosePattern '^\s*\}\s*(elseif|else)\b'
     $script:LocalLinkBusy = Get-BlockSource -Path $script:SetupPs1 `
         -Marker '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' -ClosePattern '^\s*\}\s*$'
-    # The whole if/elseif chain on the Node installer's exit code, and nothing after it.
+    # The whole if/elseif chain on the Node installer's exit code, and nothing after it. Anchored on the chain,
+    # not on reading $LASTEXITCODE: the mirror retry (#11786) sits between the two and closes first.
     $script:NodeExit = Get-BlockSource -Path $script:SetupPs1 `
-        -Marker '$nodeExit = $LASTEXITCODE' -ClosePattern '^\s*\}\s*$'
+        -Marker '$nodeExit -eq 3' -ClosePattern '^\s*\}\s*$'
 }
 
 Describe 'no llama.cpp blocked-install message names a cause setup cannot determine' {
