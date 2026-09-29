@@ -1135,7 +1135,7 @@ def test_a_stream_whose_worker_was_swapped_gets_no_tail_at_all():
 
     body = inspect.getsource(orchestrator_module.InferenceOrchestrator._consume_token_stream)
     swap = body.index("initial_proc or self._resp_queue is not initial_resp_queue")
-    following = body[swap : body.index("resp = read_one(read_timeout)", swap)]
+    following = body[swap : body.index("resp = read_one(", swap)]
     assert "_subprocess_crash_message(crash_context)" in following, following
     assert "with_worker_output" not in following, following
 

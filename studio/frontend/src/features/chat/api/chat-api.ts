@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
@@ -855,7 +855,25 @@ export async function listChatAttachments(
   };
 }
 
-/** Stored attachment content (image bytes or extracted text) as a Blob. */
+export async function uploadChatAttachmentOriginal(
+  file: File,
+  epoch = getAuthSessionEpoch(),
+): Promise<{ sha256: string; sizeBytes: number }> {
+  const sameAccount = () => {
+    if (getAuthSessionEpoch() !== epoch) throw new Error("The account changed during the upload.");
+  };
+  sameAccount();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await authFetch(
+    "/api/chat/attachment-originals",
+    { method: "POST", body: form },
+    { beforeRetry: sameAccount },
+  );
+  sameAccount();
+  return parseJsonOrThrow<{ sha256: string; sizeBytes: number }>(response);
+}
+
 export async function fetchChatAttachmentBlob(
   messageId: string,
   attachmentId: string,
@@ -1171,6 +1189,23 @@ export async function batchListChatMessages(
   for (const id of threadIds) {
     out.set(id, data.messagesByThreadId[id] ?? []);
   }
+  return out;
+}
+
+/** Message counts per thread, without bodies. Null on an older server without the route. */
+export async function batchCountChatMessages(
+  threadIds: string[],
+): Promise<Map<string, number> | null> {
+  const out = new Map<string, number>();
+  if (threadIds.length === 0) return out;
+  const response = await authFetch("/api/chat/messages:counts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (response.status === 404 || response.status === 405) return null;
+  const data = await parseJsonOrThrow<{ countsByThreadId: Record<string, number> }>(response);
+  for (const id of threadIds) out.set(id, data.countsByThreadId[id] ?? 0);
   return out;
 }
 

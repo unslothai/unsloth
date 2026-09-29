@@ -408,6 +408,40 @@ def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
         assert padding_is_bitwise_exact(lin, m), f"padding changed the kept rows at M = {m}"
 
 
+def test_a_dynamic_row_count_compiles_one_graph_for_short_and_long_captions():
+    from torch._dynamo.utils import counters
+
+    torch.manual_seed(0)
+    wrapped = PadToMinM(_RecordingLinear(64, 48), min_m = 17, pad_to = 32).eval()
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(wrapped, backend = "eager", dynamic = None)
+    for m in (19, 21, 540, 7, 32):
+        x = torch.randn(1, m, 64)
+        torch._dynamo.mark_dynamic(x, 1)
+        with torch.no_grad():
+            got = compiled(x)
+            want = wrapped(x)
+        assert got.shape == (1, m, 48)
+        assert torch.equal(got, want), m
+    if tuple(int(v) for v in torch.__version__.split(".")[:2]) >= (2, 8):
+        assert counters["stats"]["unique_graphs"] == 1
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("dynamic", [None, False])
+def test_a_static_row_count_still_compiles_fullgraph(dynamic):
+    torch.manual_seed(0)
+    wrapped = PadToMinM(nn.Linear(64, 48), min_m = 17, pad_to = 32).eval()
+    torch._dynamo.reset()
+    compiled = torch.compile(wrapped, backend = "eager", dynamic = dynamic, fullgraph = True)
+    for m in (1, 19, 32, 540):
+        x = torch.randn(2, m, 64)
+        with torch.no_grad():
+            assert torch.equal(compiled(x), wrapped(x)), m
+    torch._dynamo.reset()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "nvfp4 dynamic quant needs Blackwell")
 def test_the_zero_row_guard_on_a_real_nvfp4_linear():
     """A real nvfp4 Linear survives a zero-row call once wrapped."""

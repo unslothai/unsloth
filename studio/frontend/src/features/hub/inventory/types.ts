@@ -60,6 +60,8 @@ export interface CachedInventoryRow {
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
   // run to tens of GB and the row is how they are seen and deleted, but never a pick.
   companion?: boolean;
+  // Holds only a GGUF load's VAE / text encoder: partial for loading, not a download to continue.
+  companionPrefetch?: boolean;
   tags?: string[];
   libraryName?: string | null;
   quantMethod?: string | null;
@@ -98,6 +100,7 @@ export interface LocalInventoryRow {
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
   downloading?: boolean;
+  companionPrefetch?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];
