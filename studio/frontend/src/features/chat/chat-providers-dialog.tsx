@@ -280,7 +280,7 @@ export function ChatProvidersSettings({
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
-  // Model fields as the edit form opened them: saving them unchanged must not undo an auto reload.
+  // Model fields as the edit form opened them.
   const modelFieldsAtOpenRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
@@ -1005,20 +1005,14 @@ export function ChatProvidersSettings({
         return;
       }
     }
-    const live = useExternalProvidersStore
-      .getState()
-      .providers.find((provider) => provider.id === editingProviderId);
-    const keepLiveModels =
+    // Untouched model fields are left out of the save, so an auto reload landing before or during it stands.
+    const keepSavedModels =
       existing.providerType === "llama_cpp" &&
-      live !== undefined &&
       modelFieldsAtOpenRef.current ===
         JSON.stringify([selectedModelIds, manualIds, availableModels]);
-    const savedModels = keepLiveModels ? live.models : modelsToSave;
-    const savedAvailableModels = keepLiveModels
-      ? (live.availableModels ?? [])
-      : manualOnly
-        ? []
-        : pruneProviderModelIds(existing.providerType, availableModels);
+    const availableModelsToSave = manualOnly
+      ? []
+      : pruneProviderModelIds(existing.providerType, availableModels);
     setMutatingProvider(true);
     try {
       const baseUrl = parseBaseUrlForProvider(
@@ -1036,8 +1030,8 @@ export function ChatProvidersSettings({
           : existing.name,
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
-        models: savedModels,
-        availableModels: savedAvailableModels,
+        models: keepSavedModels ? undefined : modelsToSave,
+        availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
@@ -1061,8 +1055,10 @@ export function ChatProvidersSettings({
         name: updated.display_name,
         baseUrl: updated.base_url ?? "",
         apiType: updated.api_type ?? "chat_completions",
-        models: savedModels,
-        availableModels: savedAvailableModels,
+        models: keepSavedModels ? (updated.models ?? existing.models) : modelsToSave,
+        availableModels: keepSavedModels
+          ? (updated.available_models ?? existing.availableModels)
+          : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
 
         hasApiKey: updated.has_api_key,

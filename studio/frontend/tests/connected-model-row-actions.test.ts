@@ -816,4 +816,7 @@ test("connection saves write back the live store, not the render snapshot", () =
     /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
   );
   assert.equal(liveWrites?.length, 3);
+  // Untouched llama.cpp model fields stay out of the PUT, so a concurrent reload is not overwritten.
+  assert.match(providersDialog, /models: keepSavedModels \? undefined : modelsToSave,/);
+  assert.match(providersDialog, /availableModels: keepSavedModels \? undefined : availableModelsToSave,/);
 });

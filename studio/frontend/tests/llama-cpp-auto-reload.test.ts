@@ -141,12 +141,17 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => puts.length === 3);
     assert.deepEqual(puts[2].models, ["manual", "gamma"]);
 
+    // A restart inside one poll interval is never seen offline; the changed list alone must reload.
+    served = ["gamma", "delta"];
+    await settle(() => puts.length === 4);
+    assert.deepEqual(puts[3].models, ["manual", "gamma", "delta"]);
+
     store.setState({ providers: [{ ...row(), autoReloadModels: false }] });
     served = null;
     await idle();
-    served = ["gamma", "delta"];
+    served = ["gamma", "epsilon"];
     await idle();
-    assert.equal(puts.length, 3);
+    assert.equal(puts.length, 4);
   } finally {
     stop();
   }
