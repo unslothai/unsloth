@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const HTTP_AUTHORITY =
-  /^[hH][tT][tT][pP]:\/\/(?:[^/?#]*@)?(\[[^\]]+\]|[^/:?#]+)(?::\d+)?(?:[/?#]|$)/;
+  /^[hH][tT][tT][pP]:\/\/(?:[^/?#]*@)?(\[[^\]]+\]|[^/:?#]+)(?::\d+)?(?=\/|[?#]|$)/;
 
 function isStudioLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
@@ -39,6 +39,10 @@ export function normalizeMcpUrl(url: string): string {
   const trimmed = (url || "").trim().replace(/\/+$/, "");
   const authority = HTTP_AUTHORITY.exec(trimmed);
   if (authority && isStudioLoopbackHost(authority[1])) {
+    const rawPath = trimmed
+      .slice(authority[0].length)
+      .split(/[?#]/, 1)[0]
+      .replace(/\/+$/, "");
     // WHATWG URL parsing rejects IPv6 zone identifiers. They do not affect loopback identity, so
     // strip one only for parsing while retaining the raw host above for backend-equivalent checks.
     const parseable = trimmed.replace(
@@ -49,7 +53,7 @@ export function normalizeMcpUrl(url: string): string {
       const parsed = new URL(parseable);
       if (
         parsed.protocol === "http:" &&
-        parsed.pathname.replace(/\/+$/, "") === "/mcp/decisions"
+        rawPath === "/mcp/decisions"
       ) {
         return "studio:decisions";
       }
