@@ -326,10 +326,6 @@ with sync_playwright() as p:
         Never raises: a click that sends nothing is logged after 10 s and the assertions after
         it decide, as they did after the fixed pause.
         """
-        started = _commits["started"]
-        # Only a /load sent after this click answers it: a page-restore load already in flight can
-        # end while the clicked flow is still in /validate, and counting that one reopens the race.
-        loads_before = len(_commits["loads"])
         # A Load/Reload click is not answered until its /load is: quiet polls alone cannot see a
         # request the flow has not sent yet. Save/Forget send no load, so they keep the quiet rule.
         # A flow can also stop short of /load (validation refused, consent declined); with
@@ -337,6 +333,13 @@ with sync_playwright() as p:
         # flight and no /load started means it ended there.
         label = " ".join((btn.text_content() or "").split())
         expects_load = label in ("Load model", "Reload model")
+        # Snapshot AFTER a Playwright call: the sync API delivers request events only while one
+        # runs (see wait_until), so a page-restore /load already sent would otherwise be recorded
+        # during the call above and counted as this click's. Only a /load sent after this point
+        # answers the click; a restore load ending while the clicked flow is still in /validate
+        # would otherwise reopen the race.
+        started = _commits["started"]
+        loads_before = len(_commits["loads"])
         clicked_at = time.monotonic()
         btn.click()
         quiet = [0]
