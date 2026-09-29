@@ -8143,8 +8143,6 @@ def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(fake_run
     assert calls[0]["model_dense_mib"] == int(
         (transformer_gb + text_encoder_gb * scale + vae_gb) * _MIB_PER_GB
     )
-    # The companion / text-encoder split rides along (as the image loader passes it), at the pre-cast size, so the
-    # planner can keep the DiT resident while the text encoder streams.
     assert calls[0]["companion_dense_mib"] == int((text_encoder_gb * scale + vae_gb) * _MIB_PER_GB)
     assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * scale * _MIB_PER_GB)
 
@@ -11188,7 +11186,6 @@ def test_a_resident_video_int8_on_nvidia_keeps_torchao(fake_runtime, monkeypatch
 
 
 def test_video_auto_under_offload_on_nvidia_takes_the_torchao_free_int8(fake_runtime, monkeypatch):
-    # A DiT that has to move used to stay bf16 under auto; the torchao-free int8 rides the hooks, so auto takes it.
     calls = _stub_nvidia_video_offload(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")

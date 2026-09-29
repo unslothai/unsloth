@@ -429,7 +429,6 @@ def _buffer_ptrs(module):
 @cuda
 @pytest.mark.parametrize("pin", ["0", "1"])
 def test_buffer_weights_keep_their_host_storage_and_are_pinned(monkeypatch, pin):
-    """A buffer weight used to be copied back to pageable host memory after every call and re-uploaded unpinned."""
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
     x = torch.randn(4, 8)
     stock = _buffer_pipe("cuda")

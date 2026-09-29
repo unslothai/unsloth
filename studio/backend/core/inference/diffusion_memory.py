@@ -212,8 +212,7 @@ def _pin_host_weights(
     logger: Any = None,
     buffer_host: Optional[dict] = None,
 ) -> int:
-    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives.
-    ``buffer_host`` are the kept host BUFFERS (a torchao-free int8 linear stores its weight as one)."""
+    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
     import torch
 
     mode = _pin_mode()
@@ -338,10 +337,8 @@ def _wrap_cpu_offload_hook(
         module.__dict__[_KEEP_ATTR] = state
     state.setdefault("owner", {})
     host, owner, version = state["host"], state["owner"], state["version"]
-    # The same for plain BUFFERS: a torchao-free int8 linear keeps its weight and scale as buffers, which the stock
-    # offload copied back to pageable host memory after every call and re-uploaded unpinned (measured on Wan2.2-5B:
-    # 6.3 s of copies per call against a 1.2 s denoise). A buffer is kept while the device copy is the same tensor at
-    # the same version, i.e. nothing wrote to it.
+    # Plain buffers too (torchao-free int8): the stock offload re-copied them every call, 6.3 s vs a 1.2 s denoise on Wan2.2-5B.
+    # Kept while the device copy is the same tensor at the same version.
     buffer_host = state.setdefault("buffer_host", {})
     buffer_version = state.setdefault("buffer_version", {})
 
