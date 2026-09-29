@@ -308,7 +308,6 @@ def test_media_galleries_save_natively_with_feedback():
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = _ui_source(APP_SIDEBAR)
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
     thread_sidebar = _ui_source(THREAD_SIDEBAR)
@@ -322,12 +321,21 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    for source in (app_sidebar, thread, thread_sidebar, shared_composer, data_tab, projects):
+    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
+    project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
+    for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
         assert "isDownloadCancelled(error)" in source
+    assert "if (!isDownloadCancelled(err)) toast.error(" in chats_library
+    assert "if (!isDownloadCancelled(error)) toast.error(" in project_menu
     assert "const handleExport = useCallback(async () =>" in prompt_storage
     assert prompt_storage.count("await export") >= 12
-    assert "await Promise.all(" not in app_sidebar
-    assert "for (const id of ids)" in app_sidebar
+    # One native save at a time: the Library exports selected chats in a sequential loop.
+    assert "for (const id of threadIds) await exportConversationByFormat(" in chats_library
+    assert "await exportThreads(" in chats_library
+    # Promise.all / allSettled / any over exports would open the dialogs together.
+    assert not re.search(r"Promise\.\w+\((?:(?!;).)*?\bexport\w*\(", chats_library, re.S)
+    assert "await exportThreads(" in project_menu
     assert prompt_storage.count("await downloadBlob(") >= 5
 
     assert "await downloadBlob(zipped," in prompt_storage

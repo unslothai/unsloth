@@ -85,6 +85,7 @@ from utils.download_transport_settings import (
 from utils.hub_settings import (
     HubSettings,
     active_source,
+    claim_automatic_source,
     get_hub_settings,
     set_hub_settings,
     set_hub_source,
@@ -652,6 +653,8 @@ class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    expected_enabled: Optional[bool] = None
+    expected_model: Optional[str] = None
 
 
 class SystemOneDownloadPlan(BaseModel):
@@ -698,6 +701,10 @@ class HubSettingsResponse(BaseModel):
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
     active_source: Literal["huggingface", "modelscope"]
+
+
+class HubSourceNoticeResponse(BaseModel):
+    granted: bool
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1372,8 +1379,6 @@ def _systemone_response() -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
 
     enabled = systemone_settings.get_enabled()
-    if enabled:
-        laya_runtime.install_in_background()
     runtime = laya_runtime.status()
     model = catalog.default_checkpoint().name
     error = runtime["error"]
@@ -1401,6 +1406,37 @@ def _systemone_response() -> SystemOneSettingsResponse:
     )
 
 
+_SYSTEMONE_SETTINGS_LOCK = threading.Lock()
+
+
+def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
+    try:
+        return systemone_settings.validate(
+            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
+            event = "settings.update_systemone_failed",
+            log = logger,
+        ) from exc
+
+
+def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    changed = (
+        payload.expected_enabled is not None
+        and systemone_settings.get_enabled() != payload.expected_enabled
+    ) or (
+        payload.expected_model is not None
+        and catalog.default_checkpoint().name != payload.expected_model
+    )
+    if changed:
+        raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
+
+
 @_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
     current_subject: str = Depends(get_current_subject),
@@ -1413,33 +1449,44 @@ def update_systemone_settings(
     payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
-
-    try:
-        values = systemone_settings.validate(**payload.model_dump(exclude_none = True))
-    except ValueError as exc:
-        raise log_and_http_error(
-            exc,
-            400,
-            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
-            event = "settings.update_systemone_failed",
-            log = logger,
-        ) from exc
-    if values:
-        # The resident model was built from the old settings; drop it so the next request uses the new ones.
-        try:
-            laya_runtime.unload()
-        except laya_runtime.Unavailable as exc:
-            raise HTTPException(status_code = 409, detail = exc.message) from None
-        systemone_settings.save(values)
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            # The resident model was built from the old settings; drop it so the next request uses the new ones.
+            try:
+                laya_runtime.unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
+            systemone_settings.save(values)
     return _systemone_response()
+
+
+@_owner_settings_router.post("/systemone/validate", status_code = 204)
+def validate_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> None:
+    from core.systemone import laya_runtime
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            try:
+                laya_runtime.ensure_can_unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
-    current_subject: str = Depends(get_current_subject),
+    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(catalog.default_checkpoint()))
+
+    checkpoint = catalog.default_checkpoint() if model is None else catalog.resolve(model)
+    if checkpoint is None:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
@@ -1522,6 +1569,16 @@ def update_hub_source(
 ) -> HubSettingsResponse:
     require_ui_session(via_api_key)
     return _hub_settings_response(set_hub_source(payload.source))
+
+
+@_owner_settings_router.post("/hub/source-notice", response_model = HubSourceNoticeResponse)
+def claim_hub_source_notice(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSourceNoticeResponse:
+    """Keep the automatic ModelScope default; granted once, to the UI that tells the owner."""
+    require_ui_session(via_api_key)
+    return HubSourceNoticeResponse(granted = claim_automatic_source())
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
@@ -4130,6 +4187,7 @@ class DebugLogSourceModel(BaseModel):
 class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
+    matched_source_id: Optional[str] = None
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
@@ -4160,6 +4218,7 @@ class DebugLogResponse(BaseModel):
 
 @_owner_settings_router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
+    diagnostic_path: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogSourcesResponse:
@@ -4181,6 +4240,7 @@ def get_debug_log_sources(
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
+        matched_source_id = debug_log_sources.source_id_for_path(diagnostic_path, sources),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
         log_root = log_root,
     )
