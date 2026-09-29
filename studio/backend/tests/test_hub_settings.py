@@ -45,6 +45,19 @@ def store(monkeypatch):
     monkeypatch.setattr(
         studio_db, "upsert_app_settings", lambda updates, **_: values.update(updates) or values
     )
+
+    def compare_and_set(
+        key,
+        expected,
+        value,
+        absent = (),
+    ):
+        if values.get(key) != expected or any(k in values for k in absent):
+            return False
+        values[key] = value
+        return True
+
+    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", compare_and_set)
     monkeypatch.setattr(hub_settings, "_operator_env", None)
     monkeypatch.setattr(hub_settings, "_operator_endpoints", None, raising = False)
     monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
@@ -118,6 +131,170 @@ def test_the_startup_read_leaves_studio_db_as_it_found_it(tmp_path, monkeypatch)
     assert not db.exists()
 
 
+@pytest.mark.parametrize(
+    "flag, configured, automatic",
+    [
+        ("1", {}, True),
+        ("0", {}, False),
+        ("1", {hub_settings.SOURCE_KEY: "huggingface"}, False),
+        ("1", {hub_settings.HF_ENDPOINT_KEY: ""}, False),
+        ("1", {"HF_ENDPOINT": MIRROR}, False),
+    ],
+)
+def test_restricted_region_defaults_to_modelscope_until_the_hub_is_configured(
+    store, monkeypatch, flag, configured, automatic
+):
+    import hub.modelscope.router as modelscope
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    monkeypatch.delenv("HF_ENDPOINT")
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", flag)
+    for key, value in configured.items():
+        if key == "HF_ENDPOINT":
+            monkeypatch.setenv(key, value)
+        else:
+            store[key] = value
+    hub_settings.apply_hub_settings()
+    settings = hub_settings.get_hub_settings()
+    expected = hub_settings.MODELSCOPE if automatic else hub_settings.HUGGINGFACE
+    assert (settings.source, settings.source_automatic) == (expected, automatic)
+    assert hub_settings.active_source() == expected
+    assert store == {k: v for k, v in configured.items() if k != "HF_ENDPOINT"}
+
+
+def test_rejected_operator_endpoint_still_disables_the_automatic_source(store, monkeypatch):
+    monkeypatch.setenv("HF_ENDPOINT", "http://mirror.lan")
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "1")
+    hub_settings.apply_hub_settings()
+    current = hub_settings.get_hub_settings()
+    assert (current.source, current.source_automatic) == (hub_settings.HUGGINGFACE, False)
+    assert "HF_ENDPOINT" not in os.environ
+    assert hub_settings.operator_hf_endpoint() == "https://huggingface.co"
+
+
+@pytest.mark.parametrize(
+    "zone, resolvers, platform, expected",
+    [
+        ("Asia/Shanghai", "", "linux", True),
+        (":/usr/share/zoneinfo/Asia/Urumqi", "", "darwin", True),
+        ("Asia/Singapore", "", "linux", False),
+        ("Asia/Singapore", "nameserver 192.168.1.1\nnameserver 223.5.5.5\n", "linux", True),
+        ("Asia/Singapore", "nameserver 223.5.5.50\n", "linux", False),
+    ],
+)
+def test_restricted_region_follows_the_installer_rules(
+    tmp_path, monkeypatch, zone, resolvers, platform, expected
+):
+    from utils import region
+
+    conf = tmp_path / "resolv.conf"
+    conf.write_text(resolvers)
+    monkeypatch.setattr(region, "_RESOLV_CONFS", (str(tmp_path / "missing"), str(conf)))
+    monkeypatch.setattr(region.sys, "platform", platform)
+    monkeypatch.setenv("TZ", zone)
+    monkeypatch.delenv("UNSLOTH_MIRROR_FALLBACK")
+    region.in_restricted_region.cache_clear()
+    try:
+        assert region.mirror_fallback_enabled() is expected
+    finally:
+        region.in_restricted_region.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "zone, resolvers, expected",
+    [
+        ("China Standard Time", [], True),
+        ("Singapore Standard Time", [], False),
+        ("Singapore Standard Time", ["192.168.1.1", "223.5.5.5"], True),
+        ("Singapore Standard Time", ["223.5.5.50", "8.8.8.8"], False),
+    ],
+)
+def test_windows_reads_the_registry_time_zone_and_adapter_resolvers(
+    monkeypatch, zone, resolvers, expected
+):
+    from utils import region
+
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    registry = _types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE = None,
+        OpenKey = lambda *_: _Key(),
+        QueryValueEx = lambda _key, name: (zone, 1),
+    )
+    monkeypatch.setattr(region, "_windows_resolvers", lambda: resolvers)
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    monkeypatch.setattr(region.sys, "platform", "win32")
+    monkeypatch.delenv("TZ", raising = False)
+    region.in_restricted_region.cache_clear()
+    try:
+        assert region.in_restricted_region() is expected
+    finally:
+        region.in_restricted_region.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "database, automatic", [(None, True), ("garbage", False), ("malformed row", False)]
+)
+def test_only_a_missing_database_reads_as_unconfigured(monkeypatch, database, automatic):
+    import sqlite3
+
+    from utils.account_context import OWNER, run_as
+    from utils.paths.storage_roots import studio_db_path
+
+    monkeypatch.delitem(sys.modules, "storage.studio_db")
+    monkeypatch.delenv("HF_ENDPOINT", raising = False)
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "1")
+    monkeypatch.setattr(hub_settings, "_operator_env", None)
+    path = run_as(OWNER, studio_db_path)
+    path.parent.mkdir(parents = True, exist_ok = True)
+    if database == "garbage":
+        path.write_bytes(b"not a database" * 100)
+    elif database == "malformed row":
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT)")
+            conn.execute("INSERT INTO app_settings VALUES (?, ?)", (hub_settings.SOURCE_KEY, "{"))
+    assert hub_settings.get_hub_settings().source_automatic is automatic
+
+
+def test_windows_resolvers_come_from_adapters_that_are_up():
+    import ctypes
+
+    from utils import region
+
+    keep = []
+
+    def servers(*addresses):
+        head = ctypes.POINTER(region._Server)()
+        for address in reversed(addresses):
+            family, octets = (2, address.split(".")) if "." in address else (23, ["0"] * 4)
+            raw = (ctypes.c_ubyte * 16)(family, 0, 0, 0, *map(int, octets))
+            node = region._Server(
+                next = head,
+                address = region._Address(ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte)), 16),
+            )
+            keep.extend([raw, node])
+            head = ctypes.pointer(node)
+        return head
+
+    head = ctypes.POINTER(region._Adapter)()
+    for status, dns in reversed(
+        [
+            (1, servers("::1", "192.168.1.1")),
+            (2, servers("223.5.5.5")),
+            (1, servers("119.29.29.29")),
+        ]
+    ):
+        adapter = region._Adapter(next = head, dns = dns, oper_status = status)
+        keep.append(adapter)
+        head = ctypes.pointer(adapter)
+    assert region._up_adapter_resolvers(head) == ["192.168.1.1", "119.29.29.29"]
+
+
 @pytest.fixture
 def client(store):
     app = FastAPI()
@@ -166,8 +343,53 @@ def test_an_api_key_cannot_move_the_endpoint_or_source(client, store):
         == 403
     )
     assert client.put("/hub/source", json = {"source": "modelscope"}).status_code == 403
+    assert client.post("/hub/source-notice").status_code == 403
     client.app.dependency_overrides[settings.authenticated_via_api_key] = lambda: False
     assert client.get("/hub").json() == before
+
+
+def test_the_owner_is_told_once_and_the_automatic_source_is_kept(client, store, monkeypatch):
+    import hub.modelscope.router as modelscope
+
+    def no_adapter():
+        raise RuntimeError("port exhausted")
+
+    monkeypatch.delenv("HF_ENDPOINT")
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "1")
+    monkeypatch.setattr(modelscope, "internal_endpoint", no_adapter)
+    hub_settings.apply_hub_settings()
+    assert client.post("/hub/source-notice").json() == {"granted": False}
+    assert store == {}
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    hub_settings.apply_hub_settings()
+    grants = [client.post("/hub/source-notice").json()["granted"] for _ in range(2)]
+    assert grants == [True, False]
+    assert store == {hub_settings.SOURCE_KEY: "modelscope"}
+    store.clear()
+    claim = studio_db.compare_and_set_app_setting
+
+    def endpoint_saved_meanwhile(*args, **kwargs):
+        # Another tab saves an endpoint between this claim's read and its insert.
+        store[hub_settings.HF_ENDPOINT_KEY] = MIRROR
+        return claim(*args, **kwargs)
+
+    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", endpoint_saved_meanwhile)
+    assert client.post("/hub/source-notice").json() == {"granted": False}
+    assert store == {hub_settings.HF_ENDPOINT_KEY: MIRROR}
+    store.clear()
+    store[hub_settings.SOURCE_KEY] = "modelscope"
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+    assert client.get("/hub").json()["source"] == "modelscope"
+
+
+def test_the_claim_insert_requires_the_endpoint_to_stay_unsaved():
+    source, endpoint = hub_settings.SOURCE_KEY, hub_settings.HF_ENDPOINT_KEY
+    studio_db.upsert_app_settings({endpoint: MIRROR})
+    assert not studio_db.compare_and_set_app_setting(source, None, "modelscope", absent = (endpoint,))
+    assert studio_db.get_app_setting(source, None) is None
+    assert studio_db.compare_and_set_app_setting(source, None, "modelscope", absent = ("unset",))
+    assert studio_db.get_app_setting(source, None) == "modelscope"
 
 
 @pytest.mark.parametrize(

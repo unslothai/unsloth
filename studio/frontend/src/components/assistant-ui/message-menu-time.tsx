@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useLocale, useT } from "@/i18n";
 import { formatMessageDate } from "@/lib/format-message-date";
+import { messageTimestamp } from "@/lib/message-timestamp";
 import type { FC } from "react";
 
 /** When the message was written, heading the More menu, with the details button beside it.
@@ -20,7 +21,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
 }) => {
   const t = useT();
   const locale = useLocale();
-  const createdAt = useAuiState(({ message }) => message.createdAt?.getTime());
+  const createdAt = useAuiState(({ message }) => messageTimestamp(message));
   const date =
     createdAt !== undefined && Number.isFinite(createdAt)
       ? new Date(createdAt)

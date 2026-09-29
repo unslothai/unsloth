@@ -1214,3 +1214,64 @@ def test_int8_decoder_rotated_path_stays_close(monkeypatch):
         ref = vae.decoder(z)
         got = fast.decoder(z)
     assert (got - ref).norm() / ref.norm() < 0.05
+
+
+def test_the_fused_decoder_reservation_turns_off_the_forced_vae_block_compile(monkeypatch):
+    # UNSLOTH_DIFFUSION_COMPILE_VAE=1 used to compile the decoder blocks the fused decoder never calls, and report it
+    from core.inference import diffusion_speed as ds_mod
+
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    monkeypatch.delenv(H.H3_VAE_FAST_ENV, raising = False)
+    monkeypatch.setattr(H, "cuda_fast_path_available", lambda vae = None: True)
+    vae = _tiny_vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    assert H.reserve_h3_fast_decoder(vae, speed_mode = "default", workflow = "t2va") is True
+    assert ds_mod._vae_decode_compile_allowed(pipe, "default") is False
+    # the reservation predicts exactly what apply_h3_vae_speedups then engages
+    assert H.LEVER_FUSED_DECODER in H.apply_h3_vae_speedups(
+        vae, speed_mode = "default", workflow = "t2va"
+    )
+
+
+@pytest.mark.parametrize("case", ["off", "fast_disabled", "no_fast_path"])
+def test_no_fused_decoder_keeps_the_forced_vae_block_compile(monkeypatch, case):
+    from core.inference import diffusion_speed as ds_mod
+
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    monkeypatch.delenv(H.H3_VAE_FAST_ENV, raising = False)
+    monkeypatch.setattr(H, "cuda_fast_path_available", lambda vae = None: case != "no_fast_path")
+    if case == "fast_disabled":
+        monkeypatch.setenv(H.H3_VAE_FAST_ENV, "0")
+    vae = _tiny_vae()
+    speed = "off" if case == "off" else "default"
+    assert H.reserve_h3_fast_decoder(vae, speed_mode = speed, workflow = "t2va") is False
+    assert ds_mod._vae_decode_compile_allowed(types.SimpleNamespace(vae = vae), "default") is True
+
+
+def test_the_h3_load_reserves_the_fused_decoder_before_the_speed_optims():
+    import ast
+    import pathlib
+
+    tree = ast.parse((pathlib.Path(H.__file__).parent / "video.py").read_text(encoding = "utf-8"))
+    load = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
+    )
+
+    def calls(name):
+        return [
+            c
+            for c in ast.walk(load)
+            if isinstance(c, ast.Call)
+            and (getattr(c.func, "id", None) == name or getattr(c.func, "attr", None) == name)
+        ]
+
+    (reserve,) = calls("reserve_h3_fast_decoder")
+    (apply_vae,) = calls("apply_h3_vae_speedups")
+    assert reserve.lineno < calls("apply_speed_optims")[0].lineno
+    assert {k.arg for k in reserve.keywords} == {"speed_mode", "workflow"}
+    # the same tier and workflow as the call that engages the fused decoder
+    for kw in ("speed_mode", "workflow"):
+        got = {k.arg: ast.dump(k.value) for k in reserve.keywords}[kw]
+        assert got == {k.arg: ast.dump(k.value) for k in apply_vae.keywords}[kw]

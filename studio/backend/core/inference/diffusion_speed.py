@@ -437,6 +437,7 @@ def apply_speed_optims(
     applied = {
         "channels_last": False,
         "vae_fp16_decode": False,
+        "vae_single_frame": False,
         "vae_fused": False,
         "cudnn_benchmark": False,
         "tf32": False,
@@ -456,6 +457,7 @@ def apply_speed_optims(
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
+    applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(
         pipe, logger, fused = on_cuda and _fused_vae_planned(pipe)
@@ -579,6 +581,15 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
         and _is_float16(getattr(target, "dtype", None))
         and _denoiser_unet(pipe) is not None
     )
+
+
+def _vae_single_frame(pipe: Any, logger: Any) -> bool:
+    try:
+        from . import diffusion_vae_single_frame  # noqa: PLC0415
+        return diffusion_vae_single_frame.install(getattr(pipe, "vae", None), logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "vae single-frame path", exc)
+        return False
 
 
 # channels_last: slower on the stock path (72.7 vs 89 ms), faster once the fused norms install (104.7 vs 121.0 ms).
@@ -747,7 +758,19 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
     return bool(_STREAM_MERGE_SOURCE.search(source))
 
 
+def _divisibility_proof_available() -> bool:
+    """Whether inductor proves ``(k*a + k*b) % (a + b) == 0`` (torch 2.14+, or the backport; see diffusion_inductor_backports)."""
+    try:
+        from . import diffusion_inductor_backports  # noqa: PLC0415 - imports torch
+        return diffusion_inductor_backports.proof_available()
+    except Exception:  # noqa: BLE001 - unanswerable: keep the static fallback
+        return False
+
+
 def _dits_merge_streams(dits: list) -> bool:
+    """Whether a stream-merging block must compile static: not once inductor can prove the CantSplit split."""
+    if _divisibility_proof_available():
+        return False
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
@@ -889,12 +912,12 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
-        if dit_kwargs["dynamic"] is None:
-            try:
-                from . import diffusion_dynamic_text
-                diffusion_dynamic_text.install(transformer, logger)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "dynamic text dims", exc)
+        # dynamic=True (dense H3) still needs the unbacked temb, else step 1 compiles a second graph.
+        try:
+            from . import diffusion_dynamic_text
+            diffusion_dynamic_text.install(transformer, logger, dynamic = dit_kwargs["dynamic"])
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "dynamic text dims", exc)
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)
@@ -1100,7 +1123,7 @@ def settle_compile_fallback(
     dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
     the recorded failure, or None when nothing fell back."""
     dit_error = compile_fallback_error(pipe)
-    vae_error = getattr(getattr(pipe, "vae", None), "_unsloth_compile_decode_error", None)
+    vae_error = _vae_compile_error(getattr(pipe, "vae", None))
     fallback = dit_error or vae_error
     if not fallback:
         return None
@@ -1157,11 +1180,12 @@ COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
 _VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
 _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 
-# Not a correctness list: these decode correctly compiled but measured SLOWER than eager.
+# Correct compiled but not worth it (Qwen-Image VAE: ~54 s first compile for ~23 ms/decode). Keyed by class, never by
+# the single-frame marker, which is installed after the compile-cache fingerprint is taken.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 # ``auto`` compiles only measured VAEs: video DiTs also pass through apply_speed_optims.
-_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL", "AutoencoderKLFlux2"})
 
 
 def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
@@ -1199,6 +1223,9 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
         return False
     if _denoiser_unet(pipe) is not None:
         return True
+    # H3's fused decoder never calls the blocks, so compiling them would be reported but never run.
+    if getattr(getattr(pipe, "vae", None), "_unsloth_decode_blocks_bypassed", False):
+        return False
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
     if raw in _VAE_FALSE_TOKENS:
         return False
@@ -1328,15 +1355,21 @@ def _compile_vae_decode(
     decode = getattr(owner, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
+    # A regional block guard does not clear _unsloth_compiled_decode when it falls back, so the error is read first.
+    if _vae_compile_error(vae):
+        return False
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return True
     if getattr(vae, "_unsloth_compile_decode_error", None):
         return False
     _install_inductor_backports(logger)
+    if _vae_declares_repeated_blocks(vae):
+        return _compile_vae_regionally(vae, logger, max_autotune = max_autotune)
     try:
         import torch
 
+        # dynamic=True: automatic dynamic pays a second compile on the next resolution for no steady-state gain.
         kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
@@ -1349,6 +1382,44 @@ def _compile_vae_decode(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)
         return False
+
+
+def _vae_declares_repeated_blocks(vae: Any) -> bool:
+    try:
+        return bool(getattr(vae, "_repeated_blocks", None)) and callable(
+            getattr(vae, "compile_repeated_blocks", None)
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _compile_vae_regionally(
+    vae: Any,
+    logger: Any,
+    max_autotune: bool = False,
+) -> bool:
+    """Compile the VAE's repeated block, not ``decode``: a tiled decode unrolls its Python tile loop into one graph
+    (RecursionError static, CantSplit dynamic on MiniMax-H3); a block sees one fixed-shape tile."""
+    try:
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": False}
+        if max_autotune:
+            kwargs["mode"] = "max-autotune-no-cudagraphs"
+        vae.compile_repeated_blocks(**kwargs)
+        guard_compiled_blocks(vae, logger)
+        vae._unsloth_compiled_decode = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "vae regional compile", exc)
+        return False
+
+
+def _vae_compile_error(vae: Any) -> Optional[str]:
+    """The decode-compile failure a VAE fell back from: the whole-decode wrapper's, or a regional block guard's."""
+    error = getattr(vae, "_unsloth_compile_decode_error", None)
+    if error:
+        return error
+    guard = getattr(vae, "_unsloth_compile_guard", None)
+    return getattr(guard, "error", None) if guard is not None else None
 
 
 def _enable_cudnn_benchmark(logger: Any) -> bool:

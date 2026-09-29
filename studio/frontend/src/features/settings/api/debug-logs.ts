@@ -29,6 +29,8 @@ export interface DebugLogSource {
 export interface DebugLogSources {
   sources: DebugLogSource[];
   defaultSourceId: string | null;
+  /** The source a diagnostic's own path names, canonicalised by the backend. */
+  matchedSourceId: string | null;
   fileLoggingDisabled: boolean;
   /** Where the logs live. Null on a backend older than this field. */
   logRoot: string | null;
@@ -52,8 +54,12 @@ export interface DebugLogPage {
 
 export async function loadDebugLogSources(
   signal?: AbortSignal,
+  diagnosticPath?: string | null,
 ): Promise<DebugLogSources> {
-  const response = await authFetch("/api/settings/debug/logs/sources", {
+  const query = diagnosticPath
+    ? `?diagnostic_path=${encodeURIComponent(diagnosticPath)}`
+    : "";
+  const response = await authFetch(`/api/settings/debug/logs/sources${query}`, {
     signal,
   });
   if (!response.ok) {
@@ -73,6 +79,7 @@ export async function loadDebugLogSources(
       isCurrent: Boolean(source.is_current),
     })),
     defaultSourceId: body.default_source_id ?? null,
+    matchedSourceId: body.matched_source_id ?? null,
     fileLoggingDisabled: Boolean(body.file_logging_disabled),
     logRoot: body.log_root ?? null,
   };
@@ -156,7 +163,8 @@ const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 // session (per-account isolation, shared installs). No request is made, so
 // there is no status: the command returns this exact sentence (`LOGIN_REQUIRED`
 // in native_file_dialogs.rs). Keep the two in step.
-const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Unsloth session.";
+const DESKTOP_LOGIN_REQUIRED =
+  "Log export requires a signed-in Unsloth session.";
 
 function desktopExportError(error: unknown): LogExportError {
   const message =
