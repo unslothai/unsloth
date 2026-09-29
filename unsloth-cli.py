@@ -294,7 +294,6 @@ def run(args):
             asft_streaming = ASFTStreamingConfig(
                 mode = args.asft_streaming,
                 ref_microbatch_size = args.ref_microbatch_size,
-                seq_chunk_size = args.seq_chunk_size,
             ),
         )
     else:
@@ -590,7 +589,7 @@ def build_parser():
         "--kl_weight",
         type = float,
         default = 0.0,
-        help = "Weight for KL divergence term in sft+kl and asft modes. Default: 0.0",
+        help = "Weight for the KL term in sft+kl and asft modes; 0 skips the reference forward. Default: 0.0",
     )
     asft_group.add_argument(
         "--reference_policy",
@@ -605,28 +604,19 @@ def build_parser():
     asft_group.add_argument(
         "--asft_streaming",
         nargs = "?",
-        const = "auto",
+        const = "batch",
         default = "off",
-        choices = ["off", "auto", "batch", "seq", "hybrid"],
+        choices = ["off", "batch"],
         help = (
-            "Streaming mode for reference forward: 'off' (full forward), "
-            "'auto' (seq_kv_cache with batch-micro fallback), "
-            "'batch' (microbatch by batch), 'seq' (sequence chunking with KV cache), "
-            "'hybrid' (batch micro + seq_kv_cache). "
-            "Use flag without value for 'auto'."
+            "Reference forward: 'off' (one full forward) or 'batch' (microbatched to lower "
+            "peak VRAM). Flag without value means 'batch'."
         ),
     )
     asft_group.add_argument(
         "--ref_microbatch_size",
         type = int,
         default = None,
-        help = "Microbatch size for batch_micro or seq_kv_cache strategy",
-    )
-    asft_group.add_argument(
-        "--seq_chunk_size",
-        type = int,
-        default = None,
-        help = "Sequence chunk size for seq_kv_cache strategy",
+        help = "Reference microbatch size for --asft_streaming batch. Default: half the batch",
     )
 
     return parser

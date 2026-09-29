@@ -17,7 +17,6 @@
 from .asft import (
     ASFTStreamingConfig,
     compute_asft_loss,
-    effective_logits,
     fast_cross_entropy_loss_per_token,
     build_shift_labels,
     get_reference_forward_callable,
@@ -26,7 +25,6 @@ from .asft import (
 __all__ = [
     "ASFTStreamingConfig",
     "compute_asft_loss",
-    "effective_logits",
     "fast_cross_entropy_loss_per_token",
     "build_shift_labels",
     "get_reference_forward_callable",

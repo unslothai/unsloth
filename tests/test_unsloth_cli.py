@@ -40,15 +40,14 @@ def test_cli_defaults_asft():
     assert args.reference_policy == "disable_adapter"
     assert args.asft_streaming == "off"
     assert args.ref_microbatch_size is None
-    assert args.seq_chunk_size is None
 
 
-def test_cli_asft_streaming_flag_defaults_auto():
+def test_cli_asft_streaming_flag_defaults_batch():
     cli = _load_cli_module()
     parser = cli.build_parser()
     args = parser.parse_args(["--asft_streaming"])
 
-    assert args.asft_streaming == "auto"
+    assert args.asft_streaming == "batch"
 
 
 def test_cli_asft_streaming_value():

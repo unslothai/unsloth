@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Literal, Optional, Tuple, Union
 
 import torch
@@ -30,7 +30,6 @@ from unsloth.utils.packing import mask_packed_sequence_boundaries
 
 __all__ = [
     "ASFTStreamingConfig",
-    "effective_logits",
     "fast_cross_entropy_loss_per_token",
     "build_shift_labels",
     "get_reference_forward_callable",
@@ -38,88 +37,20 @@ __all__ = [
 ]
 
 
-_DEFAULT_SEQ_CHUNK_SIZE = 256
 _DEFAULT_REF_MICROBATCH_DIVISOR = 2
 
 
 @dataclass
 class ASFTStreamingConfig:
-    """Streaming options that lower the reference-forward VRAM peak.
+    """Reference-forward streaming: mode "off" (one full forward) or "batch" (microbatched).
 
-    mode: "off" | "auto" (seq_kv_cache, batch-micro fallback) | "batch" | "seq" | "hybrid";
-    overrides the legacy enabled/ref_strategy fields when set.
+    No sequence/KV-cache chunking: Unsloth's patched decoders route any call with
+    past_key_values to the single-token decode kernel (asserts q_len == 1).
     """
 
-    mode: Optional[Literal["off", "auto", "batch", "seq", "hybrid"]] = None
-    enabled: bool = False
-    ref_strategy: Literal["none", "batch_micro", "seq_kv_cache"] = "none"
+    mode: Literal["off", "batch"] = "off"
     ref_microbatch_size: Optional[int] = None
-    seq_chunk_size: Optional[int] = None
-    kl_token_chunk_size: Optional[int] = None
     force_fp32_kl: bool = True
-
-
-def _resolve_logit_params(
-    model: Optional[nn.Module], logit_softcapping: Optional[float], logit_scaling: Optional[float]
-) -> Tuple[float, float]:
-    if model is not None:
-        config = getattr(model, "config", None)
-        if config is not None:
-            if logit_softcapping is None:
-                logit_softcapping = getattr(config, "final_logit_softcapping", 0)
-                if logit_softcapping is None:
-                    logit_softcapping = 0
-            if logit_scaling is None:
-                logit_scaling = getattr(config, "logit_scale", 0)
-                if logit_scaling is None:
-                    logit_scaling = 0
-                if logit_scaling == 0:
-                    logit_scaling = getattr(config, "logit_scaling", 0)
-                    if logit_scaling is None:
-                        logit_scaling = 0
-                model_type = getattr(config, "model_type", None)
-                if model_type == "granite":
-                    logits_scaling = getattr(config, "logits_scaling", 1)
-                    if logits_scaling is None:
-                        logits_scaling = 1
-                    logit_scaling = 1 / logits_scaling
-                elif model_type == "falcon_h1":
-                    logit_scaling = getattr(config, "lm_head_multiplier", 0)
-                    if logit_scaling is None:
-                        logit_scaling = 0
-
-    if logit_softcapping is None:
-        logit_softcapping = 0
-    if logit_scaling is None:
-        logit_scaling = 0
-
-    return logit_softcapping, logit_scaling
-
-
-def effective_logits(
-    logits: torch.Tensor,
-    model: Optional[nn.Module] = None,
-    logit_softcapping: Optional[float] = None,
-    logit_scaling: Optional[float] = None,
-) -> torch.Tensor:
-    """Apply logit scaling then softcapping exactly as Unsloth's Triton CE kernel does,
-    so DFT weights and KL see the same distribution as CE.
-    """
-    logit_softcapping, logit_scaling = _resolve_logit_params(
-        model,
-        logit_softcapping,
-        logit_scaling,
-    )
-
-    x = logits.float()
-
-    if logit_scaling != 0:
-        x = logit_scaling * x
-
-    if logit_softcapping != 0:
-        x = logit_softcapping * torch.tanh(x / logit_softcapping)
-
-    return x
 
 
 def fast_cross_entropy_loss_per_token(
@@ -130,29 +61,12 @@ def fast_cross_entropy_loss_per_token(
     ignore_index: int = -100,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Unreduced per-token CE via Fast_CrossEntropyLoss; returns (losses (B*T,), valid_mask)."""
-    original_shape = None
-    if logits.dim() == 3:
-        batch, seq_len, vocab_size = logits.shape
-        original_shape = (batch, seq_len)
-        logits = logits.view(batch * seq_len, vocab_size)
-        labels = labels.view(batch * seq_len)
-    else:
-        vocab_size = logits.shape[-1]
-
+    logits = logits.reshape(-1, logits.shape[-1])
+    labels = labels.reshape(-1)
     valid_mask = labels != ignore_index
-
-    labels_for_kernel = labels
     if ignore_index != -100:
-        labels_for_kernel = labels.clone()
-        labels_for_kernel[labels_for_kernel == ignore_index] = -100
-
-    losses = Fast_CrossEntropyLoss.apply(
-        logits,
-        labels_for_kernel,
-        logit_softcapping,
-        logit_scaling,
-    )
-
+        labels = labels.masked_fill(~valid_mask, -100)
+    losses = Fast_CrossEntropyLoss.apply(logits, labels, logit_softcapping, logit_scaling)
     return losses, valid_mask
 
 
@@ -165,14 +79,8 @@ def build_shift_labels(
     shift_labels = torch.empty_like(labels)
     shift_labels[..., :-1] = labels[..., 1:]
     shift_labels[..., -1] = ignore_index
-
     if packed_seq_lengths is not None:
-        mask_packed_sequence_boundaries(
-            shift_labels,
-            packed_seq_lengths,
-            ignore_index = ignore_index,
-        )
-
+        mask_packed_sequence_boundaries(shift_labels, packed_seq_lengths, ignore_index = ignore_index)
     return shift_labels
 
 
@@ -195,396 +103,105 @@ def get_reference_forward_callable(
     return_outputs: bool = False,
 ) -> Callable[..., torch.Tensor]:
     """Return a reference forward: "disable_adapter" (needs PEFT) or "frozen_copy"."""
-    has_adapters = hasattr(model, "disable_adapter")
+    if reference_policy not in ("disable_adapter", "frozen_copy"):
+        raise ValueError(f"Unknown reference_policy: {reference_policy}")
 
-    if reference_policy == "disable_adapter" and has_adapters:
+    if reference_policy == "disable_adapter" and hasattr(model, "disable_adapter"):
 
-        def ref_forward(**forward_inputs) -> torch.Tensor:
+        def ref_forward(**forward_inputs):
             with _inference_eval_context(model):
                 disable_adapter = model.disable_adapter
-                if hasattr(disable_adapter, "__enter__") and hasattr(disable_adapter, "__exit__"):
-                    context_manager = disable_adapter
-                else:
-                    context_manager = disable_adapter()
-                with context_manager:
+                if not (
+                    hasattr(disable_adapter, "__enter__") and hasattr(disable_adapter, "__exit__")
+                ):
+                    disable_adapter = disable_adapter()
+                with disable_adapter:
                     outputs = model(**forward_inputs)
                     return outputs if return_outputs else outputs.logits
 
         return ref_forward
 
-    elif reference_policy == "frozen_copy" or not has_adapters:
-        if original_model is None:
-            original_model = deepcopy(model)
-            original_model.eval()
-            original_model.requires_grad_(False)
+    if original_model is None:
+        original_model = deepcopy(model)
+        original_model.eval()
+        original_model.requires_grad_(False)
 
-        def ref_forward(**forward_inputs) -> torch.Tensor:
-            with _inference_eval_context(original_model):
-                outputs = original_model(**forward_inputs)
-                return outputs if return_outputs else outputs.logits
+    def ref_forward(**forward_inputs):
+        with _inference_eval_context(original_model):
+            outputs = original_model(**forward_inputs)
+            return outputs if return_outputs else outputs.logits
 
-        return ref_forward
-
-    else:
-        raise ValueError(f"Unknown reference_policy: {reference_policy}")
+    return ref_forward
 
 
 def _compute_kl_divergence(
     cur_logits: torch.Tensor,
     ref_logits: torch.Tensor,
-    model: Optional[nn.Module] = None,
-    logit_softcapping: float = 0,
-    logit_scaling: float = 0,
     force_fp32: bool = True,
     kl_direction: Literal["forward", "reverse"] = "forward",
 ) -> torch.Tensor:
-    """Per-token KL, forward KL(p_ref || p_cur) by default.
+    """Per-token KL over the last dim, forward KL(p_ref || p_cur) by default.
 
-    The original ASFT repo's paper says reverse KL, but its code F.kl_div(log(cur), ref)
-    is forward KL; we match the code. kl_direction="reverse" gives KL(p_cur || p_ref).
+    The ASFT paper says reverse KL, but its code F.kl_div(log(cur), ref) is forward KL;
+    we match the code. kl_direction="reverse" gives KL(p_cur || p_ref).
     """
-    original_shape = None
-    if cur_logits.dim() == 3:
-        batch, seq_len, vocab_size = cur_logits.shape
-        original_shape = (batch, seq_len)
-        cur_logits = cur_logits.view(batch * seq_len, vocab_size)
-        ref_logits = ref_logits.view(batch * seq_len, vocab_size)
-
-    cur_eff = effective_logits(cur_logits, model, logit_softcapping, logit_scaling)
-    ref_eff = effective_logits(ref_logits, model, logit_softcapping, logit_scaling)
-
     if force_fp32:
-        cur_eff = cur_eff.float()
-        ref_eff = ref_eff.float()
-
+        cur_logits = cur_logits.float()
+        ref_logits = ref_logits.float()
     if kl_direction == "forward":
-        cur_logp = F.log_softmax(cur_eff, dim = -1)
-        ref_p = F.softmax(ref_eff, dim = -1)
-        kl = F.kl_div(cur_logp, ref_p, reduction = "none").sum(dim = -1)
-    elif kl_direction == "reverse":
-        ref_logp = F.log_softmax(ref_eff, dim = -1)
-        cur_p = F.softmax(cur_eff, dim = -1)
-        kl = F.kl_div(ref_logp, cur_p, reduction = "none").sum(dim = -1)
-    else:
-        raise ValueError(f"Unknown kl_direction: {kl_direction}")
-
-    return kl
+        return F.kl_div(
+            F.log_softmax(cur_logits, dim = -1), F.softmax(ref_logits, dim = -1), reduction = "none"
+        ).sum(dim = -1)
+    if kl_direction == "reverse":
+        return F.kl_div(
+            F.log_softmax(ref_logits, dim = -1), F.softmax(cur_logits, dim = -1), reduction = "none"
+        ).sum(dim = -1)
+    raise ValueError(f"Unknown kl_direction: {kl_direction}")
 
 
-def _compute_dft_weights(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    model: Optional[nn.Module] = None,
-    logit_softcapping: float = 0,
-    logit_scaling: float = 0,
-    ignore_index: int = -100,
-    ce_losses: Optional[torch.Tensor] = None,
-    valid_mask: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    """Detached p(label); uses exp(-ce_losses) when given to skip a full-vocab softmax."""
-    if ce_losses is not None:
-        weights = torch.exp(-ce_losses.detach())
-        if valid_mask is not None:
-            weights = weights * valid_mask
-        return weights
-
-    if logits.dim() == 3:
-        batch, seq_len, vocab_size = logits.shape
-        logits = logits.view(batch * seq_len, vocab_size)
-        labels = labels.view(batch * seq_len)
-    else:
-        vocab_size = logits.shape[-1]
-
-    logits_eff = effective_logits(logits, model, logit_softcapping, logit_scaling)
-
-    p = F.softmax(logits_eff.float(), dim = -1)
-
-    safe_labels = labels.clamp(min = 0, max = vocab_size - 1)
-
-    weights = p.gather(dim = -1, index = safe_labels.unsqueeze(-1)).squeeze(-1)
-
-    return weights.detach()
-
-
-def _unwrap_reference_outputs(ref_outputs: Any) -> Tuple[torch.Tensor, Optional[Any]]:
+def _unwrap_logits(ref_outputs: Any) -> torch.Tensor:
     if hasattr(ref_outputs, "logits"):
-        return ref_outputs.logits, getattr(ref_outputs, "past_key_values", None)
-    if isinstance(ref_outputs, (tuple, list)) and len(ref_outputs) > 0:
-        past_key_values = ref_outputs[1] if len(ref_outputs) > 1 else None
-        return ref_outputs[0], past_key_values
-    return ref_outputs, None
+        return ref_outputs.logits
+    if isinstance(ref_outputs, (tuple, list)):
+        return ref_outputs[0]
+    return ref_outputs
 
 
 def _slice_batch_inputs(
     forward_inputs: Dict[str, Any], batch_size: int, b_start: int, b_end: int
 ) -> Dict[str, Any]:
-    mb_inputs = {}
-    for key, value in forward_inputs.items():
-        if torch.is_tensor(value) and value.shape[0] == batch_size:
-            mb_inputs[key] = value[b_start:b_end]
-        else:
-            mb_inputs[key] = value
-    return mb_inputs
+    return {
+        key: value[b_start:b_end]
+        if torch.is_tensor(value) and value.shape[:1] == (batch_size,)
+        else value
+        for key, value in forward_inputs.items()
+    }
 
 
-def _compute_kl_batch_micro(
-    model: nn.Module,
+def _compute_kl(
     cur_logits: torch.Tensor,
-    shift_labels: torch.Tensor,
-    valid_mask: torch.Tensor,
     ref_forward: Callable,
     forward_inputs: Dict[str, Any],
     microbatch_size: int,
-    logit_softcapping: float = 0,
-    logit_scaling: float = 0,
     force_fp32: bool = True,
     kl_direction: Literal["forward", "reverse"] = "forward",
 ) -> torch.Tensor:
+    """(B, T) KL with the reference forward run microbatch_size rows at a time."""
     batch_size = cur_logits.shape[0]
-    device = cur_logits.device
-    kl = torch.zeros_like(shift_labels, dtype = torch.float32)
-
+    microbatch_size = max(1, microbatch_size)
+    if microbatch_size >= batch_size:
+        ref_logits = _unwrap_logits(ref_forward(**forward_inputs))
+        return _compute_kl_divergence(cur_logits, ref_logits, force_fp32, kl_direction)
+    kl = []
     for b_start in range(0, batch_size, microbatch_size):
         b_end = min(b_start + microbatch_size, batch_size)
-
         mb_inputs = _slice_batch_inputs(forward_inputs, batch_size, b_start, b_end)
-
-        ref_outputs_mb = ref_forward(**mb_inputs)
-        ref_logits_mb, _ = _unwrap_reference_outputs(ref_outputs_mb)
-        cur_logits_mb = cur_logits[b_start:b_end]
-
-        kl_mb = _compute_kl_divergence(
-            cur_logits_mb,
-            ref_logits_mb,
-            model,
-            logit_softcapping,
-            logit_scaling,
-            force_fp32,
-            kl_direction,
+        ref_logits = _unwrap_logits(ref_forward(**mb_inputs))
+        kl.append(
+            _compute_kl_divergence(cur_logits[b_start:b_end], ref_logits, force_fp32, kl_direction)
         )
-
-        if kl_mb.dim() == 1:
-            mb_batch = b_end - b_start
-            kl_mb = kl_mb.view(mb_batch, -1)
-
-        kl[b_start:b_end] = kl_mb
-
-        del ref_logits_mb
-
-    return kl
-
-
-def _compute_kl_seq_kv_cache(
-    model: nn.Module,
-    cur_logits: torch.Tensor,
-    shift_labels: torch.Tensor,
-    valid_mask: torch.Tensor,
-    ref_forward: Callable,
-    forward_inputs: Dict[str, Any],
-    seq_chunk_size: int,
-    microbatch_size: Optional[int] = None,
-    allow_auto_microbatch_fallback: bool = True,
-    logit_softcapping: float = 0,
-    logit_scaling: float = 0,
-    force_fp32: bool = True,
-    kl_direction: Literal["forward", "reverse"] = "forward",
-) -> torch.Tensor:
-    """Falls back to batch micro / full reference forward if the model cannot use a KV cache."""
-    batch_size, seq_len, vocab_size = cur_logits.shape
-    device = cur_logits.device
-
-    packed_seq_lengths = forward_inputs.get("packed_seq_lengths", None)
-    if packed_seq_lengths is not None:
-        # seq_kv_cache is unsafe with packed sequences.
-        fallback_microbatch = None
-        if microbatch_size is not None and microbatch_size < batch_size:
-            fallback_microbatch = microbatch_size
-        elif allow_auto_microbatch_fallback:
-            fallback_microbatch = max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
-            if fallback_microbatch >= batch_size:
-                fallback_microbatch = None
-        if fallback_microbatch is not None:
-            return _compute_kl_batch_micro(
-                model,
-                cur_logits,
-                shift_labels,
-                valid_mask,
-                ref_forward,
-                forward_inputs,
-                fallback_microbatch,
-                logit_softcapping,
-                logit_scaling,
-                force_fp32,
-                kl_direction,
-            )
-        ref_outputs = ref_forward(**forward_inputs)
-        ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
-        kl_full = _compute_kl_divergence(
-            cur_logits,
-            ref_logits,
-            model,
-            logit_softcapping,
-            logit_scaling,
-            force_fp32,
-            kl_direction,
-        )
-        if kl_full.dim() == 1:
-            kl_full = kl_full.view(batch_size, seq_len)
-        return kl_full
-
-    if microbatch_size is not None:
-        microbatch_size = max(1, microbatch_size)
-    if microbatch_size is not None and microbatch_size < batch_size:
-        kl = torch.zeros(batch_size, seq_len, dtype = torch.float32, device = device)
-        for b_start in range(0, batch_size, microbatch_size):
-            b_end = min(b_start + microbatch_size, batch_size)
-            mb_inputs = _slice_batch_inputs(forward_inputs, batch_size, b_start, b_end)
-            kl_mb = _compute_kl_seq_kv_cache(
-                model,
-                cur_logits[b_start:b_end],
-                shift_labels[b_start:b_end],
-                valid_mask[b_start:b_end],
-                ref_forward,
-                mb_inputs,
-                seq_chunk_size,
-                microbatch_size = None,
-                allow_auto_microbatch_fallback = False,
-                logit_softcapping = logit_softcapping,
-                logit_scaling = logit_scaling,
-                force_fp32 = force_fp32,
-                kl_direction = kl_direction,
-            )
-            if kl_mb.dim() == 1:
-                mb_batch = b_end - b_start
-                kl_mb = kl_mb.view(mb_batch, -1)
-            kl[b_start:b_end] = kl_mb
-        return kl
-
-    kl = torch.zeros(batch_size, seq_len, dtype = torch.float32, device = device)
-
-    past_key_values = None
-
-    for s_start in range(0, seq_len, seq_chunk_size):
-        s_end = min(s_start + seq_chunk_size, seq_len)
-
-        chunk_inputs = {}
-        for key, value in forward_inputs.items():
-            if key == "input_ids":
-                chunk_inputs[key] = value[:, s_start:s_end]
-            elif key == "attention_mask":
-                chunk_inputs[key] = value[:, :s_end]
-            elif key == "position_ids":
-                chunk_inputs[key] = value[:, s_start:s_end]
-            elif torch.is_tensor(value) and value.dim() >= 2 and value.shape[1] == seq_len:
-                chunk_inputs[key] = value[:, s_start:s_end]
-            else:
-                chunk_inputs[key] = value
-
-        if past_key_values is not None:
-            chunk_inputs["past_key_values"] = past_key_values
-
-        chunk_inputs["use_cache"] = True
-
-        try:
-            ref_outputs = ref_forward(**chunk_inputs)
-            ref_logits_chunk, ref_past_key_values = _unwrap_reference_outputs(ref_outputs)
-            if ref_past_key_values is None and s_end < seq_len:
-                fallback_microbatch = None
-                if allow_auto_microbatch_fallback:
-                    fallback_microbatch = (
-                        microbatch_size
-                        if microbatch_size is not None
-                        else max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
-                    )
-                if fallback_microbatch is not None and fallback_microbatch < batch_size:
-                    return _compute_kl_batch_micro(
-                        model,
-                        cur_logits,
-                        shift_labels,
-                        valid_mask,
-                        ref_forward,
-                        forward_inputs,
-                        fallback_microbatch,
-                        logit_softcapping,
-                        logit_scaling,
-                        force_fp32,
-                        kl_direction,
-                    )
-                ref_outputs = ref_forward(**forward_inputs)
-                ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
-                kl_full = _compute_kl_divergence(
-                    cur_logits,
-                    ref_logits,
-                    model,
-                    logit_softcapping,
-                    logit_scaling,
-                    force_fp32,
-                    kl_direction,
-                )
-                if kl_full.dim() == 1:
-                    kl_full = kl_full.view(batch_size, seq_len)
-                return kl_full
-            past_key_values = ref_past_key_values
-
-            cur_logits_chunk = cur_logits[:, s_start:s_end]
-
-            kl_chunk = _compute_kl_divergence(
-                cur_logits_chunk,
-                ref_logits_chunk,
-                model,
-                logit_softcapping,
-                logit_scaling,
-                force_fp32,
-                kl_direction,
-            )
-
-            if kl_chunk.dim() == 1:
-                chunk_len = s_end - s_start
-                kl_chunk = kl_chunk.view(batch_size, chunk_len)
-
-            kl[:, s_start:s_end] = kl_chunk
-
-            del ref_logits_chunk
-
-        except (RuntimeError, ValueError, KeyError, TypeError) as e:
-            # Raised by models without chunked past_key_values support.
-            fallback_microbatch = None
-            if allow_auto_microbatch_fallback:
-                fallback_microbatch = (
-                    microbatch_size
-                    if microbatch_size is not None
-                    else max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
-                )
-            if fallback_microbatch is not None and fallback_microbatch < batch_size:
-                return _compute_kl_batch_micro(
-                    model,
-                    cur_logits,
-                    shift_labels,
-                    valid_mask,
-                    ref_forward,
-                    forward_inputs,
-                    fallback_microbatch,
-                    logit_softcapping,
-                    logit_scaling,
-                    force_fp32,
-                    kl_direction,
-                )
-            ref_outputs = ref_forward(**forward_inputs)
-            ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
-            kl_full = _compute_kl_divergence(
-                cur_logits,
-                ref_logits,
-                model,
-                logit_softcapping,
-                logit_scaling,
-                force_fp32,
-                kl_direction,
-            )
-            if kl_full.dim() == 1:
-                kl_full = kl_full.view(batch_size, seq_len)
-            return kl_full
-
-    return kl
+        del ref_logits
+    return torch.cat(kl, dim = 0)
 
 
 def compute_asft_loss(
@@ -603,44 +220,27 @@ def compute_asft_loss(
     """Compute the ASFT loss.
 
     asft_mode: "sft" CE; "dft" CE * detached p(label); "sft+kl" CE + kl_weight * KL;
-    "asft" DFT + kl_weight * KL. normalize_by: "tokens" (matches reference) or "weights".
+    "asft" DFT + kl_weight * KL. kl_weight == 0 skips the reference forward.
+    normalize_by: "tokens" (matches reference) or "weights".
     """
+    if asft_mode not in ("sft", "dft", "sft+kl", "asft"):
+        raise ValueError(f"Unknown asft_mode: {asft_mode}")
+    if normalize_by not in ("tokens", "weights") or (
+        normalize_by == "weights" and asft_mode not in ("dft", "asft")
+    ):
+        raise ValueError(f"normalize_by={normalize_by!r} is invalid for asft_mode={asft_mode!r}")
     if streaming_config is None:
         streaming_config = ASFTStreamingConfig()
-
-    mode = streaming_config.mode
-    if mode is None:
-        streaming_enabled = streaming_config.enabled
-        ref_strategy = streaming_config.ref_strategy
-    else:
-        if mode == "off":
-            streaming_enabled = False
-            ref_strategy = "none"
-        elif mode == "batch":
-            streaming_enabled = True
-            ref_strategy = "batch_micro"
-        elif mode in ("seq", "auto", "hybrid"):
-            streaming_enabled = True
-            ref_strategy = "seq_kv_cache"
-        else:
-            raise ValueError(f"Unknown streaming mode: {mode}")
-
-    logit_softcapping, logit_scaling = _resolve_logit_params(
-        model,
-        None,
-        None,
-    )
+    if streaming_config.mode not in ("off", "batch"):
+        raise ValueError(f"Unknown streaming mode: {streaming_config.mode}")
 
     # Drop labels/num_items so the model returns logits.
     forward_inputs = {k: v for k, v in inputs.items() if k not in {"labels", "num_items_in_batch"}}
-
     outputs = model(**forward_inputs)
+    # Model forwards already apply softcapping / logit scaling, so the CE kernel must not again.
     logits = outputs.logits
 
-    labels = inputs["labels"]
-    packed_seq_lengths = inputs.get("packed_seq_lengths", None)
-    shift_labels = build_shift_labels(labels, packed_seq_lengths)
-
+    shift_labels = build_shift_labels(inputs["labels"], inputs.get("packed_seq_lengths", None))
     valid_mask = shift_labels != -100
     n_items_tokens = inputs.get("num_items_in_batch", None)
     if n_items_tokens is None:
@@ -649,124 +249,44 @@ def compute_asft_loss(
 
     if valid_mask.sum() == 0:
         zero_loss = logits.sum() * 0.0
-        if return_outputs:
-            return zero_loss, outputs
-        return zero_loss
+        return (zero_loss, outputs) if return_outputs else zero_loss
 
-    ce_losses, _ = fast_cross_entropy_loss_per_token(
-        logits, shift_labels, logit_softcapping, logit_scaling
-    )
     batch_size, seq_len = shift_labels.shape
+    ce_losses, _ = fast_cross_entropy_loss_per_token(logits, shift_labels)
     ce_losses = ce_losses.view(batch_size, seq_len)
 
     dft_weights = None
-    if asft_mode == "sft":
-        token_loss = ce_losses
-
-    elif asft_mode == "dft":
-        dft_weights = _compute_dft_weights(
-            logits,
-            shift_labels,
-            model,
-            logit_softcapping,
-            logit_scaling,
-            ce_losses = ce_losses,
-            valid_mask = valid_mask,
-        )
-        dft_weights = dft_weights.view(batch_size, seq_len)
+    token_loss = ce_losses
+    if asft_mode in ("dft", "asft"):
+        # exp(-CE) is p(label) without a second full-vocab softmax.
+        dft_weights = torch.exp(-ce_losses.detach()) * valid_mask
         token_loss = ce_losses * dft_weights
 
-    elif asft_mode in ("sft+kl", "asft"):
-        needs_outputs = streaming_enabled and ref_strategy == "seq_kv_cache"
-        ref_forward = get_reference_forward_callable(
-            model,
-            reference_policy,
-            original_model,
-            return_outputs = needs_outputs,
+    if asft_mode in ("sft+kl", "asft") and kl_weight != 0:
+        ref_model = (
+            model.module
+            if isinstance(model, (nn.parallel.DistributedDataParallel, nn.DataParallel))
+            else model
         )
-
-        if streaming_enabled and ref_strategy == "batch_micro":
-            ref_microbatch_size = streaming_config.ref_microbatch_size
-            if ref_microbatch_size is None:
-                ref_microbatch_size = max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
-            kl = _compute_kl_batch_micro(
-                model,
-                logits,
-                shift_labels,
-                valid_mask,
-                ref_forward,
-                forward_inputs,
-                ref_microbatch_size,
-                logit_softcapping,
-                logit_scaling,
-                streaming_config.force_fp32_kl,
-                kl_direction,
+        ref_forward = get_reference_forward_callable(ref_model, reference_policy, original_model)
+        microbatch_size = batch_size
+        if streaming_config.mode == "batch":
+            microbatch_size = streaming_config.ref_microbatch_size or max(
+                1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR
             )
-        elif streaming_enabled and ref_strategy == "seq_kv_cache":
-            seq_chunk_size = streaming_config.seq_chunk_size
-            if seq_chunk_size is None:
-                seq_chunk_size = _DEFAULT_SEQ_CHUNK_SIZE
-            ref_microbatch_size = streaming_config.ref_microbatch_size
-            if mode == "hybrid" and ref_microbatch_size is None:
-                ref_microbatch_size = max(1, batch_size // _DEFAULT_REF_MICROBATCH_DIVISOR)
-            allow_auto_microbatch_fallback = True
-            kl = _compute_kl_seq_kv_cache(
-                model,
-                logits,
-                shift_labels,
-                valid_mask,
-                ref_forward,
-                forward_inputs,
-                seq_chunk_size,
-                microbatch_size = ref_microbatch_size,
-                allow_auto_microbatch_fallback = allow_auto_microbatch_fallback,
-                logit_softcapping = logit_softcapping,
-                logit_scaling = logit_scaling,
-                force_fp32 = streaming_config.force_fp32_kl,
-                kl_direction = kl_direction,
-            )
-        else:
-            ref_outputs = ref_forward(**forward_inputs)
-            ref_logits, _ = _unwrap_reference_outputs(ref_outputs)
-            kl = _compute_kl_divergence(
-                logits,
-                ref_logits,
-                model,
-                logit_softcapping,
-                logit_scaling,
-                streaming_config.force_fp32_kl,
-                kl_direction,
-            )
-            kl = kl.view(batch_size, seq_len)
-            del ref_logits
-
-        if asft_mode == "sft+kl":
-            token_loss = ce_losses + kl_weight * kl
-        else:
-            dft_weights = _compute_dft_weights(
-                logits,
-                shift_labels,
-                model,
-                logit_softcapping,
-                logit_scaling,
-                ce_losses = ce_losses,
-                valid_mask = valid_mask,
-            )
-            dft_weights = dft_weights.view(batch_size, seq_len)
-            dft_loss = ce_losses * dft_weights
-            token_loss = dft_loss + kl_weight * kl
-
-    else:
-        raise ValueError(f"Unknown asft_mode: {asft_mode}")
+        kl = _compute_kl(
+            logits,
+            ref_forward,
+            forward_inputs,
+            microbatch_size,
+            streaming_config.force_fp32_kl,
+            kl_direction,
+        )
+        token_loss = token_loss + kl_weight * kl
 
     normalizer = n_items_tokens
-    if normalize_by == "weights" and dft_weights is not None:
-        weight_sum = dft_weights[valid_mask].sum()
-        normalizer = weight_sum.clamp_min(1e-8)
-    elif normalize_by != "tokens":
-        raise ValueError(f"Unknown normalize_by: {normalize_by}")
+    if normalize_by == "weights":
+        normalizer = dft_weights[valid_mask].sum().clamp_min(1e-8)
     loss = token_loss[valid_mask].sum() / normalizer
 
-    if return_outputs:
-        return loss, outputs
-    return loss
+    return (loss, outputs) if return_outputs else loss

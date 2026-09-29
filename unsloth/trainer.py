@@ -1114,9 +1114,10 @@ class ASFTTrainer(UnslothTrainer):
         if num_items_in_batch is not None:
             inputs["num_items_in_batch"] = num_items_in_batch
 
-        if self.asft_mode in ("sft+kl", "asft"):
-            needs_frozen_copy = self.reference_policy == "frozen_copy" or (
-                self.reference_policy == "disable_adapter" and not hasattr(model, "disable_adapter")
+        if self.asft_mode in ("sft+kl", "asft") and self.kl_weight != 0:
+            base_model = self.accelerator.unwrap_model(model)
+            needs_frozen_copy = self.reference_policy == "frozen_copy" or not hasattr(
+                base_model, "disable_adapter"
             )
             if needs_frozen_copy and self._asft_original_model is None:
                 if self.reference_policy == "frozen_copy":
@@ -1125,17 +1126,17 @@ class ASFTTrainer(UnslothTrainer):
                         "This doubles VRAM usage. Use 'disable_adapter' if using LoRA.",
                         stacklevel = 2,
                     )
-                elif self.reference_policy == "disable_adapter":
+                else:
                     warnings.warn(
                         "Unsloth: 'disable_adapter' is unavailable; falling back to a "
                         "frozen copy for ASFT. This doubles VRAM usage.",
                         stacklevel = 2,
                     )
-                self._asft_original_model = deepcopy(model)
+                self._asft_original_model = deepcopy(base_model)
                 self._asft_original_model.eval()
                 self._asft_original_model.requires_grad_(False)
 
-        return compute_asft_loss(
+        result = compute_asft_loss(
             model = model,
             inputs = inputs,
             asft_mode = self.asft_mode,
@@ -1147,6 +1148,16 @@ class ASFTTrainer(UnslothTrainer):
             normalize_by = self.normalize_by,
             return_outputs = return_outputs,
         )
+        # Mirror Trainer.compute_loss: num_items_in_batch is summed over ranks, so undo the DDP mean.
+        if (
+            getattr(self.args, "average_tokens_across_devices", False)
+            and num_items_in_batch is not None
+            and self.accelerator.num_processes > 1
+        ):
+            if return_outputs:
+                return result[0] * self.accelerator.num_processes, result[1]
+            return result * self.accelerator.num_processes
+        return result
 
 
 # From trl >= 0.13.0 several params are passed to the trainer differently; patch to make the transition smooth.
