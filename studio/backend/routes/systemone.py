@@ -206,8 +206,9 @@ class RequireStudioAuth:
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "http":
+            auth_scope = {**scope, "path": MCP_PATH, "root_path": ""}
             try:
-                await get_current_subject(await security(Request(scope)))
+                await get_current_subject(await security(Request(auth_scope)))
             except HTTPException as exc:
                 response = JSONResponse({"detail": exc.detail}, exc.status_code, exc.headers)
                 await response(scope, receive, send)

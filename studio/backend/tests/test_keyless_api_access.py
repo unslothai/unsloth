@@ -14,7 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Mount
+from starlette.applications import Starlette
 
 from auth import storage
 from auth.authentication import (
@@ -186,6 +190,43 @@ def test_decisions_mcp_preserves_keyless_inference_access(token):
     set_keyless_api_access("off")
     with pytest.raises(HTTPException):
         subject_of(decisions_request())
+
+
+def test_mounted_decisions_mcp_preserves_keyless_inference_access(monkeypatch):
+    from routes import systemone
+
+    seen = []
+    real_security = systemone.security
+
+    async def capture_security(request):
+        seen.append(
+            (
+                request.scope["path"],
+                request.scope["root_path"],
+                keyless_request_allowed(request),
+            )
+        )
+        return await real_security(request)
+
+    monkeypatch.setattr(systemone, "security", capture_security)
+
+    async def endpoint(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    app = Starlette(
+        routes = [Mount(systemone.MCP_PATH, app = systemone.RequireStudioAuth(endpoint))]
+    )
+    for name, value in vars(app_state()).items():
+        setattr(app.state, name, value)
+
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+    with TestClient(
+        app, base_url = "http://127.0.0.1", client = ("127.0.0.1", 50000)
+    ) as client:
+        response = client.post(f"{systemone.MCP_PATH}/")
+    assert response.status_code == 200, (response.text, seen)
+    assert seen == [(systemone.MCP_PATH, "", True)]
 
 
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
