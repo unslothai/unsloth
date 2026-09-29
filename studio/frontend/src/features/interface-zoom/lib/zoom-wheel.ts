@@ -15,6 +15,13 @@ type ZoomWheelEvent = Pick<
   "deltaY" | "deltaMode" | "ctrlKey" | "metaKey" | "altKey" | "timeStamp"
 >;
 
+/** Vertical Ctrl+wheel without Alt or Meta. Anything else keeps its default. */
+export function isZoomWheel(
+  event: Pick<WheelEvent, "deltaY" | "ctrlKey" | "metaKey" | "altKey">,
+): boolean {
+  return event.ctrlKey && !event.metaKey && !event.altKey && event.deltaY !== 0;
+}
+
 /** Ctrl+wheel to zoom steps (1 in, -1 out). `zoom` converts CSS px deltas to screen px. */
 export function createWheelZoomAccumulator(): (
   event: ZoomWheelEvent,
@@ -23,8 +30,7 @@ export function createWheelZoomAccumulator(): (
   let travel = 0;
   let lastAt = Number.NEGATIVE_INFINITY;
   return (event, zoom) => {
-    if (!event.ctrlKey || event.metaKey || event.altKey || event.deltaY === 0)
-      return null;
+    if (!isZoomWheel(event)) return null;
     const unit =
       event.deltaMode === 1 ? LINE_PX : event.deltaMode === 2 ? PAGE_PX : 1;
     const delta = event.deltaY * unit * zoom;

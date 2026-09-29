@@ -14,6 +14,7 @@ import {
   WHEEL_ZOOM_IDLE_MS,
   WHEEL_ZOOM_STEP_PX,
   createWheelZoomAccumulator,
+  isZoomWheel,
 } from "../src/features/interface-zoom/lib/zoom-wheel.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -176,6 +177,16 @@ test("one Ctrl+wheel notch is one step, up zooms in, and a pause starts over", (
   assert.ok(WHEEL_ZOOM_STEP_PX <= 50);
 });
 
+test("only a vertical Ctrl+wheel without Alt or Meta zooms", () => {
+  const wheel = { deltaY: -100, ctrlKey: true, metaKey: false, altKey: false };
+  assert.equal(isZoomWheel(wheel), true);
+  assert.equal(isZoomWheel({ ...wheel, ctrlKey: false }), false);
+  assert.equal(isZoomWheel({ ...wheel, altKey: true }), false);
+  assert.equal(isZoomWheel({ ...wheel, metaKey: true }), false);
+  // Ctrl+horizontal wheel keeps its default.
+  assert.equal(isZoomWheel({ ...wheel, deltaY: 0 }), false);
+});
+
 test("the popup keeps one on-screen size and does not dismiss a modal", () => {
   const zoom = readSrc("features/interface-zoom/components/interface-zoom.tsx");
   // The page zoom is divided back out.
@@ -191,10 +202,10 @@ test("the popup keeps one on-screen size and does not dismiss a modal", () => {
     /\{isTauri && <ZoomAnnouncer open=\{open\} \/>\}\s*\{open && <ZoomPopup \/>\}/,
   );
   // Canvases that zoom on Ctrl+wheel themselves get the event first; macOS keeps its own.
-  // Ctrl+Alt and Ctrl+Meta are left unprevented, since the accumulator rejects them.
+  // Only a wheel the accumulator would take is prevented.
   assert.match(
     zoom,
-    /event\.defaultPrevented \|\|\s*!event\.ctrlKey \|\|\s*event\.altKey \|\|\s*event\.metaKey\s*\)\s*return;\s*event\.preventDefault\(\);/,
+    /if \(event\.defaultPrevented \|\| !isZoomWheel\(event\)\) return;\s*event\.preventDefault\(\);/,
   );
   assert.match(
     zoom,

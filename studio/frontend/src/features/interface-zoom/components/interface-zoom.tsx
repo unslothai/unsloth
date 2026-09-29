@@ -34,7 +34,7 @@ import {
   zoomChordTaken,
   zoomDirectionForKey,
 } from "../lib/zoom-chords.ts";
-import { createWheelZoomAccumulator } from "../lib/zoom-wheel.ts";
+import { createWheelZoomAccumulator, isZoomWheel } from "../lib/zoom-wheel.ts";
 
 /** Hide delay after the last zoom, paused while hovered or focused. */
 export const ZOOM_POPUP_HIDE_MS = 2500;
@@ -192,14 +192,7 @@ export function InterfaceZoom() {
     // Bubble phase, so canvases with their own Ctrl+wheel zoom keep it.
     const wheelStep = createWheelZoomAccumulator();
     const onWheel = (event: WheelEvent) => {
-      // Ctrl+Alt and Ctrl+Meta keep their default.
-      if (
-        event.defaultPrevented ||
-        !event.ctrlKey ||
-        event.altKey ||
-        event.metaKey
-      )
-        return;
+      if (event.defaultPrevented || !isZoomWheel(event)) return;
       event.preventDefault();
       const direction = wheelStep(event, getAppliedInterfaceZoom());
       if (direction !== null) zoomInterface(direction);
