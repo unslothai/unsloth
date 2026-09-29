@@ -1808,21 +1808,33 @@ def _video_streamed_peak_bytes(module: Any, offload_type: str, *, prefetch: bool
         )
         units, fixed = windows, unmatched
     else:
-        units, fixed = [], 0
-        inside: set[int] = set()
-        for mod in module.modules():
-            if id(mod) in inside:
-                continue
+        units = []
+        paths: list[int] = [0]
+        visited: set[int] = set()
+
+        def _walk(mod: Any, enclosing: int) -> None:
+            if id(mod) in visited:
+                return
+            visited.add(id(mod))
             if isinstance(mod, leaf_types):
-                inside |= {id(m) for m in mod.modules()}
                 units.append(_own(mod, True))
+                paths.append(enclosing)
             elif next(mod.children(), None) is not None:
                 # a parent's loose params onload in its pre-forward and stay until its post-forward, under every
-                # descendant leaf and its prefetch; summing every enclosing group bounds any nesting path
-                fixed += _own(mod, False)
+                # descendant; a sibling branch has offloaded its own by then, so only the enclosing chain stacks
+                loose = _own(mod, False)
+                held_here = enclosing + loose
+                paths.append(held_here)
+                units.append(loose)  # the copy stream may prefetch a parent group, not only a leaf
+                for child in mod.children():
+                    _walk(child, held_here)
             else:
                 # loose params of a childless non-leaf (a norm) form their own group
                 units.append(_own(mod, False))
+                paths.append(enclosing)
+
+        _walk(module, 0)
+        fixed = max(paths)
     units = sorted(units, reverse = True)
     # a copy stream prefetches the next group while the current one computes
     return fixed + sum(units[: 2 if prefetch else 1])
@@ -6108,8 +6120,11 @@ class VideoBackend:
             ):
                 # An encoder that refused leaf offload is kept resident under the same policy: re-check what landed.
                 applied_floor = _video_offload_vram_floor_mib(pipe, plan, applied = True)
-                if applied_floor is not None and applied_floor > vram_floor_mib:
+                raised = applied_floor is not None and applied_floor > vram_floor_mib
+                if applied_floor is not None:
+                    # record what landed even when lower (the fallback may stream a DiT the plan kept resident)
                     vram_floor_mib = applied_floor
+                if raised:
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,
                         floor_mib = applied_floor,

@@ -614,6 +614,40 @@ def test_decoded_clip_share_sits_beside_the_decode_floor_not_the_streamed_dit():
     assert 'phase = "decode"' in src
 
 
+def test_leaf_streaming_peak_does_not_stack_sibling_branch_groups():
+    """A sibling branch has offloaded its own params before the next runs: only the enclosing chain stacks."""
+    torch = pytest.importorskip("torch")
+    from core.inference.video import _video_streamed_peak_bytes
+
+    mib = 1 << 20
+
+    def _branch():
+        branch = torch.nn.Module()
+        branch.table = torch.nn.Parameter(torch.zeros(mib // 2, dtype = torch.bfloat16))
+        branch.leaf = torch.nn.Linear(1024, 2 * 512, bias = False).to(torch.bfloat16)
+        return branch
+
+    root = torch.nn.Module()
+    root.first, root.second = _branch(), _branch()
+
+    def size(t):
+        return t.numel() * t.element_size()
+
+    # one 1 MiB enclosing table plus the current and prefetched 2 MiB leaves; not both tables
+    assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 5 * mib
+
+
+def test_applied_floor_is_recorded_even_when_lower_than_planned():
+    """The fallback can stream a DiT the plan kept resident: the lower applied floor must replace the planned one."""
+    import inspect
+
+    import core.inference.video as V
+
+    src = inspect.getsource(V)
+    assert "raised = applied_floor is not None and applied_floor > vram_floor_mib" in src
+    assert "if applied_floor is not None:\n                    # record what landed even when lower" in src
+
+
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
     """_apply_group_offload keeps a refusing encoder resident under the same policy; the floor must follow the hooks."""
     torch = pytest.importorskip("torch")
