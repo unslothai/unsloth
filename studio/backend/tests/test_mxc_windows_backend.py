@@ -640,6 +640,37 @@ def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
         mxc_adapter.spawn(request)
 
 
+@pytest.mark.parametrize(
+    "dacl, grants, held", [(True, True, True), (True, False, False), (False, True, False)]
+)
+def test_a_launch_holds_the_read_grants_until_its_last_cleanup(
+    monkeypatch, tmp_path, dacl, grants, held
+):
+    from core.inference import sandbox_windows_mxc
+
+    released = []
+    lease = type("Lease", (), {"release": lambda self: released.append("grants")})()
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "dacl_fallback_enabled", lambda: dacl)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: grants)
+    monkeypatch.setattr(mxc_read_grants, "hold", lambda: lease)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_policy,
+        "build_launch_request",
+        lambda _plan, **_kw: {"policyHash": "sha256:controlled"},
+    )
+    capability = os_sandbox.SandboxCapability(
+        backend = "mxc-processcontainer",
+        available = True,
+        reason = "qualified",
+        environment = "win32",
+        profile_id = mxc_runtime.PROFILE_ID,
+    )
+    prepared = sandbox_windows_mxc.prepare(_plan(tmp_path), capability)
+    prepared.cleanup_callbacks.append(lambda: released.append("workload"))
+    prepared.cleanup()
+    assert released == (["workload", "grants"] if held else ["workload"])
+
+
 def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):
     calls = []
     prepared = os_sandbox.PreparedSandboxLaunch(

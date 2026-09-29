@@ -192,6 +192,11 @@ def prepare(plan, capability):
         execution_record = record,
         launch_limitations = launch_limitations,
     )
+    if mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled():
+        # Appended first so it runs last (LIFO): the grants outlive the workload that may use them.
+        grant_lease = mxc_read_grants.hold()
+        if grant_lease is not None:
+            prepared.cleanup_callbacks.append(grant_lease.release)
     if lease is not None:
         # Runs on every exit path, spawned or not; release_runtime drops it first once the workload is gone.
         prepared.cleanup_callbacks.append(lease.release)

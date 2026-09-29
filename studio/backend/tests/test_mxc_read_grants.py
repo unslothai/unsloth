@@ -279,6 +279,54 @@ def test_an_unreadable_identity_keeps_the_record_for_a_later_revoke(host, monkey
     assert ("revoke", os.path.normcase(venv)) not in host.calls
 
 
+def test_revocation_waits_for_a_running_workload_and_its_release_finishes_it(host, monkeypatch):
+    # On Windows a lease held open cannot be deleted; here an existing file stands in for that.
+    monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    lease = mxc_read_grants.hold()
+    monkeypatch.setenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, "0")
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+    assert _states() == {os.path.normcase(venv): "complete"}
+    lease.release()
+    assert host.calls[-1] == ("revoke", os.path.normcase(venv))
+    assert _record() == {}
+    lease.release()
+    assert host.calls.count(("revoke", os.path.normcase(venv))) == 1
+
+
+def test_release_keeps_the_grants_while_they_are_still_on(host, monkeypatch):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    mxc_read_grants.hold().release()
+    assert host.calls == [("grant", venv)]
+    assert _states() == {os.path.normcase(venv): "complete"}
+
+
+def test_a_lease_left_by_a_crashed_process_never_blocks_revocation(host, monkeypatch):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    stale = mxc_read_grants._leases_dir() / "4242-crashed"
+    stale.parent.mkdir(parents = True, exist_ok = True)
+    stale.write_text("")
+    monkeypatch.setenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, "0")
+    assert mxc_read_grants.revoke_recorded() == (os.path.normcase(venv),)
+    assert not stale.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows refuses to delete a file held open")
+def test_an_open_lease_is_live_until_released(host):
+    lease = mxc_read_grants.hold()
+    assert mxc_read_grants._live_leases() == 1
+    lease.release()
+    assert mxc_read_grants._live_leases() == 0
+
+
 def test_a_replaced_folder_is_not_adopted_through_a_stale_record(host, tmp_path):
     venv = _runtime(host)
     mxc_read_grants.ensure([venv])
