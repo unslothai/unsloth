@@ -22,7 +22,7 @@ fi
 
 _SH="${BASH:-/bin/bash}"
 ROCM_URL="https://download.pytorch.org/whl/rocm7.1"
-# $1 = physical NVIDIA card (1/0), $2 = index url, $3 = env assignments. Stub honours the mask like the real probe.
+# $1 = physical NVIDIA card (1/0), $2 = index url, $3 = env assignments, $4 = AMD card on PCI (default 1). Stub honours the mask like the real probe.
 _run() {
     env -u CUDA_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES \
         $3 "$_SH" -c "
@@ -30,6 +30,7 @@ _run() {
             _cvd_hides_nvidia && return 1
             [ '$1' = 1 ]
         }
+        _amd_gpu_present_via_pci() { [ '${4:-1}' = 1 ]; }
         . '$_FN_FILE'
         _warn_if_cuda_mask_hides_amd '$2'
     " 2>&1
@@ -47,6 +48,7 @@ assert_contains "a per-arch gfx index counts"   "$_out" "UNSLOTH_FORCE_ROCM_TORC
 
 echo "=== Everything else stays quiet ==="
 assert_eq "AMD-only host: the mask is deliberate" "" "$(_run 0 "$ROCM_URL" "CUDA_VISIBLE_DEVICES=")"
+assert_eq "NVIDIA-only host with a pinned ROCm index" "" "$(_run 1 "$ROCM_URL" "CUDA_VISIBLE_DEVICES=" 0)"
 assert_eq "HIP_VISIBLE_DEVICES set: HIP ignores CUDA_VISIBLE_DEVICES" "" \
     "$(_run 1 "$ROCM_URL" "CUDA_VISIBLE_DEVICES= HIP_VISIBLE_DEVICES=0")"
 assert_eq "no mask" "" "$(_run 1 "$ROCM_URL" "")"

@@ -5898,6 +5898,7 @@ _warn_if_cuda_mask_hides_amd() {
     _cvd_hides_nvidia || return 0
     [ -z "${HIP_VISIBLE_DEVICES+x}" ] || return 0
     _torch_index_url_is_rocm "${1:-}" || return 0
+    _amd_gpu_present_via_pci || return 0
     ( unset CUDA_VISIBLE_DEVICES; _has_usable_nvidia_gpu ) >/dev/null 2>&1 || return 0
     echo "" >&2
     echo "[WARN] CUDA_VISIBLE_DEVICES=\"$CUDA_VISIBLE_DEVICES\" hid the NVIDIA GPU, so ROCm torch was selected." >&2
