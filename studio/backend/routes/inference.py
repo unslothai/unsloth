@@ -8393,7 +8393,8 @@ def note_chat_evicted() -> None:
     primary_serving = _llama_cpp_backend.is_active or getattr(
         _orchestrator_module._inference_backend, "active_model_name", None
     )
-    if primary_serving:
+    # Single-model users keep the no-auto-reload default; auto-switch alone decides there.
+    if primary_serving and _extra_slots:
         _stash_evicted(_primary_request, account = _primary_account)
     for slot in _extra_slots:
         _stash_evicted(slot.request, account = slot.account)
@@ -17342,6 +17343,7 @@ async def _load_model_impl(
         serving = bool(
             getattr(llama_backend, "is_active", getattr(llama_backend, "is_loaded", False))
             or getattr(backend, "active_model_name", None)
+            or (replacing and _resident_npu_model() is not None)
         )
 
         # Resolve once so dedupe, admission and launch use the same slot count.

@@ -764,7 +764,6 @@ def test_reloading_a_kept_model_stops_only_its_own_chats(backends, monkeypatch):
 
 
 def test_a_plain_switch_forgets_the_model_it_replaced(backends, monkeypatch):
-    monkeypatch.setattr(inf, "_extra_slots", [])
     inf._note_primary_load(LoadRequest(model_path = "org/P-GGUF"))
     inf.note_chat_evicted()
     assert "org/P-GGUF" in inf._evicted
@@ -1187,3 +1186,81 @@ def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
     with TestClient(app) as client:
         ids = [entry["id"] for entry in client.get("/api/inference/loaded-models").json()["data"]]
     assert ids.count("lemonade:qwen3-0.6b-FLM") == 1 and "org/B-GGUF" in ids and "org/D-GGUF" in ids
+
+
+def test_a_single_model_evicted_for_images_is_not_reloaded_on_its_own(backends, monkeypatch):
+    monkeypatch.setattr(inf, "_extra_slots", [])
+    inf._note_primary_load(LoadRequest(model_path = "org/P-GGUF"))
+    inf.note_chat_evicted()
+    assert "org/P-GGUF" not in inf._evicted
+
+
+def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, tmp_path):
+    import asyncio
+    import struct
+    import threading
+    from types import SimpleNamespace
+
+    import core.inference.npu_backend as npu_backend
+    import core.inference.orchestrator as orchestrator
+    from state import active_generations
+
+    class _Orch:
+        active_model_name = None
+        models = {}
+        loading_models = ()
+
+        def set_parallel_slots(self, n):
+            pass
+
+    class _Refused(Exception):
+        pass
+
+    npu = SimpleNamespace(
+        is_loaded = True,
+        loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
+        resident = lambda: None,
+        unload = lambda: None,
+    )
+    monkeypatch.setattr(orchestrator, "_inference_backend", _Orch())
+    monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    torn_down = []
+
+    async def _teardown():
+        torn_down.append(True)
+        raise RuntimeError("NPU unloaded while its chat is still streaming")
+
+    monkeypatch.setattr(inf, "_unload_npu_before_local_load", _teardown)
+    asked = []
+
+    def _gate(*, cancel):
+        asked.append(cancel)
+        if active_generations.count() and not cancel:
+            raise _Refused
+        return 0
+
+    def _s(x):
+        return struct.pack("<Q", len(x)) + x.encode()
+
+    gguf = tmp_path / "tiny.gguf"
+    gguf.write_bytes(
+        b"GGUF"
+        + struct.pack("<IQQ", 3, 0, 1)
+        + _s("general.architecture")
+        + struct.pack("<I", 8)
+        + _s("llama")
+    )
+
+    async def _load():
+        with active_generations.ActiveGeneration(
+            threading.Event(), thread_id = "t1", run_id = "r1", model = "npu", kind = "chat"
+        ):
+            with pytest.raises(Exception) as exc:
+                await inf._load_model_impl(
+                    LoadRequest(model_path = str(gguf)), None, "s", on_reload_confirmed = _gate
+                )
+        return exc
+
+    exc = asyncio.run(_load())
+    assert asked == [False] and not torn_down, exc.value
