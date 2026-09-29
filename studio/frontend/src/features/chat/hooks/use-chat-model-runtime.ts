@@ -92,6 +92,7 @@ import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-c
 import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
 import {
   requestLocalPromptQueueStop,
+  requestPromptQueueStop,
   notifyLocalPromptQueueLoadFailed,
 } from "../utils/prompt-queue-boundary";
 import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
@@ -1789,6 +1790,10 @@ export function useChatModelRuntime() {
                 forceReload
                   ? "Applying these settings"
                   : "Loading a different model",
+                "reload",
+                replacesOneOfSeveral
+                  ? (useChatRuntimeStore.getState().params.checkpoint ?? undefined)
+                  : undefined,
               );
       } catch (error) {
         releasePreflightLifecycleLease();
@@ -2398,8 +2403,13 @@ export function useChatModelRuntime() {
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
 
-            cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-            requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+            // Chats on the other loaded models keep their server, so only a full swap stops every queue.
+            if (keepsOthers || replacesOneOfSeveral) {
+              requestPromptQueueStop(stopDecision.promptQueueThreadIds);
+            } else {
+              cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+              requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+            }
             // Applying settings reloads the model in place, so a failed reload must roll back even when
             // the other models are kept.
             if (currentCheckpoint && !keepsOthers) {
@@ -2551,7 +2561,9 @@ export function useChatModelRuntime() {
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             // Invalidate factories started before the final loading boundary.
-            requestLocalPromptQueueStop();
+            if (!keepsOthers && !replacesOneOfSeveral) {
+              requestLocalPromptQueueStop();
+            }
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);
             }

@@ -83,7 +83,10 @@ def summarize_resident_chat() -> Dict[str, Any]:
             )
             if name:
                 gguf_name = gguf_name or name
-                loading = True
+                # Like the primary: only a slot still loading cannot be sized; a loaded one is
+                # counted in the free VRAM can_keep measures.
+                if pending or filling or (slot.llama.is_active and not slot.llama.is_loaded):
+                    loading = True
     except Exception as e:
         logger.warning("Could not inspect models loaded alongside: %s", e)
 

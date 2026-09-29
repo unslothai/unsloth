@@ -1988,3 +1988,18 @@ test("with the box off a pick replaces only the chat's own model", () => {
     2,
   );
 });
+
+test("replacing one of several asks about and stops only that model's chats", () => {
+  const CONFIRM = readSrc("features/chat/utils/confirm-stop-running-chats.ts");
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /"reload",\s*replacesOneOfSeveral\s*\?\s*\(useChatRuntimeStore\.getState\(\)\.params\.checkpoint \?\? undefined\)/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(keepsOthers \|\| replacesOneOfSeveral\) \{\s*requestPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\} else \{/,
+  );
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !replacesOneOfSeveral\) \{\s*requestLocalPromptQueueStop\(\);/);
+  assert.match(CONFIRM, /let running = model\s*\?\s*\[\]/);
+  assert.match(CONFIRM, /await getActiveGenerations\(model\)/);
+});

@@ -16134,7 +16134,9 @@ def _unload_may_evict(model_path: str) -> bool:
 
 @studio_router.get("/active-generations")
 async def get_active_generations(
-    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
+    fastapi_request: Request,
+    model: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Conversations currently generating, plus how many can decode at once.
 
@@ -16144,7 +16146,15 @@ async def get_active_generations(
     requested --parallel; chats beyond it queue rather than fail.
     """
     scope = account_access.account_scope()
-    entries = active_generations.snapshot(scope)
+    # ``model``: only the chats an unload of that model stops, the same split its scoped 409 uses.
+    exclude, only = (), None
+    if model and _extra_slots:
+        slot = await asyncio.to_thread(_slot_serving, model, _visible_extra_slots())
+        if slot is not None:
+            only = set(slot.generations)
+        else:
+            exclude = _slot_generations()
+    entries = active_generations.snapshot(scope, exclude, only)
     # A tracker's model can be a native local path (the legacy stream records active_model_name
     # verbatim); redact here, the one place that serialises it.
     for _entry in entries:
@@ -16158,7 +16168,7 @@ async def get_active_generations(
     return {
         "active": entries,
         "count": len(entries),
-        "thread_ids": active_generations.active_thread_ids(scope),
+        "thread_ids": active_generations.active_thread_ids(scope, exclude, only),
         "parallel_slots": max(1, int(slots)),
     }
 

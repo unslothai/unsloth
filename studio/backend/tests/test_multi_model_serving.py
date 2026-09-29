@@ -1045,3 +1045,31 @@ def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, 
 
     exc = asyncio.run(_load())
     assert asked == [False] and not torn_down, exc.value
+
+
+def test_a_loaded_model_kept_alongside_lets_training_size_the_fit(backends):
+    from routes import training_vram
+    summary = training_vram.summarize_resident_chat()
+    assert summary["any"] and not summary["loading"]
+
+
+def test_active_generations_for_a_model_lists_only_its_chats(backends):
+    import threading
+
+    from state import active_generations
+
+    _, extra = backends
+    app = FastAPI()
+    app.include_router(inf.studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-subject"
+    on_a, on_b = threading.Event(), threading.Event()
+    extra.generations.add(on_b)
+    with (
+        active_generations.ActiveGeneration(on_a, thread_id = "chat-on-A"),
+        active_generations.ActiveGeneration(on_b, thread_id = "chat-on-B"),
+        TestClient(app) as client,
+    ):
+        get = lambda q: client.get("/api/inference/active-generations" + q).json()["thread_ids"]
+        assert get("?model=org/B-GGUF") == ["chat-on-B"]
+        assert get("?model=org/A-GGUF") == ["chat-on-A"]
+        assert sorted(get("")) == ["chat-on-A", "chat-on-B"]

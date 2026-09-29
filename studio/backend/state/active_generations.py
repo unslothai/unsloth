@@ -116,22 +116,28 @@ class ActiveGeneration:
 
 
 def _matching(
-    account_id: Optional[str], exclude: Collection[threading.Event]
+    account_id: Optional[str],
+    exclude: Collection[threading.Event],
+    only: Optional[Collection[threading.Event]] = None,
 ) -> list[dict[str, Any]]:
     return [
         e
         for e in _ACTIVE.values()
-        if (account_id is None or e["account_id"] == account_id) and e["event"] not in exclude
+        if (account_id is None or e["account_id"] == account_id)
+        and e["event"] not in exclude
+        and (only is None or e["event"] in only)
     ]
 
 
 def snapshot(
-    account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    only: Optional[Collection[threading.Event]] = None,
 ) -> list[dict[str, Any]]:
     """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only.
     ``exclude`` leaves out the runs holding those cancel events."""
     with _LOCK:
-        entries = _matching(account_id, exclude)
+        entries = _matching(account_id, exclude, only)
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -148,7 +154,9 @@ def snapshot(
 
 
 def active_thread_ids(
-    account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    only: Optional[Collection[threading.Event]] = None,
 ) -> list[str]:
     """Distinct conversation ids with a generation in flight, in start order.
 
@@ -156,7 +164,7 @@ def active_thread_ids(
     this cannot name it.
     """
     seen: list[str] = []
-    for e in snapshot(account_id, exclude):
+    for e in snapshot(account_id, exclude, only):
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
