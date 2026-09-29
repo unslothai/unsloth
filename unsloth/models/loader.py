@@ -1551,7 +1551,7 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel
+from .vision import FastBaseModel, _is_text_seq2seq_config
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from transformers import (
     AutoModelForCausalLM,
@@ -2138,6 +2138,13 @@ class FastModel(FastBaseModel):
                             + NIGHTLY
                         )
                     break
+        # transformers 4.x T5: the fullgraph-compiled layer inlines a compiler-disabled T5Attention (dynamo Unsupported).
+        if (
+            transformers_version < Version("5.0.0")
+            and getattr(model_config, "model_type", None) in ("t5", "mt5", "umt5")
+            and _is_text_seq2seq_config(model_config)
+        ):
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
 
         if auto_model is not None:
             # All other models need to disable static cache.
@@ -2266,7 +2273,8 @@ class FastModel(FastBaseModel):
                 sdpa_gqa_replace = True,
                 sdpa_dynamic_compile = True,
                 compile_attention = True,
-                disable_causal_masks = True,
+                # Encoder-decoders on transformers 4.x build the decoder's causal mask in _update_causal_mask; stubbing it makes the decoder bidirectional under eager attention (T5).
+                disable_causal_masks = not _is_text_seq2seq_config(model_config),
                 compile_torch_modules = True,
                 compile_custom_modules = True,
                 compile_function_calls = True,
@@ -2298,6 +2306,8 @@ class FastModel(FastBaseModel):
         _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
             model_config, "vision_config"
         )
+        # T5 / BART end in ForConditionalGeneration too but ship a tokenizer, not a processor.
+        _ckpt_is_vlm = _ckpt_is_vlm and not _is_text_seq2seq_config(model_config)
         tokenizer_name = _resolve_checkpoint_tokenizer_name(
             old_model_name, kwargs, require_processor = _ckpt_is_vlm
         )
@@ -2446,6 +2456,22 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
+            elif _is_text_seq2seq_config(model_config):
+                if fast_inference:
+                    raise NotImplementedError(
+                        "Unsloth: fast_inference (vLLM) does not support encoder-decoder models "
+                        "such as T5 or BART. Please load with fast_inference = False."
+                    )
+                from transformers import AutoModelForSeq2SeqLM
+
+                auto_model = AutoModelForSeq2SeqLM
+                # The zoo's source probe says sdpa where transformers refuses it (T5 on 4.57).
+                if not getattr(
+                    resolve_model_class(auto_model, model_config, **_probe_hub_kwargs),
+                    "_supports_sdpa",
+                    True,
+                ):
+                    supports_sdpa = False
             elif is_vlm:
                 # Some repo-code VL models register only a generic auto class (Nemotron-VL uses AutoModelForCausalLM, DeepSeek-OCR AutoModel), so the VLM auto class raises "Unrecognized configuration class". Fall back to what the repo registered, matching the CONCRETE class name, since transformers resolves remote code by that exact name.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}

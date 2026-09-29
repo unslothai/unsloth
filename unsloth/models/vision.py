@@ -66,6 +66,32 @@ def _multimodal_auto_classes():
     return classes
 
 
+def _is_text_seq2seq_config(config):
+    """T5 / BART / Marian: Seq2SeqLM-mapped, no multimodal class or sub-config (Voxtral, T5Gemma2 are Seq2SeqLM too)."""
+    import transformers
+
+    if config is None or any(
+        hasattr(config, key)
+        for key in ("vision_config", "audio_config", "text_config", "encoder_config")
+    ):
+        return False
+
+    def mapped(auto_class):
+        try:
+            return auto_class is not None and type(config) in auto_class._model_mapping
+        except Exception:
+            return False
+
+    if not mapped(getattr(transformers, "AutoModelForSeq2SeqLM", None)):
+        return False
+    return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
+
+
+def _generation_padding_side(config):
+    # BART / Marian encoder positions are absolute, so left padding would shift every real token.
+    return "right" if _is_text_seq2seq_config(config) else "left"
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -144,7 +170,7 @@ from unsloth_zoo.gradient_checkpointing import (
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModelForSeq2SeqLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -1292,7 +1318,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
         model_eos_token_id = model_eos_token_id[0]
 
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+    # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
+    default_pad_token_id = model_eos_token_id
+    if (
+        _is_text_seq2seq_config(self.config)
+        and getattr(self.config, "pad_token_id", None) is not None
+    ):
+        default_pad_token_id = self.config.pad_token_id
+    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -3596,9 +3629,10 @@ class FastBaseModel:
         apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
-        tokenizer.padding_side = "left"
+        _padding_side = _generation_padding_side(getattr(model, "config", None))
+        tokenizer.padding_side = _padding_side
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "left"
+            tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
         if (
@@ -3713,8 +3747,34 @@ class FastBaseModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM):
+        if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if _is_text_seq2seq_config(getattr(model, "config", None)):
+            if task_type == TaskType.CAUSAL_LM:
+                task_type = TaskType.SEQ_2_SEQ_LM
+            # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
+            finetune_vision_layers = True
+            # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
+            if (
+                target_modules is None or target_modules == "all-linear"
+            ) and finetune_language_layers:
+                _output = model.get_output_embeddings()
+                _linears = [
+                    name
+                    for name, module in model.named_modules()
+                    if isinstance(module, torch.nn.Linear) and module is not _output
+                ]
+                if finetune_attention_modules and finetune_mlp_modules:
+                    target_modules = sorted({name.rsplit(".", 1)[-1] for name in _linears})
+                elif finetune_attention_modules or finetune_mlp_modules:
+                    target_modules = [
+                        name
+                        for name in _linears
+                        if bool(re.search(r"attention|attn", name.lower()))
+                        == finetune_attention_modules
+                    ]
+                    # Full paths carry the family choice; get_peft_regex would reject them.
+                    finetune_attention_modules = finetune_mlp_modules = True
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)
@@ -4210,7 +4270,9 @@ class FastBaseModel:
             if hasattr(m, "training"):
                 m.training = False
             if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.padding_side = "left"
+                m._saved_temp_tokenizer.padding_side = _generation_padding_side(
+                    getattr(m, "config", None)
+                )
             m._flag_for_generation = True
 
         m = model
