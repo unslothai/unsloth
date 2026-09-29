@@ -1777,6 +1777,11 @@ class ExportBackend:
             None,
         )
         if converter is None:
+            if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
+                raise RuntimeError(
+                    "GGUF adapter export needs llama.cpp's convert_lora_to_gguf.py, which is not "
+                    f"installed, and offline mode forbids cloning it; clone llama.cpp into {source_dir}."
+                )
             if not getattr(_zoo_llama_cpp, "_auto_install_enabled", lambda: True)():
                 raise RuntimeError(
                     "GGUF adapter export needs a llama.cpp source checkout and automatic "

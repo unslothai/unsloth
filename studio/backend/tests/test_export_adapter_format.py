@@ -288,3 +288,13 @@ def test_local_dir_never_format_mixed(monkeypatch, tmp_path):
     (out / "adapter_model.bin").write_bytes(b"x")
     ok, message, _ = backend.export_lora_adapter(str(out))
     assert not ok and "mix" in message
+
+
+def test_gguf_converter_offline_refuses_clone(monkeypatch, tmp_path):
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._converter_network_allowed = lambda: False
+    with pytest.raises(RuntimeError, match = "offline"):
+        backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls == []
