@@ -313,6 +313,175 @@ def test_the_audio_input_path_resolves_an_unset_budget(monkeypatch):
     assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
 
 
+def _rendered_audio_messages(
+    monkeypatch,
+    messages,
+    audio = None,
+):
+    backend, _model = _audio_backend(monkeypatch)
+    processor = backend.models[backend.active_model_name]["processor"]
+    render = processor.apply_chat_template
+    seen = {}
+
+    def _capture(messages, *args, **kwargs):
+        seen["messages"] = messages
+        return render(messages, *args, **kwargs)
+
+    monkeypatch.setattr(processor, "apply_chat_template", _capture, raising = False)
+    list(
+        backend.generate_audio_input_response(
+            messages, "be brief", audio or object(), 0.0, 1.0, 0, 0.0, 8, 1.0
+        )
+    )
+    return seen["messages"]
+
+
+def _audio_turns(monkeypatch, messages):
+    return [(m["role"], m.get("name")) for m in _rendered_audio_messages(monkeypatch, messages)]
+
+
+def test_the_audio_input_turns_keep_participant_names(monkeypatch):
+    assert _audio_turns(monkeypatch, [{"role": "user", "name": "alice", "content": "hi"}]) == [
+        ("system", None),
+        ("user", "alice"),
+    ]
+
+
+def test_the_audio_turn_keeps_its_text_and_ends_the_prompt(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Summarize this"},
+            {"role": "assistant", "content": "partial"},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Summarize this"},
+            ],
+        }
+    ]
+
+
+def test_the_audio_turn_is_named_for_whoever_recorded_it(monkeypatch):
+    assert _audio_turns(
+        monkeypatch,
+        [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "name": "bob", "content": ""},
+        ],
+    ) == [("system", None), ("user", "alice"), ("assistant", None), ("user", "bob")]
+
+
+def test_an_audio_only_turn_keeps_the_conversation_before_it(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Write a haiku about the sea"},
+            {"role": "assistant", "content": "Waves fold into foam"},
+            {"role": "user", "content": ""},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {"role": "user", "content": [{"type": "text", "text": "Write a haiku about the sea"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Waves fold into foam"}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Please transcribe this audio."},
+            ],
+        },
+    ]
+
+
+def test_an_earlier_audio_turn_keeps_its_reply(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Write a haiku about the sea"},
+            {"role": "assistant", "content": "Waves fold into foam"},
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "Please count from one to five."},
+            {"role": "user", "content": ""},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {"role": "user", "content": [{"type": "text", "text": "Write a haiku about the sea"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Waves fold into foam"}]},
+        {"role": "user", "content": []},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Please count from one to five."}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Please transcribe this audio."},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "history, roles",
+    [
+        ([{"role": "user", "content": "My name is Nilay"}], ["system", "user"]),
+        ([{"role": "assistant", "content": "Hi, how can I help?"}], ["system", "user"]),
+        (
+            [{"role": "user", "content": "My name is Nilay"}, {"role": "assistant", "content": ""}],
+            ["system", "user"],
+        ),
+        (
+            [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "weather", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+                {"role": "assistant", "content": "It is sunny."},
+            ],
+            ["system", "user", "assistant", "user"],
+        ),
+    ],
+)
+def test_an_audio_turn_after_an_unanswered_or_tool_turn_still_alternates(
+    monkeypatch, history, roles
+):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch, [*history, {"role": "user", "content": ""}], audio
+    )
+
+    assert [m["role"] for m in rendered] == roles
+    assert rendered[-1]["content"] == [
+        {"type": "audio", "audio": audio},
+        {"type": "text", "text": "Please transcribe this audio."},
+    ]
+
+
 def test_an_explicit_audio_budget_is_untouched(monkeypatch):
     backend, model = _audio_backend(monkeypatch)
 

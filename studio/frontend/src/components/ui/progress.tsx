@@ -23,7 +23,7 @@ function Progress({
     <ProgressPrimitive.Root
       data-slot="progress"
       className={cn(
-        "bg-foreground/[0.06] h-3 rounded-4xl relative flex w-full items-center overflow-x-hidden",
+        "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] h-3 rounded-4xl relative flex w-full items-center overflow-x-hidden",
         className,
       )}
       {...props}

@@ -5,7 +5,7 @@ compute-capability major version."""
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 import unsloth  # noqa: F401
@@ -36,11 +36,11 @@ def test_capability_gate(capability, probe_result, expect_disabled):
 
 
 @pytest.mark.skipif(
-    not (has_real_accelerator() and ad.HAS_XFORMERS),
+    not (has_real_cuda() and ad.HAS_XFORMERS),
     reason = "needs a CUDA GPU with a working xformers build",
 )
 @pytest.mark.skipif(
-    has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12,
+    has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12,
     reason = "on real sm_120+ the probe legitimately returns False when the build ships no "
     "sm_120 kernel, so asserting True there would be a false failure",
 )

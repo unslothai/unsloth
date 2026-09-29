@@ -3,7 +3,9 @@
 
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
+  cachedRepoConfigId,
   ggufVariantFromStorageKey,
+  isStandaloneGgufPath,
   modelIdFromStorageKey,
   modelStorageKey,
   normalizeGgufVariantIdentity,
@@ -20,14 +22,15 @@ export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
-  /** MLX KV cache quantization width. Optional so older blobs still parse. */
-  mlxKvBits?: number | null;
+  mlxKvQuant?: MlxKvQuant | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
    *  Optional so older blobs parse. */
   specDraftCacheDtype?: string | null;
   nParallel: number | null;
+  reasoningBudget: number;
+  reasoningBudgetMessage: string;
   nBatch: number | null;
   nUbatch: number | null;
   /** --load-mode; null lets the fit decide (`none` when the load fits, else no flag).
@@ -47,23 +50,27 @@ export interface PerModelConfig {
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
-  // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
+  // selectedGpuIds means automatic.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
+  /** --tensor-split in picker order, never stored. `undefined` defers to the store, `null` = default. */
+  tensorSplit?: number[] | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   nBatch: null,
   nUbatch: null,
   loadMode: null,
@@ -197,6 +204,9 @@ export function loadedContextFields(resp: {
   native_context_length?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
+  parallel_slots?: number | null;
+  mlx_context_budget?: number | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -204,6 +214,9 @@ export function loadedContextFields(resp: {
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
+  loadedContextUnboundedWhenBatched: boolean;
+  loadedParallelSlots: number | null;
+  loadedContextBudget: number | null;
 } {
   if (!resp) {
     return {
@@ -213,6 +226,9 @@ export function loadedContextFields(resp: {
       loadedIsGguf: null,
       loadedIsMlx: null,
       loadedContextEnforced: null,
+      loadedContextUnboundedWhenBatched: false,
+      loadedParallelSlots: null,
+      loadedContextBudget: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -226,6 +242,9 @@ export function loadedContextFields(resp: {
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
+      loadedContextUnboundedWhenBatched: false,
+      loadedParallelSlots: null,
+      loadedContextBudget: null,
     };
   }
   return {
@@ -239,6 +258,12 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+    // Read from the same response as the other two so the three never mix across loads.
+    loadedContextUnboundedWhenBatched: isGguf
+      ? false
+      : (resp.context_unbounded_when_batched ?? false),
+    loadedParallelSlots: resp.parallel_slots ?? null,
+    loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
 
@@ -254,8 +279,40 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// Every width mx.quantize supports. By bit width, not a dtype name, hence separate from KV_CACHE_DTYPES.
-export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
+export const MLX_KV_QUANTS = [
+  "8",
+  "6",
+  "5",
+  "4",
+  "3",
+  "2",
+  "tq-4",
+  "tq-3.5",
+  "tq-3",
+  "tq-2",
+] as const;
+export type MlxKvQuant = (typeof MLX_KV_QUANTS)[number];
+const VALID_MLX_KV_QUANTS = new Set<string>(MLX_KV_QUANTS);
+
+export function mlxKvQuantLabel(quant: string): string {
+  return quant.startsWith("tq-") ? `TurboQuant ${quant.slice(3)}-bit` : `${quant}-bit`;
+}
+
+/** A bare width only ever meant mx.quantize; null is how a saved Auto spells itself. */
+export function normalizeMlxKvQuant(
+  value: unknown,
+  supersededBits?: unknown,
+): MlxKvQuant | null {
+  if (typeof value === "string") {
+    // Trimmed and lower-cased to match the backend's reader, or one row means two settings.
+    const named = value.trim().toLowerCase();
+    return VALID_MLX_KV_QUANTS.has(named) ? (named as MlxKvQuant) : null;
+  }
+  if (value !== undefined) return null;
+  if (typeof supersededBits !== "number" || !Number.isFinite(supersededBits)) return null;
+  const name = String(supersededBits);
+  return VALID_MLX_KV_QUANTS.has(name) ? (name as MlxKvQuant) : null;
+}
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 // llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it, storage keeps null and
@@ -296,8 +353,11 @@ const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
-// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam); a client from before any of them
-const STORAGE_SCHEMA_VERSION = 5;
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
+// v7 mlxKvQuant
+const STORAGE_SCHEMA_VERSION = 7;
+const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
+const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
 const PRE_VISION_SCHEMA_VERSION = 3;
 const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
@@ -305,23 +365,44 @@ const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
+export const MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192;
+
+export function isReasoningBudgetMessageValid(value: string): boolean {
+  if (value.includes("\0")) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return (
+    new TextEncoder().encode(value).byteLength <=
+    MAX_REASONING_BUDGET_MESSAGE_BYTES
+  );
+}
 
 type StoredPerModelConfig = PerModelConfig & {
   version: number;
 };
 type StoredMap = Record<string, PerModelConfig | StoredPerModelConfig>;
-type RawConfig = Partial<PerModelConfig> & { version?: unknown };
+type RawConfig = Partial<PerModelConfig> & { version?: unknown; mlxKvBits?: unknown };
 
 const STORED_CONFIG_FIELDS = new Set([
   "version",
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
-  "mlxKvBits",
+  "mlxKvQuant",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
   "nParallel",
+  "reasoningBudget",
+  "reasoningBudgetMessage",
   "nBatch",
   "nUbatch",
   "loadMode",
@@ -722,6 +803,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
       typeof raw.specDraftNMax === "number" ? raw.specDraftNMax : null,
     // Legacy blobs predate the parallel-slots knob.
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     disableVision:
@@ -909,11 +992,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
-    mlxKvBits:
-      typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
-        ? partial.mlxKvBits
-        : null,
+    mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -941,6 +1020,19 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudget,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -978,28 +1070,43 @@ function normalize(raw: unknown): PerModelConfig {
   return normalizeV1(partial);
 }
 
-function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
-  const normalized = normalize(config);
-  // Stamped with the OLDEST version that still understands every field present, so a record an older client can
-  // safely rewrite stays in its reach. Only a TRUE disableVision needs v4: false is what a pre-vision client
-  // reconstructs anyway, and stamping every record v4 would put the whole store out of reach. The tuning group
-  // follows the same rule.
+/** The OLDEST version that still understands every field present, so a record an older client can
+ *  safely rewrite stays in its reach. Only a TRUE disableVision needs v4: false is what a pre-vision
+ *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
+ *  The tuning group and the reasoning pair follow the same rule. */
+function storedSchemaVersion(normalized: PerModelConfig): number {
+  if (normalized.mlxKvQuant != null) {
+    return STORAGE_SCHEMA_VERSION;
+  }
+  const hasReasoningBudget =
+    normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
+  if (hasReasoningBudget) {
+    return PRE_MLX_KV_QUANT_SCHEMA_VERSION;
+  }
   const hasServerTuning =
     normalized.loadMode != null ||
     normalized.specDraftCacheDtype != null ||
     normalized.ctxCheckpoints != null ||
     normalized.cacheRam != null;
-  const version = hasServerTuning
-    ? STORAGE_SCHEMA_VERSION
-    : normalized.disableVision
-      ? PRE_SERVER_TUNING_SCHEMA_VERSION
-      : normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
-        ? PRE_VISION_SCHEMA_VERSION
-        : normalized.nBatch != null || normalized.nUbatch != null
-          ? PRE_EXTRA_ARGS_SCHEMA_VERSION
-          : PRE_BATCH_SCHEMA_VERSION;
+  if (hasServerTuning) {
+    return PRE_REASONING_BUDGET_SCHEMA_VERSION;
+  }
+  if (normalized.disableVision) {
+    return PRE_SERVER_TUNING_SCHEMA_VERSION;
+  }
+  if (normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0) {
+    return PRE_VISION_SCHEMA_VERSION;
+  }
+  if (normalized.nBatch != null || normalized.nUbatch != null) {
+    return PRE_EXTRA_ARGS_SCHEMA_VERSION;
+  }
+  return PRE_BATCH_SCHEMA_VERSION;
+}
+
+function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
+  const normalized = normalize(config);
   return {
-    version,
+    version: storedSchemaVersion(normalized),
     ...normalized,
   };
 }
@@ -1142,10 +1249,13 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
-    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
+    (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
+    config.reasoningBudget === DEFAULT_PER_MODEL_CONFIG.reasoningBudget &&
+    config.reasoningBudgetMessage ===
+      DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage &&
     config.nBatch == null &&
     config.nUbatch == null &&
     // The tuning group, for the same reason as the arguments below: savePerModelConfig deletes an entry it judges
@@ -1408,6 +1518,19 @@ export function resolveInitialConfig(
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
 }
 
+/** Moves a record an older build saved under a cached repo's snapshot path to the repo id the
+ *  settings panel keys it by. Returns that repo id, or null when the model is not one. */
+export function adoptCachedRepoConfig(
+  modelId: string,
+  ggufVariant?: string | null,
+): string | null {
+  const repoId = cachedRepoConfigId(modelId, ggufVariant);
+  if (repoId) {
+    adoptLegacyConfigKey(repoId, modelId, null);
+  }
+  return repoId;
+}
+
 /** Remembered settings for the identifier /api/inference/status reports as loaded. An API auto-switch hands the
  *  loader a concrete snapshot path while settings are keyed by repo id, so reading the raw identifier reports the
  *  resident model as unremembered and blanks a control it is running with. Only a namespaced collapse is adopted,
@@ -1416,9 +1539,23 @@ export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
-  const direct = resolveInitialConfig(modelId, ggufVariant);
+  const repoId = adoptCachedRepoConfig(modelId, ggufVariant);
+  if (repoId) {
+    return resolveInitialConfig(repoId, null);
+  }
+  // a standalone file's reported quant is a label; its settings are saved without a variant.
+  const standalone = isStandaloneGgufPath(modelId);
+  const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant);
   if (direct.remembered) {
     return direct;
+  }
+  // A loose .gguf load names no variant, so override_lookup_candidates reads the bare path
+  // then the label; a picker before #7473 keyed the label, and those records still exist.
+  if (standalone && ggufVariant) {
+    const labelled = resolveInitialConfig(modelId, ggufVariant);
+    if (labelled.remembered) {
+      return labelled;
+    }
   }
   const alias = publicModelId(modelId);
   if (alias === modelId || !alias.includes("/")) {

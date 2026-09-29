@@ -148,7 +148,7 @@ def test_invalid_repo_never_reaches_github(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(changes, "auth_safe_open", fail)
 
     assert changes._fetch_release("owner/repository/extra", "b1") is None
     assert called is False
@@ -168,7 +168,7 @@ def test_repo_with_a_dot_segment_never_reaches_github(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(changes, "auth_safe_open", fail)
 
     for repo in ("../etc", "owner/..", "..", "../rate_limit"):
         assert changes._fetch_release(repo, "b1") is None
@@ -363,7 +363,7 @@ def test_a_truncated_response_does_not_escape_to_the_caller(monkeypatch):
         def read(self, size = -1):
             raise http.client.IncompleteRead(b"partial")
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
+    monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())
 
     # IncompleteRead is an HTTPException, not an OSError.
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
@@ -380,7 +380,7 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
         def read(self, size = -1):
             return b"x" * (changes.MAX_RELEASE_BYTES + 1)
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
+    monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())
 
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
 
@@ -407,7 +407,7 @@ def test_a_403_records_the_shared_lockout(monkeypatch, retry_after, body, low, h
     def refused(*_args, **_kwargs):
         raise urllib.error.HTTPError("url", 403, "rate limited", headers, io.BytesIO(body))
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", refused)
+    monkeypatch.setattr(changes, "auth_safe_open", refused)
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
     ceiling = high if high is not None else freshness_flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS
     assert low < freshness_flow.github_rate_limit_remaining() <= ceiling
