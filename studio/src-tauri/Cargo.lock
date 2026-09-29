@@ -5757,7 +5757,6 @@ dependencies = [
  "arboard",
  "base64 0.23.1",
  "block2",
- "core-foundation 0.10.1",
  "core-graphics",
  "dirs 6.0.0",
  "elevated-command",

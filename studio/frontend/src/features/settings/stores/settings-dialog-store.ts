@@ -22,7 +22,6 @@ export const SETTINGS_TABS = [
   "remote-lan",
   "agents",
   "keyboard-shortcuts",
-  "system",
   "debugging",
   "about",
 ] as const;

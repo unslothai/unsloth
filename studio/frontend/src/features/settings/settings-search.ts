@@ -277,11 +277,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
   ],
-  system: [
-    "systemPill.settings.title",
-    "systemPill.settings.enable",
-    "systemPill.settings.defaultModel",
-  ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",

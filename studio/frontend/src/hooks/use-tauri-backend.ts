@@ -50,17 +50,6 @@ import {
   markServerStopIntent,
 } from "./server-stop-intent";
 
-// Persist and forward the port: the pill window can miss the one-shot broadcast.
-function announcePortToPill(port: number): void {
-  try {
-    window.localStorage.setItem("unsloth_backend_port", String(port));
-  } catch {
-  }
-  void import("@tauri-apps/api/event")
-    .then(({ emitTo }) => emitTo("ask", "server-port", port))
-    .catch(() => undefined);
-}
-
 export type BackendStatus =
   | "checking"
   | "not-installed"
@@ -356,7 +345,6 @@ export function useTauriBackend() {
             return;
           }
           setApiBase(preflight.port);
-          announcePortToPill(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(true);
           setStartupMessage(SERVER_STARTUP_MESSAGE);
@@ -370,7 +358,6 @@ export function useTauriBackend() {
             return;
           }
           setApiBase(preflight.port);
-          announcePortToPill(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(false);
           stopExternalServerPoll();
@@ -451,7 +438,6 @@ export function useTauriBackend() {
 
       if (startupResult.status === "ready") {
         setApiBase(startupResult.port);
-        announcePortToPill(startupResult.port);
         setRunningStatus();
         startingRef.current = false;
         return;
@@ -804,7 +790,6 @@ export function useTauriBackend() {
         // a real crash and deserves the generic message.
         startTimedOutRef.current = false;
         setApiBase(e.payload);
-        announcePortToPill(e.payload);
       });
 
       register<void>("server-crashed", () => {

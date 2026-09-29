@@ -25,7 +25,6 @@ import {
   CloudIcon,
   ComputerTerminal01Icon,
   CpuIcon,
-  Cursor01Icon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
   Globe02Icon,
@@ -63,7 +62,6 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-import { isMacPlatform } from "@/lib/pill-native";
 
 interface SettingsPanelProps {
   searchEntry?: string;
@@ -102,8 +100,6 @@ const TAB_LOADERS = {
     import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
   agents: () =>
     import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
-  system: () =>
-    import("./tabs/system-pill-tab").then((m) => ({ default: m.SystemPillTab })),
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
   about: () =>
@@ -262,23 +258,12 @@ const TABS: TabDef[] = [
     icon: EnergyRectangleIcon,
   },
   {
-    id: "system",
-    labelKey: "systemPill.settings.tab",
-    icon: Cursor01Icon,
-    badgeKey: "common.new",
-  },
-  {
     id: "debugging",
     labelKey: "settings.tabs.debugging",
     icon: ComputerTerminal01Icon,
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
-
-// The Ask bar is a macOS desktop feature; its tab stays hidden elsewhere.
-function tabOnThisPlatform(tab: SettingsTab): boolean {
-  return tab !== "system" || (isTauri && isMacPlatform());
-}
 
 const clientPlatform = getClientPlatform();
 const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
@@ -316,7 +301,7 @@ export function SettingsDialog() {
   const stacked = useStackedLayout();
   const hubSource = useHubSource();
   const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
-  const visibleTabs = useMemo(() => TABS.filter((tab) => tabOnThisPlatform(tab.id) && settingsTabVisible(tab.id, isOwner)), [isOwner]);
+  const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
   const activeTab = resolveSettingsTab(requestedTab, isOwner);
@@ -460,7 +445,6 @@ export function SettingsDialog() {
     "api-keys": null,
     "remote-lan": null,
     agents: null,
-    system: null,
     debugging: null,
     about: null,
   });

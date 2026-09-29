@@ -1101,6 +1101,9 @@ export const de = {
           "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
         closeToTraySaveError:
           "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
+        askBar: "Fragenleiste aktivieren",
+        askBarDescription: "Drücken Sie ⌥Space in einer beliebigen App. Fragen Sie Ihr lokales Modell aus jeder App auf diesem Mac.",
+        askBarSaveError: "Speichern fehlgeschlagen. Bitte versuchen Sie es erneut.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -2897,7 +2900,6 @@ export const de = {
       stopAndSave: "Stoppen und speichern",
       compareInChat: "Im Chat vergleichen",
       exportModel: "Modell exportieren",
-      useEverywhere: "Überall auf diesem Mac verwenden",
       milestone: "Meilenstein",
       halfwayDone: "Zur Hälfte fertig. Das Training ist über 50 %.",
       doneNextStep:
@@ -3071,34 +3073,18 @@ export const de = {
       modelWeights: "Modellgewichte",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Unsloth fragen...",
-      loading: "{model} wird geladen...",
-      copy: "Kopieren",
-      copied: "Kopiert",
-      noModel:
-        "Kein Modell verfügbar. Wählen Sie in den Einstellungen ein Standardmodell aus.",
-      failed: "Etwas ist schiefgelaufen. Läuft das Backend?",
-      autoModel: "Aktives Modell",
-      enterHint: "fragen",
-      escHint: "schließen",
-      followUp: "Nachfragen...",
-      clear: "Leeren",
-    },
-    settings: {
-      tab: "Assistent",
-      title: "Assistent",
-      description:
-        "Fragen Sie Ihr lokales Modell aus jeder App auf diesem Mac.",
-      enable: "Fragenleiste aktivieren",
-      enableDescription: "Drücken Sie {hotkey} in einer beliebigen App.",
-      defaultModel: "Standardmodell",
-      defaultModelDescription:
-        "Beantwortet die Fragenleiste. Ohne Angabe wird das bereits geladene Modell verwendet.",
-      actionModelDefault: "Geladenes Modell verwenden",
-      saveError: "Speichern fehlgeschlagen. Bitte versuchen Sie es erneut.",
-    },
+  askBar: {
+    placeholder: "Unsloth fragen...",
+    followUp: "Nachfragen...",
+    loading: "{model} wird geladen...",
+    noModel: "Kein Modell geladen. Laden Sie zuerst eines in Unsloth.",
+    failed: "Etwas ist schiefgelaufen. Läuft das Backend?",
+    autoModel: "Aktives Modell",
+    copy: "Kopieren",
+    copied: "Kopiert",
+    clear: "Leeren",
+    enterHint: "fragen",
+    escHint: "schließen",
   },
   modelMemory: {
     readout:

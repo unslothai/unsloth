@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod ask_bar;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -25,7 +26,6 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
-mod selection_pill;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -2106,7 +2106,7 @@ fn main() {
     info!("Native saved app layout restore enabled: {restore_initial_layout}");
     let mut window_state = tauri_plugin_window_state::Builder::new()
         .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-        .with_denylist(&[selection_pill::ASK_WINDOW_LABEL]);
+        .with_denylist(&[ask_bar::ASK_WINDOW_LABEL]);
     if !restore_initial_layout {
         window_state = window_state.skip_initial_state("main");
     }
@@ -2127,7 +2127,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(window_state.build())
         .manage(app_layout::NativeLayoutRestored(
             std::sync::atomic::AtomicBool::new(restore_initial_layout),
@@ -2139,7 +2138,7 @@ fn main() {
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
-        .manage(selection_pill::new_pill_state())
+        .manage(ask_bar::AskBarState::default())
         .manage(update::new_update_state())
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
@@ -2199,11 +2198,10 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
-            selection_pill::commands::pill_status,
-            selection_pill::commands::pill_set_config,
-            selection_pill::commands::pill_server_port,
-            selection_pill::commands::ask_hide,
-            selection_pill::commands::ask_resize,
+            ask_bar::get_ask_bar,
+            ask_bar::set_ask_bar,
+            ask_bar::ask_hide,
+            ask_bar::ask_resize,
             webview_permissions::reset_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
@@ -2259,9 +2257,9 @@ fn main() {
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
-            if let Err(e) = selection_pill::init(app) {
-                log::warn!("selection pill init failed: {e}");
-            }
+            #[cfg(target_os = "macos")]
+            app.handle().plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
+            ask_bar::init(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2275,10 +2273,8 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: closing the main window exits before the reap.
                 api.prevent_close();
-                // Cmd+W on the ask panel hides it instead of running the main close policy.
-                #[cfg(target_os = "macos")]
-                if window.label() == selection_pill::ASK_WINDOW_LABEL {
-                    selection_pill::hide_ask_window(window);
+                if window.label() == ask_bar::ASK_WINDOW_LABEL {
+                    ask_bar::hide_window(window);
                     return;
                 }
                 let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);

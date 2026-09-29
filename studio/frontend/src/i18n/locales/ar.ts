@@ -1079,6 +1079,9 @@ export const ar = {
         closeToTrayDescription:
           "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
+        askBar: "تفعيل شريط السؤال",
+        askBarDescription: "اضغط ⌥Space في أي تطبيق. اسأل نموذجك المحلي من أي تطبيق على هذا الـ Mac.",
+        askBarSaveError: "تعذر الحفظ. يرجى المحاولة مرة أخرى.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
@@ -2834,7 +2837,6 @@ export const ar = {
       stopAndSave: "الإيقاف والحفظ",
       compareInChat: "المقارنة في المحادثة",
       exportModel: "تصدير النموذج",
-      useEverywhere: "استخدمه في كل مكان على هذا الـ Mac",
       milestone: "مرحلة مهمة",
       halfwayDone: "اكتمل النصف. تجاوز التدريب 50%.",
       doneNextStep:
@@ -3002,32 +3004,18 @@ export const ar = {
       modelWeights: "أوزان النموذج",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "اسأل Unsloth...",
-      loading: "جار تحميل {model}...",
-      copy: "نسخ",
-      copied: "تم النسخ",
-      noModel: "لا يوجد نموذج متاح. اختر نموذجا افتراضيا من الإعدادات.",
-      failed: "حدث خطأ ما. هل الخادم الخلفي قيد التشغيل؟",
-      autoModel: "النموذج النشط",
-      enterHint: "اسأل",
-      escHint: "إغلاق",
-      followUp: "متابعة السؤال...",
-      clear: "مسح",
-    },
-    settings: {
-      tab: "المساعد",
-      title: "المساعد",
-      description: "اسأل نموذجك المحلي من أي تطبيق على هذا الـ Mac.",
-      enable: "تفعيل شريط السؤال",
-      enableDescription: "اضغط {hotkey} في أي تطبيق.",
-      defaultModel: "النموذج الافتراضي",
-      defaultModelDescription:
-        "يجيب في شريط السؤال. اتركه فارغا لاستخدام النموذج المحمل بالفعل.",
-      actionModelDefault: "استخدام النموذج المحمل",
-      saveError: "تعذر الحفظ. يرجى المحاولة مرة أخرى.",
-    },
+  askBar: {
+    placeholder: "اسأل Unsloth...",
+    followUp: "متابعة السؤال...",
+    loading: "جار تحميل {model}...",
+    noModel: "لا يوجد نموذج محمل. حمّل نموذجا في Unsloth أولا.",
+    failed: "حدث خطأ ما. هل الخادم الخلفي قيد التشغيل؟",
+    autoModel: "النموذج النشط",
+    copy: "نسخ",
+    copied: "تم النسخ",
+    clear: "مسح",
+    enterHint: "اسأل",
+    escHint: "إغلاق",
   },
   modelMemory: {
     readout:

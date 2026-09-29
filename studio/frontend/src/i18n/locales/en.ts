@@ -1086,6 +1086,9 @@ export const en = {
         closeToTrayDescription:
           "Keep Unsloth and its server running in the background when you close the main window.",
         closeToTraySaveError: "Failed to update the close to system tray setting.",
+        askBar: "Enable ask bar",
+        askBarDescription: "Press ⌥Space in any app to ask your local model.",
+        askBarSaveError: "Failed to save. Please try again.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -2818,7 +2821,6 @@ export const en = {
       stopAndSave: "Stop and Save",
       compareInChat: "Compare in Chat",
       exportModel: "Export Model",
-      useEverywhere: "Use everywhere on this Mac",
       milestone: "Milestone",
       halfwayDone: "Halfway done. Training is past 50%.",
       doneNextStep:
@@ -2986,32 +2988,18 @@ export const en = {
       modelWeights: "Model weights",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Ask Unsloth...",
-      loading: "Loading {model}...",
-      copy: "Copy",
-      copied: "Copied",
-      noModel: "No model available. Pick a default model in Settings.",
-      failed: "Something went wrong. Is the backend running?",
-      autoModel: "Active model",
-      enterHint: "ask",
-      escHint: "close",
-      followUp: "Follow up...",
-      clear: "Clear",
-    },
-    settings: {
-      tab: "Assistant",
-      title: "Assistant",
-      description: "Ask your local model from any app on this Mac.",
-      enable: "Enable ask bar",
-      enableDescription: "Press {hotkey} in any app.",
-      defaultModel: "Default model",
-      defaultModelDescription:
-        "Answers the ask bar. Leave unset to use whichever model is already loaded.",
-      actionModelDefault: "Use loaded model",
-      saveError: "Failed to save. Please try again.",
-    },
+  askBar: {
+    placeholder: "Ask Unsloth...",
+    followUp: "Follow up...",
+    loading: "Loading {model}...",
+    noModel: "No model is loaded. Load one in Unsloth first.",
+    failed: "Something went wrong. Is the backend running?",
+    autoModel: "Active model",
+    copy: "Copy",
+    copied: "Copied",
+    clear: "Clear",
+    enterHint: "ask",
+    escHint: "close",
   },
   modelMemory: {
     readout:

@@ -44,7 +44,6 @@ rand = "0.10.0"
 tauri-plugin-notification = "2.3.3"
 tempfile = "3"
 tauri-plugin-window-state = "2"
-tauri-plugin-global-shortcut = "2"
 time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -54,11 +53,12 @@ signal-hook = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-core-foundation = "0.10"
 core-graphics = "0.25"
+tauri-plugin-global-shortcut = "2"
 window-vibrancy = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSString"] }
+
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSPanel", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSNotification", "NSObject", "NSOperation", "NSString"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"

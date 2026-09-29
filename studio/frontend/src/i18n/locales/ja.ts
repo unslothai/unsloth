@@ -1068,6 +1068,9 @@ export const ja = {
         closeToTrayDescription:
           "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",
         closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
+        askBar: "質問バーを有効にする",
+        askBarDescription: "どのアプリでも ⌥Space を押します。この Mac のどのアプリからでもローカルモデルに質問できます。",
+        askBarSaveError: "保存できませんでした。もう一度お試しください。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
@@ -2787,7 +2790,6 @@ export const ja = {
       stopAndSave: "停止して保存",
       compareInChat: "チャットで比較",
       exportModel: "モデルをエクスポート",
-      useEverywhere: "この Mac のどこでも使う",
       milestone: "マイルストーン",
       halfwayDone: "半分完了しました。トレーニングの進捗が 50% を超えました。",
       doneNextStep: "トレーニングが完了しました。次のステップ: ベースモデルとファインチューニング後の出力を比較します。",
@@ -2950,34 +2952,18 @@ export const ja = {
       modelWeights: "モデルの重み",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Unsloth に質問...",
-      loading: "{model} を読み込み中...",
-      copy: "コピー",
-      copied: "コピーしました",
-      noModel:
-        "利用できるモデルがありません。設定で既定のモデルを選択してください。",
-      failed: "問題が発生しました。バックエンドは起動していますか？",
-      autoModel: "使用中のモデル",
-      enterHint: "質問",
-      escHint: "閉じる",
-      followUp: "続けて質問...",
-      clear: "クリア",
-    },
-    settings: {
-      tab: "アシスタント",
-      title: "アシスタント",
-      description:
-        "この Mac のどのアプリからでもローカルモデルに質問できます。",
-      enable: "質問バーを有効にする",
-      enableDescription: "どのアプリでも {hotkey} を押します。",
-      defaultModel: "既定のモデル",
-      defaultModelDescription:
-        "質問バーの回答に使います。未設定の場合は読み込み済みのモデルを使います。",
-      actionModelDefault: "読み込み済みのモデルを使う",
-      saveError: "保存できませんでした。もう一度お試しください。",
-    },
+  askBar: {
+    placeholder: "Unsloth に質問...",
+    followUp: "続けて質問...",
+    loading: "{model} を読み込み中...",
+    noModel: "モデルが読み込まれていません。先に Unsloth でモデルを読み込んでください。",
+    failed: "問題が発生しました。バックエンドは起動していますか？",
+    autoModel: "使用中のモデル",
+    copy: "コピー",
+    copied: "コピーしました",
+    clear: "クリア",
+    enterHint: "質問",
+    escHint: "閉じる",
   },
   modelMemory: {
     readout:

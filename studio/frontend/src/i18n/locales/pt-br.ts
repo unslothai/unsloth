@@ -1088,6 +1088,9 @@ export const ptBR = {
           "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
         closeToTraySaveError:
           "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
+        askBar: "Ativar a barra de perguntas",
+        askBarDescription: "Pressione ⌥Space em qualquer app. Pergunte ao seu modelo local em qualquer app deste Mac.",
+        askBarSaveError: "Falha ao salvar. Tente novamente.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
@@ -2861,7 +2864,6 @@ export const ptBR = {
       stopAndSave: "Interromper e Salvar",
       compareInChat: "Comparar no Chat",
       exportModel: "Exportar Modelo",
-      useEverywhere: "Usar em qualquer lugar neste Mac",
       milestone: "Marco",
       halfwayDone: "Metade concluída. O treinamento passou de 50%.",
       doneNextStep:
@@ -3030,33 +3032,18 @@ export const ptBR = {
       modelWeights: "Pesos do modelo",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Pergunte ao Unsloth...",
-      loading: "Carregando {model}...",
-      copy: "Copiar",
-      copied: "Copiado",
-      noModel:
-        "Nenhum modelo disponível. Escolha um modelo padrão nas configurações.",
-      failed: "Algo deu errado. O backend está em execução?",
-      autoModel: "Modelo ativo",
-      enterHint: "perguntar",
-      escHint: "fechar",
-      followUp: "Perguntar mais...",
-      clear: "Limpar",
-    },
-    settings: {
-      tab: "Assistente",
-      title: "Assistente",
-      description: "Pergunte ao seu modelo local em qualquer app deste Mac.",
-      enable: "Ativar a barra de perguntas",
-      enableDescription: "Pressione {hotkey} em qualquer app.",
-      defaultModel: "Modelo padrão",
-      defaultModelDescription:
-        "Responde na barra de perguntas. Deixe em branco para usar o modelo já carregado.",
-      actionModelDefault: "Usar o modelo carregado",
-      saveError: "Falha ao salvar. Tente novamente.",
-    },
+  askBar: {
+    placeholder: "Pergunte ao Unsloth...",
+    followUp: "Perguntar mais...",
+    loading: "Carregando {model}...",
+    noModel: "Nenhum modelo carregado. Carregue um no Unsloth primeiro.",
+    failed: "Algo deu errado. O backend está em execução?",
+    autoModel: "Modelo ativo",
+    copy: "Copiar",
+    copied: "Copiado",
+    clear: "Limpar",
+    enterHint: "perguntar",
+    escHint: "fechar",
   },
   modelMemory: {
     readout:

@@ -46,7 +46,6 @@ import {
   useShortcutAvailable,
 } from "@/features/settings";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
-import { PillConfigSync } from "@/features/system-pill";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
@@ -675,8 +674,6 @@ function RootLayout() {
       <TransformersUpgradeDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
-      <PillConfigSync />
-
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>

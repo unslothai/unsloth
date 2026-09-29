@@ -1099,6 +1099,9 @@ export const fr = {
           "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
         closeToTraySaveError:
           "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
+        askBar: "Activer la barre de question",
+        askBarDescription: "Appuyez sur ⌥Space dans n'importe quelle app. Interrogez votre modèle local depuis n'importe quelle app de ce Mac.",
+        askBarSaveError: "Échec de l'enregistrement. Veuillez réessayer.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
@@ -2907,7 +2910,6 @@ export const fr = {
       stopAndSave: "Arrêter et enregistrer",
       compareInChat: "Comparer dans la discussion",
       exportModel: "Exporter le modèle",
-      useEverywhere: "Utiliser partout sur ce Mac",
       milestone: "Étape clé",
       halfwayDone: "À mi-chemin. L'entraînement a dépassé 50 %.",
       doneNextStep:
@@ -3082,35 +3084,18 @@ export const fr = {
       modelWeights: "Poids du modèle",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Poser une question à Unsloth...",
-      loading: "Chargement de {model}...",
-      copy: "Copier",
-      copied: "Copié",
-      noModel:
-        "Aucun modèle disponible. Choisissez un modèle par défaut dans les paramètres.",
-      failed:
-        "Une erreur s'est produite. Le backend est-il en cours d'exécution ?",
-      autoModel: "Modèle actif",
-      enterHint: "demander",
-      escHint: "fermer",
-      followUp: "Question suivante...",
-      clear: "Effacer",
-    },
-    settings: {
-      tab: "Assistant",
-      title: "Assistant",
-      description:
-        "Interrogez votre modèle local depuis n'importe quelle app de ce Mac.",
-      enable: "Activer la barre de question",
-      enableDescription: "Appuyez sur {hotkey} dans n'importe quelle app.",
-      defaultModel: "Modèle par défaut",
-      defaultModelDescription:
-        "Répond dans la barre de question. Laissez vide pour utiliser le modèle déjà chargé.",
-      actionModelDefault: "Utiliser le modèle chargé",
-      saveError: "Échec de l'enregistrement. Veuillez réessayer.",
-    },
+  askBar: {
+    placeholder: "Poser une question à Unsloth...",
+    followUp: "Question suivante...",
+    loading: "Chargement de {model}...",
+    noModel: "Aucun modèle chargé. Chargez-en un dans Unsloth d'abord.",
+    failed: "Une erreur s'est produite. Le backend est-il en cours d'exécution ?",
+    autoModel: "Modèle actif",
+    copy: "Copier",
+    copied: "Copié",
+    clear: "Effacer",
+    enterHint: "demander",
+    escHint: "fermer",
   },
   modelMemory: {
     readout:

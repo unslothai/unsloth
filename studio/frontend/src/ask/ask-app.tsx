@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   useEffect,
   useLayoutEffect,
@@ -11,44 +13,19 @@ import {
 } from "react";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { askHide, askResize, pillServerPort } from "@/lib/pill-native";
 import {
-  fetchInferenceStatus,
-  fetchPillSettings,
-  getCachedSettings,
-} from "../pill/api";
-import {
-  classifyFetchError,
-  ensureModelLoaded,
-  PillRunError,
-} from "../pill/run-action";
-import { streamCompletion } from "../pill/stream";
+  adoptBackendPort,
+  AskError,
+  resolveModel,
+  streamAnswer,
+  type ChatMessage,
+} from "./chat";
 
-type AskPhase = "input" | "loading" | "streaming" | "done" | "error";
-
-// `complete`: stream reached its terminal frame; a failed run may leave partial text.
+type Phase = "input" | "loading" | "streaming" | "done" | "error";
+// `complete`: the stream reached a clean stop, so the turn can go into follow-up history.
 type Turn = { question: string; answer: string; complete: boolean };
 
-function shortModelName(model: string): string {
-  return model.split("/").pop() ?? model;
-}
-
-function SparkIcon(): ReactElement {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-4.5 shrink-0 text-muted-foreground"
-    >
-      <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
-      <circle cx="12" cy="12" r="3.2" />
-    </svg>
-  );
-}
+const shortName = (model: string): string => model.split("/").pop() ?? model;
 
 function Key({ children }: { children: ReactNode }): ReactElement {
   return (
@@ -61,261 +38,133 @@ function Key({ children }: { children: ReactNode }): ReactElement {
 export function AskApp(): ReactElement {
   const t = useT();
   const [query, setQuery] = useState("");
-  const [phase, setPhase] = useState<AskPhase>("input");
+  const [phase, setPhase] = useState<Phase>("input");
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [modelLabel, setModelLabel] = useState<string | null>(null);
-  const [loadingModel, setLoadingModel] = useState<string | null>(null);
-  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  const [error, setError] = useState<AskError["kind"] | null>(null);
   const [copied, setCopied] = useState(false);
-  const [showNonce, setShowNonce] = useState(0);
+  const [session, setSession] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const answerRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const lastSizeRef = useRef({ width: 0, height: 0 });
+  const sizeRef = useRef({ width: 0, height: 0 });
+
+  const cancel = (): void => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
 
   useEffect(() => {
-    let disposed = false;
-    const cleanups: Array<() => void> = [];
-
-    void (async () => {
-      const { isTauri } = await import("@/lib/api-base");
-      if (!isTauri) return;
-      const { listen } = await import("@tauri-apps/api/event");
-      const unlistenShow = await listen("ask://show", () => {
-        // Drop the controller too, or a run parked on an unabortable fetch drives the reset session.
-        abortRef.current?.abort();
-        abortRef.current = null;
-        setTurns([]);
-        setQuery("");
-        setErrorKey(null);
-        setPhase("input");
-        setShowNonce((nonce) => nonce + 1);
-        void fetchPillSettings()
-          .then((settings) =>
-            setModelLabel(
-              settings.defaultModel
-                ? shortModelName(settings.defaultModel)
-                : null,
-            ),
-          )
-          .catch(() => undefined);
-      });
-      const unlistenHide = await listen("ask://hide", () => {
-        abortRef.current?.abort();
-        abortRef.current = null;
-      });
-      const unlistenPort = await listen<number>("server-port", (event) => {
-        void import("@/lib/api-base").then(({ setApiBase }) =>
-          setApiBase(event.payload),
-        );
-      });
-      if (disposed) {
-        unlistenShow();
-        unlistenHide();
-        unlistenPort();
-        return;
-      }
-      cleanups.push(unlistenShow, unlistenHide, unlistenPort);
-
-      // The server-port broadcast may predate this listener.
-      let port = await pillServerPort().catch(() => null);
-      if (port == null) {
-        const stored = window.localStorage.getItem("unsloth_backend_port");
-        port = stored ? Number(stored) || null : null;
-      }
-      if (port != null) {
-        const { setApiBase } = await import("@/lib/api-base");
-        setApiBase(port);
-      }
-      const settings = await fetchPillSettings().catch(() => null);
-      if (!disposed && settings?.defaultModel) {
-        setModelLabel(shortModelName(settings.defaultModel));
-      }
-    })();
-
-    const onKeyDown = (event: KeyboardEvent) => {
+    // Every summon starts a fresh conversation.
+    const show = listen("ask://show", () => {
+      cancel();
+      setTurns([]);
+      setQuery("");
+      setError(null);
+      setPhase("input");
+      setSession((value) => value + 1);
+    });
+    const hide = listen("ask://hide", cancel);
+    const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
-        abortRef.current?.abort();
-        abortRef.current = null;
-        void askHide();
+        cancel();
+        void invoke("ask_hide");
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    cleanups.push(() => window.removeEventListener("keydown", onKeyDown));
-
     return () => {
-      disposed = true;
-      for (const cleanup of cleanups) cleanup();
+      void show.then((unlisten) => unlisten());
+      void hide.then((unlisten) => unlisten());
+      window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
 
   useEffect(() => {
-    if (showNonce === 0) return;
     inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [showNonce]);
+  }, [session]);
 
   useLayoutEffect(() => {
     const node = containerRef.current;
     if (!node) return;
-    const rect = node.getBoundingClientRect();
-    const width = Math.ceil(rect.width);
-    const height = Math.ceil(rect.height);
-    // A native resize per streamed token freezes the app; resize only on real change.
-    if (
-      width === lastSizeRef.current.width &&
-      height === lastSizeRef.current.height
-    ) {
-      return;
-    }
-    lastSizeRef.current = { width, height };
-    void askResize(width, height).catch(() => undefined);
-  }, [phase, turns, errorKey, loadingModel]);
+    const width = Math.ceil(node.offsetWidth);
+    const height = Math.ceil(node.offsetHeight);
+    // A native resize per streamed token stalls the app: only resize on a real change.
+    if (width === sizeRef.current.width && height === sizeRef.current.height) return;
+    sizeRef.current = { width, height };
+    void invoke("ask_resize", { width, height }).catch(() => undefined);
+  });
 
   useEffect(() => {
     const node = answerRef.current;
     if (node) node.scrollTop = node.scrollHeight;
   }, [turns]);
 
-  const submit = async (): Promise<void> => {
-    const question = query.trim();
-    if (!question || phase === "streaming" || phase === "loading") return;
-    abortRef.current?.abort();
-    const abort = new AbortController();
-    abortRef.current = abort;
-    const history = turns;
-    setTurns([...history, { question, answer: "", complete: false }]);
-    setQuery("");
-    setErrorKey(null);
-    setPhase("streaming");
-
-    // A summon replaces the controller: re-check isCurrentRun after every await.
-    const isCurrentRun = (): boolean => abortRef.current === abort;
-
-    try {
-      const status = await fetchInferenceStatus().catch((error: unknown) => {
-        throw new PillRunError(classifyFetchError(error));
-      });
-      if (!isCurrentRun()) return;
-      const settings =
-        (await fetchPillSettings().catch(() => null)) ?? getCachedSettings();
-      if (!isCurrentRun()) return;
-      const model = settings?.defaultModel ?? null;
-
-      if (model) {
-        await ensureModelLoaded(
-          model,
-          settings?.defaultGgufVariant ?? null,
-          abort.signal,
-          (loading) => {
-            if (!isCurrentRun()) return;
-            setLoadingModel(shortModelName(loading));
-            setPhase("loading");
-          },
-        );
-        if (!isCurrentRun()) return;
-        setLoadingModel(null);
-        setPhase("streaming");
-      } else if (!status.active_model) {
-        throw new PillRunError("noModel");
-      }
-
-      const used = model ?? status.active_model ?? "default";
-      setModelLabel(shortModelName(used));
-
-      const answered = history.filter((turn) => turn.complete);
-      const messages = answered.flatMap((turn) => [
-        { role: "user" as const, content: turn.question },
-        { role: "assistant" as const, content: turn.answer },
-      ]);
-      messages.push({ role: "user", content: question });
-      let sawToken = false;
-      for await (const delta of streamCompletion(
-        { model: used, messages, stream: true },
-        abort.signal,
-      )) {
-        // turns may be emptied while a delta is in flight.
-        if (!isCurrentRun()) break;
-        sawToken = true;
-        setTurns((current) => {
-          const last = current[current.length - 1];
-          if (!last) return current;
-          const next = current.slice();
-          next[next.length - 1] = { ...last, answer: last.answer + delta };
-          return next;
-        });
-      }
-      if (!isCurrentRun()) return;
-      if (!sawToken) throw new PillRunError("failed");
-      setTurns((current) => {
-        const next = current.slice();
-        const last = next[next.length - 1];
-        if (last) next[next.length - 1] = { ...last, complete: true };
-        return next;
-      });
-      setPhase("done");
-    } catch (error) {
-      if (abortRef.current !== abort) return;
-      if (abort.signal.aborted) {
-        setPhase("done");
-      } else if (error instanceof PillRunError) {
-        setErrorKey(error.errorKey === "noModel" ? "noModel" : "failed");
-        setPhase("error");
-      } else {
-        setErrorKey("failed");
-        setPhase("error");
-      }
-      setLoadingModel(null);
-    } finally {
-      if (abortRef.current === abort) abortRef.current = null;
-    }
-  };
-
-  const lastAnswer = turns.length > 0 ? turns[turns.length - 1].answer : "";
-
-  const copyAnswer = (): void => {
-    // navigator.clipboard can be absent on this custom-scheme page.
-    void copyToClipboard(lastAnswer).then((ok) => {
-      if (ok) setCopied(true);
-    });
-  };
-
-  const clearThread = (): void => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setTurns([]);
-    setErrorKey(null);
-    setPhase("input");
-    inputRef.current?.focus();
-  };
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(false), 1500);
     return () => clearTimeout(timer);
   }, [copied]);
 
-  useEffect(() => {
-    if (phase !== "done" || !lastAnswer) return;
-    const onCopyKey = (event: KeyboardEvent) => {
-      if (
-        event.metaKey &&
-        event.key === "c" &&
-        !window.getSelection()?.toString()
-      ) {
-        copyAnswer();
-      }
-    };
-    window.addEventListener("keydown", onCopyKey);
-    return () => window.removeEventListener("keydown", onCopyKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, lastAnswer]);
+  const submit = async (): Promise<void> => {
+    const question = query.trim();
+    if (!question || phase === "loading" || phase === "streaming") return;
+    cancel();
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const history = turns.filter((turn) => turn.complete);
+    setTurns([...turns, { question, answer: "", complete: false }]);
+    setQuery("");
+    setError(null);
+    setPhase("streaming");
+    // A new summon replaces the controller; stop touching state once that happens.
+    const current = (): boolean => abortRef.current === abort;
+    const update = (change: (turn: Turn) => Turn): void =>
+      setTurns((all) => [...all.slice(0, -1), change(all[all.length - 1])]);
 
+    try {
+      if (!adoptBackendPort()) throw new AskError("failed");
+      const used = await resolveModel(abort.signal, (loading) => {
+        if (!current()) return;
+        setModel(shortName(loading));
+        setPhase("loading");
+      });
+      if (!current()) return;
+      setModel(shortName(used));
+      setPhase("streaming");
+      const messages: ChatMessage[] = history.flatMap((turn) => [
+        { role: "user" as const, content: turn.question },
+        { role: "assistant" as const, content: turn.answer },
+      ]);
+      messages.push({ role: "user", content: question });
+      for await (const delta of streamAnswer(used, messages, abort.signal)) {
+        if (!current()) return;
+        update((turn) => ({ ...turn, answer: turn.answer + delta }));
+      }
+      if (!current()) return;
+      update((turn) => ({ ...turn, complete: true }));
+      setPhase("done");
+    } catch (cause) {
+      if (!current()) return;
+      if (abort.signal.aborted) {
+        setPhase("done");
+        return;
+      }
+      setError(cause instanceof AskError ? cause.kind : "failed");
+      setPhase("error");
+    } finally {
+      if (current()) abortRef.current = null;
+    }
+  };
+
+  const lastAnswer = turns.at(-1)?.answer ?? "";
   const busy = phase === "loading" || phase === "streaming";
+  const linkClass =
+    "rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-accent-foreground";
 
   return (
     <div
-      key={showNonce}
+      key={session}
       ref={containerRef}
       className="ask-pop w-160 overflow-hidden rounded-2xl border border-border/60 bg-popover/70 text-popover-foreground shadow-2xl"
     >
@@ -326,17 +175,12 @@ export function AskApp(): ReactElement {
         }}
         className="flex items-center gap-3 px-5 py-4"
       >
-        <SparkIcon />
         <input
           ref={inputRef}
           autoFocus
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder={
-            turns.length > 0
-              ? t("systemPill.ask.followUp")
-              : t("systemPill.ask.placeholder")
-          }
+          placeholder={t(turns.length > 0 ? "askBar.followUp" : "askBar.placeholder")}
           spellCheck={false}
           className="w-full bg-transparent text-ui-17 text-foreground outline-none placeholder:text-muted-foreground/80"
         />
@@ -352,7 +196,7 @@ export function AskApp(): ReactElement {
         >
           {turns.map((turn, index) => (
             <div key={index} className={index > 0 ? "mt-3" : undefined}>
-              {(index > 0 || turns.length > 1) && (
+              {turns.length > 1 && (
                 <div className="mb-1 text-ui-11p5 font-medium text-muted-foreground">
                   {turn.question}
                 </div>
@@ -367,53 +211,50 @@ export function AskApp(): ReactElement {
           ))}
           {phase === "error" && (
             <span className="text-muted-foreground">
-              {t(
-                errorKey === "noModel"
-                  ? "systemPill.ask.noModel"
-                  : "systemPill.ask.failed",
-              )}
+              {t(error === "noModel" ? "askBar.noModel" : "askBar.failed")}
             </span>
           )}
         </div>
       )}
 
-      <div className="flex h-9 items-center justify-between border-t border-border/50 bg-muted/30 px-4">
-        <span className="flex min-w-0 items-center gap-1.5 text-ui-11 text-muted-foreground">
-          {phase === "loading" && loadingModel ? (
-            t("systemPill.ask.loading", { model: loadingModel })
-          ) : (
-            <>
-              <span className="size-1.5 shrink-0 rounded-full bg-emerald-500/80" />
-              <span className="truncate">
-                {modelLabel ?? t("systemPill.ask.autoModel")}
-              </span>
-            </>
-          )}
+      <div className="flex h-9 items-center justify-between border-t border-border/50 bg-muted/30 px-4 text-ui-11 text-muted-foreground">
+        <span className="truncate">
+          {phase === "loading" && model
+            ? t("askBar.loading", { model })
+            : (model ?? t("askBar.autoModel"))}
         </span>
-        <span className="flex shrink-0 items-center gap-3 text-ui-11 text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-3">
           {turns.length > 0 && (
             <button
               type="button"
-              onClick={clearThread}
-              className="rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-accent-foreground"
+              className={linkClass}
+              onClick={() => {
+                cancel();
+                setTurns([]);
+                setError(null);
+                setPhase("input");
+                inputRef.current?.focus();
+              }}
             >
-              {t("systemPill.ask.clear")}
+              {t("askBar.clear")}
             </button>
           )}
           {phase === "done" && lastAnswer && (
             <button
               type="button"
-              onClick={copyAnswer}
-              className="rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-accent-foreground"
+              className={linkClass}
+              onClick={() =>
+                void copyToClipboard(lastAnswer).then((ok) => setCopied(ok))
+              }
             >
-              {copied ? t("systemPill.ask.copied") : t("systemPill.ask.copy")}
+              {t(copied ? "askBar.copied" : "askBar.copy")}
             </button>
           )}
           <span className="flex items-center gap-1">
-            <Key>⏎</Key> {t("systemPill.ask.enterHint")}
+            <Key>⏎</Key> {t("askBar.enterHint")}
           </span>
           <span className="flex items-center gap-1">
-            <Key>esc</Key> {t("systemPill.ask.escHint")}
+            <Key>esc</Key> {t("askBar.escHint")}
           </span>
         </span>
       </div>

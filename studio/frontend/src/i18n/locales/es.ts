@@ -1097,6 +1097,9 @@ export const es = {
           "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
         closeToTraySaveError:
           "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
+        askBar: "Activar la barra de preguntas",
+        askBarDescription: "Pulsa ⌥Space en cualquier app. Pregunta a tu modelo local desde cualquier app de este Mac.",
+        askBarSaveError: "No se pudo guardar. Inténtalo de nuevo.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
@@ -2891,7 +2894,6 @@ export const es = {
       stopAndSave: "Detener y guardar",
       compareInChat: "Comparar en el chat",
       exportModel: "Exportar modelo",
-      useEverywhere: "Usar en cualquier lugar de este Mac",
       milestone: "Hito",
       halfwayDone: "A mitad de camino. El entrenamiento superó el 50 %.",
       doneNextStep:
@@ -3068,34 +3070,18 @@ export const es = {
       modelWeights: "Pesos del modelo",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Pregunta a Unsloth...",
-      loading: "Cargando {model}...",
-      copy: "Copiar",
-      copied: "Copiado",
-      noModel:
-        "No hay ningún modelo disponible. Elige un modelo predeterminado en la configuración.",
-      failed: "Algo salió mal. ¿El backend está en ejecución?",
-      autoModel: "Modelo activo",
-      enterHint: "preguntar",
-      escHint: "cerrar",
-      followUp: "Preguntar más...",
-      clear: "Borrar",
-    },
-    settings: {
-      tab: "Asistente",
-      title: "Asistente",
-      description:
-        "Pregunta a tu modelo local desde cualquier app de este Mac.",
-      enable: "Activar la barra de preguntas",
-      enableDescription: "Pulsa {hotkey} en cualquier app.",
-      defaultModel: "Modelo predeterminado",
-      defaultModelDescription:
-        "Responde en la barra de preguntas. Déjalo sin definir para usar el modelo que ya esté cargado.",
-      actionModelDefault: "Usar el modelo cargado",
-      saveError: "No se pudo guardar. Inténtalo de nuevo.",
-    },
+  askBar: {
+    placeholder: "Pregunta a Unsloth...",
+    followUp: "Preguntar más...",
+    loading: "Cargando {model}...",
+    noModel: "No hay ningún modelo cargado. Carga uno en Unsloth primero.",
+    failed: "Algo salió mal. ¿El backend está en ejecución?",
+    autoModel: "Modelo activo",
+    copy: "Copiar",
+    copied: "Copiado",
+    clear: "Borrar",
+    enterHint: "preguntar",
+    escHint: "cerrar",
   },
   modelMemory: {
     readout:

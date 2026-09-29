@@ -22,9 +22,6 @@ import { Progress } from "@/components/ui/progress";
 import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
-import { useSettingsDialogStore } from "@/features/settings";
-import { isTauri } from "@/lib/api-base";
-import { isMacPlatform } from "@/lib/pill-native";
 import {
   getTrainingMethodLabel,
   type TrainingViewData,
@@ -660,7 +657,6 @@ function MilestoneCallout({
   onCompareInChat: () => Promise<void>;
 }): ReactElement | null {
   const t = useT();
-  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   if (!(showHalfwayHint || showCompletedHint)) {
     return null;
   }
@@ -699,15 +695,6 @@ function MilestoneCallout({
           <Button asChild={true} size="xs" variant="outline">
             <Link to="/export">{t("studio.training.exportModel")}</Link>
           </Button>
-          {isTauri && isMacPlatform() && (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => openSettings("system")}
-            >
-              {t("studio.training.useEverywhere")}
-            </Button>
-          )}
         </div>
       )}
     </div>

@@ -1082,6 +1082,9 @@ export const hi = {
         closeToTrayDescription:
           "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
+        askBar: "आस्क बार चालू करें",
+        askBarDescription: "किसी भी ऐप में ⌥Space दबाएँ। इस Mac के किसी भी ऐप से अपने लोकल मॉडल से सवाल पूछें।",
+        askBarSaveError: "सहेजा नहीं जा सका। कृपया फिर कोशिश करें।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
@@ -2841,7 +2844,6 @@ export const hi = {
       stopAndSave: "रोकें और सहेजें",
       compareInChat: "चैट में तुलना करें",
       exportModel: "मॉडल एक्सपोर्ट करें",
-      useEverywhere: "इस Mac पर कहीं भी उपयोग करें",
       milestone: "मील का पत्थर",
       halfwayDone: "आधा हो गया। ट्रेनिंग 50% पार कर चुकी है।",
       doneNextStep:
@@ -3009,32 +3011,18 @@ export const hi = {
       modelWeights: "मॉडल वेट्स",
     },
   },
-  systemPill: {
-    ask: {
-      placeholder: "Unsloth से पूछें...",
-      loading: "{model} लोड हो रहा है...",
-      copy: "कॉपी करें",
-      copied: "कॉपी हो गया",
-      noModel: "कोई मॉडल उपलब्ध नहीं है। सेटिंग्स में डिफ़ॉल्ट मॉडल चुनें।",
-      failed: "कुछ गड़बड़ हो गई। क्या बैकएंड चल रहा है?",
-      autoModel: "सक्रिय मॉडल",
-      enterHint: "पूछें",
-      escHint: "बंद करें",
-      followUp: "आगे पूछें...",
-      clear: "साफ़ करें",
-    },
-    settings: {
-      tab: "सहायक",
-      title: "सहायक",
-      description: "इस Mac के किसी भी ऐप से अपने लोकल मॉडल से सवाल पूछें।",
-      enable: "आस्क बार चालू करें",
-      enableDescription: "किसी भी ऐप में {hotkey} दबाएँ।",
-      defaultModel: "डिफ़ॉल्ट मॉडल",
-      defaultModelDescription:
-        "आस्क बार में जवाब देता है। पहले से लोड मॉडल इस्तेमाल करने के लिए इसे खाली छोड़ें।",
-      actionModelDefault: "लोड किया गया मॉडल इस्तेमाल करें",
-      saveError: "सहेजा नहीं जा सका। कृपया फिर कोशिश करें।",
-    },
+  askBar: {
+    placeholder: "Unsloth से पूछें...",
+    followUp: "आगे पूछें...",
+    loading: "{model} लोड हो रहा है...",
+    noModel: "कोई मॉडल लोड नहीं है। पहले Unsloth में एक मॉडल लोड करें।",
+    failed: "कुछ गड़बड़ हो गई। क्या बैकएंड चल रहा है?",
+    autoModel: "सक्रिय मॉडल",
+    copy: "कॉपी करें",
+    copied: "कॉपी हो गया",
+    clear: "साफ़ करें",
+    enterHint: "पूछें",
+    escHint: "बंद करें",
   },
   modelMemory: {
     readout:
