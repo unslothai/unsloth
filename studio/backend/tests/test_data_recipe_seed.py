@@ -82,6 +82,26 @@ def _raise(exc: BaseException):
     return raise_exc
 
 
+def test_local_csv_seed_keeps_its_values_as_written(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    path = tmp_path / "seed.csv"
+    # The unnamed index column triggers the rewrite.
+    path.write_text(",zip,country,qty,note\n0,01234,NA,3,None\n1,90210,DE,,N/A\n", encoding = "utf-8")
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert [row["zip"] for row in rows] == ["01234", "90210"]
+    assert [row["country"] for row in rows] == ["NA", "DE"]
+    assert [row["note"] for row in rows] == ["None", "N/A"]
+    assert rows[0]["qty"] == "3"
+    assert path.read_text(encoding = "utf-8").splitlines() == [
+        "zip,country,qty,note",
+        "01234,NA,3,None",
+        "90210,DE,,N/A",
+    ]
+
+
 @pytest.mark.parametrize(
     ("filename", "package"),
     [
