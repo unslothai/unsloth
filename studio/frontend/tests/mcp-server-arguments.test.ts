@@ -27,6 +27,7 @@ const CHAT_MCP_SERVERS_DIALOG = readSrc(
   "features/chat/chat-mcp-servers-dialog.tsx",
 );
 const MCP_COMPOSER_BUTTON = readSrc("features/chat/mcp-composer-button.tsx");
+const SYSTEMONE_API = readSrc("features/settings/api/systemone.ts");
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -862,8 +863,14 @@ test("an older Decision API settings response cannot replace a newer one", () =>
   )?.[1];
   assert.ok(settingsRequest);
   assert.equal(
-    settingsRequest.match(/listRefreshGenerationRef\.current !== generation/g)
-      ?.length,
+    settingsRequest.match(
+      /decisionsRefreshGenerationRef\.current !== decisionsGeneration/g,
+    )?.length,
     2,
+  );
+  assert.match(MCP_COMPOSER_BUTTON, /subscribeSystemOneSettings\(\(settings\) =>/);
+  assert.match(
+    SYSTEMONE_API,
+    /new CustomEvent\(SYSTEMONE_SETTINGS_EVENT, \{ detail: settings \}\)/,
   );
 });

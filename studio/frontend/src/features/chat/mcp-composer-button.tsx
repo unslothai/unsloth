@@ -24,7 +24,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { loadSystemOneSettings, useShortcut } from "@/features/settings";
+import {
+  loadSystemOneSettings,
+  subscribeSystemOneSettings,
+  useShortcut,
+} from "@/features/settings";
 
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
@@ -96,6 +100,7 @@ export function McpComposerButton({
   const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
   const [decisionsUrl, setDecisionsUrl] = useState<string | null>(null);
+  const decisionsRefreshGenerationRef = useRef(0);
   const listRefreshGenerationRef = useRef(0);
   const hasLoadedServerSnapshotRef = useRef(false);
 
@@ -107,14 +112,18 @@ export function McpComposerButton({
     async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
       const generation = listRefreshGenerationRef.current + 1;
       listRefreshGenerationRef.current = generation;
+      const decisionsGeneration = decisionsRefreshGenerationRef.current + 1;
+      decisionsRefreshGenerationRef.current = decisionsGeneration;
       setServersLoaded(false);
       loadSystemOneSettings().then(
         (settings) => {
-          if (listRefreshGenerationRef.current !== generation) return;
+          if (decisionsRefreshGenerationRef.current !== decisionsGeneration)
+            return;
           setDecisionsUrl(settings.enabled ? settings.mcpUrl : null);
         },
         () => {
-          if (listRefreshGenerationRef.current !== generation) return;
+          if (decisionsRefreshGenerationRef.current !== decisionsGeneration)
+            return;
           setDecisionsUrl(null);
         },
       );
@@ -139,6 +148,15 @@ export function McpComposerButton({
     [],
   );
 
+  useEffect(
+    () =>
+      subscribeSystemOneSettings((settings) => {
+        decisionsRefreshGenerationRef.current += 1;
+        setDecisionsUrl(settings.enabled ? settings.mcpUrl : null);
+      }),
+    [],
+  );
+
   const applyServer = useCallback((server: McpServerConfig) => {
     setServers((current) => {
       const index = current.findIndex(
@@ -157,6 +175,7 @@ export function McpComposerButton({
     });
     return () => {
       unsubscribe();
+      decisionsRefreshGenerationRef.current += 1;
       listRefreshGenerationRef.current += 1;
     };
   }, [refresh]);

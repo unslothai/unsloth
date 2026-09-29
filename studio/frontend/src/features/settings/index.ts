@@ -12,7 +12,10 @@ export {
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
-export { loadSystemOneSettings } from "./api/systemone";
+export {
+  loadSystemOneSettings,
+  subscribeSystemOneSettings,
+} from "./api/systemone";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
