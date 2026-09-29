@@ -21743,12 +21743,9 @@ class LlamaCppBackend:
         # The #6415 split-axis abort shares the frame but has its own latch.
         if "split_axis" in text:
             return False
-        return (
-            "cur_backend_id" in text
-            or "ggml_backend_sched_split_graph" in text
-            or "sched_reserve" in text
-            or "graph_reserve" in text
-        )
+        # Not sched_reserve / graph_reserve alone: every reserve-time crash (a CUDA OOM
+        # in ggml_gallocr_reserve_n) passes through them; this assert fires inside split_graph.
+        return "cur_backend_id" in text or "ggml_backend_sched_split_graph" in text
 
     @staticmethod
     def _sched_reserve_abort_message() -> str:
@@ -23400,9 +23397,12 @@ class LlamaCppBackend:
                 return False
 
             # Fail fast before killing the live server. Keyed on the whole request, so an
-            # identical replay is blocked but any changed setting (quant, -c, TP, spec) retries.
+            # identical replay is blocked but any changed setting (quant, -c, TP, spec) retries;
+            # an explicit reload also retries (freed memory can make the same load fit).
             _abort_memo_model = repr(replace(intent, hf_token = None, force_reload = False))
-            if LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
+            if not intent.force_reload and LlamaCppBackend._sched_reserve_aborts(
+                binary, _abort_memo_model
+            ):
                 logger.warning(
                     "Skipping reload of '%s': it already aborted in the llama.cpp graph "
                     "scheduler this session.",

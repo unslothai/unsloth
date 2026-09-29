@@ -47,6 +47,19 @@ _SPLIT_AXIS_ABORT = (
     "#3 ggml_backend_sched_split_graph ()"
 )
 
+# A CUDA OOM while reserving: same reserve frames, different assert.
+_CUDA_OOM_ABORT = "\n".join(
+    [
+        "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 23810.00 MiB on device 0: "
+        "cudaMalloc failed: out of memory",
+        "/src/ggml/src/ggml-cuda/ggml-cuda.cu:95: GGML_ASSERT(err == cudaSuccess) failed",
+        "#2  ggml_abort () from libggml-base.so",
+        "#3  ggml_gallocr_reserve_n () from libggml-base.so",
+        "#4  ggml_backend_sched_reserve () from libggml-base.so",
+        "#5  llama_context::graph_reserve(...) () from libllama.so",
+        "#6  llama_context::sched_reserve() () from libllama.so",
+    ]
+)
 _OOM_OUTPUT = "llama_model_load: error loading model: unable to allocate buffer\nkilled"
 _CLEAN_OUTPUT = "main: server is listening on http://127.0.0.1:8080 - starting the main loop"
 
@@ -60,6 +73,7 @@ def test_matcher_fires_on_full_abort_and_short_tail():
 def test_matcher_ignores_unrelated_crashes():
     assert not LlamaCppBackend._is_sched_reserve_abort(_SPLIT_AXIS_ABORT)
     assert not LlamaCppBackend._is_sched_reserve_abort(_OOM_OUTPUT)
+    assert not LlamaCppBackend._is_sched_reserve_abort(_CUDA_OOM_ABORT)
     assert not LlamaCppBackend._is_sched_reserve_abort(_CLEAN_OUTPUT)
     assert not LlamaCppBackend._is_sched_reserve_abort("")
 
@@ -225,7 +239,9 @@ def test_identical_replay_fails_fast_without_spawning(crashing):
     assert not kills, "a memoed replay must not tear down the running server"
 
 
-@pytest.mark.parametrize("change", [{"n_ctx": 2048}, {"tensor_parallel": True}])
+@pytest.mark.parametrize(
+    "change", [{"n_ctx": 2048}, {"tensor_parallel": True}, {"force_reload": True}]
+)
 def test_a_changed_setting_is_allowed_to_retry(crashing, change):
     crashing.load()
     before = crashing.spawns
