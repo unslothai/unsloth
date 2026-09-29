@@ -381,10 +381,46 @@ def test_vram_floor_counts_what_each_tier_holds_at_once():
 
     assert _video_offload_vram_floor_mib(pipe, _plan("none")) is None
     assert _video_offload_vram_floor_mib(pipe, _plan("model")) == 12
-    assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True, dit = False)) == 23
-    assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 15
-    assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True)) == 3
-    assert _video_offload_vram_floor_mib(pipe, _plan("streaming")) == 3
+    # a flat module is one group, so its whole payload is onloaded during its forward
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True, dit = False)) == 35
+    assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 25
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True)) == 15
+    assert _video_offload_vram_floor_mib(pipe, _plan("streaming")) == 15
+
+
+def test_vram_floor_adds_the_largest_onloaded_block_or_leaf():
+    """Streamed tiers hold the unmatched group plus the current and prefetched block (or leaf) on the device."""
+    torch = pytest.importorskip("torch")
+    from core.inference.video import _video_offload_vram_floor_mib
+
+    def _linear(mib):
+        return torch.nn.Linear(1024, mib * 512, bias = False).to(torch.bfloat16)
+
+    dit = torch.nn.Module()
+    dit.patch_embedding = _linear(1)
+    dit.blocks = torch.nn.ModuleList([_linear(2) for _ in range(4)])
+    encoder = torch.nn.Module()
+    encoder.shared = torch.nn.Embedding(1024, 3 * 512).to(torch.bfloat16)
+    encoder.layers = torch.nn.ModuleList([_linear(1) for _ in range(4)])
+    vae = _linear(3)
+    pipe = types.SimpleNamespace(components = {"transformer": dit, "text_encoder": encoder, "vae": vae})
+
+    def _plan(policy, backend, te = False, dit = True):
+        return types.SimpleNamespace(
+            offload_policy = policy,
+            stream_text_encoders = te,
+            stream_transformer = dit,
+            device_memory = types.SimpleNamespace(backend = backend),
+        )
+
+    # resident TE 7 + VAE 3, plus DiT embed 1 + current and prefetched 2 MiB blocks
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda")) == 15
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", "mps")) == 13
+    # resident DiT 9 + VAE 3, plus the 3 MiB embedding and the next 1 MiB leaf
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda", te = True, dit = False)) == 16
+    # streamed modules run in turn: VAE 3 plus the larger of DiT 5 and TE 4
+    assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cuda")) == 8
+    assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cpu")) == 6
 
 
 def test_shortfall_message_only_for_what_cannot_run():
@@ -406,6 +442,33 @@ def test_shortfall_message_only_for_what_cannot_run():
         frames = 81,
     )
     assert "wan2.2-t2v-a14b needs about" in message and "1280x720 at 81 frames" in message
+
+
+def test_generate_requirement_grows_with_the_requested_clip():
+    import re
+
+    from core.inference.video import video_offload_shortfall_message
+
+    def _required(width, height, frames):
+        message = video_offload_shortfall_message(
+            family = "wan2.2-ti2v-5b",
+            floor_mib = 10000,
+            available_mib = 0,
+            placement = "x",
+            width = width,
+            height = height,
+            frames = frames,
+        )
+        return float(re.search(r"needs about ([0-9.]+) GiB", message).group(1))
+
+    base = _required(640, 480, 49)
+    assert _required(1280, 480, 49) > base
+    assert _required(640, 960, 49) > base
+    assert _required(640, 480, 161) > base
+    # a small clip still fits where a long 720p one does not
+    kwargs = dict(family = "f", floor_mib = 10000, available_mib = 12500, placement = "x")
+    assert video_offload_shortfall_message(**kwargs, width = 256, height = 256, frames = 9) is None
+    assert video_offload_shortfall_message(**kwargs, width = 1280, height = 720, frames = 121)
 
 
 def test_load_refuses_a_tier_whose_weights_cannot_fit(fake_runtime, monkeypatch):
@@ -446,6 +509,11 @@ def test_generate_refuses_below_the_offload_floor(fake_runtime, monkeypatch, tmp
     free["bytes"] = 20 * 1024**3
     with pytest.raises(RuntimeError, match = "needs about"):
         backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    # same free VRAM: a small clip runs, a long 720p clip is refused before the render
+    free["bytes"] = 31 * 1024**3
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    with pytest.raises(RuntimeError, match = "at 121 frames"):
+        backend.generate(prompt = "a sloth", width = 1280, height = 720, num_frames = 121, fps = 8)
 
 
 def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):

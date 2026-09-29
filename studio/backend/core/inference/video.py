@@ -88,6 +88,7 @@ from .diffusion_device import (
 )
 from .diffusion_memory import (
     DEFAULT_BASE_OVERHEAD_MIB,
+    DEFAULT_GROUP_BLOCKS,
     MEMORY_MODE_AUTO,
     OFFLOAD_GROUP,
     OFFLOAD_MODEL,
@@ -1750,6 +1751,65 @@ def _video_plan_label(plan: Any) -> str:
 _VIDEO_DENOISER_ATTRS = ("transformer", "transformer_2", "unconditional_transformer")
 
 
+def _video_streamed_peak_bytes(module: Any, offload_type: str, *, prefetch: bool, size: Any) -> int:
+    """Bytes a group-offload hook holds on the device at once for ``module`` (diffusers' own grouping)."""
+    from itertools import chain
+
+    import torch
+
+    try:
+        from diffusers.hooks._common import _GO_LC_SUPPORTED_PYTORCH_LAYERS as leaf_types
+    except Exception:  # noqa: BLE001 -- same layer set diffusers streams leaf by leaf
+        nn = torch.nn
+        leaf_types = (
+            nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d,
+            nn.Linear, nn.Embedding,
+        )
+
+    counted: set[int] = set()
+
+    def _own(mod: Any, recurse: bool) -> int:
+        # a tied weight (shared embedding) moves once, so count it for its first group only
+        total = 0
+        for t in chain(mod.parameters(recurse = recurse), mod.buffers(recurse = recurse)):
+            if id(t) not in counted:
+                counted.add(id(t))
+                total += size(t)
+        return total
+
+    if offload_type == "block_level":
+        windows: list[int] = []
+        grouped: set[int] = set()
+        for child in module.children():
+            if isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+                blocks = list(child)
+                for i in range(0, len(blocks), DEFAULT_GROUP_BLOCKS):
+                    windows.append(sum(_own(b, True) for b in blocks[i : i + DEFAULT_GROUP_BLOCKS]))
+                grouped |= {id(t) for t in chain(child.parameters(), child.buffers())}
+        # the unmatched group (embeddings, heads, loose params) stays onloaded for the whole forward
+        unmatched = sum(
+            size(t)
+            for t in {id(t): t for t in chain(module.parameters(), module.buffers())}.values()
+            if id(t) not in grouped and id(t) not in counted
+        )
+        units, fixed = windows, unmatched
+    else:
+        units, fixed = [], 0
+        inside: set[int] = set()
+        for mod in module.modules():
+            if id(mod) in inside:
+                continue
+            if isinstance(mod, leaf_types):
+                inside |= {id(m) for m in mod.modules()}
+                units.append(_own(mod, True))
+            else:
+                # loose params of a non-leaf parent form their own group
+                units.append(_own(mod, False))
+    units = sorted(units, reverse = True)
+    # a copy stream prefetches the next group while the current one computes
+    return fixed + sum(units[: 2 if prefetch else 1])
+
+
 def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
     """MiB of weights co-resident on the device under ``plan``'s tier, from the loaded modules; None if not offloaded."""
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
@@ -1766,6 +1826,7 @@ def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
         if not isinstance(components, dict):
             return None
         sizes: dict[str, int] = {}
+        modules: dict[str, Any] = {}
         seen: set[int] = set()
         for name, module in components.items():
             if not isinstance(module, torch.nn.Module):
@@ -1777,23 +1838,43 @@ def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
                 seen.add(id(tensor))
                 total += tensor_payload_bytes(tensor)
             sizes[str(name)] = total
+            modules[str(name)] = module
         if not sizes:
             return None
         denoisers = {n for n in sizes if n in _VIDEO_DENOISER_ATTRS}
         encoders = {n for n in sizes if n.startswith("text_encoder")}
         if policy == OFFLOAD_MODEL:
-            held = max(sizes.values())
-        elif policy == OFFLOAD_GROUP:
+            return int(max(sizes.values()) // (1024 * 1024))
+        if policy == OFFLOAD_GROUP:
             streamed = (
                 set() if not bool(getattr(plan, "stream_transformer", True)) else set(denoisers)
             )
             if bool(getattr(plan, "stream_text_encoders", False)):
                 streamed |= encoders
-            held = sum(size for name, size in sizes.items() if name not in streamed)
         elif policy == OFFLOAD_STREAMING:
-            held = sum(size for name, size in sizes.items() if name not in denoisers | encoders)
+            streamed = denoisers | encoders
         else:
             return None
+        held = sum(size for name, size in sizes.items() if name not in streamed)
+        backend = getattr(getattr(plan, "device_memory", None), "backend", None)
+        prefetch = backend not in ("mps", "cpu")
+
+        def _size(tensor: Any) -> int:
+            return 0 if getattr(tensor, "is_meta", False) else tensor_payload_bytes(tensor)
+
+        # streamed modules run one after another, so only the largest onloaded unit joins the residents
+        held += max(
+            (
+                _video_streamed_peak_bytes(
+                    modules[name],
+                    "block_level" if name in denoisers else "leaf_level",
+                    prefetch = prefetch,
+                    size = _size,
+                )
+                for name in streamed
+            ),
+            default = 0,
+        )
         return int(held // (1024 * 1024))
     except Exception:  # noqa: BLE001 -- an unreadable pipeline keeps today's unchecked behaviour
         return None
@@ -1809,15 +1890,23 @@ def video_offload_shortfall_message(
     height: Optional[int] = None,
     frames: Optional[int] = None,
 ) -> Optional[str]:
-    """Refusal when co-resident weights plus the base overhead exceed the device, else None."""
-    required = int(floor_mib) + DEFAULT_BASE_OVERHEAD_MIB
+    """Refusal when co-resident weights plus the activation headroom exceed the device, else None."""
+    headroom = DEFAULT_BASE_OVERHEAD_MIB
+    if width and height and frames:
+        # decoded-clip share of the runtime estimate; its fixed 4 GiB denoise base over-refuses measured cells
+        headroom += max(
+            0,
+            estimate_video_runtime_mib(width = width, height = height, num_frames = frames)
+            - _VIDEO_DENOISE_ACTIVATION_MIB,
+        )
+    required = int(floor_mib) + headroom
     if int(available_mib) >= required:
         return None
     shape = f" for {width}x{height} at {frames} frames" if width and height and frames else ""
     return (
         f"{family} needs about {required / 1024:.1f} GiB of available VRAM{shape} under this load's "
         f"placement ({placement}: {floor_mib / 1024:.1f} GiB of weights on the GPU at once plus "
-        f"{DEFAULT_BASE_OVERHEAD_MIB / 1024:.0f} GiB for activations); {available_mib / 1024:.1f} GiB is "
+        f"{headroom / 1024:.1f} GiB for activations); {available_mib / 1024:.1f} GiB is "
         "available. Free VRAM held by other processes, set the text encoder or DiT precision lower, "
         "or pick a smaller model."
     )
