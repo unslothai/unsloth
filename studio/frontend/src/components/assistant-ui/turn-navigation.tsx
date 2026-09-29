@@ -63,23 +63,28 @@ function useIsTurnBookmarked(
 }
 
 function useTurnBookmark(): { bookmarked: boolean; toggle: () => void } | null {
-  const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
   const incognito = useChatRuntimeStore((state) => state.incognito);
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const openerId = useAuiState(({ thread, message }) =>
-    enabled ? turnOpenerIdAt(thread.messages, message.index) : undefined,
+    turnOpenerIdAt(thread.messages, message.index),
   );
   const bookmarked = useIsTurnBookmarked(threadId, openerId);
   const toggleBookmarkedTurn = useBookmarkedTurnsStore(
     (state) => state.toggleBookmarkedTurn,
   );
-  if (!enabled || incognito || !threadId || !openerId) {
+  if (incognito || !threadId || !openerId) {
     return null;
   }
   return { bookmarked, toggle: () => toggleBookmarkedTurn(threadId, openerId) };
 }
 
+// gated so the default (off) mounts no thread subscriptions per message
 export const BookmarkTurnButton: FC = () => {
+  const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
+  return enabled ? <BookmarkTurnButtonInner /> : null;
+};
+
+const BookmarkTurnButtonInner: FC = () => {
   const t = useT();
   const turnBookmark = useTurnBookmark();
   if (!turnBookmark) {
@@ -103,6 +108,13 @@ export const BookmarkTurnButton: FC = () => {
 };
 
 export const BookmarkTurnMenuItem: FC<{ className?: string }> = ({
+  className,
+}) => {
+  const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
+  return enabled ? <BookmarkTurnMenuItemInner className={className} /> : null;
+};
+
+const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
   className,
 }) => {
   const t = useT();
