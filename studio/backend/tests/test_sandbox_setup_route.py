@@ -391,3 +391,19 @@ def test_a_setup_run_is_reported_by_the_prepare_route(host, windows, monkeypatch
     with _client(OWNER) as client:
         body = client.get("/sandbox/prepare").json()
     assert body["id"] == "setup1" and body["state"] == "running"
+
+
+def test_windows_commands_with_host_paths_stay_with_the_owner(host, windows):
+    _calls, _saved, plan = host
+    plan["value"] = sandbox_setup_plan.SetupPlan(
+        platform = "win32",
+        action = sandbox_setup_plan.WINDOWS_SETUP,
+        elevation = "uac",
+        steps = (("C:\\Users\\owner\\python.exe", "--prepare-host"),),
+        manual_command = "& 'C:\\Users\\owner\\python.exe' '--prepare-host'",
+        reason = "host preparation is missing",
+    )
+    other = _capability_client(ALICE).get("/api/sandbox/capability").json()
+    owner = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert other["manual_command"] == "" and other["setup_blocked"] == "not_owner"
+    assert "owner" in owner["manual_command"]

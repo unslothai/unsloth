@@ -1455,6 +1455,7 @@ def run_safetensors_tool_loop(
                 permission_mode = permission_mode,
                 name = decision.tool_name,
                 arguments = decision.arguments,
+                prompted = needs_confirm,
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None

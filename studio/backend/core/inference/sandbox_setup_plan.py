@@ -459,9 +459,13 @@ def setup_fields_for(
     if plan.action and not can_run:
         # Why there is no button, so the page does not tell the owner at this computer to find the owner.
         blocked = "not_owner" if not owner else "not_local" if not local else "no_elevation"
+    # Windows commands carry this install's interpreter, script and runtime paths (the account name
+    # and home), which other accounts and API keys are not shown anywhere else; the Linux package
+    # commands are the same on every host.
+    command = plan.manual_command if owner or not sys.platform.startswith("win") else ""
     return {
         "setup_action": plan.action if can_run else None,
-        "manual_command": plan.manual_command,
+        "manual_command": command,
         "can_run_setup": can_run,
         "setup_blocked": blocked,
         "needs_consent": plan.needs_consent if can_run else False,

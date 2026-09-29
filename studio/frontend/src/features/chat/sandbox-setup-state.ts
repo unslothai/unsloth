@@ -82,9 +82,12 @@ export function sandboxSetupView({
     showConsent,
     installDisabled: running || (showConsent && !consent),
     command,
+    // Windows commands name this install's paths, so other accounts get the note without one.
     showOwnerOnly:
       install === null &&
-      command !== "" &&
+      (command !== "" ||
+        capability.setupBlocked === "not_owner" ||
+        capability.setupBlocked === "not_local") &&
       capability.setupBlocked !== "no_elevation",
     showRunInTerminal:
       install === null &&

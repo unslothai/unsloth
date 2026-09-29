@@ -477,7 +477,7 @@ def test_capability_reports_the_cached_answers():
 )
 def test_strict_launch_matrix(isolation, mode, tool, isolated, risky):
     isolation["python"] = isolation["terminal"] = isolated
-    strict = tool_policy.requires_os_isolation(
+    decision = dict(
         confirm_tool_calls = True,
         bypass_permissions = mode == "full",
         permission_mode = mode,
@@ -485,8 +485,41 @@ def test_strict_launch_matrix(isolation, mode, tool, isolated, risky):
         arguments = {"risky": risky},
         is_high_risk = _risk,
     )
+    prompted = tool_policy.needs_tool_confirmation(**decision, never_needs = lambda _n: False)
+    strict = tool_policy.requires_os_isolation(**decision, prompted = prompted)
     assert strict is (
         mode == "off" and tool in ("python", "terminal") and isolated is True and risky
+    )
+
+
+def test_a_refresh_between_the_two_decisions_cannot_skip_both(isolation):
+    # The prompt was skipped on a cached PASS; a refresh then publishes a failure before the launch
+    # decision. That decision must follow the prompt decision, not re-read the cache.
+    isolation["python"] = True
+    decision = dict(
+        confirm_tool_calls = True,
+        bypass_permissions = False,
+        permission_mode = "off",
+        name = "python",
+        arguments = {"risky": True},
+        is_high_risk = _risk,
+    )
+    prompted = tool_policy.needs_tool_confirmation(**decision, never_needs = lambda _n: False)
+    isolation["python"] = False
+    assert prompted is False
+    assert tool_policy.requires_os_isolation(**decision, prompted = prompted) is True
+
+
+def test_an_approved_prompt_runs_without_the_strict_launch(isolation):
+    isolation["python"] = False
+    assert not tool_policy.requires_os_isolation(
+        confirm_tool_calls = True,
+        bypass_permissions = False,
+        permission_mode = "off",
+        name = "python",
+        arguments = {"risky": True},
+        is_high_risk = _risk,
+        prompted = True,
     )
 
 
@@ -499,6 +532,7 @@ def test_strict_launch_needs_an_armed_gate(isolation):
         name = "python",
         arguments = {"risky": True},
         is_high_risk = _risk,
+        prompted = False,
     )
 
 

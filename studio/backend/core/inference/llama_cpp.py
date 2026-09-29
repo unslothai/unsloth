@@ -37753,6 +37753,7 @@ class LlamaCppBackend:
                         permission_mode = permission_mode,
                         name = decision.tool_name,
                         arguments = decision.arguments,
+                        prompted = needs_confirm,
                         is_high_risk = is_high_risk_tool_call,
                     )
                     approval_id = new_approval_id() if needs_confirm else ""

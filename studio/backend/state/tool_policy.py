@@ -141,17 +141,20 @@ def requires_os_isolation(
     permission_mode: Optional[str],
     name: str,
     arguments,
+    prompted: bool,
     is_high_risk = None,
 ) -> bool:
     """Whether this call must launch with tool_execution_mode="required".
 
     "off" skips the prompt for a risky python/terminal call only because the cached capability
     said the OS sandbox is on. If that sandbox stopped working since, the launch must refuse
-    rather than fall back to software safeguards and run the risky call unasked.
+    rather than fall back to software safeguards and run the risky call unasked. ``prompted`` is
+    the decision needs_tool_confirmation already made for this call: reading the cache again
+    here could see a refresh that landed in between and skip both the prompt and the strict launch.
     """
-    if not confirm_tool_calls or bypass_permissions or permission_mode != "off":
+    if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False
-    if name not in OS_SANDBOXED_TOOLS or off_mode_still_gates(name):
+    if name not in OS_SANDBOXED_TOOLS:
         return False
     if is_high_risk is None:
         from core.inference.tools import is_high_risk_tool_call as is_high_risk

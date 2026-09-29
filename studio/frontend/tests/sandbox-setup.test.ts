@@ -419,6 +419,22 @@ test("someone who cannot run the setup gets the command and who can", () => {
   assert.equal(macos.install, null);
 });
 
+test("another account on Windows gets the owner note without the host's paths", () => {
+  const view = setupState.sandboxSetupView({
+    capability: capability({
+      platform: "win32",
+      setupAction: null,
+      canRunSetup: false,
+      manualCommand: "",
+      setupBlocked: "not_owner",
+    }),
+    job: null,
+    consent: false,
+  });
+  assert.equal(view.command, "");
+  assert.equal(view.showOwnerOnly, true);
+});
+
 test("the owner here without a way to ask for the password is told to run the command", () => {
   const view = setupState.sandboxSetupView({
     capability: capability({

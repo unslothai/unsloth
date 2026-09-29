@@ -1729,6 +1729,7 @@ async def stream_with_studio_tools(
                 permission_mode = permission_mode,
                 name = name,
                 arguments = arguments,
+                prompted = needs_confirmation,
                 is_high_risk = is_high_risk_tool_call,
             )
             approval_id = new_approval_id() if needs_confirmation else ""

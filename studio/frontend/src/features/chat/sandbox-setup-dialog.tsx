@@ -269,6 +269,11 @@ function SandboxSetupContent({
         {actionError ? (
           <p className={`${NOTE_CLASS} text-destructive`}>{actionError}</p>
         ) : null}
+        {view.showOwnerOnly && !view.command ? (
+          <p className={`${NOTE_CLASS} text-muted-foreground`}>
+            {t("sandboxSetup.ownerOnly")}
+          </p>
+        ) : null}
         {view.command ? (
           <div className="flex min-w-0 flex-col gap-1">
             <p className={`${NOTE_CLASS} text-muted-foreground`}>
