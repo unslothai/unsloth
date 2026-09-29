@@ -16366,7 +16366,8 @@ def _text_token_cost(text: str, ctx: int) -> float:
         return measured
     # A counter that could not answer is a counter that is not there: taking its presence as proof the estimate is
     # safe is what leaves dense ASCII priced at the English rate.
-    estimate = sum(0.25 if character.isascii() else 1.0 for character in text)
+    ascii_chars = len(text.encode("ascii", "ignore"))
+    estimate = ascii_chars * 0.25 + (len(text) - ascii_chars)
     return estimate / _UNMEASURED_ROOM_MARGIN
 
 
