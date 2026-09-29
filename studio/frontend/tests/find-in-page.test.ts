@@ -1520,6 +1520,11 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
     assert.ok(backgrounded.includes(`"${slot}"`), `${slot} is not read as a modal`);
   }
   assert.match(backgrounded, /:not\(\[data-state="closed"\]\)/);
+  // The guided tour renders its own overlay, with the same slot.
+  assert.match(
+    await readSrcAsync("features/tour/components/guided-tour.tsx"),
+    /<DialogPrimitive\.Overlay asChild>\s*<motion\.div[\s\S]*?data-slot="dialog-overlay"/,
+  );
   assert.match(
     backgrounded,
     /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/,
