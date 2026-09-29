@@ -10864,6 +10864,10 @@ class BackendRoute:
 
 # Quoted values only: non-ROCm builds write `hip: Optional[str] = None`. Mirrors install_python_stack.
 _TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
+# AMD's Radeon SDK wheels leave hip None and carry the tag here (2.9.0+rocmsdk20251116).
+_TORCH_VERSION_PY_VERSION_RE = re.compile(
+    r"""^__version__\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE
+)
 
 
 def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
@@ -10871,8 +10875,9 @@ def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
         text = version_py.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return None
-    match = _TORCH_VERSION_PY_HIP_RE.search(text)
-    return bool(match and match.group(1))
+    hip = _TORCH_VERSION_PY_HIP_RE.search(text)
+    version = _TORCH_VERSION_PY_VERSION_RE.search(text)
+    return bool((hip and hip.group(1)) or (version and "rocm" in version.group(1).lower()))
 
 
 def _installed_torch_is_rocm() -> bool | None:

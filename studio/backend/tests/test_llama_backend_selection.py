@@ -527,6 +527,8 @@ def test_explicit_cuda_ignores_rocm_torch(monkeypatch):
         ("__version__ = '2.11.0+rocm7.1'\nhip = '7.1.52802'\ncuda = None\n", True),
         ("__version__ = '2.11.0+cu130'\ncuda = '13.0'\nhip = None\n", False),
         ("hip: Optional[str] = None\n", False),
+        ("__version__ = '2.9.0+rocmsdk20251116'\nhip: Optional[str] = None\n", True),
+        ("__version__ = '2.8.0+rocm6.4'\nhip: Optional[str] = None\n", True),
     ],
 )
 def test_torch_version_py_names_its_vendor(tmp_path, text, expected):
