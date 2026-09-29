@@ -216,7 +216,6 @@ def test_quantize_nvfp4_unsupported_on_float16_is_noop(monkeypatch):
     pipe = types.SimpleNamespace(text_encoder = object())
     outcome = quantize_text_encoders(pipe, _target(dtype = "float16", cc = (7, 5)), mode = "nvfp4")
     assert outcome.mode is None
-    # an unsupported request is reported rather than silently skipped, and says what the mode needs
     assert outcome.status == "unsupported"
     assert "'nvfp4' needs an NVIDIA GPU that runs bf16" in outcome.reason
     assert recorder == []
@@ -234,7 +233,6 @@ def test_nvfp4_weight_only_probe_reads_the_installed_torchao(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
     monkeypatch.setitem(sys.modules, "torchao.prototype", types.ModuleType("torchao.prototype"))
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
-    # torchao 0.14 has no NVFP4WeightOnlyConfig
     assert probe() is False
     mx.NVFP4WeightOnlyConfig = _rejects_this_torch
     assert probe() is False
