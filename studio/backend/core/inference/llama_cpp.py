@@ -574,6 +574,7 @@ class GgufLoadIntent:
     # for the session.
     disable_vision: bool = False
     n_ctx: int = 4096
+    max_seq_length_auto_derived: bool = False
     chat_template_override: Optional[str] = None
     cache_type_kv: Optional[str] = None
     speculative_type: Optional[str] = None
@@ -3098,9 +3099,9 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|TQ[0-9]+_[0-9]+"
+    r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|Q[0-9]+_[0-9]+"
+    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,
@@ -6540,7 +6541,7 @@ def _launch_required_ubatch(
 
     # Pass-through arguments override managed projector flags.
     override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
-    if override:
+    if override and not vision_off and not extra_args_disable_mmproj(extra_args):
         required = max(
             required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
         )
@@ -6595,6 +6596,21 @@ def _batch_ubatch_for_mmproj(
     if target <= ubatch:
         return n_batch, n_ubatch
     return n_batch, target
+
+
+def _embedding_batch_ubatch(
+    n_ctx: int,
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Size an unset batch pair to the context for pooling that needs one micro-batch."""
+    _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
+    if (batch_named and ubatch_named) or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
+        return n_batch, n_ubatch
+    # llama.cpp caps the micro-batch at the batch, so the unset side must grow too.
+    return (n_batch if batch_named else n_ctx), (n_ubatch if ubatch_named else n_ctx)
 
 
 def _build_ngram_mod_flags(
@@ -19868,12 +19884,18 @@ class LlamaCppBackend:
             return False
 
     def _resolve_launch_mmproj_path(
-        self, *, model_path: str, mmproj_path: Optional[str]
+        self,
+        *,
+        model_path: str,
+        mmproj_path: Optional[str],
+        extra_args: Optional[Iterable[str]] = None,
     ) -> Optional[str]:
-        """Return mmproj_path iff it exists on disk AND matches the model family.
-
-        None if mmproj_path is None, missing, or family-mismatched.
-        """
+        """Resolve a projector, trusting an explicit path over filename heuristics."""
+        override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+        if override is not None:
+            if not override or not Path(override).is_file():
+                raise ValueError("The custom mmproj path must name an existing file.")
+            return override
         if not mmproj_path:
             return None
 
@@ -22474,17 +22496,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
-        """Return cmd without the '--mmproj <path>' pair (text-only retry).
-        Every other flag is preserved; a no-op when --mmproj is absent.
-        """
+        """Remove explicit projector paths, including aliases, for managed emission or retry."""
         out: list[str] = []
         skip_value = False
         for tok in cmd:
             if skip_value:
                 skip_value = False
                 continue
-            if tok == "--mmproj":
-                skip_value = True
+            if _flag_name(tok) in {"--mmproj", "-mm"}:
+                skip_value = "=" not in tok
                 continue
             out.append(tok)
         return out
@@ -23125,6 +23145,7 @@ class LlamaCppBackend:
         is_vision = intent.is_vision
         disable_vision = intent.disable_vision
         n_ctx = intent.n_ctx
+        _replayed_ctx_refit = False
         chat_template_override = intent.chat_template_override
         cache_type_kv = intent.cache_type_kv
         speculative_type = intent.speculative_type
@@ -23145,6 +23166,12 @@ class LlamaCppBackend:
         ctx_checkpoints = intent.ctx_checkpoints
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
+        custom_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+        if custom_mmproj is not None:
+            mmproj_path = self._resolve_launch_mmproj_path(
+                model_path = gguf_path or "", mmproj_path = mmproj_path, extra_args = extra_args
+            )
+            is_vision = True
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         reasoning_budget = intent.reasoning_budget
         reasoning_budget_message = intent.reasoning_budget_message
@@ -23847,6 +23874,16 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # MEAN/CLS inputs must fit one micro-batch (LAST splits). Before the projector raise,
+            # which would otherwise read as a user-set micro-batch.
+            if self._pooling_type in (1, 2):
+                n_batch, n_ubatch = _embedding_batch_ubatch(
+                    resolve_requested_ctx(extra_args, n_ctx) or self._context_length or 0,
+                    n_batch,
+                    n_ubatch,
+                    extra_args,
+                )
+
             # Decide after downloading the projector and before pricing the load.
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 _launch_required_ubatch(
@@ -23855,6 +23892,7 @@ class LlamaCppBackend:
                     else self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
+                        extra_args = extra_args,
                     ),
                     # Use the same order-independent metadata read as the estimators.
                     _read_gguf_embedding_length(model_path),
@@ -24223,6 +24261,7 @@ class LlamaCppBackend:
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
+                        extra_args = extra_args,
                     )
                     # The switch turns VISION off, and a projector is not always a
                     # vision tower: ultravox, Voxtral and Qwen3-ASR declare an audio
@@ -25039,6 +25078,24 @@ class LlamaCppBackend:
                     _draft_cpu_no_embedded = _draft_on_cpu and (
                         _separate_draft_launches or not self._nextn_predict_layers
                     )
+                    # A replay was fitted without the drafter: re-fit it like a fresh MTP load, before any explicit_ctx reader.
+                    if (
+                        explicit_ctx
+                        and ctx_override is None
+                        and intent.max_seq_length_auto_derived
+                        # CPU-pinned drafters too: the target still pays rollback state for them.
+                        and _mtp_will_engage
+                        # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
+                        and (
+                            (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                            or _user_mtp_via_extras
+                            or _user_draft_via_extras
+                            or _extra_args_set_spec_type(extra_args)
+                            or _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        )
+                    ):
+                        explicit_ctx = False
+                        _replayed_ctx_refit = True
 
                     # The two tensor -> layer downgrades that need nothing the probe
                     # decides run BEFORE it: the probe is gated on `not tensor_parallel`
@@ -28461,7 +28518,7 @@ class LlamaCppBackend:
                 # User pass-through args go last. Placement flags are removed
                 # below when the Unsloth picker owns the GPU selection.
                 if _mem_extras:
-                    _emit_extra_args = list(_mem_extras)
+                    _emit_extra_args = self._strip_mmproj_args(list(_mem_extras))
                     if _gpu_ids_own_device_flags:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
@@ -31237,7 +31294,8 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
-                self._requested_n_ctx = int(n_ctx)
+                # A re-fit replay records what launched, which is what the client replays next.
+                self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
                 # Commit with the rest of the known-good state: only a launch that got
@@ -32059,15 +32117,22 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        if intent.gguf_path is not None and self._gguf_path:
+        custom_mmproj = _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
+        source_path = intent.gguf_path
+        if source_path is None and custom_mmproj is not None:
+            if (self._hf_variant or "").lower() != (intent.hf_variant or "").lower():
+                return False
+            source_path = self._gguf_path
+        if source_path is not None and self._gguf_path:
             resident_identity = getattr(self, "_gguf_load_identity", None)
             if resident_identity is not None:
                 candidate_identity = LlamaCppBackend._gguf_load_source_identity(
-                    intent.gguf_path, intent.mmproj_path
+                    source_path,
+                    custom_mmproj or intent.mmproj_path,
                 )
                 return candidate_identity == resident_identity
             try:
-                return Path(self._gguf_path).resolve() == Path(intent.gguf_path).resolve()
+                return Path(self._gguf_path).resolve() == Path(source_path).resolve()
             except OSError:
                 return False
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
@@ -32091,7 +32156,7 @@ class LlamaCppBackend:
         the main ``--gpu-layers``. A drafter explicitly forced to CPU
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
         _args = [str(a) for a in cmd]
-        if any(a.startswith("--mmproj") for a in _args):
+        if any(a.startswith("--mmproj") or _flag_name(a) == "-mm" for a in _args):
             # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
             # GPU backend on it, so the projector holds no VRAM. Last flag wins.
             _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
@@ -33807,6 +33872,8 @@ class LlamaCppBackend:
             return None
 
     _SIDECAR_WEIGHT_FLAGS = (
+        "--mmproj",
+        "-mm",
         "--lora",
         "--lora-scaled",
         "--control-vector",
@@ -35153,6 +35220,7 @@ class LlamaCppBackend:
         compaction_headroom_ratio: Optional[float] = None,
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
+        thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -35207,6 +35275,8 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
+        if thinking_budget_tokens is not None:
+            payload["thinking_budget_tokens"] = thinking_budget_tokens
         if continue_final_message:
             # llama-server applies the template; it rejects both flags set true.
             payload["continue_final_message"] = True
@@ -35515,6 +35585,7 @@ class LlamaCppBackend:
                     # The retry refits, so it must be told the same about this request's
                     # tools as the first attempt was.
                     tools_withheld = tools_withheld,
+                    thinking_budget_tokens = thinking_budget_tokens,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -35576,6 +35647,7 @@ class LlamaCppBackend:
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
+        thinking_budget_tokens: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36318,6 +36390,8 @@ class LlamaCppBackend:
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            if thinking_budget_tokens is not None:
+                payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is
             # no longer trailing, so later turns are normal.
             if continue_final_message and trailing_assistant_text(conversation):
@@ -38997,6 +39071,8 @@ class LlamaCppBackend:
             stream_payload["logit_bias"] = logit_bias
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
+        if thinking_budget_tokens is not None:
+            stream_payload["thinking_budget_tokens"] = thinking_budget_tokens
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop

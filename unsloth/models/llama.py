@@ -37,6 +37,7 @@ from .loader_utils import (
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
     _prepare_compressed_tensors_model,
+    fsdp_will_wrap,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -107,6 +108,7 @@ from unsloth.models._attn_mask_compat import (
     AttentionMaskConverter,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
 from ..tokenizer_utils import *
@@ -235,6 +237,63 @@ def _offload_frozen_module_for_training(
     module.original_module.requires_grad_(False)
 
 
+def _ensure_cache_is_dynamic(past_key_values):
+    # transformers 5 rejects legacy tuple caches in generate().
+    if past_key_values is None:
+        return None
+    if isinstance(past_key_values, Cache):
+        return past_key_values
+    if isinstance(past_key_values, (tuple, list)) and len(past_key_values) > 0:
+        cache = DynamicCache()
+        for layer_idx, layer_kv in enumerate(past_key_values):
+            cache.update(layer_kv[0], layer_kv[1], layer_idx)
+        return cache
+    return past_key_values
+
+
+def _cache_as_legacy_tuple(past_key_values):
+    # Unsloth's forwards index past_key_values[layer][0|1]; transformers 5 caches are not subscriptable.
+    if not isinstance(past_key_values, Cache):
+        return past_key_values
+    past_len = past_key_values.get_seq_length()
+    if past_len == 0:
+        return None
+    layers = getattr(past_key_values, "layers", None)
+    if layers is None:
+        return past_key_values.to_legacy_cache()
+    # Static layers allocate max_cache_len; quantized / sliding layers hold fewer than past_len.
+    for layer in layers:
+        if layer.keys is None or layer.keys.shape[-2] < past_len:
+            raise ValueError(
+                f"Unsloth: {type(layer).__name__} does not keep every cached position, so it cannot be "
+                "used as past_key_values. Pass a DynamicCache or the model's own past_key_values."
+            )
+    return tuple(
+        (layer.keys[..., :past_len, :], layer.values[..., :past_len, :]) for layer in layers
+    )
+
+
+def _cached_prefill_defaults(
+    past_key_values, input_ids, inputs_embeds, position_ids, attention_mask
+):
+    # Continue after the cache as transformers does; else RoPE restarts at 0 and xFormers runs unmasked.
+    past_len = past_key_values[0][0].shape[-2]
+    ref = input_ids if input_ids is not None else inputs_embeds
+    bsz, q_len = ref.shape[:2]
+    if position_ids is None:
+        position_ids = torch.arange(past_len, past_len + q_len, device = ref.device)
+        position_ids = position_ids.unsqueeze(0).expand(bsz, -1)
+    if attention_mask is None:
+        attention_mask = torch.ones((bsz, past_len + q_len), dtype = torch.long, device = ref.device)
+    return position_ids, attention_mask
+
+
+def _slice_position_ids(position_ids, seq_length):
+    if position_ids is not None and 0 < seq_length < position_ids.shape[-1]:
+        position_ids = position_ids[..., -seq_length:]
+    return position_ids
+
+
 def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
@@ -268,11 +327,24 @@ def _fast_prepare_inputs_for_generation(
             kwargs["past_key_values"] = None
             use_inputs_embeds = inputs_embeds is not None
         else:
+            if hasattr(past_key_values, "get_seq_length"):
+                past_len = int(past_key_values.get_seq_length())
+            else:
+                # Legacy tuple cache: (layer, (K, V)).
+                past_len = int(past_key_values[0][0].shape[-2])
+            kwargs["past_key_values"] = _cache_as_legacy_tuple(past_key_values)
+
             if input_ids is not None and input_ids.numel() > 0:
                 bs = input_ids.shape[0]
-                input_ids = input_ids[:, [-1]]
                 device = input_ids.device
-                seq_length = 1
+                # The 2D mask spans cache + new tokens, so it also counts a suffix-only turn (transformers 5).
+                n_new = 0
+                if original_attention_mask is not None and original_attention_mask.dim() == 2:
+                    n_new = original_attention_mask.shape[-1] - past_len
+                if not 0 < n_new <= input_ids.shape[1]:
+                    n_new = max(input_ids.shape[1] - past_len, 1)
+                input_ids = input_ids[:, -n_new:]
+                seq_length = input_ids.shape[1]
             elif inputs_embeds is not None:
                 bs, seq_length, _ = inputs_embeds.shape
                 device = inputs_embeds.device
@@ -280,14 +352,11 @@ def _fast_prepare_inputs_for_generation(
                 bs, seq_length = 1, 0
                 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-            if hasattr(past_key_values, "get_seq_length"):
-                past_len = int(past_key_values.get_seq_length())
-            else:
-                # Legacy tuple cache: (layer, (K, V)).
-                past_len = int(past_key_values[0][0].shape[-2])
-
+            # A flattened cache holds exactly past_len positions, whatever the Cache allocated.
             max_cache_len = None
-            if hasattr(past_key_values, "get_max_cache_shape"):
+            if kwargs["past_key_values"] is not past_key_values:
+                pass
+            elif hasattr(past_key_values, "get_max_cache_shape"):
                 m = past_key_values.get_max_cache_shape()
                 max_cache_len = int(m) if m is not None and m > 0 else None
             elif hasattr(past_key_values, "get_max_length"):
@@ -368,6 +437,8 @@ def _fast_prepare_inputs_for_generation(
             if cp.dim() == 1:
                 cp = cp.unsqueeze(0).expand(bs, -1)
             kwargs["position_ids"] = cp
+    else:
+        kwargs["position_ids"] = _slice_position_ids(kwargs["position_ids"], seq_length)
 
     result = {
         "attention_mask": attention_mask,
@@ -1457,7 +1528,10 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        if past_key_values is not None:
+        past_key_values = _cache_as_legacy_tuple(past_key_values)
+        if past_key_values is not None and len(past_key_values) == 0:
+            past_key_values = None
+        if past_key_values is not None and input_ids is not None and input_ids.shape[1] == 1:
             outputs = fast_forward_inference(
                 self,
                 input_ids,
@@ -1467,7 +1541,13 @@ def CausalLM_fast_forward(fast_forward_inference):
                 **kwargs,
             )
         else:
-            causal_mask = xformers.attn_bias.LowerTriangularMask() if HAS_XFORMERS else None
+            causal_mask = None
+            if past_key_values is not None:
+                position_ids, attention_mask = _cached_prefill_defaults(
+                    past_key_values, input_ids, inputs_embeds, position_ids, attention_mask
+                )
+            elif HAS_XFORMERS:
+                causal_mask = xformers.attn_bias.LowerTriangularMask()
 
             output_attentions = (
                 output_attentions
@@ -2227,7 +2307,23 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # Must patch accelerate for Xformers.
 
-    kwargs["cache_implementation"] = "dynamic"
+    # transformers raises if cache_implementation is set beside a user-supplied cache.
+    if kwargs.get("past_key_values", None) is not None:
+        # FalconH1 keeps its own input preparation for its hybrid Mamba/attention cache.
+        if getattr(getattr(self, "config", None), "model_type", None) == "falcon_h1":
+            raise NotImplementedError(
+                "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
+            )
+        kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+        # The fast decode path only seeds missing KV buffers; drop the previous generate()'s.
+        for module in self.modules():
+            if hasattr(module, "paged_attention"):
+                del module.paged_attention_K, module.paged_attention_V, module.paged_attention
+        # A user StaticCache triggers CUDA-graph auto-compile, which overwrites the decode buffers.
+        if hasattr(getattr(self, "generation_config", None), "disable_compile"):
+            kwargs.setdefault("disable_compile", True)
+    else:
+        kwargs["cache_implementation"] = "dynamic"
     # transformers 4.50 renamed num_logits_to_keep to logits_to_keep; pop both and re-emit under the
     # spelling forward() accepts.
     _provided_num = kwargs.pop("num_logits_to_keep", None)
@@ -2293,11 +2389,12 @@ def _fused_lora_skip_reason(
     lora_dropout,
     bias,
     float32_base = False,
+    fsdp = False,
 ) -> str:
     """Why patch_peft_model skipped the fused LoRA kernels, for the patched layers summary.
 
     Returns "" when nothing disabled them, so the common summary line is unchanged. The
-    conditions mirror the `lora_dropout == 0 and bias == "none"` gate in patch_peft_model.
+    conditions mirror the fused-kernel gate in patch_peft_model.
     """
     reasons = []
     if lora_dropout != 0:
@@ -2306,6 +2403,8 @@ def _fused_lora_skip_reason(
         reasons.append(f"bias = '{bias}'")
     if float32_base:
         reasons.append("the base weights are float32")
+    if fsdp:
+        reasons.append("FSDP shards the weights they read (UNSLOTH_FORCE_FUSED_LORA=1 overrides)")
     if not reasons:
         return ""
     return (
@@ -2318,6 +2417,42 @@ def _base_weight_dtype(proj):
     weight = getattr(proj, "base_layer", proj).weight
     quant_state = getattr(weight, "quant_state", None)
     return quant_state.dtype if quant_state is not None else weight.dtype
+
+
+_FUSED_LORA_MLPS = (apply_lora_mlp_swiglu, apply_lora_mlp_geglu_exact, apply_lora_mlp_geglu_approx)
+
+
+def _decline_fused_lora_for_fsdp(model) -> int:
+    """Put peft's forwards back on layers patch_peft_model gave a fused LoRA kernel.
+
+    `TrainingArguments(fsdp=...)` only reaches the Accelerator inside `Trainer.__init__`, after
+    patch_peft_model ran with no launcher env to see, so the Trainer calls this once it knows.
+    """
+    if model is None or os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
+        return 0
+    n = 0
+    for module in model.modules():
+        if getattr(module, "apply_qkv", None) is apply_lora_qkv:
+            module.apply_qkv = original_apply_qkv
+            n += 1
+        if getattr(module, "apply_o", None) is apply_lora_o:
+            module.apply_o = original_apply_o
+            n += 1
+        for name in ("forward", "_unsloth_forward"):
+            func = getattr(module.__dict__.get(name), "__func__", None)
+            if getattr(func, "func", func) not in _FUSED_LORA_MLPS:
+                continue
+            if name == "forward":
+                delattr(module, "forward")
+            else:
+                module._unsloth_forward = module.__class__.forward
+            n += 1
+    if n:
+        logger.warning_once(
+            f"Unsloth: the Trainer enabled FSDP, so {n} fused LoRA projections were switched back "
+            "to peft's forward, which FSDP can unshard. Set UNSLOTH_FORCE_FUSED_LORA=1 to keep them."
+        )
+    return n
 
 
 class FastLlamaModel:
@@ -3934,8 +4069,15 @@ class FastLlamaModel:
         float32_base = (
             _base_weight_dtype(model.model.model.layers[0].self_attn.q_proj) == torch.float32
         )
+        # Fused kernels read `.weight` directly, bypassing FSDP's unshard hook, so under FSDP they see shard views (#409).
+        fused_lora_declined_for_fsdp = fsdp_will_wrap()
 
-        if lora_dropout == 0 and bias == "none" and not float32_base:
+        if (
+            lora_dropout == 0
+            and bias == "none"
+            and not float32_base
+            and not fused_lora_declined_for_fsdp
+        ):
             for idx, layer in enumerate(model.model.model.layers):
                 if model_type != "falcon_h1":
                     # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is not patched for now.
@@ -4014,7 +4156,9 @@ class FastLlamaModel:
                     )
 
         # A zero count reads as a failure, so say why the fused kernels were skipped.
-        unfused_reason = _fused_lora_skip_reason(lora_dropout, bias, float32_base)
+        unfused_reason = _fused_lora_skip_reason(
+            lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
+        )
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
