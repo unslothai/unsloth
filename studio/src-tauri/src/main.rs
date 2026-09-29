@@ -16,6 +16,8 @@ mod install_watchdog;
 mod linux_webkit;
 mod loopback_http;
 #[cfg(target_os = "macos")]
+mod macos_event_guard;
+#[cfg(target_os = "macos")]
 mod macos_tray;
 mod native_backend_lease;
 mod native_clipboard;
@@ -40,7 +42,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -788,8 +790,9 @@ fn setup_logging() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
             let max_log_bytes = 5 * 1024 * 1024;
-            if let Ok(file) = RotatingLogFile::open(log_path, rotated_path, max_log_bytes) {
+            if let Ok(file) = RotatingLogFile::open(log_path.clone(), rotated_path, max_log_bytes) {
                 loggers.push(WriteLogger::new(LevelFilter::Info, Config::default(), file));
+                let _ = PANIC_LOG_PATH.set(log_path);
             }
         }
     }
@@ -797,6 +800,38 @@ fn setup_logging() {
     if !loggers.is_empty() {
         let _ = CombinedLogger::init(loggers);
     }
+}
+
+static PANIC_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Records panics in tauri.log, since a packaged app's stderr goes nowhere. Writes through its
+/// own handle: the logger formats under its lock, so logging a panic raised there would deadlock.
+fn log_panics() {
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = PANIC_LOG_PATH.get() {
+            // Symbolizing is slow, so only the first few panics get a backtrace.
+            let backtrace = if PANICS.fetch_add(1, Ordering::Relaxed) < 4 {
+                format!("\n{}", std::backtrace::Backtrace::force_capture())
+            } else {
+                String::new()
+            };
+            let now = time::OffsetDateTime::now_utc();
+            let thread = std::thread::current();
+            if let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) {
+                let _ = writeln!(
+                    file,
+                    "{:02}:{:02}:{:02} [ERROR] thread '{}' {info}{backtrace}",
+                    now.hour(),
+                    now.minute(),
+                    now.second(),
+                    thread.name().unwrap_or("<unnamed>"),
+                );
+            }
+        }
+        default_hook(info);
+    }));
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -2080,7 +2115,10 @@ fn main() {
     let _ = fix_path_env::fix();
 
     setup_logging();
+    log_panics();
     info!("Unsloth desktop app starting");
+    #[cfg(target_os = "macos")]
+    macos_event_guard::install();
 
     #[cfg(target_os = "linux")]
     if let Some((variables, reason)) = webkit_rendering_workaround {
