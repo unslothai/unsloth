@@ -42,23 +42,23 @@ def test_fast_language_model_after_fast_model_on_the_same_family(tmp_path):
 import os
 os.environ["UNSLOTH_COMPILE_LOCATION"] = {str(tmp_path / "compiled")!r}
 from unsloth import FastModel, FastLanguageModel
-from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
-try:
-    tok = AutoTokenizer.from_pretrained("trl-internal-testing/tiny-LlamaForCausalLM-3.2")
-except Exception:
-    print("SKIP no tokenizer"); raise SystemExit(0)
-config = LlamaConfig(vocab_size = len(tok), hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
-                     num_attention_heads = 4, num_key_value_heads = 2, head_dim = 16, max_position_embeddings = 128)
+import torch
+from tokenizers import Tokenizer, models
+from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+vocab = {{"<unk>": 0, "<s>": 1, "</s>": 2, **{{f"w{{i}}": i + 3 for i in range(125)}}}}
+tok = PreTrainedTokenizerFast(tokenizer_object = Tokenizer(models.WordLevel(vocab, unk_token = "<unk>")),
+                              unk_token = "<unk>", bos_token = "<s>", eos_token = "</s>", pad_token = "</s>")
+config = LlamaConfig(vocab_size = len(vocab), hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
+                     num_attention_heads = 4, num_key_value_heads = 2, head_dim = 16, max_position_embeddings = 128,
+                     bos_token_id = 1, eos_token_id = 2, pad_token_id = 2)
 path = {str(tmp_path / "tiny")!r}
 LlamaForCausalLM(config).save_pretrained(path)
 tok.save_pretrained(path)
-x = tok("hello world", return_tensors = "pt").to("cuda")
+x = {{"input_ids": torch.tensor([[1, 5, 6, 7]], device = "cuda")}}
 a, _ = FastModel.from_pretrained(path, load_in_4bit = False, load_in_16bit = True, max_seq_length = 64)
 a(**x)
 b, _ = FastLanguageModel.from_pretrained(path, load_in_4bit = False, max_seq_length = 64)
 print("LOGITS", tuple(b(**x).logits.shape))
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 900)
-    if "SKIP no tokenizer" in out.stdout:
-        pytest.skip("tokenizer download unavailable")
     assert "LOGITS" in out.stdout, (out.stdout[-2000:], out.stderr[-3000:])
