@@ -352,6 +352,26 @@ def _isolate_generation_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_the_managed_provider_url_setting():
+    """Drop the managed-account private provider URL setting's cached answer around each test.
+
+    ``managed_provider_url_settings`` holds the owner's switch for a second so every managed
+    outbound request does not open SQLite. Each test points ``UNSLOTH_STUDIO_HOME`` at a fresh
+    store, but the held answer outlives it: a test that turned the switch on left ``True`` cached,
+    and the next test in the same xdist worker to run inside that second read it instead of its own
+    store's default, so test_managed_account_cannot_list_models_from_a_loopback_provider got a 200
+    with the loopback provider's models where it expected a 400.
+    """
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+    yield
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+
+
+@pytest.fixture(autouse = True)
 def _forget_the_cached_owner_identity():
     """Drop ``process_lifetime``'s cached owner identity after each test.
 
