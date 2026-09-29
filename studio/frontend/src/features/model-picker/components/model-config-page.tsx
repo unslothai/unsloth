@@ -3186,13 +3186,15 @@ export function ModelConfigPage({
     }
     // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
+    // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
     if (
       remember &&
       effectiveRuntimeConfig.customContextLength !== config.customContextLength
     ) {
-      update({
+      setConfig((current) => ({
+        ...current,
         customContextLength: effectiveRuntimeConfig.customContextLength,
-      });
+      }));
     }
     finishPersist(defaultConfig);
   };

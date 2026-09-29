@@ -1579,7 +1579,13 @@ def test_save_settings_reflects_the_context_it_pinned():
         "if ( remember && effectiveRuntimeConfig.customContextLength !== config.customContextLength"
         in handler
     )
-    assert "update({ customContextLength: effectiveRuntimeConfig.customContextLength, })" in handler
+    assert (
+        "setConfig((current) => ({ ...current, customContextLength: "
+        "effectiveRuntimeConfig.customContextLength, }));" in handler
+    )
+    # update() re-marks the draft edited right after persistConfig cleared it, and an edited
+    # draft refuses newer server settings on the next hydration.
+    assert "update(" not in handler
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():
