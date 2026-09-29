@@ -18,10 +18,9 @@ const GUARD = /<MenuDismissGuard\b(?=[^>]*\btriggerRef=\{)[^>]*\/>/;
 const UNGUARDED = new Map<string, string>([
   [
     "components/app-sidebar.tsx <DropdownMenu>",
-    "the sidebar's More flyout opens on POINTER ENTER and stays open for 180ms after the pointer " +
-      "leaves, so an unconditional swallow eats an ordinary click on the nav row the pointer was " +
-      "heading for. A press pins it open too, and that path could take one, but the flyout has " +
-      "been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
+    "the sidebar's More flyout sits among the nav rows, and a click on another row while it is " +
+      "open should close it and follow that row, which an unconditional swallow would eat. The " +
+      "flyout has been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
   ],
 ]);
 
