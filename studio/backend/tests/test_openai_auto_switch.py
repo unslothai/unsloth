@@ -11120,6 +11120,45 @@ def test_chat_refuses_an_unfetchable_scheme_before_non_gguf_switch(monkeypatch, 
     assert backend.model_identifier == "org/A-GGUF"
 
 
+def test_chat_leaves_an_unread_older_image_to_the_loaded_model(monkeypatch):
+    # The newer remote image is the one the model reads, so the older one is not validated.
+    _, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    recorder.fail = True
+    turns = ["data:image/png;base64,Zm9v", "https://example.com/0.png"]
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [_chat_image_request(url).messages[0] for url in turns],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.detail == "load failed"
+    assert len(recorder.calls) == 1
+
+
+def test_chat_refuses_a_remote_image_beside_a_legacy_one_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    reply = _chat_image_request("https://example.com/0.png").messages[0]
+    reply.role = "assistant"
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            reply,
+            ChatMessage(role = "user", content = "and?"),
+        ],
+        image_base64 = "aGVsbG8=",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert "one image per message" in exc.value.detail
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
 def _responses_image_payload(*images, stream):
     return ResponsesRequest(
         model = "org/B-GGUF",

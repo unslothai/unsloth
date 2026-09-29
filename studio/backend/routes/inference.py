@@ -26214,8 +26214,11 @@ async def produce_openai_chat_completions(
         _images_on_turn = _images_in_last_user_message(payload.messages)
         _legacy_image_distinct = _legacy_image_is_distinct(payload)
         _local_image_payloads = _request_local_image_payloads(payload)
-        _image_b64 = _pre_parsed[2] or payload.image_base64
-        if _image_b64 is None and _local_image_payloads:
+        # A remote image the model reads is decoded after its fetch; no older image stands in for it.
+        _selected_image = _served_image_part(payload.messages)
+        _selects_remote = _remote_image_part(_selected_image)
+        _image_b64 = None if _selects_remote else _pre_parsed[2] or payload.image_base64
+        if _image_b64 is None and _local_image_payloads and not _selects_remote:
             _image_b64 = _local_image_payloads[0]
         # Read as the render reads it after the fetch; b64s stays as sent for GGUF to validate.
         _served_messages = _remote_images_as_served(payload.messages)
@@ -26228,7 +26231,7 @@ async def produce_openai_chat_completions(
             "admitted": _admitted_payloads,
             "multiple": (
                 _images_on_turn + int(_legacy_image_distinct) > 1
-                or bool(_pre_parsed[2] and _legacy_image_distinct)
+                or bool((_pre_parsed[2] or _selects_remote) and _legacy_image_distinct)
             ),
             # Refused after the load whatever the target is, so refused before evicting for it.
             "unservable_alongside": _newest_turn_shows_more_images_than_it_sends(
@@ -35435,6 +35438,10 @@ def _served_image_part(messages):
     return latest_user or latest
 
 
+def _remote_image_part(part) -> bool:
+    return part is not None and not part.image_url.url.startswith("data:")
+
+
 def _served_remote_parts(messages, several: bool) -> list:
     # Only what the renderers read: the image _extract_content_parts selects, and on a
     # multi-image model every user turn's (_conversation_with_image_markers).
@@ -35445,7 +35452,7 @@ def _served_remote_parts(messages, several: bool) -> list:
         if isinstance(message.content, list)
         for part in message.content
         if isinstance(part, ImageContentPart)
-        and not part.image_url.url.startswith("data:")
+        and _remote_image_part(part)
         and (part is selected or (several and message.role == "user"))
     ]
 
