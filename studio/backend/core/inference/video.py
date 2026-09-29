@@ -6123,12 +6123,21 @@ class VideoBackend:
         # cache_dir for the same reason as the token: load_components forwards extra kwargs through ComponentSpec.load
         # into each from_pretrained, and without it those ~145 GB of Hub-pinned components resolve against the
         # import-time HF_HUB_CACHE snapshot rather than Unsloth's live cache folder, which the user can move.
+        # Offline, the processor / tokenizer specs are pointed at the cached snapshot folder: opened by repo id,
+        # transformers 5.x asks for their absent config.json and raises, and load_components only warns, so a fully
+        # downloaded model came back with processor=None and died on the first render (diffusion_offline_source).
+        from .diffusion_offline_source import offline_component_sources
+
+        offline_sources = offline_component_sources(
+            pipe, local_files_only = local_files_only, cache_dir = hub_cache_dir()
+        )
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,
             cache_dir = hub_cache_dir(),
             local_files_only = local_files_only,
             **({"token": hf_token} if hf_token else {}),
+            **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
         )
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both copies are resident for the
         # whole decode. Pre-casting the decoder removes the pair without changing a single output value. The encoder
