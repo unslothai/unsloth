@@ -5,9 +5,10 @@
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "Triton RoPE kernel needs CUDA"
-)
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason = "Triton RoPE kernel needs CUDA"),
+]
 
 
 def _reference(x, cos, sin, idx):
