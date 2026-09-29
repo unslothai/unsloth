@@ -1021,11 +1021,17 @@ def get_token(args) -> str:
     The minted key is a reusable secret for *this* machine's Studio; it is never
     sent to another host, so a non-loopback --base-url needs a credential issued
     by that server (ValueError otherwise)."""
-    if args.token:
-        return args.token
-    env = os.environ.get("UNSLOTH_BENCH_TOKEN")
-    if env:
-        return env
+    explicit = args.token or os.environ.get("UNSLOTH_BENCH_TOKEN")
+    if getattr(args, "tts_provider_id", None):
+        # Current Studio refuses saved provider credentials to API-key callers.
+        # Do not mint a privileged workflow key to work around that boundary.
+        if not explicit or explicit.startswith("sk-unsloth-"):
+            raise ValueError(
+                "Saved external TTS requires a Studio session token in --token or "
+                "UNSLOTH_BENCH_TOKEN; API keys cannot use saved provider credentials."
+            )
+    if explicit:
+        return explicit
     if not is_loopback_url(args.base_url):
         raise ValueError(
             f"{args.base_url} is not this machine's Studio, so no local key is minted for it: "

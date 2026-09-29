@@ -128,12 +128,26 @@ TTS wall-clock also drifts a little with GPU load. So TTS is judged by *latency*
 — reported as a median over `--repeats` and normalized by audio length
 (`tts_rtf`) — not by exact bytes.
 
+## Current integration and acceptance
+
+The harness is integrated against upstream main at
+`6c20f0fac752a1ec64537575873fa7f835d348dd`. For simultaneous local chat and TTS,
+use the separately recovered `voice/pr-a-conversation-mode` branch, which
+replaces closed PR #10373. This benchmark branch contains no product voice UI
+or model lifecycle changes. The harness deliberately calls the non-streaming
+speech endpoint twice per turn; its first-audio metric is a projection, not a
+measurement of browser playback or the conversation UI's PCM stream.
+
+Server-free tests have been rerun for this integration. The hardware figures
+below are historical author-reported results, not new measurements. A fresh
+supported-model run is still required before publishing latency claims.
+
 ## Running it
 
 Prereqs: Studio running (default port 8888), a **chat model** loaded, and a
 **TTS route**. Studio serves one resident model per slot, and on current `main`
-that slot is the only one: `/v1/audio/speech` is reload-only and returns 400
-unless the resident model *is* a TTS model, while `/v1/chat/completions` against
+that slot is the only one: this harness omits `model` on local speech calls,
+so `/v1/audio/speech` requires the resident model to be a TTS model, while `/v1/chat/completions` against
 a resident TTS model returns speech, not text. So a chat model and a local voice
 can only coexist on a backend with a separate **voice slot**
 (`/api/inference/voice/*`, loaded from the Speak-with picker), which is part of
@@ -147,7 +161,7 @@ startup and exits 2 with the reason rather than 400-ing on every synthesis.
 Use the Studio venv python so the token bootstrap can import `auth.storage`:
 
 ```bash
-PY="$HOME/.unsloth/studio/unsloth_studio/Scripts/python.exe"
+PY="$(pwd)/.venv/bin/python" # from the repository root; use your Studio venv path
 cd studio/benchmarks/voice
 
 "$PY" voice_bench.py                     # one measured pass + timestamped report
@@ -160,6 +174,13 @@ key is written straight into the **local** auth database, so it is only ever
 sent to a loopback `--base-url` (`127.0.0.1`, `::1`, `localhost`, the default);
 to benchmark a Studio on another host pass `--token` (or set
 `UNSLOTH_BENCH_TOKEN`) with a credential that server issued, or the run exits 2.
+Saved external connections now require an explicit **Studio session token** in
+`UNSLOTH_BENCH_TOKEN` or `--token`: current Studio does not allow API-key callers
+to spend saved provider credentials. The harness rejects missing tokens and
+`sk-unsloth-` API keys for `--tts-provider-id` before minting or sending requests.
+The backend still validates the token and the account's connection permissions.
+Prefer the environment variable to avoid putting a session token in shell history.
+
 The first call to each stage pays a cold-start cost (Whisper load, MIOpen kernel
 tuning, model warmup); that's shown separately as `cold-start` and kept out of
 the steady-state means via a warmup pass.

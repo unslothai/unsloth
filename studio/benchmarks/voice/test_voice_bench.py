@@ -290,6 +290,22 @@ class TokenTests(unittest.TestCase):
             with self.subTest(url = url):
                 self.assertFalse(vb.is_loopback_url(url))
 
+    def test_saved_external_tts_requires_explicit_session_token(self):
+        args = types.SimpleNamespace(
+            base_url = "http://localhost:8888", token = None, tts_provider_id = "p1"
+        )
+        with unittest.mock.patch.dict(os.environ, {}, clear = True):
+            with self.assertRaisesRegex(ValueError, "session token"):
+                vb.get_token(args)
+            args.token = "sk-unsloth-test"
+            with self.assertRaisesRegex(ValueError, "API keys"):
+                vb.get_token(args)
+            args.token = "session-token"
+            self.assertEqual(vb.get_token(args), "session-token")
+            args.token = None
+            os.environ["UNSLOTH_BENCH_TOKEN"] = "session-from-env"
+            self.assertEqual(vb.get_token(args), "session-from-env")
+
     def test_remote_base_url_needs_an_explicit_token(self):
         remote = types.SimpleNamespace(base_url = "http://10.0.0.5:8888", token = None)
         with unittest.mock.patch.dict(os.environ, {}, clear = False):
