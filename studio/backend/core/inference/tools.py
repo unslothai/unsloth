@@ -13214,8 +13214,7 @@ _MCP_COMPACT_HINT = "Full parameters via mcp_tool_schema."
 _MCP_MIN_SCHEMA_PAGE_CHARS = 64
 _MCP_FULL_LISTING_SHARE = 0.75
 _MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
-# (account, window) -> the tools the last MCP listing built for it compacted, read back when a call from it runs.
-# Per account because each account has its own MCP servers (account-scoped studio.db).
+# (account, window) -> tools its last MCP listing compacted; per account since studio.db (and so MCP servers) is.
 _MCP_COMPACTED_WINDOWS: dict[tuple, frozenset] = {}
 
 
