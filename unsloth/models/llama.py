@@ -2351,8 +2351,7 @@ def _snapshot_transformers_modules(model_patcher):
 
 
 def _record_pre_patch_changes(snapshot):
-    """Keep, per modeling module, the original value of every module global and class attribute pre_patch changed
-    (first recording wins, so a second FastLanguageModel load never records its own patches as the originals)."""
+    """Record the originals of whatever pre_patch changed; the first load wins, so later loads never record patches."""
     for modeling, (module_globals, class_dicts) in snapshot.items():
         record = vars(modeling).get("_unsloth_pre_patch_originals")
         if record is None:
@@ -2369,8 +2368,7 @@ def _record_pre_patch_changes(snapshot):
 
 
 def restore_transformers_family(model_types):
-    """Undo FastLanguageModel's pre_patch on these families before FastModel compiles them: the compiler copies the
-    classes' current forwards, and the fast forwards reference names its generated module does not define."""
+    """Undo pre_patch before FastModel compiles a family: the compiler copies whatever forwards the classes hold."""
     for model_type in model_types:
         modeling = sys.modules.get(f"transformers.models.{model_type}.modeling_{model_type}")
         record = (
