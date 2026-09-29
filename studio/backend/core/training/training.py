@@ -1817,7 +1817,10 @@ class TrainingBackend:
             if before_spawn is not None:
                 try:
                     before_spawn()
-                except Exception:
+                except Exception as exc:
+                    # Best effort, except a resident that still holds the GPUs.
+                    if getattr(exc, "blocks_training", False):
+                        raise
                     logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
             if defer_auto_selection:

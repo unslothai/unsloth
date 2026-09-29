@@ -404,6 +404,13 @@ def can_load_chat_during_training(
         return False, {"reason": "probe_error", "error": str(e)}
 
 
+class ManagedEngineStillRunning(RuntimeError):
+    """A managed engine that did not stop still holds its GPUs, so training must not spawn.
+    ``blocks_training`` lets the core trainer honour it without importing routes."""
+
+    blocks_training = True
+
+
 def free_chat_models_for_training(reason: str) -> List[str]:
     """Unload every resident chat model (HF/MLX orchestrator + GGUF server) to free
     VRAM for training. Each backend isolated. Returns labels of what was freed."""
@@ -442,7 +449,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         logger.warning("Could not unload inference model: %s", e)
 
     if managed_stop_failed:
-        raise RuntimeError(
+        raise ManagedEngineStillRunning(
             "The inference engine could not be stopped. Retry before starting training."
         )
 
