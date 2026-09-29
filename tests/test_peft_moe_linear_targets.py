@@ -25,10 +25,11 @@ from torch import nn
 if not hasattr(twc, "convert_peft_config_for_transformers") or not hasattr(
     transformers, "DeepseekV3Config"
 ):
-    pytest.skip("peft without the transformers v5 MoE conversion", allow_module_level = True)
+    pytest.skip(reason = "peft without the transformers v5 MoE conversion", allow_module_level = True)
 if int(transformers.__version__.split(".")[0]) < 5:
     pytest.skip(
-        "transformers v4 keeps unfused experts, nothing is converted", allow_module_level = True
+        reason = "transformers v4 keeps unfused experts, nothing is converted",
+        allow_module_level = True,
     )
 
 from peft import LoraConfig, PeftModel, get_peft_model
