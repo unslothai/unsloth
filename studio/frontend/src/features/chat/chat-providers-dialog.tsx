@@ -922,7 +922,7 @@ export function ChatProvidersSettings({
         updatedAt,
       };
       onProvidersChange([
-        ...providers.filter((p) => p.id !== created.id),
+        ...useExternalProvidersStore.getState().providers.filter((p) => p.id !== created.id),
         provider,
       ]);
       void refreshProviderModelCatalogs([provider]);
@@ -1101,11 +1101,9 @@ export function ChatProvidersSettings({
             : undefined,
           updatedAt,
         };
-        const currentProviders = existing.providerType === "llama_cpp"
-          ? useExternalProvidersStore.getState().providers
-          : providers;
+        // Live store, not the render snapshot: auto reload may have written during the await.
         onProvidersChange(
-          currentProviders.map((provider) =>
+          useExternalProvidersStore.getState().providers.map((provider) =>
             provider.id === editingProviderId ? editedProvider : provider,
           ),
         );
@@ -1326,7 +1324,9 @@ export function ChatProvidersSettings({
       await deleteProviderConfig(providerId);
       removeExternalProviderApiKey(providerId);
       onProvidersChange(
-        providers.filter((provider) => provider.id !== providerId),
+        useExternalProvidersStore.getState().providers.filter(
+          (provider) => provider.id !== providerId,
+        ),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

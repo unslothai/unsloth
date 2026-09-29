@@ -813,3 +813,14 @@ test("a served catalogue cannot take away a context window it has no field for",
 
   setModelsDevCatalog({ fetched_at: Date.now(), providers: {} } as never);
 });
+
+test("connection saves write back the live store, not the render snapshot", () => {
+  // Auto reload can update a llama.cpp row while a save awaits the backend.
+  assert.doesNotMatch(providersDialog, /\.\.\.providers\.filter\(\(p\) => p\.id !== created\.id\)/);
+  assert.doesNotMatch(providersDialog, /\n\s*providers\.filter\(\(provider\) => provider\.id !== providerId\)/);
+  assert.doesNotMatch(providersDialog, /:\s*providers;\s*onProvidersChange\(/);
+  const liveWrites = providersDialog.match(
+    /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
+  );
+  assert.equal(liveWrites?.length, 3);
+});
