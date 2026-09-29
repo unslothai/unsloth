@@ -551,6 +551,17 @@ class GpuMemoryShortError(RuntimeError):
         self.gpu_indices = gpu_indices
 
 
+def _net_of_held_vram(gpu_mem, held: dict[int, int]):
+    """Cap each GPU's free MiB at its total less what the other loaded models planned. A total of 0
+    is an integrated GPU on shared RAM, whose free reading already counts them: left as is."""
+    if not held:
+        return gpu_mem
+    return [
+        (idx, min(free, max(0, total - held.get(idx, 0))) if total > 0 else free, total)
+        for idx, free, total in gpu_mem
+    ]
+
+
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
 
 
@@ -24483,12 +24494,7 @@ class LlamaCppBackend:
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
-                    _held = self._other_planned_vram_mib()
-                    if _held:
-                        _gpu_mem = [
-                            (idx, min(free, max(0, total - _held.get(idx, 0))), total)
-                            for idx, free, total in _gpu_mem
-                        ]
+                    _gpu_mem = _net_of_held_vram(_gpu_mem, self._other_planned_vram_mib())
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and

@@ -1087,3 +1087,15 @@ def test_serving_leaves_out_a_model_only_held_behind_the_active_one(backends, mo
     assert "org/held-hf" in status.loaded
     monkeypatch.setattr(inf, "_extra_slots", [])
     assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]
+
+
+def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():
+    from core.inference.llama_cpp import _net_of_held_vram
+
+    held = {0: 900}
+    # Discrete: capped at total less what the other model planned.
+    assert _net_of_held_vram([(0, 20_000, 24_000)], held) == [(0, 20_000, 24_000)]
+    assert _net_of_held_vram([(0, 23_500, 24_000)], held) == [(0, 23_100, 24_000)]
+    # Integrated (total 0, shared RAM): the free reading is left alone, not zeroed.
+    assert _net_of_held_vram([(0, 60_000, 0)], held) == [(0, 60_000, 0)]
+    assert _net_of_held_vram([(0, 60_000, 0)], {}) == [(0, 60_000, 0)]
