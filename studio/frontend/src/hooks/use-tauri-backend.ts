@@ -50,14 +50,11 @@ import {
   markServerStopIntent,
 } from "./server-stop-intent";
 
-// The pill window resolves its API base separately and can miss the one-shot
-// server-port broadcast; persist the port (shared same-origin localStorage)
-// and forward the event so it can always catch up.
+// Persist and forward the port: the pill window can miss the one-shot broadcast.
 function announcePortToPill(port: number): void {
   try {
     window.localStorage.setItem("unsloth_backend_port", String(port));
   } catch {
-    // storage unavailable; the event below still covers a live pill window
   }
   void import("@tauri-apps/api/event")
     .then(({ emitTo }) => emitTo("ask", "server-port", port))

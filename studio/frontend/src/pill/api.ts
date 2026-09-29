@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The auth barrel drags the login/change-password pages (~156 kB) into the
-// pill window's load graph, so import the leaf module directly.
+// Leaf import: the auth barrel pulls ~156 kB of pages into the pill bundle.
 // eslint-disable-next-line no-restricted-imports
 import { authFetch } from "@/features/auth/api";
 import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
@@ -20,8 +19,6 @@ export type InferenceStatus = {
 
 let cachedSettings: PillSettings | null = null;
 
-// Boot race: the pill can fire before the desktop auth handshake finishes;
-// a 401 is "not yet", so retry briefly instead of showing an empty pill.
 async function authFetchBootTolerant(
   path: string,
   signal?: AbortSignal,
@@ -63,11 +60,7 @@ export async function requestModelLoad(
   ggufVariant: string | null,
   signal?: AbortSignal,
 ): Promise<void> {
-  // The route pads its body past a 15s keepalive, committing the 200 while the
-  // load is still running, so the body is the only thing that reports the load
-  // finished and a late failure arrives in-band as _deferred_error. /status
-  // cannot stand in for it: its `loading` list covers the transformers backend
-  // only and stays empty for a llama.cpp load in progress.
+  // The 200 is committed early by keepalive padding; only the body reports load completion (_deferred_error). /status misses llama.cpp loads.
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -2275,9 +2275,7 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: closing the main window exits before the reap.
                 api.prevent_close();
-                // This handler is registered for every window. The ask panel is
-                // transient, so Cmd+W over it must hide the panel, not run the
-                // main window's close policy and quit the app under it.
+                // Cmd+W on the ask panel hides it instead of running the main close policy.
                 #[cfg(target_os = "macos")]
                 if window.label() == selection_pill::ASK_WINDOW_LABEL {
                     selection_pill::hide_ask_window(window);
@@ -2296,10 +2294,7 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
-            // Keyed on the main window, not has_visible_windows: the ask panel
-            // counts as a visible window, so a Dock click while only the panel
-            // is up would otherwise restore nothing and the activation monitor
-            // would then hide the panel too, leaving no window at all.
+            // Keyed on the main window: the ask panel counts as a visible window.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 let main_hidden = app

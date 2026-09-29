@@ -13,12 +13,7 @@ PILL_EXCLUDED_APPS_KEY = "pill_excluded_apps"
 
 
 def _get_setting(key: str, default: Any = None) -> Any:
-    # Deliberately not guarded: get_app_setting already answers a missing key
-    # with the default, so anything raising here is the store being unreadable.
-    # Swallowing that returned enabled = False as a successful read, and the
-    # startup sync then treated those defaults as authoritative, unregistered a
-    # working shortcut and persisted the disabled config. Failing the read
-    # instead leaves the last known configuration in place for the retry.
+    # Not guarded: returning defaults on a read error made startup sync unregister a working shortcut.
     from storage.studio_db import get_app_setting
     return get_app_setting(key, default)
 

@@ -55,11 +55,7 @@ pub fn save_config(app_config_dir: &Path, config: &PillConfig) -> Result<(), Str
         .map_err(|e| format!("Failed to create config dir: {e}"))?;
     let raw = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize pill config: {e}"))?;
-    // Staged through a sibling temp file and renamed over the destination, the
-    // same way the backend owner file is written. fs::write truncates first, so
-    // a full disk or an interrupted write leaves a partial file, and
-    // load_config reads unparseable JSON as the default: a half-written save
-    // would silently discard the persisted configuration on the next launch.
+    // Temp file + rename: a partial write would load as defaults and drop the config.
     let tmp = app_config_dir.join(format!(".selection-pill.{}.tmp", std::process::id()));
     fs::write(&tmp, raw).map_err(|e| format!("Failed to write pill config: {e}"))?;
     fs::rename(&tmp, config_path(app_config_dir)).map_err(|e| {
@@ -104,8 +100,6 @@ mod tests {
         };
         save_config(&dir, &config).unwrap();
         assert_eq!(load_config(&dir), config);
-        // The save stages through a temp file; a successful one must leave none
-        // behind, or the config dir accumulates a file per process.
         let strays: Vec<_> = fs::read_dir(&dir)
             .unwrap()
             .filter_map(|entry| entry.ok())

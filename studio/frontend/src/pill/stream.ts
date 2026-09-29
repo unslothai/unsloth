@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Deliberately not imported from features/chat: the pill bundle must stay
-// tiny and chat-api drags the full chat page graph with it.
+// Not from features/chat: it drags the full chat page into the pill bundle.
 
-// The auth barrel drags the login/change-password pages (~156 kB) into the
-// pill window's load graph, so import the leaf module directly.
+// Leaf import: the auth barrel pulls ~156 kB of pages into the pill bundle.
 // eslint-disable-next-line no-restricted-imports
 import { authFetch } from "@/features/auth/api";
 
@@ -58,13 +56,9 @@ export async function* streamCompletion(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  // A dropped connection ends the body exactly like a finished stream, so
-  // without this an answer cut mid-sentence is rendered as a complete one.
+  // A dropped connection looks like a finished stream; require a terminal frame.
   let terminated = false;
-  // A thinking model can put its whole reply in reasoning_content and never
-  // emit visible content; the backend preserves such deltas deliberately. Hold
-  // the reasoning aside and use it only if nothing visible ever arrives, so a
-  // normal answer is never interleaved with its own thinking.
+  // Use reasoning_content only if no visible content ever arrives.
   let sawContent = false;
   let reasoning = "";
   const promoteReasoning = (): string | null =>
@@ -96,9 +90,7 @@ export async function* streamCompletion(
           } catch {
             continue;
           }
-          // A generation that fails mid-stream is reported in band, as an
-          // error frame followed straight by [DONE]. Without this the sentinel
-          // would return and the partial answer would read as a whole one.
+          // Mid-stream failure arrives as an error frame then [DONE].
           if (chunk.error) {
             const message =
               typeof chunk.error === "string"
@@ -109,11 +101,7 @@ export async function* streamCompletion(
           const choice = chunk.choices?.[0];
           const reason = choice?.finish_reason;
           if (reason) {
-            // The stream ended properly either way, so this is a terminal
-            // frame. But only "stop" (and a tool hand-off) means the answer is
-            // whole: "length" is the token cap and "content_filter" is a
-            // refusal cut, and treating either as success shows a clipped
-            // reply as finished and then feeds it back as history.
+            // Only "stop" (or a tool hand-off) is a whole answer; "length"/"content_filter" are clipped.
             terminated = true;
             if (reason !== "stop" && reason !== "tool_calls") {
               throw new Error(`The answer stopped early (${reason})`);
@@ -133,7 +121,6 @@ export async function* streamCompletion(
     if (!terminated) {
       throw new Error("Stream ended before the answer was complete");
     }
-    // Terminated by a finish_reason rather than a [DONE] sentinel.
     const only = promoteReasoning();
     if (only) yield only;
   } finally {

@@ -36,8 +36,7 @@ pub fn init(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     .build()?;
     panel::convert_to_key_panel(&ask_window).map_err(std::io::Error::other)?;
 
-    // Native frosted glass behind the transparent webview; radius must match
-    // the CSS corner radius (rounded-2xl = 16).
+    // Radius must match the CSS rounded-2xl (16).
     {
         use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
         if let Err(e) = apply_vibrancy(
@@ -53,11 +52,7 @@ pub fn init(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     monitor::install_dismiss_monitors(handle.clone());
     if let Err(e) = apply_hotkey(&handle, &loaded) {
         warn!("ask: hotkey registration failed: {e}");
-        // Startup stays best-effort and the persisted intent is left alone, a
-        // clash can be transient. But the managed state must not claim a
-        // shortcut that is not installed: the startup sync compares the backend
-        // setting against pill_status, and an enabled-looking state is read as
-        // already applied, so nothing ever retries.
+        // Best-effort at startup, but state must not claim an unregistered shortcut or sync never retries.
         handle.state::<PillState>().config.lock().unwrap().enabled = false;
     }
     info!(
@@ -68,25 +63,13 @@ pub fn init(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn apply_config(app: &AppHandle, config: &PillConfig) -> Result<(), String> {
-    // Register BEFORE persisting, so nothing that failed to take is written to
-    // disk. Saving first meant a taken shortcut still left enabled: true on
-    // disk, and init reloads that on the next launch while swallowing the same
-    // failure (rightly: a hotkey clash must not fail app startup), putting the
-    // bar back to reporting enabled with nothing behind it.
-    //
-    // Reporting the error also matters at runtime: swallowing it left PillState
-    // committed as enabled, so the next syncNativePillConfig saw native and
-    // backend as equal and never retried. Returning Err leaves the state
-    // uncommitted, which is what drives that retry.
+    // Register BEFORE persisting and return Err, so a failed hotkey is neither saved nor committed as enabled.
     apply_hotkey(app, config).inspect_err(|e| {
         warn!("ask: hotkey registration failed: {e}");
     })?;
     config::save_for_app(app, config).inspect_err(|e| {
         warn!("ask: config save failed, rolling the shortcut back: {e}");
-        // The registration above is already live. A failed save means
-        // pill_set_config skips its commit, so the state keeps the previous
-        // config; re-apply that one so a live shortcut cannot outlive the
-        // state that is supposed to describe it.
+        // Save failed: re-apply the previous config so the live shortcut matches state.
         if let Some(state) = app.try_state::<PillState>() {
             if let Ok(previous) = state.config.lock() {
                 let _ = apply_hotkey(app, &previous);

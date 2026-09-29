@@ -32,13 +32,9 @@ export function SystemPillTab(): ReactElement {
   const [settings, setSettings] = useState<PillSettings | null>(null);
   const [hotkey, setHotkey] = useState("");
   const [models, setModels] = useState<PillModelOption[]>([]);
-  // The model scan gates this whole load, so the settings GET it carries can
-  // land long after a toggle has already been saved. Let a saved edit win.
+  // The slow initial load must not overwrite an already saved edit.
   const editedRef = useRef(false);
-  // Saves are independent PUTs each followed by its own native sync, so a slow
-  // earlier one can answer, or apply its config to Rust, after a later one.
-  // The sequence drops superseded UI writes; the chain keeps the PUT and the
-  // native sync of one save from interleaving with the next.
+  // Sequence drops superseded UI writes; the chain serialises each PUT with its native sync.
   const saveSeqRef = useRef(0);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -56,7 +52,6 @@ export function SystemPillTab(): ReactElement {
         setModels(loadedModels);
       })
       .catch(() => {
-        // Backend down or non-mac; leave defaults.
       });
     return () => {
       cancelled = true;
@@ -65,43 +60,28 @@ export function SystemPillTab(): ReactElement {
 
   const applySettings = (update: Partial<PillSettings>): Promise<void> => {
     const seq = ++saveSeqRef.current;
-    // saveChainRef orders this tab's own saves; the shared lock additionally
-    // keeps the whole write, apply and recovery from interleaving with the
-    // startup sync, which writes the same native config.
+    // Shared lock: startup sync writes the same native config.
     saveChainRef.current = saveChainRef.current.then(() =>
       withNativeApplyLock(async () => {
-        // The write and the native apply fail for different reasons and need
-        // different recoveries, so they are handled separately rather than in
-        // one catch: a rejected write means we do not know what is stored, while
-        // a rejected apply means the backend holds a value the machine refused.
         let saved: PillSettings;
         try {
           saved = await updatePillSettings(update);
         } catch {
           toast.error(t("systemPill.settings.saveError"));
-          // A predecessor may have persisted and then skipped its own apply as
-          // superseded by this save. With this one failed, nothing else will
-          // apply it, so read back what actually stuck. Only the newest save
-          // reconciles; an older one still has a successor coming.
+          // A predecessor may have skipped its apply as superseded; the newest save reads back what stuck.
           if (seq !== saveSeqRef.current) return;
           try {
             const actual = await fetchPillSettings();
             if (seq !== saveSeqRef.current) return;
-            // Armed here too: this is persisted state, so the initial load must
-            // not later commit its older snapshot over it.
             editedRef.current = true;
             setSettings(actual);
             await syncNativePillConfig(actual);
           } catch {
-            // Backend unreachable too; the next open re-reads it.
           }
           return;
         }
 
-        // A superseded save must not restore its own result over the newer one.
         if (seq !== saveSeqRef.current) return;
-        // Fenced only once a save actually landed, so a failed edit cannot
-        // suppress the initial load and leave the tab showing defaults.
         editedRef.current = true;
         setSettings(saved);
 
@@ -109,14 +89,7 @@ export function SystemPillTab(): ReactElement {
           await syncNativePillConfig(saved);
         } catch {
           toast.error(t("systemPill.settings.saveError"));
-          // The backend took the value but the native layer refused it, so the
-          // two now disagree about whether a shortcut exists. Native status is
-          // the only one that knows what is actually registered, so make the
-          // backend and the switch agree with IT rather than with what we asked
-          // for. This covers both directions: a refused enable (nothing
-          // registered, so back to disabled) and a refused disable, where Rust
-          // restores the previous hotkey when its save fails and the bar is
-          // therefore still live despite the request to turn it off.
+          // Native refused: align backend and switch with native status (Rust restores the old hotkey on a failed disable).
           if (seq !== saveSeqRef.current) return;
           try {
             const status = await pillStatus();
@@ -127,7 +100,6 @@ export function SystemPillTab(): ReactElement {
             if (seq !== saveSeqRef.current) return;
             setSettings(corrected);
           } catch {
-            // Could not correct it either; the next open reads the backend.
           }
         }
       }),

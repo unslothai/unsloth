@@ -53,7 +53,6 @@ def test_explicit_null_clears_default_model(pill_home):
         current_subject = "test-user",
     )
 
-    # The settings tab sends {"defaultModel": null} for its "Default" option.
     settings = pill.put_settings(
         pill.PillSettingsUpdate.model_validate_json('{"defaultModel": null}'),
         current_subject = "test-user",

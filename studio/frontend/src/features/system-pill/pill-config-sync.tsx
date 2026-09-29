@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pushes backend-persisted pill settings to the Rust layer on startup so the
-// hotkey works before the settings UI is ever opened.
+// Applies persisted pill settings at startup so the hotkey works before settings is opened.
 
 import { useEffect } from "react";
 import { isTauri } from "@/lib/api-base";
@@ -14,18 +13,13 @@ import {
 } from "./api";
 import { isMacPlatform, pillSetConfig, pillStatus } from "@/lib/pill-native";
 
-// server-port re-announcements can arrive in bursts; one sync per window. The
-// throttle keys on the last SUCCESS, not the last attempt: a failed startup
-// sync used to bank 30s of silence and swallow the retry the port triggers,
-// leaving the hotkey stale for the window's lifetime.
+// Throttle on last SUCCESS, so a failed sync does not swallow the port-triggered retry.
 let lastSyncSucceededAt = 0;
 let syncInFlight = false;
 let syncQueued = false;
 
 async function syncConfigToNative(): Promise<void> {
-  // A trigger arriving mid-attempt is remembered, not dropped: during startup
-  // it is often the only retry there will be, and the attempt it overlaps is
-  // the one most likely to fail on a backend that is not up yet.
+  // Queue a mid-attempt trigger: during startup it is often the only retry.
   if (syncInFlight) {
     syncQueued = true;
     return;
@@ -33,13 +27,7 @@ async function syncConfigToNative(): Promise<void> {
   if (lastSyncSucceededAt && Date.now() - lastSyncSucceededAt < 30_000) return;
   syncInFlight = true;
   try {
-    // The read and the apply run under the shared lock as one unit, so an
-    // interactive save cannot land between them and be overwritten by this
-    // older snapshot. Whichever path acquires second reads current state.
     await withNativeApplyLock(async () => {
-      // Read and apply are separated because they fail for different reasons: a
-      // failed read means the backend is not up yet and the next trigger retries,
-      // while a failed apply means the shortcut could not be taken.
       let settings;
       try {
         settings = await fetchPillSettings();
@@ -50,29 +38,20 @@ async function syncConfigToNative(): Promise<void> {
         await syncNativePillConfig(settings);
         lastSyncSucceededAt = Date.now();
       } catch {
-        // Native status is the only party that knows what is actually
-        // registered, so make the backend agree with IT rather than with the
-        // snapshot we tried to apply. Both directions happen here, the same as
-        // in the settings tab: a refused enable registered nothing, and a
-        // refused disable leaves the previous hotkey live, because Rust puts it
-        // back when its own save fails.
+        // Align the backend with native status, as in the settings tab.
         try {
           const status = await pillStatus();
           if (!status.supported || status.enabled === settings.enabled) return;
           const corrected = await updatePillSettings({
             enabled: status.enabled,
           });
-          // Bring selection-pill.json into line too. syncNativePillConfig
-          // would skip this, since the managed status already equals what we
-          // are writing, but init reads the file, and startup may have loaded
-          // an enabled one whose registration has just failed.
+          // Also rewrite selection-pill.json: syncNativePillConfig would skip it, but init reads the file.
           await pillSetConfig({
             enabled: status.enabled,
             hotkey: status.hotkey,
             excludedApps: corrected.excludedApps,
           });
         } catch {
-          // Could not correct it either; the next open reads the backend.
         }
       }
     });
@@ -80,8 +59,6 @@ async function syncConfigToNative(): Promise<void> {
     syncInFlight = false;
     if (syncQueued) {
       syncQueued = false;
-      // Re-enters the throttle above, so a successful attempt still collapses
-      // the queued one instead of running it back to back.
       void syncConfigToNative();
     }
   }
@@ -93,8 +70,6 @@ export function PillConfigSync(): null {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    // Give auth/backend startup a moment, then sync; also re-sync when the
-    // backend port is (re)announced.
     const timer = setTimeout(() => void syncConfigToNative(), 3000);
     void import("@tauri-apps/api/event")
       .then(({ listen }) =>

@@ -7,14 +7,12 @@ import "@/index.css";
 import { initializeLocale } from "@/i18n";
 import { AskApp } from "./ask-app";
 
-// Follows the main window's theme: storage events fire across same-origin
-// windows.
+// storage events fire across same-origin windows.
 function applyTheme(): void {
   let stored: string | null = null;
   try {
     stored = window.localStorage.getItem("theme");
   } catch {
-    // default to system below
   }
   const dark =
     stored === "dark" ||

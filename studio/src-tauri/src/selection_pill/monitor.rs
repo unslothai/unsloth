@@ -1,5 +1,4 @@
-// Global NSEvent mouse monitors are TCC-free and never see our own panel's
-// events, so no hit-testing is needed.
+// Global NSEvent monitors are TCC-free and never see our own panel's events.
 
 use super::{ASK_WINDOW_LABEL, EVENT_ASK_HIDE};
 use block2::RcBlock;

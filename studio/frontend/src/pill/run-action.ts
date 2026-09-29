@@ -28,8 +28,6 @@ export async function ensureModelLoaded(
   signal: AbortSignal,
   onLoading: (model: string) => void,
 ): Promise<void> {
-  // Abortable so Escape during the pre-flight check cancels it rather than
-  // leaving the panel waiting on a stalled request.
   let status = await fetchInferenceStatus(signal);
   if (modelMatchesLoaded(model, status)) return;
 
@@ -39,27 +37,17 @@ export async function ensureModelLoaded(
   }
 
   onLoading(model);
-  // The load itself is now the long part, so the budget has to start here and
-  // bound the request: a load that never finishes would otherwise park on this
-  // await forever, leaving the panel loading until the user gives up.
   const deadline = Date.now() + MODEL_LOAD_TIMEOUT_MS;
-  // One budget for the load AND the confirmation polls. Disposing it before the
-  // loop left those polls unbounded, so a stalled status request parked on the
-  // await and the wall-clock deadline was never re-checked.
+  // One budget bounds the load AND the confirmation polls.
   const budget = pollSignal(signal, MODEL_LOAD_TIMEOUT_MS);
   try {
-    // Resolves only once the load itself finished, so the poll loop below just
-    // confirms which model ended up active.
     await requestModelLoad(model, ggufVariant, budget.signal);
 
-    // Two consecutive polls with nothing loading means the load never
-    // registered or already failed; one idle poll is grace for registration lag.
+    // Two idle polls = load never registered or failed; one is grace.
     let idlePolls = 0;
     while (Date.now() < deadline) {
       if (signal.aborted) throw new DOMException("aborted", "AbortError");
       await new Promise((resolve) => setTimeout(resolve, STATUS_POLL_MS));
-      // A timed-out poll resolves to the previous status rather than throwing,
-      // and the deadline above then ends the loop on the next turn.
       status = await fetchInferenceStatus(budget.signal).catch(() => status);
       if (modelMatchesLoaded(model, status)) return;
       idlePolls = status.loading.length === 0 ? idlePolls + 1 : 0;

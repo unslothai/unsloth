@@ -58,17 +58,13 @@ pub fn pill_set_config(
         config.hotkey = current.hotkey.clone();
         config.ask_hotkey = current.ask_hotkey.clone();
     }
-    // Commit only once it is on disk and the hotkey is applied. Updating first
-    // left a failed write with in-memory values the next frontend sync reads
-    // back as already-applied, so it skipped the retry and the shortcut stayed
-    // stale for the session.
+    // Commit only after the disk write and hotkey apply succeed, so a failure is retried.
     persist_and_apply(&app, &config)?;
     *state.config.lock().unwrap() = config.clone();
     Ok(make_status(config))
 }
 
-// The server-port event is a one-shot broadcast the hidden webview can miss
-// while it is still loading; this lets it pull the current port instead.
+// Lets the webview pull the port if it missed the one-shot broadcast.
 #[tauri::command]
 pub fn pill_server_port(
     window: WebviewWindow,

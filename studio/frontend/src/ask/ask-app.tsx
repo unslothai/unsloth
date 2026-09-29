@@ -26,9 +26,7 @@ import { streamCompletion } from "../pill/stream";
 
 type AskPhase = "input" | "loading" | "streaming" | "done" | "error";
 
-// `complete` is set only when the stream reached its terminal frame. A failed
-// run can leave a partial answer behind, so the text alone cannot say whether
-// the turn is real history.
+// `complete`: stream reached its terminal frame; a failed run may leave partial text.
 type Turn = { question: string; answer: string; complete: boolean };
 
 function shortModelName(model: string): string {
@@ -86,9 +84,7 @@ export function AskApp(): ReactElement {
       if (!isTauri) return;
       const { listen } = await import("@tauri-apps/api/event");
       const unlistenShow = await listen<string | null>("ask://show", (event) => {
-        // Every summon is a fresh conversation with fresh settings. Drop the
-        // controller too: a run parked on an unabortable fetch would otherwise
-        // still look current and drive this freshly reset session.
+        // Drop the controller too, or a run parked on an unabortable fetch drives the reset session.
         abortRef.current?.abort();
         abortRef.current = null;
         setContext(event.payload ?? null);
@@ -124,8 +120,7 @@ export function AskApp(): ReactElement {
       }
       cleanups.push(unlistenShow, unlistenHide, unlistenPort);
 
-      // The server-port broadcast may predate this listener; pull the current
-      // port, falling back to the value the main window persisted.
+      // The server-port broadcast may predate this listener.
       let port = await pillServerPort().catch(() => null);
       if (port == null) {
         const stored = window.localStorage.getItem("unsloth_backend_port");
@@ -143,8 +138,6 @@ export function AskApp(): ReactElement {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        // Cleared here too rather than waiting for the ask://hide round trip
-        // this triggers, which is what would otherwise retire the controller.
         abortRef.current?.abort();
         abortRef.current = null;
         void askHide();
@@ -159,7 +152,6 @@ export function AskApp(): ReactElement {
     };
   }, []);
 
-  // Refocus (and preselect the previous question) on every summon.
   useEffect(() => {
     if (showNonce === 0) return;
     inputRef.current?.focus();
@@ -172,8 +164,7 @@ export function AskApp(): ReactElement {
     const rect = node.getBoundingClientRect();
     const width = Math.ceil(rect.width);
     const height = Math.ceil(rect.height);
-    // Streaming updates land per token; a native resize per token saturates
-    // the main thread and freezes the app. Only resize on real change.
+    // A native resize per streamed token freezes the app; resize only on real change.
     if (
       width === lastSizeRef.current.width &&
       height === lastSizeRef.current.height
@@ -184,7 +175,6 @@ export function AskApp(): ReactElement {
     void askResize(width, height).catch(() => undefined);
   }, [phase, turns, errorKey, loadingModel]);
 
-  // Follow the stream.
   useEffect(() => {
     const node = answerRef.current;
     if (node) node.scrollTop = node.scrollHeight;
@@ -202,11 +192,7 @@ export function AskApp(): ReactElement {
     setErrorKey(null);
     setPhase("streaming");
 
-    // A summon replaces the controller, so anything this run writes after an
-    // await has to check it is still the live one. The status and settings
-    // fetches are not abortable, so without this a discarded run could park the
-    // freshly reset panel in loading and then return from its catch, leaving it
-    // busy with nothing running.
+    // A summon replaces the controller: re-check isCurrentRun after every await.
     const isCurrentRun = (): boolean => abortRef.current === abort;
 
     try {
@@ -214,7 +200,6 @@ export function AskApp(): ReactElement {
         throw new PillRunError(classifyFetchError(error));
       });
       if (!isCurrentRun()) return;
-      // Fresh-first: the default model may have changed in the main window.
       const settings =
         (await fetchPillSettings().catch(() => null)) ?? getCachedSettings();
       if (!isCurrentRun()) return;
@@ -243,8 +228,6 @@ export function AskApp(): ReactElement {
 
       const withContext = (text: string, first: boolean): string =>
         first && context ? `${text}\n\nText:\n"""\n${context}\n"""` : text;
-      // Only turns whose stream actually finished are real history; a failed
-      // one can carry a blank or truncated answer.
       const answered = history.filter((turn) => turn.complete);
       const messages = answered.flatMap((turn, index) => [
         { role: "user" as const, content: withContext(turn.question, index === 0) },
@@ -259,9 +242,7 @@ export function AskApp(): ReactElement {
         { model: used, messages, stream: true },
         abort.signal,
       )) {
-        // Clear and a re-summon both empty turns while a delta can still be in
-        // flight, and the updater runs against that emptied state: without the
-        // guard below it reads .answer off undefined and throws inside render.
+        // turns may be emptied while a delta is in flight.
         if (!isCurrentRun()) break;
         sawToken = true;
         setTurns((current) => {
@@ -272,8 +253,6 @@ export function AskApp(): ReactElement {
           return next;
         });
       }
-      // Reached either normally or via the supersession break above; in the
-      // latter case the completion writes belong to a session that is gone.
       if (!isCurrentRun()) return;
       if (!sawToken) throw new PillRunError("failed");
       setTurns((current) => {
@@ -284,8 +263,6 @@ export function AskApp(): ReactElement {
       });
       setPhase("done");
     } catch (error) {
-      // A run the user walked away from can land here after a newer one has
-      // already started; only the current run may still drive the shared phase.
       if (abortRef.current !== abort) return;
       if (abort.signal.aborted) {
         setPhase("done");
@@ -305,18 +282,13 @@ export function AskApp(): ReactElement {
   const lastAnswer = turns.length > 0 ? turns[turns.length - 1].answer : "";
 
   const copyAnswer = (): void => {
-    // The panel is a custom-scheme page, where navigator.clipboard can be
-    // absent or refuse the write. copyToClipboard tries the native plugin the
-    // ask capability already grants, then falls back to the web writers.
+    // navigator.clipboard can be absent on this custom-scheme page.
     void copyToClipboard(lastAnswer).then((ok) => {
       if (ok) setCopied(true);
     });
   };
 
   const clearThread = (): void => {
-    // Same reason as the show and hide handlers: a run parked on an
-    // abort-insensitive fetch would still pass isCurrentRun and drive the
-    // cleared panel back through loading and on to done.
     abortRef.current?.abort();
     abortRef.current = null;
     setTurns([]);
@@ -331,7 +303,6 @@ export function AskApp(): ReactElement {
     return () => clearTimeout(timer);
   }, [copied]);
 
-  // Cmd+C with nothing selected copies the finished answer.
   useEffect(() => {
     if (phase !== "done" || !lastAnswer) return;
     const onCopyKey = (event: KeyboardEvent) => {

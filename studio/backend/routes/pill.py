@@ -36,7 +36,6 @@ _ARG_BY_FIELD = {
 
 @router.put("/settings")
 def put_settings(req: PillSettingsUpdate, current_subject: str = Depends(get_current_subject)):
-    # An absent field and an explicit null both arrive as None, so pass on only
-    # what the client actually sent: clearing the default model is a null.
+    # Forward only fields the client sent: an explicit null clears the default model.
     sent = req.model_dump(exclude_unset = True)
     return update_pill_settings(**{_ARG_BY_FIELD[field]: value for field, value in sent.items()})

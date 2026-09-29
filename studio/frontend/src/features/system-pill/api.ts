@@ -5,8 +5,7 @@ import { authFetch } from "@/features/auth";
 import { pillSetConfig, pillStatus } from "@/lib/pill-native";
 import type { PillModelOption, PillSettings } from "./types";
 
-// These run at startup, racing the desktop auth handshake: a 401 here means
-// "not signed in yet", not "no". Retry briefly before reporting the failure.
+// Startup races the desktop auth handshake: retry 401s briefly.
 async function authFetchBootTolerant(path: string): Promise<Response> {
   let response = await authFetch(path);
   for (let attempt = 0; response.status === 401 && attempt < 5; attempt++) {
@@ -22,18 +21,12 @@ export async function fetchPillSettings(): Promise<PillSettings> {
   return (await response.json()) as PillSettings;
 }
 
-// Two paths write the native config: the settings tab and the startup sync.
-// Checking a marker before applying was not enough, because the apply itself
-// awaits two IPC round trips and a save can land inside that window, leaving
-// the older snapshot to be applied last. So they take turns instead: whoever
-// holds this runs its read and its apply as one unit, which makes a stale
+// Settings tab and startup sync take turns so read+apply is atomic; a marker check raced the IPC awaits.
 // snapshot impossible rather than merely unlikely.
 let nativeApplyChain: Promise<unknown> = Promise.resolve();
 
 export function withNativeApplyLock<T>(run: () => Promise<T>): Promise<T> {
   const next = nativeApplyChain.then(run, run);
-  // Swallowed here only so one caller's rejection cannot poison the queue for
-  // the next; the original promise still rejects for its own caller.
   nativeApplyChain = next.then(
     () => undefined,
     () => undefined,
@@ -53,7 +46,6 @@ export async function updatePillSettings(
   return (await response.json()) as PillSettings;
 }
 
-// Pushes enabled/excludedApps down to the Rust layer, preserving its hotkey.
 export async function syncNativePillConfig(settings: PillSettings): Promise<void> {
   const status = await pillStatus();
   if (!status.supported) return;
@@ -82,10 +74,7 @@ type CachedGgufEntry = {
   task?: string | null;
 };
 
-// Same rule isChattableCachedRepo applies for chat. The picker routes these
-// rows to the Images/Video page on click; the ask bar loads in the background
-// with no routing step, so a diffusion row would load a media runtime and then
-// be asked to chat.
+// Same rule as isChattableCachedRepo: no routing step here, so diffusion rows are excluded.
 const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
@@ -109,7 +98,6 @@ export async function fetchPillModelOptions(): Promise<PillModelOption[]> {
       }
     }
   } catch {
-    // exported models are optional
   }
   try {
     const response = await authFetchBootTolerant("/api/models/cached-gguf");
@@ -118,9 +106,7 @@ export async function fetchPillModelOptions(): Promise<PillModelOption[]> {
       for (const entry of body.cached) {
         if (entry.repo_id && !IMAGE_OR_VIDEO_TASKS.has(entry.task ?? "")) {
           options.push({
-            // load_id is set only when the repo id resolves nowhere (a repo
-            // outside the active hub cache), so load the snapshot it names
-            // while still listing the row under its repo id.
+            // load_id: repo outside the active hub cache; load that snapshot.
             id: entry.load_id || entry.repo_id,
             label: entry.repo_id,
             source: "cached",
@@ -129,7 +115,6 @@ export async function fetchPillModelOptions(): Promise<PillModelOption[]> {
       }
     }
   } catch {
-    // cached models are optional
   }
   return options;
 }
