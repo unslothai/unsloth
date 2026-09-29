@@ -4,6 +4,10 @@
 "use client";
 
 // Avatar removed — caused circular crop on image thumbnails
+import {
+  AttachmentCardPreview,
+  attachmentPreview,
+} from "@/components/assistant-ui/attachment-card-preview";
 import { AttachmentPreviewDialog } from "@/components/assistant-ui/attachment-preview";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
@@ -49,10 +53,9 @@ import {
 } from "@assistant-ui/react";
 import {
   AudioWave01Icon,
-  File01Icon,
-  File02Icon,
+  FileEmpty02Icon,
+  FlimSlateIcon,
   TextAlignLeft01Icon,
-  Video01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
@@ -100,10 +103,10 @@ const AttachmentThumb: FC = () => {
       <HugeiconsIcon
         icon={
           isVideo
-            ? Video01Icon
+            ? FlimSlateIcon
             : isAudioAttachment(name, contentType)
               ? AudioWave01Icon
-              : File02Icon
+              : FileEmpty02Icon
         }
         strokeWidth={2}
         className="size-6 text-muted-foreground"
@@ -120,8 +123,9 @@ const SENT_IMAGE_SIZE_COMPACT = "size-[calc(5rem*var(--ui-space-scale,1))]";
 const SENT_ROW_WIDTH = "w-[calc(18rem*var(--ui-space-scale,1))]";
 const CARD_EDGE =
   "border border-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-edge-gain,1)),transparent)]";
+// No fill, so cards take the composer background; hover still tints.
 const CARD_SURFACE =
-  "bg-[color-mix(in_oklab,var(--foreground)_3%,transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]";
+  "hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]";
 
 const useAttachmentKind = (): {
   name: string;
@@ -153,21 +157,28 @@ const AttachmentKindIcon: FC<{ kind: AttachmentFileKind; className?: string }> =
   />
 );
 
+const CardCenter: FC<{ children?: ReactNode }> = ({ children }) => (
+  <span className="flex h-full min-h-0 flex-1 items-center justify-center px-3 text-muted-foreground">
+    {children ?? <HugeiconsIcon icon={FileEmpty02Icon} strokeWidth={1.5} className="size-6" />}
+  </span>
+);
+
 const FileCardBody: FC<{
   name: string;
   kind: AttachmentFileKind;
   center?: ReactNode;
   icon?: ReactNode;
-}> = ({ name, kind, center, icon }) => (
+  preview?: ReactNode;
+}> = ({ name, kind, center, icon, preview }) => (
   <span className="flex h-full w-full flex-col">
-    <span className="flex min-h-0 flex-1 items-center justify-center px-3 text-muted-foreground">
-      {center ?? (
-        <HugeiconsIcon icon={File01Icon} strokeWidth={1.5} className="size-6" />
-      )}
-    </span>
-    <span className="flex min-w-0 items-center gap-1.5 px-3 pb-2.5">
-      {icon ?? <AttachmentKindIcon kind={kind} className="size-4" />}
-      <span className="min-w-0 truncate text-ui-13 leading-ui-18 text-foreground">
+    {preview ? (
+      <span className="min-h-0 flex-1 overflow-hidden">{preview}</span>
+    ) : (
+      <CardCenter>{center}</CardCenter>
+    )}
+    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-1.75", preview && "pt-1.25")}>
+      {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
+      <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
         {name}
       </span>
     </span>
@@ -179,6 +190,7 @@ const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string 
   kind,
   src,
 }) => {
+  const file = useAuiState(({ attachment }) => (attachment as { file?: File }).file);
   if (src) {
     return (
       <img
@@ -188,7 +200,18 @@ const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string 
       />
     );
   }
-  return <FileCardBody name={name} kind={kind} />;
+  const preview = attachmentPreview(file, kind);
+  return (
+    <FileCardBody
+      name={name}
+      kind={kind}
+      preview={
+        file && preview ? (
+          <AttachmentCardPreview file={file} preview={preview} fallback={<CardCenter />} />
+        ) : undefined
+      }
+    />
+  );
 };
 
 type PastedTextAttachment = {
@@ -340,7 +363,7 @@ const PastedTextAttachmentUI: FC<{
     variant === "card" ? (
       <button
         className={cn(
-          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[18px] text-left transition-colors",
+          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
           CARD_SIZE,
           CARD_EDGE,
           CARD_SURFACE,
@@ -353,7 +376,7 @@ const PastedTextAttachmentUI: FC<{
         <FileCardBody
           name={name}
           kind="text"
-          icon={textIcon("size-4")}
+          icon={textIcon("size-3.25")}
           center={
             <span className="flex flex-col items-center gap-1 text-ui-11">
               {textIcon("size-6")}
@@ -603,9 +626,9 @@ const ComposerAttachmentCard: FC = () => {
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
-            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[18px] text-left transition-colors",
+            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
             CARD_SIZE,
-            !src && CARD_EDGE,
+            CARD_EDGE,
             !src && CARD_SURFACE,
           )}
           type="button"

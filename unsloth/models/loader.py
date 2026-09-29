@@ -50,6 +50,7 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     _prefer_legacy_lowercase_cache,
+    is_distributed,
     is_automatic_device_map,
     prepare_device_map,
     requested_device_map,
@@ -80,6 +81,7 @@ from ..device_type import (
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.tiled_mlp import patch_tiled_mlp
+from ._tiled_mlp_ddp import patch_tiled_mlp_for_ddp
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -730,6 +732,19 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _vllm_unavailable_error():
+    # vLLM installed but disabled at import (ABI break, needs transformers 5) is not "not installed".
+    from unsloth import import_fixes
+    if import_fixes.VLLM_DISABLED_REASON:
+        return ImportError(
+            f"{import_fixes.VLLM_DISABLED_REASON}\n`fast_inference = True` needs a working vLLM."
+        )
+    return ImportError(
+        "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+        "You can do this in a terminal via `pip install vllm`"
+    )
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
@@ -861,10 +876,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                raise _vllm_unavailable_error()
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
@@ -1523,6 +1535,8 @@ class FastLanguageModel(FastLlamaModel):
         )
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+            if is_distributed():
+                patch_tiled_mlp_for_ddp()
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -1740,10 +1754,7 @@ class FastModel(FastBaseModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                raise _vllm_unavailable_error()
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
@@ -2721,6 +2732,8 @@ class FastModel(FastBaseModel):
         )
         if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
+            if is_distributed():
+                patch_tiled_mlp_for_ddp()
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
