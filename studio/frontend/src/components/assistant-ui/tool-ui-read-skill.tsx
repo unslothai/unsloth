@@ -8,8 +8,9 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { BookOpenIcon } from "lucide-react";
-import { memo } from "react";
+import { Scroll01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ComponentProps, memo } from "react";
 import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
@@ -17,6 +18,16 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
+
+// ToolFallbackTrigger renders whatever component it is handed, so the glyph is bound here.
+// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
+function SkillIcon({
+  strokeWidth: _strokeWidth,
+  ...props
+}: ComponentProps<"svg">) {
+  return <HugeiconsIcon icon={Scroll01Icon} {...props} />;
+}
 
 const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -49,7 +60,7 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={isRunning ? `Reading ${name}…` : `Read ${name} · ${resource}`}
         status={status}
-        icon={BookOpenIcon}
+        icon={SkillIcon}
       />
       <ToolFallbackContent>
         {isRunning ? (
@@ -58,9 +69,12 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
             <span>Reading {name}&hellip;</span>
           </div>
         ) : resultText ? (
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+          <ScrollPane
+            className="rounded bg-muted/50 p-2"
+            scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+          >
             {resultText}
-          </pre>
+          </ScrollPane>
         ) : (
           <div className="text-sm text-muted-foreground">
             Loaded {resource}.

@@ -46,6 +46,7 @@ import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
   type ProviderAuthStatus,
+  type ProviderApiType,
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
@@ -154,6 +155,10 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
   );
 }
 
+function shouldShowProviderApiType(providerType: string): boolean {
+  return providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
+}
+
 function formatModelSummary(models: string[]): string {
   if (models.length === 0) {
     return "No models enabled";
@@ -257,6 +262,7 @@ export function ChatProvidersSettings({
 
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  const [apiType, setApiType] = useState<ProviderApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -401,6 +407,7 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setApiType("chat_completions");
     setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
@@ -525,6 +532,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setApiType("chat_completions");
     setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
@@ -560,11 +568,14 @@ export function ChatProvidersSettings({
   }
 
   function selectAllModels() {
-    setSelectedModelIds([...availableModels]);
+    setSelectedModelIds((prev) => [
+      ...new Set([...prev, ...filteredAvailableModels]),
+    ]);
   }
 
   function clearModelSelection() {
-    setSelectedModelIds([]);
+    const visible = new Set(filteredAvailableModels);
+    setSelectedModelIds((prev) => prev.filter((id) => !visible.has(id)));
   }
 
   function parseOptionalBaseUrl(
@@ -690,6 +701,7 @@ export function ChatProvidersSettings({
         providerId: editingProviderId,
         apiKey: apiKey.trim(),
         baseUrl,
+        apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
@@ -763,6 +775,7 @@ export function ChatProvidersSettings({
         providerType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
+        apiType: created.api_type ?? "chat_completions",
         models,
         availableModels: available,
         hasApiKey: created.has_api_key,
@@ -864,6 +877,7 @@ export function ChatProvidersSettings({
         providerType: backendProviderType,
         displayName,
         baseUrl,
+        apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -888,6 +902,7 @@ export function ChatProvidersSettings({
         backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
+        apiType: created.api_type ?? "chat_completions",
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -1039,6 +1054,7 @@ export function ChatProvidersSettings({
               customProviderDisplayName(existing.providerType)
             : existing.name,
           baseUrl,
+          apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
           models: savedModels,
           availableModels: savedAvailableModels,
           maxOutputTokens,
@@ -1066,6 +1082,7 @@ export function ChatProvidersSettings({
           backendProviderType: updated.provider_type,
           name: updated.display_name,
           baseUrl: updated.base_url ?? "",
+          apiType: updated.api_type ?? "chat_completions",
           models: savedModels,
           availableModels: savedAvailableModels,
           maxOutputTokens: updated.max_output_tokens ?? undefined,
@@ -1195,6 +1212,7 @@ export function ChatProvidersSettings({
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
     autoReloadBaselineRef.current = provider.autoReloadModels === true;
+    setApiType(provider.apiType ?? "chat_completions");
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
@@ -1356,6 +1374,7 @@ export function ChatProvidersSettings({
         providerId: provider.id,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
+        apiType: provider.apiType,
         modelId:
           provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
             ? (provider.models[0] ?? null)
@@ -1412,7 +1431,7 @@ export function ChatProvidersSettings({
           </div>
         </header>
 
-        <div className="flex max-w-[760px] flex-col gap-3">
+        <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
           <section className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
               <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
@@ -1455,24 +1474,24 @@ export function ChatProvidersSettings({
                           key={preset.providerType}
                           value={preset.providerType}
                         >
-                          <span className="flex items-center gap-2">
+                          <span className="flex min-w-0 items-center gap-2">
                             <ApiProviderLogo
                               providerType={preset.providerType}
                               className="size-4"
                               title={preset.displayName}
                             />
-                            {preset.displayName}
+                            <span className="truncate">{preset.displayName}</span>
                           </span>
                         </SelectItem>
                       ))}
                       <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex items-center gap-2">
+                        <span className="flex min-w-0 items-center gap-2">
                           <ApiProviderLogo
                             providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
                             className="size-4"
                             title={CUSTOM_PROVIDER_DISPLAY_NAME}
                           />
-                          {CUSTOM_PROVIDER_DISPLAY_NAME}
+                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
                         </span>
                       </SelectItem>
                     </SelectGroup>
@@ -1488,13 +1507,13 @@ export function ChatProvidersSettings({
                             key={entry.provider_type}
                             value={entry.provider_type}
                           >
-                            <span className="flex items-center gap-2">
+                            <span className="flex min-w-0 items-center gap-2">
                               <ApiProviderLogo
                                 providerType={entry.provider_type}
                                 className="size-4"
                                 title={entry.display_name}
                               />
-                              {entry.display_name}
+                              <span className="truncate">{entry.display_name}</span>
                             </span>
                           </SelectItem>
                         ))}
@@ -1593,6 +1612,30 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {shouldShowProviderApiType(providerType) ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="provider-api-type" className="text-sm font-medium">
+                      API type
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Choose the endpoint your enabled models support.
+                    </p>
+                  </div>
+                  <Select
+                    value={apiType}
+                    onValueChange={(value) => setApiType(value as ProviderApiType)}
+                  >
+                    <SelectTrigger id="provider-api-type" className="h-9 w-full text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="chat_completions">OpenAI Chat Completions</SelectItem>
+                      <SelectItem value="responses">OpenAI Responses</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
               {isCustomProvider &&
               selectedProviderContract?.base_url_editable !== false ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
@@ -1859,7 +1902,7 @@ export function ChatProvidersSettings({
                         }
                         placeholder={customProviderModelIdsPlaceholder(providerType)}
                         rows={5}
-                        className="min-h-[100px] resize-y font-mono text-sm"
+                        className="min-h-[calc(100px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                       />
                     </div>
                   </div>
@@ -1902,7 +1945,7 @@ export function ChatProvidersSettings({
                               className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
                               onClick={() => {
                                 clearModelSelection();
-                                setManualModelIds("");
+                                if (!modelSearchQuery.trim()) setManualModelIds("");
                               }}
                             >
                               Clear
@@ -1952,7 +1995,7 @@ export function ChatProvidersSettings({
                           onChange={(event) => setManualModelIds(event.target.value)}
                           placeholder={"model-id-1\nmodel-id-2"}
                           rows={5}
-                          className="min-h-[100px] resize-y font-mono text-sm"
+                          className="min-h-[calc(100px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                         />
                       </div>
                     ) : null}
@@ -2048,7 +2091,7 @@ export function ChatProvidersSettings({
                             providerType,
                           )}
                           rows={4}
-                          className="min-h-[80px] resize-y font-mono text-sm"
+                          className="min-h-[calc(80px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                         />
                       </div>
                     ) : null}
@@ -2095,17 +2138,16 @@ export function ChatProvidersSettings({
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-6">
-      <header className="flex flex-col gap-1 pr-8">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="font-heading text-lg font-semibold">Connections</h1>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model connections for chat.
-          </p>
-        </div>
+    <div className="settings-page min-h-0">
+      {/* Same title/description metrics as every other settings page. */}
+      <header className="flex min-w-0 flex-col gap-1 pr-8">
+        <h1 className="text-xl font-semibold font-heading">Connections</h1>
+        <p className="text-xs text-muted-foreground">
+          Manage model connections for chat.
+        </p>
       </header>
 
-      <div className="flex w-full max-w-[760px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
+      <div className="flex w-full max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
         <div className="flex items-center gap-2">
           <Label
             htmlFor="chat-connections-enabled"
@@ -2129,7 +2171,7 @@ export function ChatProvidersSettings({
         </p>
       </div>
 
-      <section className="flex max-w-[760px] flex-col gap-2">
+      <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2">
         <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
           <button
             type="button"
@@ -2269,7 +2311,7 @@ export function ChatProvidersDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         overlayClassName="bg-black/50 backdrop-blur-sm"
-        className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[44rem]"
+        className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[calc(44rem*var(--ui-space-scale,1))]"
       >
         <DialogHeader className="sr-only">
           <DialogTitle>Connections</DialogTitle>

@@ -105,10 +105,43 @@ is real: a windowless PowerShell spawned by a GUI binary, running a compiler, wr
 content to %TEMP%. The same call also failed outright with CS2001 where %TEMP% was unusable (#9140),
 so this is a robustness fix as much as a detection one.
 
-System.Reflection.Emit builds the identical interop stubs in memory: no compiler process, no source
+System.Reflection.Emit built the identical interop stubs in memory: no compiler process, no source
 file, no DLL, and an empty Assembly.Location. windows-no-compiler-ci.yml is the standing proof --
 4688 process auditing unioned with a live FileSystemWatcher over every temp root, with a positive
-control, requiring zero compiler launches across a full install.
+control, requiring zero compiler launches across a full install. That requirement has not moved; what
+went away is the emit apparatus that replaced the compiler.
+
+### And then no emit either
+
+Emit fixed the compiler shape and did not fix the engine verdict. A controlled pair measured it: the
+same install.ps1 with and without the apparatus, both first-seen so both got a fresh pass, same engine
+build v2021.2.0+4045, same definitions 20260916, 74 engines reporting and zero timeouts on each.
+
+| Sample | Size | Verdict |
+|---|---|---|
+| with the apparatus | 629,894 B | malicious, BehavesLike.PS.Suspicious.jr, 1 / 60 |
+| without it | 594,150 B | undetected, 0 / 61 |
+
+A 550 byte file containing nothing but a DefinePInvokeMethod call scans 0 / 62, and identical-length
+comment filler in place of the apparatus also scans clean, so this is aggregate threshold scoring
+rather than a construct match: the apparatus is the largest single contributor pushing the file over
+the line, not something independently malicious-looking. Both halves of it were independently
+sufficient, so partial removal bought nothing and only full removal could help.
+
+Two things that did NOT move the verdict, both measured rather than assumed. A valid Authenticode
+signature from a Microsoft issued CA: same family, same suffix, on a matched pair. And VirusTotal does
+not parse the signature block on a .ps1 at all, so signer identity is not an input for these assets,
+only for the .exe bundles. Signing is still worth having for AllSigned and RemoteSigned hosts, for
+WDAC and Smart App Control, and as the artifact a false-positive submission asks for.
+
+What replaced the four emitted types imports nothing. Path identity goes through a child interpreter
+running pathlib.Path.resolve, which is GetFinalPathNameByHandleW on Windows, so the exact answer is
+the same string the emitted CreateFileW / GetFinalPathNameByHandleW rung returned. The process image
+lookup and the shell icon refresh call the same entry points through ctypes, and the NVIDIA inventory
+reaches NVML and the CUDA driver API the same way. AMSI does not scan CPython, so the interop left the
+scanned surface rather than moving within it. Where no interpreter can be reached, the path resolver
+answers lexically and reports Exact = $false, which makes the caller take BOTH runtime locks: the
+degradation fails closed.
 
 ## No .vbs launcher
 
@@ -151,8 +184,10 @@ shell process, repeat on every run" is a cluster behavioural engines score, and 
 changed nothing it is also pure waste. So both install.ps1 and install.sh snapshot the icon and run
 the heavy path only on a first install or an actual change, preserving start2.bin.
 
-SHChangeNotify stays, and with it one shell32 import: a permanently wrong desktop icon is a worse
-outcome than one import.
+SHChangeNotify stays, called through a Windows Python's ctypes in both install.ps1 and the WSL
+shortcut script install.sh generates, so neither defines a native type. Where no interpreter can be
+reached the per-item refresh is skipped: a stale icon on a shortcut that works is cosmetic, and the
+heavier refresh above still runs on a first install or an icon change.
 
 ## uv comes from a pinned archive, not from a remote install script
 
@@ -671,8 +706,9 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     hits = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", text)
     assert not hits, (
         f"{name} compiles C# again ({len(hits)} Add-Type call(s), first: {hits[0].strip()!r}). "
-        "Declare native methods with New-StudioEmittedNativeType instead, or with an inline "
-        "DefinePInvokeMethod block where the script is generated and cannot call it; "
+        "Make the native call out of process instead (the early Python interpreter's ctypes, "
+        "as the NVIDIA probe and path resolver do, or an in-box System32 tool), or with an "
+        "inline DefinePInvokeMethod block where the script is generated; "
         "-MemberDefinition runs csc.exe just as -TypeDefinition does."
     )
     # Conditional, because "emits its native imports" only means anything for a file that HAS
@@ -927,8 +963,16 @@ function Get-WinEvent {
 """
 
 
-def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
-    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path."""
+def _run_watch(
+    tmp_path,
+    action: str,
+    setup: str = "",
+) -> tuple[str, list[str]]:
+    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path.
+
+    ``setup`` runs BEFORE the watch starts, for the one case that needs a directory to
+    already exist and already be watched when the action writes into it.
+    """
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     evidence = tmp_path / "evidence"
@@ -941,6 +985,7 @@ def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
                 f'$env:TMP = "{temp_root.as_posix()}"',
                 _FAKE_WINEVENT,
                 f'. "{_WATCHER}"',
+                setup,
                 f"$action = {{ {action} }}",
                 "$seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
                 f'-EvidenceRoot "{evidence.as_posix()}"',
@@ -968,20 +1013,46 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
     directory once the assembly is loaded. Comparing a listing taken before against one
     taken after cannot see a file that no longer exists, so the job failed as a broken
     detector on every run since it was added.
+
+    The directory is staged BEFORE the watch starts, and that is the whole reason this
+    test is reliable. It used to be created inside the action, which is what CodeDom
+    does, and which is unobservable here: `IncludeSubdirectories` is recursive in the
+    kernel on Windows, but off Windows .NET emulates it by adding an inotify watch per
+    directory, and it adds the one for a new subdirectory after the fact. A file written
+    into a brand-new subdirectory microseconds later can land before its watch does and
+    never be raised at all. Measured driving the same shape in a loop, idle: 1 miss in
+    60. On a two-core hosted runner it landed as COUNT:0 on a pull request that touches
+    none of this (Backend CI job 105986532571, `Repo tests (CPU, studio)`).
+
+    There is nothing to synchronise on either, so a wait is the only alternative and a
+    wait is just a wider race. The watcher's NotifyFilter is FileName, which does not
+    raise a directory's own creation: measured, 0 of 1 under FileName and 1 of 1 once
+    DirectoryName is added, so the event that would say "the subdirectory is watched
+    now" is deliberately not in the stream, and widening the production filter to put it
+    there would change what the detector records.
+
+    What is under test does not need a new directory. The claim is that a file which no
+    longer exists when the action returns is still reported, and the only detector that
+    can make it is the live stream: the before-listing is taken while the directory is
+    empty, the after-listing sees a directory that is gone. Staging the directory removes
+    the platform's timing from the measurement without touching the claim.
     """
+    setup = (
+        '$staged = Join-Path $env:TEMP "vpmyd5eq"; '
+        "New-Item -ItemType Directory -Force -Path $staged | Out-Null"
+    )
     action = (
-        '$dir = Join-Path $env:TEMP "abcd1234"; '
-        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
-        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.cmdline") -Value "/noconfig"; '
-        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.dll") -Value "MZ"; '
+        '$dir = Join-Path $env:TEMP "vpmyd5eq"; '
+        'Set-Content -LiteralPath (Join-Path $dir "vpmyd5eq.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $dir "vpmyd5eq.dll") -Value "MZ"; '
         "Start-Sleep -Milliseconds 400; "
         # The whole point: gone before the action returns, exactly as CodeDom leaves it.
         "Remove-Item -LiteralPath $dir -Recurse -Force"
     )
-    stdout, libraries = _run_watch(tmp_path, action)
+    stdout, libraries = _run_watch(tmp_path, action, setup = setup)
     assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
-    assert any(lib.endswith(".cmdline") for lib in libraries), libraries
-    assert any(lib.endswith(".dll") for lib in libraries), libraries
+    assert any(lib.endswith("vpmyd5eq.cmdline") for lib in libraries), libraries
+    assert any(lib.endswith("vpmyd5eq.dll") for lib in libraries), libraries
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
@@ -1095,15 +1166,15 @@ def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
     )
 
 
-def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
-    """The point of the change is the acquisition, not the ladder: a host where emit fails must
-    degrade exactly as one that could not compile already did.
+def test_the_path_resolver_still_has_a_lexical_fallback() -> None:
+    """The point of the change is the acquisition, not the ladder: a host that cannot reach the
+    exact rung must degrade exactly as one that could not compile already did.
     """
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text
-    # Constrained Language Mode forbids defining types at all, by emit as by Add-Type.
-    assert '$languageMode -ne "FullLanguage"' in text
+    assert "Get-StudioPythonFinalPath" in text
+    assert "UNSLOTH_EARLY_PYTHON_PROBE" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1377,3 +1448,27 @@ def test_a_comment_never_points_at_a_file_that_is_not_here(name: str) -> None:
         f"{name} has a comment pointing at {missing}, which is not in this tree. Cite a PR number, "
         "or cite tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD), which travels with the repo."
     )
+
+
+@pytest.mark.parametrize("name", PS_SCRIPTS)
+def test_no_comment_line_starts_with_a_bareword(name: str) -> None:
+    path = REPO / name
+    if not path.is_file():
+        pytest.skip(f"{name} is not present")
+    offenders = [
+        f"{n}: {line.strip()}"
+        for n, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), 1)
+        if re.match(r"^\s*[A-Za-z0-9_]+#", line)
+    ]
+    assert not offenders, (
+        f"{name} has lines where a bareword runs into a '#'. PowerShell reads those as a command "
+        f"named '<word>#', not as a comment, and the run dies there:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_bareword_comment_rule_can_fire() -> None:
+    """The pattern really does catch the shape, and really does leave ordinary lines alone."""
+    assert re.match(r"^\s*[A-Za-z0-9_]+#", "f# An in-box tool")
+    assert re.match(r"^\s*[A-Za-z0-9_]+#", "    unction# something")
+    assert not re.match(r"^\s*[A-Za-z0-9_]+#", "# An in-box tool")
+    assert not re.match(r"^\s*[A-Za-z0-9_]+#", '    $x = "a#b"')

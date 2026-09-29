@@ -342,6 +342,20 @@ def test_a_record_written_with_a_process_name_still_matches():
     assert pl._same_identity("196794665:python3", "196794999") is False
 
 
+def test_a_macos_child_that_re_execs_is_still_the_same_process(monkeypatch):
+    """A framework python re-execs into Python.app, so comm read at adopt time differs later."""
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl.sys, "platform", "darwin")
+    adopted = "Wed Sep 23 06:37:18 2026     /Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+    later = "Wed Sep 23 06:37:18 2026     /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+    assert pl._same_identity(adopted, later) is True
+    assert pl._same_identity(adopted, "Wed Sep 23 06:37:19 2026     python3") is False
+    assert pl._same_identity("garbage", "garbage") is True
+    assert pl._same_identity("garbage", "other") is False
+
+
 def test_a_group_outliving_its_leader_is_still_reaped(tmp_path, monkeypatch):
     """The shim can crash while the visual server holds the GPU; the record's
     pid is then gone and the group is the only handle left."""
@@ -447,6 +461,8 @@ def test_concurrent_adopts_all_survive(tmp_path, monkeypatch):
     pl._tracked_pids.clear()
     pids = list(range(900000, 900040))
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"id-{pid}")
+    # Adopting caches this process's identity through the fake above; keep that to this test.
+    monkeypatch.setattr(pl, "_owner_identity", None)
 
     def adopt(chunk):
         for pid in chunk:

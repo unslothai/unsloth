@@ -720,6 +720,9 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
 _explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
+# The flag the runtime children switched to when UNSLOTH_HOME arrived: the guards inside the
+# extracted block read it, and setup.sh derives it in the section this harness stands in for.
+_RUNTIME_ROOT_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 _WHISPER_RECOVERED=false
 step() { echo "step|$1|$2"; }
@@ -737,6 +740,8 @@ $ErrorActionPreference = "Stop"
 $NeedLlamaSourceBuild = $false
 $script:LlamaCppDegraded = $false
 $StudioHomeIsCustom = $false
+# Same reason as _RUNTIME_ROOT_IS_CUSTOM in the shell harness above.
+$RuntimeRootIsCustom = $false
 function step { param($a, $b, $c) Write-Output "step|$a|$b" }
 function substep { param($a, $b) Write-Output "substep|$a" }
 function Write-LlamaFailureLog { param($Output) }

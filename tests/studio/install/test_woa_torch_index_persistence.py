@@ -342,6 +342,17 @@ class TestResolverEnvironmentRestore:
         install, setup = _ps_copies("Get-UvSafePath")
         assert install == setup
 
+    def test_the_alias_is_only_used_once_it_resolves(self):
+        """A space-free 8.3 name is not necessarily a name that exists (#11290).
+
+        This helper's result reaches UV_OVERRIDE and --find-links, which every later uv call reads,
+        so an alias that does not resolve breaks the whole resolve rather than one file.
+        """
+        for source, body in zip(("install.ps1", "studio/setup.ps1"), _ps_copies("Get-UvSafePath")):
+            assert (
+                "Test-Path -LiteralPath $short" in body
+            ), f"{source}: Get-UvSafePath accepts an 8.3 alias on 'contains no space' alone"
+
     def test_the_dependency_that_makes_this_necessary_is_still_there(self):
         """If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli."""
         studio_txt = PACKAGE_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
@@ -3680,7 +3691,7 @@ class TestATransientProbeFailureKeepsTheCudaBundle:
     selector with no NVIDIA evidence, which installs the CPU bundle instead."""
 
     def test_the_persisted_cuda_index_counts_as_evidence(self):
-        assert "$_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv)" in SETUP_SRC
+        assert "$_nvidiaEvidence = $HasNvidiaDriverEvidence -or ((Test-WinArm64Venv)" in SETUP_SRC
         assert "elseif ($_nvidiaEvidence) { $_nvidiaKinds }" in SETUP_SRC
 
     def test_only_a_persistable_index_counts(self):
@@ -6088,10 +6099,11 @@ class TestFoldedCallerOverridesDoNotOutliveTheRun:
     def test_the_exit_path_removes_it(self):
         """Beside the torch overrides file, which is deleted on exit for the same reason."""
         tail = INSTALL_SRC[INSTALL_SRC.index("try {\n    Install-UnslothStudio @args") :]
-        assert (
-            "Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue"
-            in tail
-        )
+        # Through the guarded helper: Remove-Item's -ErrorAction does not cover the terminating
+        # error the FileSystem provider raises for a path it cannot resolve (#11290), so an
+        # unguarded removal here would abort the rest of the sweep.
+        assert "Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides" in tail
+        assert "Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile" in tail
         head = INSTALL_SRC[: INSTALL_SRC.index("try {\n    Install-UnslothStudio @args")]
         assert head.rstrip().endswith(
             "$script:WoaSessionOverrides = $null\n$script:TorchOverridesFile = $null"

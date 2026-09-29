@@ -99,8 +99,10 @@ export type PanelResizeHandleProps = {
   /** Element to paint the live width onto, and the property to paint. */
   target: () => HTMLElement | null
   cssVar: string
-  /** Measured to start a drag from the rendered size when collapsed. */
+  /** Measured to start a drag from the rendered size when collapsed, in layout px. */
   measure: () => number
+  /** Browser interface scale: widths are layout px, painted times this. */
+  scale?: number
   label: string
   toggleLabel: string
   /**
@@ -153,6 +155,7 @@ export function PanelResizeHandle({
   target,
   cssVar,
   measure,
+  scale = 1,
   label,
   toggleLabel,
   collapseHint,
@@ -191,6 +194,10 @@ export function PanelResizeHandle({
   React.useEffect(() => {
     committedRef.current = width
   }, [width])
+  const scaleRef = React.useRef(scale)
+  React.useEffect(() => {
+    scaleRef.current = scale
+  }, [scale])
 
   // Where `rootVar` is painted, resolved once on pointer down. Always
   // [document.documentElement] with the flag off, which is what shipped.
@@ -219,7 +226,7 @@ export function PanelResizeHandle({
       if (frameRef.current) return
       frameRef.current = requestAnimationFrame(() => {
         frameRef.current = 0
-        paint(`${pendingRef.current}px`)
+        paint(`${pendingRef.current * scaleRef.current}px`)
       })
     },
     [paint],
@@ -236,7 +243,7 @@ export function PanelResizeHandle({
     }
     // Hand the property back to the committed value. A commit re-renders with
     // the new width; a cancel or a no-commit drag keeps DOM and store in step.
-    paint(`${committedRef.current}px`)
+    paint(`${committedRef.current * scaleRef.current}px`)
     if (rootVar) {
       for (const el of rootTargetsRef.current) el.style.removeProperty(rootVar)
     }
@@ -284,7 +291,8 @@ export function PanelResizeHandle({
     if (!drag.moved && Math.abs(delta) < DRAG_SLOP) return
     drag.moved = true
 
-    const next = drag.startWidth + delta
+    // Screen px to layout px, so the edge stays under the pointer at any scale.
+    const next = drag.startWidth + delta / scaleRef.current
     rawRef.current = next
     if (!open) {
       // Past the minimum, dragging the collapsed edge reopens it.

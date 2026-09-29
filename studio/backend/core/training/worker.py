@@ -60,6 +60,7 @@ from core.training.dataset_bounds import (
     row_bound_for_resume,
     world_size_from_env,
 )
+from core.training.resume import _checkpoint_state, session_eta_seconds
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -2680,6 +2681,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # A bracketed split names rows the same way the numeric fields do.
     mlx_split_names_rows = "[" in (config.get("train_split") or "")
+    # The bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+    mlx_kept_row_fraction = [1.0]
+
+    def _on_bound(kept, total):
+        mlx_kept_row_fraction[0] = kept / total
+        _send("status", status_message = f"Using {kept} of {total} rows (max_steps run)")
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -2695,10 +2702,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ds,
             mlx_max_train_rows,
             mlx_max_train_rows_seed,
-            on_bound = lambda kept, total: _send(
-                "status",
-                status_message = f"Using {kept} of {total} rows (max_steps run)",
-            ),
+            on_bound = _on_bound,
         )
 
     def _load_local(file_paths):
@@ -2834,6 +2838,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            else:
+                errors = info.get("errors", [])
+                raise ValueError(f"Dataset format conversion failed: {'; '.join(errors)}")
+            if info.get("dropped_rows_warning"):
+                _send("warning", message = info["dropped_rows_warning"])
             dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
@@ -2847,6 +2856,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                else:
+                    eval_errors = ev.get("errors", [])
+                    raise ValueError(
+                        f"Eval dataset format conversion failed: {'; '.join(eval_errors)}"
+                    )
+                if ev.get("dropped_rows_warning"):
+                    _send("warning", message = f"Eval dataset: {ev['dropped_rows_warning']}")
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
@@ -2945,6 +2961,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
+    # `streaming` stays off: without a pass length zoo cannot end an epoch on an optimizer step or report a real epoch.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
@@ -2962,7 +2979,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         use_cce = True,
         compile = True,
         gradient_checkpointing = use_grad_checkpoint,
-        streaming = is_vlm,
         packing = bool(config.get("packing", False)),
         output_dir = output_dir,
         save_steps = int(config.get("save_steps", 0) or 0),
@@ -3079,6 +3095,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     _send("status", status_message = f"Training {model_name}...")
 
+    start_step = 0
+    if resume_from_checkpoint:
+        start_step = _checkpoint_state(Path(resume_from_checkpoint)) or 0
+
     def _on_step(
         step,
         total,
@@ -3090,16 +3110,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
         num_tokens,
         grad_norm = None,
     ):
-        eta = (elapsed / step * (total - step)) if step > 0 else 0
+        eta = session_eta_seconds(elapsed, step, start_step, total) or 0
         _send(
             "progress",
             step = step,
-            epoch = round(step / total * num_epochs, 2) if total > 0 else 0,
+            epoch = (
+                round(trainer.state.epoch * mlx_kept_row_fraction[0], 2)
+                if trainer.state.epoch
+                else 0
+            ),
             loss = loss,
             learning_rate = lr,
             total_steps = total,
             elapsed_seconds = elapsed,
-            eta_seconds = max(0, eta),
+            eta_seconds = eta,
+            session_start_step = start_step,
             grad_norm = grad_norm,
             num_tokens = num_tokens,
             eval_loss = None,
@@ -4206,6 +4231,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+
+        def _report_model_repo(repo_id):
+            # Local cache loads have no active Hub download to track.
+            if os.path.isdir(os.path.expanduser(repo_id)):
+                return
+            event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
+
         # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:
             _train_load_in_4bit = _effective_training_load_in_4bit(
@@ -4220,6 +4252,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     model_load_name,
                 )
             success = trainer.load_model(
+                on_model_resolved = _report_model_repo,
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
                 load_in_4bit = _train_load_in_4bit,
@@ -4285,6 +4318,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     success = False
                 else:
                     success = trainer.load_model(
+                        on_model_resolved = _report_model_repo,
                         model_name = model_name,
                         max_seq_length = config["max_seq_length"],
                         load_in_4bit = _train_load_in_4bit,
@@ -4715,6 +4749,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "total_steps": progress.total_steps,
                     "elapsed_seconds": progress.elapsed_seconds,
                     "eta_seconds": progress.eta_seconds,
+                    "session_start_step": progress.session_start_step,
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
@@ -4744,7 +4779,13 @@ def _create_embedding_progress_callback(
     from transformers import TrainerCallback
 
     class _EmbeddingProgressCallback(TrainerCallback):
+        _start_step = 0
+        _training_start_time = training_start_time
+
         def on_train_begin(self, args, state, control, **kwargs):
+            self._start_step = state.global_step
+            if state.global_step > 0:
+                self._training_start_time = time.time()
             # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
@@ -4785,12 +4826,8 @@ def _create_embedding_progress_callback(
                 )
             current_step = state.global_step
 
-            elapsed = time.time() - training_start_time
-            eta = None
-            if current_step > 0 and total_steps > 0:
-                remaining = total_steps - current_step
-                if remaining > 0:
-                    eta = (elapsed / current_step) * remaining
+            elapsed = time.time() - self._training_start_time
+            eta = session_eta_seconds(elapsed, current_step, self._start_step, total_steps)
 
             event_queue.put(
                 {
@@ -4802,6 +4839,7 @@ def _create_embedding_progress_callback(
                     "total_steps": total_steps,
                     "elapsed_seconds": elapsed,
                     "eta_seconds": eta,
+                    "session_start_step": self._start_step,
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),

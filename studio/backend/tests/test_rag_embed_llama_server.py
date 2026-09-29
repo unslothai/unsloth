@@ -4,6 +4,7 @@
 """llama-server GGUF embedder tests, every boundary mocked."""
 
 import os
+import struct
 import subprocess
 import sys
 import textwrap
@@ -337,6 +338,33 @@ def test_gpu_available_apple_metal(monkeypatch):
     assert LlamaServerBackend._gpu_available() is True
 
 
+_REAL_POPEN = subprocess.Popen
+_FAKE_BINARY = "/bin/llama-server"
+
+
+def _intercept_server_popen(
+    monkeypatch,
+    proc,
+    captured = None,
+):
+    """Answer the embed server's own launch with `proc`, and nothing else.
+
+    `mod.subprocess` is the process-wide subprocess module, so a blanket Popen patch also answers
+    every other thread that starts a process while the test runs, and a recorder keeps whichever
+    argv came last. On #11902's macOS Uploads run that replaced the server's command with a
+    foreign one: `'--pooling' is not in list`. Everything that is not the server passes through.
+    """
+
+    def popen(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == _FAKE_BINARY:
+            if captured is not None:
+                captured["cmd"] = list(cmd)
+            return proc
+        return _REAL_POPEN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", popen)
+
+
 def _patch_spawn_deps(
     monkeypatch,
     proc,
@@ -345,12 +373,12 @@ def _patch_spawn_deps(
 ):
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server")
+    monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: _FAKE_BINARY)
     monkeypatch.setattr(
         LlamaServerBackend, "_resolve_model_path", lambda self, model_name = None: "/m/bge.gguf"
     )
     monkeypatch.setattr(LlamaServerBackend, "_find_free_port", staticmethod(lambda: free_port))
-    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: proc)
+    _intercept_server_popen(monkeypatch, proc)
 
 
 def test_spawn_uses_explicit_port(monkeypatch):
@@ -369,6 +397,67 @@ def test_spawn_uses_free_port_when_auto(monkeypatch):
     monkeypatch.setattr(b, "_wait_for_health", lambda *a, **k: True)
     b._spawn()
     assert b._port == 47000
+
+
+def test_spawn_refreshes_pooling_for_a_replaced_model(monkeypatch, tmp_path):
+    """A cached path survives the reaper, but its file can be replaced between server
+    lifetimes. The relaunched command and the vectors' identity must capture the same pooling."""
+    path = tmp_path / "embed.gguf"
+    _write_gguf(path, "qwen3", 1)
+    backend = LlamaServerBackend()
+    backend._model_pooling = "last"
+    proc = _FakeProc(alive = True)
+    captured = {}
+
+    monkeypatch.setattr(backend, "_resolve_binary", lambda: _FAKE_BINARY)
+    monkeypatch.setattr(backend, "_resolve_model_path", lambda model_name = None: str(path))
+    monkeypatch.setattr(backend, "_find_free_port", lambda: 47000)
+    monkeypatch.setattr(backend, "_wait_for_health", lambda *a, **k: True)
+    monkeypatch.setattr(backend, "_build_env", lambda *a, **k: {})
+
+    _intercept_server_popen(monkeypatch, proc, captured)
+    backend._spawn_once(False)
+
+    assert captured["cmd"][captured["cmd"].index("--pooling") + 1] == "mean"
+    assert backend._model_pooling == "mean"
+
+
+def test_a_process_started_elsewhere_during_spawn_does_not_replace_the_server_command(
+    monkeypatch, tmp_path
+):
+    """Another thread starting a process mid-spawn must neither be handed the fake server nor
+    overwrite the command the test reads back."""
+    path = tmp_path / "embed.gguf"
+    _write_gguf(path, "qwen3", 1)
+    backend = LlamaServerBackend()
+    proc = _FakeProc(alive = True)
+    captured = {}
+    foreign = {}
+
+    def other_thread_starts_a_process():
+        child = subprocess.Popen(
+            [sys.executable, "-c", "pass"], stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL
+        )
+        foreign["real"] = child is not proc
+        child.wait(timeout = 30)
+
+    def health_while_another_thread_spawns(*_a, **_k):
+        thread = threading.Thread(target = other_thread_starts_a_process)
+        thread.start()
+        thread.join(timeout = 30)
+        return True
+
+    monkeypatch.setattr(backend, "_resolve_binary", lambda: _FAKE_BINARY)
+    monkeypatch.setattr(backend, "_resolve_model_path", lambda model_name = None: str(path))
+    monkeypatch.setattr(backend, "_find_free_port", lambda: 47000)
+    monkeypatch.setattr(backend, "_wait_for_health", health_while_another_thread_spawns)
+    monkeypatch.setattr(backend, "_build_env", lambda *a, **k: {})
+    _intercept_server_popen(monkeypatch, proc, captured)
+    backend._spawn_once(False)
+
+    assert foreign.get("real") is True, "the other thread was handed the fake server"
+    assert captured["cmd"][0] == _FAKE_BINARY
+    assert captured["cmd"][captured["cmd"].index("--pooling") + 1] == "mean"
 
 
 def test_spawn_fails_loud_on_early_exit(monkeypatch):
@@ -1656,3 +1745,348 @@ def test_a_partly_present_planned_family_is_not_served(monkeypatch, tmp_path):
 
     assert backend._planned_family_path("org/pending", repo) is None
     assert backend._resolve_model_path().endswith("pending-F16.gguf")
+
+
+def _write_gguf(
+    path,
+    arch,
+    pooling = None,
+):
+    kvs = [
+        struct.pack("<Q", 20)
+        + b"general.architecture"
+        + struct.pack("<IQ", 8, len(arch))
+        + arch.encode()
+    ]
+    if pooling is not None:
+        key = f"{arch}.pooling_type".encode()
+        kvs.append(struct.pack("<Q", len(key)) + key + struct.pack("<II", 4, pooling))
+    Path(path).write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, len(kvs)) + b"".join(kvs))
+
+
+@pytest.mark.parametrize(
+    "pooling, expected",
+    [(3, "last"), (1, "mean"), (2, "cls"), (None, "cls"), (0, "cls")],
+)
+def test_build_cmd_serves_the_pooling_the_gguf_declares(tmp_path, pooling, expected):
+    """Forcing CLS on a last-token (Qwen3-Embedding) or mean (nomic) GGUF pooled one
+    token, so unrelated sentences embedded nearly alike. A GGUF declaring none keeps
+    CLS, since llama-server would fall back to NONE and /v1/embeddings refuses that."""
+    path = tmp_path / "embed.gguf"
+    _write_gguf(path, "qwen3", pooling)
+    cmd = LlamaServerBackend()._build_cmd("/bin/llama-server", str(path), 1, use_gpu = False)
+    assert cmd[cmd.index("--pooling") + 1] == expected
+
+
+@pytest.mark.parametrize("arch", ["nomic-bert", "nomic-bert-moe"])
+def test_build_cmd_uses_mean_for_older_nomic_ggufs_without_pooling_metadata(tmp_path, arch):
+    """Dedicated Nomic embedding architectures predate reliable pooling metadata, but
+    their model family is mean-pooled. An explicit unsupported value still falls back safely."""
+    path = tmp_path / "nomic.gguf"
+    _write_gguf(path, arch)
+    backend = LlamaServerBackend()
+    cmd = backend._build_cmd("/bin/llama-server", str(path), 1, use_gpu = False)
+    assert cmd[cmd.index("--pooling") + 1] == "mean"
+    assert backend._adopt_model_path(str(path), "org/nomic-GGUF") == str(path)
+    assert backend._model_pooling == "mean"
+
+    _write_gguf(path, arch, 0)
+    cmd = backend._build_cmd("/bin/llama-server", str(path), 1, use_gpu = False)
+    assert cmd[cmd.index("--pooling") + 1] == "cls"
+
+
+@pytest.mark.parametrize("pooling, suffix", [(3, ":last"), (1, ":mean"), (2, "")])
+def test_llama_identity_changes_only_for_a_non_cls_gguf(monkeypatch, tmp_path, pooling, suffix):
+    """Vectors indexed under the forced CLS must read as stale once a mean or last
+    GGUF is served natively, while a CLS GGUF such as bge-small keeps its identity."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    _write_gguf((snapshot / "embed-F16.gguf").resolve(), "qwen3", pooling)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    assert embeddings._identity(True, model) == legacy + suffix
+
+
+def test_llama_identity_follows_the_served_gguf_after_the_cache_moves(monkeypatch, tmp_path):
+    """Moving the HF cache in Settings leaves the server on the old file, so a fresh
+    cache search dropped the ``:last`` suffix and tagged last-pooled vectors as CLS."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub-a", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 3)
+    backend = LlamaServerBackend()
+    backend._model_path, backend._model_repo = str(served), repo
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    (tmp_path / "hub-b").mkdir()
+    _use_cache_root(monkeypatch, tmp_path / "hub-b")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    assert embeddings._identity(True, model) == legacy + ":last"
+    assert embeddings._identity(True, model, backend) == legacy + ":last"
+
+
+def test_llama_identity_with_no_gguf_on_disk_matches_no_forced_cls_row(monkeypatch, tmp_path):
+    """With the GGUF evicted and no server up, the prediction fell back to the forced-CLS
+    identity, so a re-upload deduplicated onto those stale vectors instead of re-indexing."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    (tmp_path / "hub").mkdir()
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    predicted = embeddings._identity(True, model)
+    assert not config.embedding_identity_matches(legacy, predicted)
+    assert config.embedding_identity_model(predicted) == model
+
+
+def test_llama_identity_keeps_the_launched_pooling_when_the_file_vanishes(monkeypatch, tmp_path):
+    """A running server keeps serving its open GGUF after the cache entry is evicted, so
+    re-reading the gone path answered CLS and tagged last-pooled vectors as CLS."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 3)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    backend._adopt_model_path(str(served), repo)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    served.unlink()
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    assert embeddings._identity(True, model, backend) == legacy + ":last"
+
+
+def test_llama_identity_rechecks_a_stopped_backends_replaced_gguf(monkeypatch, tmp_path):
+    """Before an encode, a stopped server will respawn from the current file and must not
+    deduplicate with its old pooling. A completed encode still keeps the value it actually used."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 3)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    backend._adopt_model_path(str(served), repo)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    _write_gguf(served, "qwen3", 1)
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + ":mean"
+    assert embeddings._identity(True, model, backend) == legacy + ":last"
+
+
+def test_llama_identity_treats_an_evicted_stopped_model_as_unresolved(monkeypatch, tmp_path):
+    """A stopped backend cannot keep serving a deleted path. Pre-encode deduplication must
+    miss old CLS rows, and the next spawn must run the normal resolver instead of that path."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 2)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    backend._adopt_model_path(str(served), repo)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    served.unlink()
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + ":unresolved"
+    monkeypatch.setattr(backend, "_resolve_uncached_model_path", lambda *args: "/fresh.gguf")
+    assert backend._resolve_model_path(model) == "/fresh.gguf"
+
+
+def test_preencode_identity_takes_one_locked_backend_snapshot(monkeypatch):
+    """A concurrent model switch cannot combine model A's repo check with model B's pooling."""
+
+    class SwitchingBackend(LlamaServerBackend):
+        def __init__(self):
+            self.gate = False
+            self.repo_read = threading.Event()
+            self.allow_repo_read = threading.Event()
+            super().__init__()
+
+        @property
+        def _model_repo(self):
+            value = self._repo_value
+            if self.gate:
+                self.repo_read.set()
+                assert self.allow_repo_read.wait(timeout = 2)
+            return value
+
+        @_model_repo.setter
+        def _model_repo(self, value):
+            self._repo_value = value
+
+        @property
+        def _model_pooling(self):
+            return self._pooling_value
+
+        @_model_pooling.setter
+        def _model_pooling(self, value):
+            self._pooling_value = value
+
+    model, repo_a, repo_b = "org/a", "org/a-GGUF", "org/b-GGUF"
+    backend = SwitchingBackend()
+    backend._model_path = "/served/a.gguf"
+    backend._model_repo = repo_a
+    backend._model_pooling = "last"
+    backend._process = _FakeProc(alive = True)
+    backend.gate = True
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda _model: repo_a)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    result = {}
+    switched_before_snapshot = []
+
+    def predict():
+        result["identity"] = embeddings._identity(True, model)
+
+    def switch_model():
+        assert backend.repo_read.wait(timeout = 2)
+        acquired = backend._serve_lock.acquire(timeout = 0.05)
+        switched_before_snapshot.append(acquired)
+        if acquired:
+            backend._repo_value = repo_b
+            backend._pooling_value = "mean"
+            backend._serve_lock.release()
+        backend.allow_repo_read.set()
+        if not acquired:
+            with backend._serve_lock:
+                backend._repo_value = repo_b
+                backend._pooling_value = "mean"
+
+    reader = threading.Thread(target = predict)
+    writer = threading.Thread(target = switch_model)
+    reader.start()
+    writer.start()
+    reader.join(timeout = 2)
+    writer.join(timeout = 2)
+    backend._process = None
+
+    assert not reader.is_alive() and not writer.is_alive()
+    assert switched_before_snapshot == [False]
+    assert result["identity"] == config.embedding_identity(
+        "llama-server", model, gguf_repo = repo_a, pooling = "last"
+    )
+
+
+def test_encode_identity_keeps_the_callers_snapshot_when_another_model_takes_over(monkeypatch):
+    """The shared backend can switch models after an encode returns. Each thread must retain
+    the immutable repo and pooling that served its own vectors, not the backend's later state."""
+    backend = LlamaServerBackend()
+    model_a, model_b = "org/a", "org/b"
+    repo_a, repo_b = "org/a-GGUF", "org/b-GGUF"
+    identities = {}
+    first_waiting = threading.Event()
+    second_done = threading.Event()
+
+    monkeypatch.setattr(embeddings, "_get_backend", lambda _model = None: backend)
+    monkeypatch.setattr(
+        config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: repo_a if model == model_a else repo_b,
+    )
+
+    def fake_ready(model):
+        backend._model_repo = repo_a if model == model_a else repo_b
+        backend._model_pooling = "last" if model == model_a else "mean"
+
+    monkeypatch.setattr(backend, "_ensure_ready", fake_ready)
+
+    def fake_encode_active(
+        texts,
+        *,
+        model_name = None,
+        **_kwargs,
+    ):
+        backend._ensure_ready(model_name)
+        return np.zeros((len(texts), 2), dtype = np.float32)
+
+    monkeypatch.setattr(backend, "_encode_active", fake_encode_active)
+    real_identity = embeddings._identity
+
+    def delayed_identity(
+        is_llama,
+        name,
+        served = None,
+        served_identity = None,
+    ):
+        if name == model_a:
+            first_waiting.set()
+            assert second_done.wait(timeout = 2)
+        else:
+            second_done.set()
+        if served_identity is None:
+            return real_identity(is_llama, name, served)
+        return real_identity(is_llama, name, served, served_identity)
+
+    monkeypatch.setattr(embeddings, "_identity", delayed_identity)
+
+    def run(model):
+        identities[model] = embeddings.encode_with_identity(["x"], model_name = model)[1]
+
+    first = threading.Thread(target = run, args = (model_a,))
+    second = threading.Thread(target = run, args = (model_b,))
+    first.start()
+    assert first_waiting.wait(timeout = 2)
+    second.start()
+    first.join(timeout = 2)
+    second.join(timeout = 2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert identities[model_a] == config.embedding_identity(
+        "llama-server", model_a, gguf_repo = repo_a, pooling = "last"
+    )
+    assert identities[model_b] == config.embedding_identity(
+        "llama-server", model_b, gguf_repo = repo_b, pooling = "mean"
+    )
+
+
+def test_llama_identity_is_not_predicted_from_a_fallback_repo(monkeypatch, tmp_path):
+    """The loader serves only the desired repo from cache before going online, so a
+    fallback repo's cached GGUF may not be what the next encode loads."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", model, ["embed-F16.gguf"])
+    _write_gguf((snapshot / "embed-F16.gguf").resolve(), "qwen3", 3)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    assert embeddings._identity(True, model) == legacy + ":unresolved"
+
+
+def test_llama_identity_follows_the_planned_family_before_a_later_variant(monkeypatch, tmp_path):
+    """The loader pins a completed download family before considering the configured
+    variant, so prediction must not take pooling from a different file that arrived later."""
+    import utils.embedding_model_settings as ems
+
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda m: ["embed-Q8_0.gguf"])
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-Q8_0.gguf", "embed-F16.gguf"])
+    _write_gguf((snapshot / "embed-Q8_0.gguf").resolve(), "qwen3", 3)
+    _write_gguf((snapshot / "embed-F16.gguf").resolve(), "bert", 2)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + ":last"
+
+
+@pytest.mark.parametrize("download_pending, suffix", [(False, ":unresolved"), (True, ":last")])
+def test_llama_identity_only_predicts_a_stand_in_quant_while_its_download_is_pending(
+    monkeypatch, tmp_path, download_pending, suffix
+):
+    """Without the configured variant, the loader goes online unless an active download
+    makes the cached quant a deliberate stand-in. Only that stand-in is predictable."""
+    import utils.embedding_model_settings as ems
+
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda m: None)
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: download_pending)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-Q8_0.gguf"])
+    _write_gguf((snapshot / "embed-Q8_0.gguf").resolve(), "qwen3", 3)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + suffix
