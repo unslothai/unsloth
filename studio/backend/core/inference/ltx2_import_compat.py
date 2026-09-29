@@ -127,11 +127,6 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             _done = True
             return True
         try:
-            package = importlib.import_module(_LTX2_PACKAGE)
-        except Exception:  # noqa: BLE001 -- no diffusers, or one without LTX-2: nothing to shim
-            return False
-        targets = [m for m in _modules_naming(package, missing) if m not in sys.modules]
-        try:
             # transformers re-executes its own __init__ (direct_transformers_import) the first time processing_utils is
             # imported, which REPLACES sys.modules["transformers"] and would drop a name bound on the old object. The
             # LTX-2 pipelines import ProcessorMixin anyway, so settle the swap first.
@@ -154,19 +149,32 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
                     if current not in touched:
                         touched.append(current)
 
+        def _import(module_name: str) -> Optional[str]:
+            """Import under the stand-in, rebinding once if transformers was swapped mid-import; the error or None."""
+            for attempt in (0, 1):
+                _bind()
+                try:
+                    importlib.import_module(module_name)
+                    return None
+                except Exception as exc:  # noqa: BLE001 -- a different failure: the real import re-raises it
+                    if attempt == 0 and any(name in str(exc) for name in missing):
+                        continue
+                    return f"{type(exc).__name__}: {exc}"
+            return None
+
         failed: list[tuple[str, str]] = []
         try:
+            # The package import is inside the window too: with DIFFUSERS_SLOW_IMPORT set, importing diffusers (and the
+            # ltx2 package) eagerly imports the LTX-2 pipeline modules themselves.
+            error = _import(_LTX2_PACKAGE)
+            package = sys.modules.get(_LTX2_PACKAGE)
+            if error is not None or package is None:
+                return False  # no diffusers, or one without LTX-2: nothing to shim
+            targets = [m for m in _modules_naming(package, missing) if m not in sys.modules]
             for module_name in targets:
-                for attempt in (0, 1):
-                    _bind()
-                    try:
-                        importlib.import_module(module_name)
-                        break
-                    except Exception as exc:  # noqa: BLE001 -- a different failure: the real import re-raises it
-                        if attempt == 0 and any(name in str(exc) for name in missing):
-                            continue  # transformers was swapped mid-import: rebind and retry once
-                        failed.append((module_name, f"{type(exc).__name__}: {exc}"))
-                        break
+                error = _import(module_name)
+                if error is not None:
+                    failed.append((module_name, error))
         finally:
             for module in touched:
                 for name, placeholder in placeholders.items():

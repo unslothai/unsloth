@@ -185,6 +185,22 @@ def test_ensure_makes_every_ltx2_pipeline_importable(fake_stack):
     assert compat.ensure_ltx2_pipelines_importable() is True
 
 
+def test_slow_import_mode_package_import_is_shimmed_too(fake_stack):
+    """With DIFFUSERS_SLOW_IMPORT the ltx2 package __init__ imports the pipelines eagerly, before any target list."""
+    import importlib
+
+    root = fake_stack(transformers_has_class = False)
+    _write(
+        root / "diffusers" / "pipelines" / "ltx2" / "__init__.py",
+        "from .pipeline_ltx2 import LTX2Pipeline  # noqa: F401\n",
+    )
+    assert compat.ensure_ltx2_pipelines_importable() is True
+    module = importlib.import_module("diffusers.pipelines.ltx2.pipeline_ltx2")
+    assert module.LTX2Pipeline is not None
+    # the stand-in is gone from transformers once the imports are done
+    assert NAME not in sys.modules["transformers"].__dict__
+
+
 def test_placeholder_refuses_to_load(fake_stack):
     fake_stack(transformers_has_class = False)
     assert compat.ensure_ltx2_pipelines_importable() is True
