@@ -481,8 +481,11 @@ def test_rewrite_follows_who_loads_the_weights():
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "FastModel loads need an accelerator")
 def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
+    """Subprocess: FastModel compiles and rebinds the Llama classes process-wide before it refuses."""
+    import subprocess
+    import sys
+
     from transformers import LlamaConfig, LlamaForCausalLM
-    from unsloth import FastModel
 
     config = LlamaConfig(
         hidden_size = 64,
@@ -496,8 +499,19 @@ def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
     raw = json.loads((tmp_path / "config.json").read_text())
     raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
     (tmp_path / "config.json").write_text(json.dumps(raw))
-    with pytest.raises(KeyError, match = "cannot load this `modelopt` checkpoint"):
-        FastModel.from_pretrained(str(tmp_path), load_in_4bit = False, load_in_16bit = True)
+    code = f"""
+import os
+os.environ["UNSLOTH_COMPILE_LOCATION"] = {str(tmp_path / "compiled")!r}
+from unsloth import FastModel
+try:
+    FastModel.from_pretrained({str(tmp_path)!r}, load_in_4bit = False, load_in_16bit = True)
+except KeyError as error:
+    print("REFUSED", "cannot load this `modelopt` checkpoint" in str(error))
+else:
+    print("LOADED")
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 600)
+    assert "REFUSED True" in out.stdout, (out.stdout[-2000:], out.stderr[-2000:])
 
 
 @needs_per_tensor_fp8
