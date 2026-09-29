@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Pydantic models for API request/response schemas."""
+
+from .training import (
+    TrainingStartRequest,
+    TrainingStartRequestStatus,
+    TrainingJobResponse,
+    TrainingStatus,
+    TrainingProgress,
+    TrainingRunSummary,
+    TrainingRunListResponse,
+    TrainingRunMetrics,
+    TrainingRunDetailResponse,
+    TrainingRunDeleteResponse,
+    TrainingRunUpdateRequest,
+)
+from .models import (
+    CheckpointInfo,
+    ModelCheckpoints,
+    CheckpointListResponse,
+    ModelDetails,
+    LocalModelInfo,
+    LocalModelListResponse,
+    LoRAInfo,
+    LoRAScanResponse,
+    ModelListResponse,
+)
+from .auth import (
+    AuthLoginRequest,
+    RefreshTokenRequest,
+    AuthStatusResponse,
+    ChangePasswordRequest,
+)
+from .export import (
+    LoadCheckpointRequest,
+    ExportStatusResponse,
+    ExportOperationResponse,
+    ExportMergedModelRequest,
+    ExportBaseModelRequest,
+    ExportGGUFRequest,
+    ExportLoRAAdapterRequest,
+)
+from .users import Token
+from .inference import (
+    LoadRequest,
+    UnloadRequest,
+    GenerateRequest,
+    LoadResponse,
+    UnloadResponse,
+    InferenceStatusResponse,
+)
+from .responses import (
+    TrainingStopResponse,
+    TrainingMetricsResponse,
+    LoRABaseModelResponse,
+    VisionCheckResponse,
+    EmbeddingCheckResponse,
+)
+from .data_recipe import (
+    RecipePayload,
+    PreviewResponse,
+    ValidateError,
+    ValidateResponse,
+    JobCreateResponse,
+)
+
+__all__ = [
+    "TrainingStartRequest",
+    "TrainingStartRequestStatus",
+    "TrainingJobResponse",
+    "TrainingStatus",
+    "TrainingProgress",
+    "TrainingRunSummary",
+    "TrainingRunListResponse",
+    "TrainingRunMetrics",
+    "TrainingRunDetailResponse",
+    "TrainingRunDeleteResponse",
+    "TrainingRunUpdateRequest",
+    "ModelDetails",
+    "LocalModelInfo",
+    "LocalModelListResponse",
+    "LoRAInfo",
+    "LoRAScanResponse",
+    "ModelListResponse",
+    "AuthLoginRequest",
+    "RefreshTokenRequest",
+    "AuthStatusResponse",
+    "ChangePasswordRequest",
+    "CheckpointInfo",
+    "ModelCheckpoints",
+    "CheckpointListResponse",
+    "LoadCheckpointRequest",
+    "ExportStatusResponse",
+    "ExportOperationResponse",
+    "ExportMergedModelRequest",
+    "ExportBaseModelRequest",
+    "ExportGGUFRequest",
+    "ExportLoRAAdapterRequest",
+    "Token",
+    "LoadRequest",
+    "UnloadRequest",
+    "GenerateRequest",
+    "LoadResponse",
+    "UnloadResponse",
+    "InferenceStatusResponse",
+    "TrainingStopResponse",
+    "TrainingMetricsResponse",
+    "LoRABaseModelResponse",
+    "VisionCheckResponse",
+    "EmbeddingCheckResponse",
+    "RecipePayload",
+    "PreviewResponse",
+    "ValidateError",
+    "ValidateResponse",
+    "JobCreateResponse",
+]

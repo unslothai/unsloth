@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "types": ["vite/client", "react", "react-dom"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "src",
+    "smoke-ansi-main.tsx",
+    "smoke-composer-icons-main.tsx",
+    "smoke-find-in-page-main.tsx",
+    "smoke-autoscroll-main.tsx",
+    "smoke-research-main.tsx",
+    "smoke-research-review-main.tsx",
+    "smoke-heavy-thread-main.tsx",
+    "smoke-thread-weight-main.tsx",
+    "smoke-settings-main.tsx",
+    "smoke-shortcuts-main.tsx",
+    "smoke-stream-pacing-main.tsx",
+    "smoke-code-block-flicker-main.tsx",
+    "smoke-tool-activity-main.tsx",
+    "smoke-reasoning-transcript-main.tsx"
+  ]
+}
