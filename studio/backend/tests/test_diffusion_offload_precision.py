@@ -502,10 +502,10 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_me
         if scheme == "int8"
         else lambda: Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
     )
-    resident = copy.deepcopy(blocks).cuda()
-    quantize_(resident, config())
     offloaded = copy.deepcopy(blocks)
     quantize_(offloaded, config())
+    # Same CPU-quantised weights: fp8 quantised on CPU can round an ulp away from CUDA (torch 2.12).
+    resident = copy.deepcopy(offloaded).cuda()
     for param in offloaded.parameters():
         param.requires_grad_(requires_grad)
     params = inspect.signature(hooks.apply_group_offloading).parameters
