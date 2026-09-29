@@ -2175,6 +2175,11 @@ export function SharedComposer({
         toast.error("Finish dictating before running a list");
         return;
       }
+      // send() cancels an in-flight transcription, which would discard it.
+      if (audioUpload.busy) {
+        toast.error("Wait for the transcription to finish before running a list");
+        return;
+      }
       // Only the first send would carry staged attachments; refuse rather than clear.
       if (
         pendingImagesRef.current.length > 0 ||
@@ -2214,7 +2219,7 @@ export function SharedComposer({
         sendRef.current?.();
       }, 100);
     },
-    [busy, isDictating, handlesRef, model1?.id, model2?.id, setCurrentText],
+    [busy, isDictating, audioUpload.busy, handlesRef, model1?.id, model2?.id, setCurrentText],
   );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
