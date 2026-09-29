@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
     "wheel>=0.42.0",
     "packaging",
     # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch2140 leaves ask
@@ -85,6 +85,7 @@ studio = [
     "*.ps1",
     "*.bat",
     "node_prebuilt_pins.json",
+    "lemonade_prebuilt_pins.json",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
@@ -95,7 +96,7 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
-    # Vendored truststore files.
+    # Vendored truststore and laya files.
     "backend/vendor/**/*",
     "backend/integrations/blender/*.py",
     "backend/plugins/**/*",
@@ -104,6 +105,8 @@ studio = [
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
     # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
+    # Gate verdicts the auto ladder reads: missing from the wheel, nvfp4 silently leaves the ladder.
+    "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
@@ -229,7 +232,7 @@ triton = [
     "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -275,7 +278,7 @@ huggingfacenotorch = [
     # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
     # range down to 5.5.0 whatever this file says. That one waits on
     # unslothai/unsloth-zoo#1227 and a later zoo release.
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -319,7 +322,7 @@ amd = [
     # install.sh and studio/install_python_stack.py.
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
@@ -857,7 +860,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -1215,6 +1218,7 @@ markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
     "reads_real_pip_config: opts out of the hermetic pip config stub, for the few tests that drive that read themselves",
+    "native_mxc: needs native Windows, the pinned Microsoft WXC executable, and a working MXC ProcessContainer backend",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with
@@ -1222,4 +1226,4 @@ markers = [
 # A run that names one of these files directly will report "no tests ran"
 # until you pass `-m gpu` -- that is the cost of the default being fast.
 # Live Studio tests are opt-in: `pytest -m server`.
-addopts = "-m 'not gpu and not slow and not server'"
+addopts = "-m 'not gpu and not slow and not server and not native_mxc'"
