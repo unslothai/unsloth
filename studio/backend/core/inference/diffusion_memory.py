@@ -319,6 +319,14 @@ def _keepable_buffer(buffer: Any) -> bool:
     return type(buffer) is torch.Tensor
 
 
+def _buffer_version(buffer: Any) -> Optional[int]:
+    """``_version``, or None for an inference tensor (moved under inference_mode), which has no version counter."""
+    try:
+        return None if buffer.is_inference() else int(buffer._version)
+    except Exception:  # noqa: BLE001 - untracked: the stock copy handles it
+        return None
+
+
 def _set_buffer(module: Any, name: str, tensor: Any) -> None:
     prefix, _, leaf = name.rpartition(".")
     owner = module.get_submodule(prefix) if prefix else module
@@ -368,7 +376,7 @@ def _wrap_cpu_offload_hook(
                 or b.device.type == "cpu"
                 or seen is None
                 or seen[0] is not b
-                or seen[1] != b._version
+                or seen[1] != _buffer_version(b)
                 or seen[2] != b.data_ptr()
             ):
                 continue
@@ -435,8 +443,8 @@ def _wrap_cpu_offload_hook(
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version, p.data_ptr())
             for name, b in _named_buffers(mod):
-                if name in buffer_host and b.device.type != "cpu":
-                    buffer_version[name] = (b, b._version, b.data_ptr())
+                if name in buffer_host and b.device.type != "cpu" and _buffer_version(b) is not None:
+                    buffer_version[name] = (b, _buffer_version(b), b.data_ptr())
         return out
 
     try:

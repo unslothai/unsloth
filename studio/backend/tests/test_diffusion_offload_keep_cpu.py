@@ -456,3 +456,19 @@ def test_a_buffer_written_on_the_device_is_copied_back():
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight_scale.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight_scale, before + 1)
+
+
+@cuda
+def test_buffers_onloaded_under_inference_mode_do_not_break_the_hook():
+    """A buffer moved under inference_mode is an inference tensor with no version counter; it takes the stock copy."""
+    x = torch.randn(4, 8)
+    stock = _buffer_pipe("cuda")
+    stock.enable_model_cpu_offload()
+    with torch.inference_mode():
+        ref = _render(stock, x)
+    pipe = _buffer_pipe("cuda")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    for _ in range(3):
+        with torch.inference_mode():
+            assert torch.equal(_render(pipe, x), ref)
