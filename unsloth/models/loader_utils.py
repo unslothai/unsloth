@@ -363,7 +363,11 @@ def exclude_no_placement_params(device_map, model_class, config):
     # Split from the most specific covering key outwards until none covers the table.
     for path in excluded_modules:
         while (key := owner(path)) is not None:
-            device = out.pop(key)
+            device = out[key]
+            # Already off the GPU: keep the module key so accelerate's offload hooks still cover it.
+            if str(device).split(":")[0] in ("cpu", "disk", "meta"):
+                break
+            out.pop(key)
             if key == path:
                 continue
             module = meta.get_submodule(key) if key else meta

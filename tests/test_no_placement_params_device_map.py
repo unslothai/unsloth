@@ -253,3 +253,10 @@ def test_disk_offloaded_ancestors_get_no_meta_hooks():
     _hook_no_placement_ancestors(model)
     hooked = [m for m in model.modules() if hasattr(m, "_hf_hook")]
     assert not any(m._hf_hook.execution_device == torch.device("meta") for m in hooked)
+
+
+def test_offloaded_covering_entry_is_left_whole():
+    out = exclude_no_placement_params({"": 0, "model.layers.1": "disk"}, Model, None)
+    assert out["model.layers.1"] == "disk" and out[""] == 0
+    assert not any(k.startswith("model.layers.1.") for k in out)
+    assert exclude_no_placement_params({"": "cpu"}, Model, None) == {"": "cpu"}
