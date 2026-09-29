@@ -5,9 +5,9 @@ import { createPanelWidthStore } from "./use-panel-width.ts";
 
 /** The previous fixed 17.5rem, at a 16px root font size. */
 export const SIDEBAR_WIDTH_DEFAULT = 280;
-/** Narrowest width that still fits the wordmark. Firefox is the constraint:
- * it renders the heading ~3px wider than Chromium and WebKit. */
-export const SIDEBAR_WIDTH_MIN = 260;
+/** Narrowest width that fits the header (logo, wordmark, BETA, search) at the
+ * default font size, with room for Firefox's ~3px wider heading. */
+export const SIDEBAR_WIDTH_MIN = 224;
 export const SIDEBAR_WIDTH_MAX = 480;
 
 const store = createPanelWidthStore({
