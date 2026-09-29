@@ -661,4 +661,4 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
 
 Files under unsloth/*, tests/*, scripts/* are Apache 2.0 licensed.
-Files under studio/*, cli/* which is optional to install are AGPLv3 licensed.
+Files under studio/*, unsloth_cli/* which is optional to install are AGPLv3 licensed.

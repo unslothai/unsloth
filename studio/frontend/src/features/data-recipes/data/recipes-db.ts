@@ -2,12 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
+import { accountDatabaseName } from "@/lib/account-transition";
 import { normalizeNonEmptyName } from "@/utils";
 import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
-const db = new Dexie("unsloth-data-recipes") as Dexie & {
+const db = new Dexie(accountDatabaseName("unsloth-data-recipes")) as Dexie & {
   recipes: EntityTable<RecipeRecord, "id">;
 };
 
@@ -15,12 +16,55 @@ db.version(1).stores({
   recipes: "id, name, updatedAt, createdAt",
 });
 
+const recentRecipeCache = new Map<string, RecipeRecord>();
+let cachedRecipeList: RecipeRecord[] = [];
+let recipeListReady = false;
+let recipeListRequest: Promise<RecipeRecord[]> | null = null;
+
 export function listRecipes(): Promise<RecipeRecord[]> {
   return db.recipes.orderBy("updatedAt").reverse().toArray();
 }
 
+function cacheRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
+  for (const recipe of recipes) {
+    writeRecipeCache(recipe);
+  }
+  cachedRecipeList = recipes;
+  recipeListReady = true;
+  return recipes;
+}
+
+export function preloadRecipes(): Promise<RecipeRecord[]> {
+  if (recipeListReady) {
+    return Promise.resolve(cachedRecipeList);
+  }
+  if (recipeListRequest) {
+    return recipeListRequest;
+  }
+
+  const request = listRecipes()
+    .then(cacheRecipeList)
+    .finally(() => {
+      recipeListRequest = null;
+    });
+  recipeListRequest = request;
+  return request;
+}
+
 export function getRecipe(id: string): Promise<RecipeRecord | undefined> {
   return db.recipes.get(id);
+}
+
+function writeRecipeCache(record: RecipeRecord): void {
+  recentRecipeCache.set(record.id, record);
+}
+
+export function getCachedRecipe(id: string): RecipeRecord | null {
+  return recentRecipeCache.get(id) ?? null;
+}
+
+export function primeRecipeCache(record: RecipeRecord): void {
+  writeRecipeCache(record);
 }
 
 export async function saveRecipe(
@@ -40,11 +84,22 @@ export async function saveRecipe(
       input.learningRecipeTitle ?? existing?.learningRecipeTitle,
   };
   await db.recipes.put(record);
+  writeRecipeCache(record);
+  if (recipeListReady) {
+    cachedRecipeList = [
+      record,
+      ...cachedRecipeList.filter((recipe) => recipe.id !== record.id),
+    ].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
   return record;
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
   await db.recipes.delete(id);
+  recentRecipeCache.delete(id);
+  if (recipeListReady) {
+    cachedRecipeList = cachedRecipeList.filter((recipe) => recipe.id !== id);
+  }
 }
 
 export function createRecipeDraft(): Promise<RecipeRecord> {
@@ -67,16 +122,27 @@ export function createRecipeFromLearningRecipe(input: {
   });
 }
 
-export function useRecipes(): RecipeRecord[] {
-  const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
+export function useRecipes(): {
+  recipes: RecipeRecord[];
+  ready: boolean;
+} {
+  const [recipes, setRecipes] = useState<RecipeRecord[]>(cachedRecipeList);
+  const [ready, setReady] = useState(recipeListReady);
 
   useEffect(() => {
     const sub = liveQuery(() => listRecipes()).subscribe({
-      next: (value) => setRecipes(value),
-      error: (error) => console.error("data-recipes liveQuery:", error),
+      next: (value) => {
+        cacheRecipeList(value);
+        setRecipes(value);
+        setReady(true);
+      },
+      error: (error) => {
+        console.error("data-recipes liveQuery:", error);
+        setReady(true);
+      },
     });
     return () => sub.unsubscribe();
   }, []);
 
-  return recipes;
+  return { recipes, ready };
 }

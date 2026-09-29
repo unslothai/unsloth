@@ -8,7 +8,7 @@ import {
   useUpdateNodeInternals,
 } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
-import { getFitNodeIdsIgnoringNotes } from "../../utils/graph/fit-view";
+import { buildFitViewOptions } from "../../utils/graph/fit-view";
 
 type LayoutControlsProps = {
   direction: "LR" | "TB";
@@ -36,10 +36,7 @@ export function LayoutControls({
     requestAnimationFrame(() => {
       refreshNodeInternals();
       requestAnimationFrame(() => {
-        fitView({
-          duration: 250,
-          nodes: getFitNodeIdsIgnoringNotes(getNodes()),
-        });
+        fitView(buildFitViewOptions(getNodes()));
       });
     });
   }, [fitView, getNodes, onLayout, refreshNodeInternals]);
@@ -51,10 +48,7 @@ export function LayoutControls({
       requestAnimationFrame(() => {
         refreshNodeInternals();
         requestAnimationFrame(() => {
-          fitView({
-            duration: 250,
-            nodes: getFitNodeIdsIgnoringNotes(getNodes()),
-          });
+          fitView(buildFitViewOptions(getNodes()));
         });
       });
     });

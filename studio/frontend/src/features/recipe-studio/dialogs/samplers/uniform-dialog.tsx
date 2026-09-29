@@ -33,7 +33,7 @@ export function UniformDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Low"
             htmlFor={lowId}
@@ -47,7 +47,7 @@ export function UniformDialog({
             onChange={(event) => onUpdate({ low: event.target.value })}
           />
         </div>
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="High"
             htmlFor={highId}
@@ -62,7 +62,7 @@ export function UniformDialog({
           />
         </div>
       </div>
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Convert to"
           htmlFor={convertId}

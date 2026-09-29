@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
+import {
+  formatFastApiDetail,
+  readFastApiError,
+} from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -11,6 +17,42 @@ export const DATA_DESIGNER_API_BASE =
 export type JobCreateResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
   job_id: string;
+};
+
+export type PublishRecipeJobRequest = {
+  repo_id: string;
+  description: string;
+  hf_token?: string | null;
+  private?: boolean;
+  artifact_path?: string | null;
+};
+
+export type PublishRecipeJobResponse = {
+  success: boolean;
+  url: string;
+  message: string;
+};
+
+export type SourceProgressResponse = {
+  source?: string | null;
+  status?: string | null;
+  repo?: string | null;
+  resource?: string | null;
+  page?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  page_items?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  fetched_items?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  estimated_total?: number | null;
+  percent?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  rate_remaining?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  retry_after_sec?: number | null;
+  message?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  updated_at?: number | null;
 };
 
 export type JobStatusResponse = {
@@ -47,6 +89,8 @@ export type JobStatusResponse = {
     ok?: number | null;
     failed?: number | null;
   };
+  // biome-ignore lint/style/useNamingConvention: api schema
+  source_progress?: SourceProgressResponse | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   model_usage?: Record<string, unknown>;
   rows?: number | null;
@@ -89,13 +133,22 @@ export type SeedInspectRequest = {
 };
 
 export type SeedInspectUploadRequest = {
-  filename: string;
-  // base64 payload without data URL prefix
-  content_base64: string;
+  // Legacy single-file
+  filename?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  content_base64?: string;
+  // Multi-file
+  // biome-ignore lint/style/useNamingConvention: api schema
+  block_id?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  file_ids?: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
+  file_names?: string[];
+  // Shared
   // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
   // biome-ignore lint/style/useNamingConvention: api schema
-  seed_source_type?: "local" | "unstructured";
+  seed_source_type?: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   unstructured_chunk_size?: number;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -112,6 +165,8 @@ export type SeedInspectResponse = {
   preview_rows: Record<string, unknown>[];
   split?: string | null;
   subset?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  resolved_paths?: string[] | null;
 };
 
 export type ValidateError = {
@@ -153,17 +208,20 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
   try {
     const parsed = JSON.parse(text) as {
-      detail?: string;
+      detail?: unknown;
       message?: string;
       // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
-    return (
-      parsed.detail ??
-      parsed.message ??
-      parsed.raw_detail ??
-      text
-    );
+    // Use ||, not ??: an array detail is truthy but not nullish, and
+    // formatFastApiDetail returns null when it cannot flatten the value.
+    const formatted = formatFastApiDetail(parsed.detail);
+    if (formatted) return formatted;
+    if (typeof parsed.message === "string" && parsed.message)
+      return parsed.message;
+    if (typeof parsed.raw_detail === "string" && parsed.raw_detail)
+      return parsed.raw_detail;
+    return text;
   } catch {
     return text;
   }
@@ -239,11 +297,15 @@ export async function validateRecipe(
   return postJson<ValidateResponse>("/validate", payload);
 }
 
-export async function createRecipeJob(payload: unknown): Promise<JobCreateResponse> {
+export async function createRecipeJob(
+  payload: unknown,
+): Promise<JobCreateResponse> {
   return postJson<JobCreateResponse>("/jobs", payload);
 }
 
-export async function getRecipeJobStatus(jobId: string): Promise<JobStatusResponse> {
+export async function getRecipeJobStatus(
+  jobId: string,
+): Promise<JobStatusResponse> {
   return getJson<JobStatusResponse>(`/jobs/${jobId}/status`);
 }
 
@@ -267,8 +329,48 @@ export async function getRecipeJobDataset(
   );
 }
 
-export async function cancelRecipeJob(jobId: string): Promise<JobStatusResponse> {
+export type RecipeJobDownloadFormat = "jsonl" | "parquet";
+
+export async function downloadRecipeJobDataset(
+  jobId: string,
+  options?: {
+    format?: RecipeJobDownloadFormat;
+    artifactPath?: string | null;
+    filename?: string | null;
+  },
+): Promise<{ url: string; filename: string }> {
+  const params = new URLSearchParams();
+  params.set("format", options?.format ?? "jsonl");
+  if (options?.artifactPath) {
+    params.set("artifact_path", options.artifactPath);
+  }
+  if (options?.filename) {
+    params.set("filename", options.filename);
+  }
+  // Minted over authFetch: it refreshes an expired session and surfaces an unexportable run
+  // before the save dialog opens. The server names the file, since a JSONL is zipped only when
+  // the artifact has images.
+  const { path, filename } = await getJson<{ path: string; filename: string }>(
+    `/jobs/${jobId}/download-url?${params.toString()}`,
+  );
+  // The same base every other call here uses, so a repointed VITE_DATA_DESIGNER_API is honoured.
+  // Its trailing slash is dropped: authFetch survives the // via FastAPI's redirect, but the
+  // native downloader refuses every 3xx, and only after the save location has been chosen.
+  const base = DATA_DESIGNER_API_BASE.replace(/\/+$/, "");
+  return { url: apiUrl(`${base}${path}`), filename };
+}
+
+export async function cancelRecipeJob(
+  jobId: string,
+): Promise<JobStatusResponse> {
   return postJson<JobStatusResponse>(`/jobs/${jobId}/cancel`, {});
+}
+
+export async function publishRecipeJob(
+  jobId: string,
+  payload: PublishRecipeJobRequest,
+): Promise<PublishRecipeJobResponse> {
+  return postJson<PublishRecipeJobResponse>(`/jobs/${jobId}/publish`, payload);
 }
 
 export async function inspectSeedDataset(
@@ -281,6 +383,13 @@ export async function inspectSeedUpload(
   payload: SeedInspectUploadRequest,
 ): Promise<SeedInspectResponse> {
   return postJson<SeedInspectResponse>("/seed/inspect-upload", payload);
+}
+
+// biome-ignore lint/style/useNamingConvention: api schema
+export type GithubEnvTokenStatus = { has_token: boolean };
+
+export async function getGithubEnvTokenStatus(): Promise<GithubEnvTokenStatus> {
+  return getJson<GithubEnvTokenStatus>("/seed/github/env-token");
 }
 
 export async function listMcpTools(
@@ -303,13 +412,10 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
+    { headers, signal: options.signal },
   );
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -324,30 +430,118 @@ export async function streamRecipeJobEvents(options: {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
-      if (rawEvent.startsWith("retry:")) {
+        if (rawEvent.startsWith("retry:")) {
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+
+        const parsed = parseJobEvent(rawEvent);
+        if (parsed) {
+          options.onEvent(parsed);
+        }
         separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
       }
-
-      const parsed = parseJobEvent(rawEvent);
-      if (parsed) {
-        options.onEvent(parsed);
-      }
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
+    }
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
     }
   }
 }
 
 // NOTE: preview endpoints removed from harness.
+
+type UnstructuredFileUploadResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
+  file_id: string;
+  filename: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  size_bytes: number;
+  status: "ok" | "error";
+  error?: string;
+};
+
+/** A desktop drop, redeemed server-side: Tauri hands the webview a path, never
+ * a File, so the bytes never cross the bridge. */
+export interface NativeUnstructuredUpload {
+  nativePathLease: string;
+  name: string;
+  size: number;
+}
+
+export type UnstructuredUploadSource = File | NativeUnstructuredUpload;
+
+export async function uploadUnstructuredFile(
+  file: UnstructuredUploadSource,
+  blockId: string,
+  signal?: AbortSignal,
+): Promise<UnstructuredFileUploadResponse> {
+  const formData = new FormData();
+  if (file instanceof File) formData.append("file", file);
+  else formData.append("nativePathLease", file.nativePathLease);
+  formData.append("block_id", blockId);
+
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`,
+    {
+      method: "POST",
+      body: formData,
+      signal,
+    },
+  );
+
+  if (res.status === 413) {
+    return {
+      file_id: "",
+      filename: file.name,
+      size_bytes: file.size,
+      status: "error",
+      error: await readFastApiError(res, "File too large"),
+    };
+  }
+
+  if (!res.ok) {
+    throw new Error(await readFastApiError(res, "Upload failed"));
+  }
+
+  return res.json();
+}
+
+export async function removeUnstructuredFile(
+  blockId: string,
+  fileId: string,
+): Promise<void> {
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/unstructured-file/${encodeURIComponent(blockId)}/${encodeURIComponent(fileId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Failed to remove file");
+  }
+}
+
+export async function removeUnstructuredBlock(blockId: string): Promise<void> {
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/unstructured-block/${encodeURIComponent(blockId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Failed to remove uploaded files");
+  }
+}

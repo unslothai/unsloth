@@ -5,11 +5,15 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckmarkCircle02Icon,
+  Download01Icon,
   Flag02Icon,
+  Share08Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { publishRecipeJob } from "../../api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { toastError, toastSuccess } from "@/shared/toast";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -24,15 +28,19 @@ import { ExecutionOverviewTab } from "./execution-overview-tab";
 import { ExecutionRawTab } from "./execution-raw-tab";
 import { ExecutionSidebar } from "./execution-sidebar";
 import {
+  type DownloadOutcome,
+  downloadExecutionDataset,
+} from "./download-execution-dataset";
+import { PublishExecutionDialog } from "./publish-execution-dialog";
+import {
   PREVIEW_DATASET_PAGE_SIZE,
   TERMINAL_STICKY_BOTTOM_THRESHOLD_PX,
   formatCellValue,
   formatDuration,
   formatPercent,
-  hasExpandableTextCell,
+  isExpandableCellValue,
   parseAnalysisColumns,
   parseModelUsageRows,
-  truncateCellValue,
 } from "./executions-view-helpers";
 
 type ExecutionsViewProps = {
@@ -43,6 +51,13 @@ type ExecutionsViewProps = {
   onCancelExecution: (id: string) => void;
   onLoadDatasetPage: (id: string, page: number) => void;
 };
+
+function downloadOutcomeMessage(outcome: DownloadOutcome): string {
+  if (outcome === "saved") return "Dataset downloaded";
+  if (outcome === "started") return "Dataset download started";
+  // The server no longer has this run, so what was written is whatever this client still holds.
+  return "Downloaded the rows still loaded for this run";
+}
 
 export function ExecutionsView({
   executions,
@@ -56,16 +71,15 @@ export function ExecutionsView({
     typeof value === "number" && Number.isFinite(value)
       ? `${value.toLocaleString()} s`
       : "--";
-  const [detailTab, setDetailTab] = useState("overview");
+  const [detailTab, setDetailTab] = useState("data");
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
-  >({});
-  const [expandedDatasetRowsByExecution, setExpandedDatasetRowsByExecution] = useState<
-    Record<string, Record<string, boolean>>
   >({});
   const [previewDatasetPageByExecution, setPreviewDatasetPageByExecution] = useState<
     Record<string, number>
   >({});
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [downloadingDataset, setDownloadingDataset] = useState(false);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTerminalToBottomRef = useRef(true);
   const selectedExecution = useMemo(
@@ -87,13 +101,6 @@ export function ExecutionsView({
     }
     return hiddenDatasetColumnsByExecution[selectedExecutionIdSafe] ?? [];
   }, [hiddenDatasetColumnsByExecution, selectedExecutionIdSafe]);
-  const expandedDatasetRows = useMemo(() => {
-    if (!selectedExecutionIdSafe) {
-      return {};
-    }
-    return expandedDatasetRowsByExecution[selectedExecutionIdSafe] ?? {};
-  }, [expandedDatasetRowsByExecution, selectedExecutionIdSafe]);
-
   const datasetColumnNames = useMemo(() => {
     if (!selectedExecution) {
       return [];
@@ -115,6 +122,34 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
+  // Columns with at least one long-text row get a wider min-width so the text
+  // is readable without clicking. The wrapper scrolls horizontally, so wide
+  // columns just add a scrollbar instead of squeezing the viewport.
+  const wideColumns = useMemo(() => {
+    const result = new Set<string>();
+    if (!selectedExecution) {
+      return result;
+    }
+    for (const row of selectedExecution.dataset) {
+      for (const name of visibleDatasetColumnNames) {
+        if (result.has(name)) {
+          continue;
+        }
+        const raw = row[name];
+        if (resolveImagePreview(raw)) {
+          continue;
+        }
+        if (isExpandableCellValue(formatCellValue(raw))) {
+          result.add(name);
+        }
+      }
+      if (result.size === visibleDatasetColumnNames.length) {
+        break;
+      }
+    }
+    return result;
+  }, [selectedExecution, visibleDatasetColumnNames]);
+
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!selectedExecution) {
       return [];
@@ -122,48 +157,38 @@ export function ExecutionsView({
     return visibleDatasetColumnNames.map((name) => ({
       accessorKey: name,
       header: name,
-      cell: ({ getValue, row }) => {
+      cell: ({ getValue }) => {
         const rawValue = getValue();
         const imagePreview = resolveImagePreview(rawValue);
         if (imagePreview?.kind === "ready") {
           return (
-            <div className="max-w-[32rem]">
+            <div>
               <img
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
-                className="h-24 w-auto max-w-[260px] rounded-md border border-border/60 bg-muted/20 object-contain"
+                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
               />
             </div>
           );
         }
         if (imagePreview?.kind === "too_large") {
           return (
-            <div className="max-w-[32rem]">
-              <p className="text-xs text-muted-foreground">
-                Image too large to preview
-              </p>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Image too large to preview
+            </p>
           );
         }
         const value = formatCellValue(rawValue);
-        const rowExpanded = Boolean(expandedDatasetRows[row.id]);
-        const rowHasExpandableCell = hasExpandableTextCell(
-          row.original,
-          visibleDatasetColumnNames,
-        );
-        const showTruncated = rowHasExpandableCell && !rowExpanded;
-
+        const isWide = wideColumns.has(name);
         return (
-          <div className="max-w-[32rem]">
-            <p className="whitespace-pre-wrap break-all">
-              {showTruncated ? truncateCellValue(value) : value}
-            </p>
+          <div className={cn(isWide ? "min-w-[calc(48rem*var(--ui-space-scale,1))] max-md:min-w-[calc(20rem*var(--ui-space-scale,1))]" : "min-w-[calc(12rem*var(--ui-space-scale,1))]")}>
+            <p className="whitespace-pre-wrap break-all">{value}</p>
           </div>
         );
       },
     }));
-  }, [expandedDatasetRows, selectedExecution, visibleDatasetColumnNames]);
+  }, [selectedExecution, visibleDatasetColumnNames, wideColumns]);
 
   const analysisColumns = useMemo(
     () => parseAnalysisColumns(selectedExecution?.analysis ?? null),
@@ -182,6 +207,19 @@ export function ExecutionsView({
 
   const canCancel = Boolean(
     selectedExecution?.jobId && isExecutionInProgress(selectedExecution.status),
+  );
+  const canPublish = Boolean(
+    selectedExecution &&
+      selectedExecution.kind === "full" &&
+      selectedExecution.status === "completed" &&
+      selectedExecution.jobId &&
+      selectedExecution.artifact_path,
+  );
+  const canDownload = Boolean(
+    selectedExecution &&
+      selectedExecution.status === "completed" &&
+      ((selectedExecution.kind === "full" && selectedExecution.jobId) ||
+        selectedExecution.dataset.length > 0),
   );
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
@@ -224,7 +262,10 @@ export function ExecutionsView({
     if (typeof selectedExecution.analysis?.num_records === "number") {
       return selectedExecution.analysis.num_records;
     }
-    if (selectedExecution.datasetTotal > 0) {
+    if (
+      typeof selectedExecution.datasetTotal === "number" &&
+      selectedExecution.datasetTotal > 0
+    ) {
       return selectedExecution.datasetTotal;
     }
     if (selectedExecution.dataset.length > 0) {
@@ -330,12 +371,16 @@ export function ExecutionsView({
   }, [selectedExecution]);
 
   useEffect(() => {
-    if (!terminalRef.current) {
+    setDetailTab("data");
+  }, [selectedExecution?.id]);
+
+  useEffect(() => {
+    if (detailTab !== "overview" || !terminalRef.current) {
       return;
     }
     shouldStickTerminalToBottomRef.current = true;
     terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-  }, [selectedExecution?.id]);
+  }, [detailTab, selectedExecution?.id]);
 
   useEffect(() => {
     if (!terminalRef.current) {
@@ -348,7 +393,7 @@ export function ExecutionsView({
   }, [terminalLines.length]);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 max-md:w-full max-md:flex-col">
       <ExecutionSidebar
         executions={executions}
         selectedExecutionId={selectedExecutionId}
@@ -427,23 +472,69 @@ export function ExecutionsView({
             )}
 
             <Tabs value={detailTab} onValueChange={setDetailTab}>
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <TabsList className="border border-border/60 bg-card/40">
+                  <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="overview">Overview</TabsTrigger>
                   <TabsTrigger value="columns">Columns</TabsTrigger>
-                  <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="raw">Raw</TabsTrigger>
                 </TabsList>
-                {canCancel && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onCancelExecution(selectedExecution.id)}
-                  >
-                    Cancel
-                  </Button>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {canDownload && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={downloadingDataset}
+                      aria-label={downloadingDataset ? "Downloading dataset" : "Download dataset"}
+                      title="Download dataset as JSONL"
+                      onClick={() => {
+                        if (!selectedExecution) {
+                          return;
+                        }
+                        setDownloadingDataset(true);
+                        downloadExecutionDataset(selectedExecution)
+                          .then((outcome) => {
+                            toastSuccess(downloadOutcomeMessage(outcome));
+                          })
+                          .catch((error: unknown) => {
+                            const message =
+                              error instanceof Error
+                                ? error.message
+                                : "Could not download this dataset.";
+                            toastError("Download failed", message);
+                          })
+                          .finally(() => {
+                            setDownloadingDataset(false);
+                          });
+                      }}
+                    >
+                      <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                      {downloadingDataset ? "Downloading..." : "Download"}
+                    </Button>
+                  )}
+                  {canPublish && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPublishDialogOpen(true)}
+                    >
+                      <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
+                      Publish to Hugging Face
+                    </Button>
+                  )}
+                  {canCancel && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onCancelExecution(selectedExecution.id)}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
               </div>
               <TabsContent value="overview">
                 <ExecutionOverviewTab
@@ -482,9 +573,7 @@ export function ExecutionsView({
                   totalPages={totalPages}
                   tableColumns={tableColumns}
                   datasetRowsForTable={datasetRowsForTable}
-                  visibleDatasetColumnNames={visibleDatasetColumnNames}
-                  expandedDatasetRows={expandedDatasetRows}
-                  selectedExecutionIdSafe={selectedExecutionIdSafe}
+                  onOpenOverview={() => setDetailTab("overview")}
                   onSetHiddenColumns={(updater) => {
                     const selectedId = selectedExecution.id;
                     setHiddenDatasetColumnsByExecution((current) => {
@@ -517,18 +606,6 @@ export function ExecutionsView({
                     }
                     onLoadDatasetPage(selectedExecution.id, currentDatasetPage + 1);
                   }}
-                  onToggleRowExpanded={(rowId) => {
-                    setExpandedDatasetRowsByExecution((current) => {
-                      const rows = current[selectedExecution.id] ?? {};
-                      return {
-                        ...current,
-                        [selectedExecution.id]: {
-                          ...rows,
-                          [rowId]: !rows[rowId],
-                        },
-                      };
-                    });
-                  }}
                 />
               </TabsContent>
               <TabsContent value="raw">
@@ -538,6 +615,18 @@ export function ExecutionsView({
           </div>
         )}
       </section>
+      <PublishExecutionDialog
+        open={publishDialogOpen}
+        onOpenChange={setPublishDialogOpen}
+        execution={canPublish ? selectedExecution : null}
+        onPublish={async (payload) => {
+          if (!selectedExecution?.jobId) {
+            throw new Error("This run is missing a job id.");
+          }
+          const response = await publishRecipeJob(selectedExecution.jobId, payload);
+          return { url: response.url };
+        }}
+      />
     </div>
   );
 }

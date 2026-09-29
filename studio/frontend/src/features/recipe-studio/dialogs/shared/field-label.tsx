@@ -18,26 +18,31 @@ export function FieldLabel({
   hint,
 }: FieldLabelProps): ReactElement {
   return (
-    <label
-      className="flex items-center gap-1.5 text-xs font-semibold uppercase text-muted-foreground"
-      htmlFor={htmlFor}
-    >
-      <span>{label}</span>
+    <div className="flex min-w-0 items-center gap-1 text-xs font-semibold uppercase text-muted-foreground">
+      {htmlFor ? (
+        <label className="min-w-0 cursor-pointer" htmlFor={htmlFor}>
+          <span className="break-words">{label}</span>
+        </label>
+      ) : (
+        <span className="min-w-0 break-words">{label}</span>
+      )}
       {hint && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
-              className="inline-flex size-3.5 items-center justify-center rounded-full text-muted-foreground/80 hover:text-foreground"
+              className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/80 transition hover:text-foreground"
               aria-label={`More info: ${label}`}
+              title={`More info about ${label}`}
             >
-              <HugeiconsIcon icon={InformationCircleIcon} className="size-3.5" />
+              <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
             </button>
           </TooltipTrigger>
-          <TooltipContent>{hint}</TooltipContent>
+          <TooltipContent className="max-w-64 break-words text-xs leading-relaxed">
+            {hint}
+          </TooltipContent>
         </Tooltip>
       )}
-    </label>
+    </div>
   );
 }
-
