@@ -623,6 +623,8 @@ export function SharedComposer({
   );
   // Audio files still being read into base64, which pendingAudio cannot see yet.
   const audioDecodingRef = useRef(0);
+  // convertingImages state is stale inside runPromptList's closure; the ref is read synchronously.
+  const convertingImagesRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -1107,6 +1109,7 @@ export function SharedComposer({
           continue;
         }
         let image: File;
+        convertingImagesRef.current += 1;
         setConvertingImages((count) => count + 1);
         try {
           image = await normalizeChatImage(file);
@@ -1115,6 +1118,7 @@ export function SharedComposer({
             error instanceof Error ? error.message : String(error);
           continue;
         } finally {
+          convertingImagesRef.current -= 1;
           setConvertingImages((count) => count - 1);
         }
         next.push({ id: crypto.randomUUID(), file: image });
@@ -2175,7 +2179,8 @@ export function SharedComposer({
       if (
         pendingImagesRef.current.length > 0 ||
         pendingAudioRef.current ||
-        audioDecodingRef.current > 0
+        audioDecodingRef.current > 0 ||
+        convertingImagesRef.current > 0
       ) {
         toast.error("Remove the staged attachment before running a list", {
           description: "Only the first prompt in the list would carry it.",
