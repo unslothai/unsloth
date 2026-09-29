@@ -82,3 +82,16 @@ def test_generate_from_history_cache_matches_full_prompt(model_and_tokenizer):
     assert wrong["input_ids"].shape[1] == n
     _, wrong_logits = _generate(model, full, past_key_values = _cache(model, wrong))
     assert (wrong_logits - expected_logits).abs().max() > 5 * tolerance
+
+
+@pytest.mark.parametrize("attention_mask", [False, True])
+def test_direct_forward_onto_cache_continues_after_it(model_and_tokenizer, attention_mask):
+    model, tokenizer = model_and_tokenizer
+    full = _ids(tokenizer, HISTORY + QUESTION)
+    n = _ids(tokenizer, HISTORY).input_ids.shape[1]
+    with torch.no_grad():
+        expected = model(full.input_ids).logits[0, n:].float()
+        cache = _cache(model, {"input_ids": full.input_ids[:, :n]})
+        kwargs = {"attention_mask": full.attention_mask} if attention_mask else {}
+        got = model(full.input_ids[:, n:], past_key_values = cache, **kwargs).logits[0].float()
+    assert (got - expected).abs().max() <= 0.02 * expected.abs().max()

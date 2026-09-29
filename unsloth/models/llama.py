@@ -254,10 +254,28 @@ def _cache_as_legacy_tuple(past_key_values):
     # Unsloth's forwards index past_key_values[layer][0|1]; transformers 5 caches are not subscriptable.
     if not isinstance(past_key_values, Cache):
         return past_key_values
+    if past_key_values.get_seq_length() == 0:
+        return None
     layers = getattr(past_key_values, "layers", None)
     if layers is not None:
         return tuple((layer.keys, layer.values) for layer in layers)
     return past_key_values.to_legacy_cache()
+
+
+def _cached_prefill_defaults(
+    past_key_values, input_ids, inputs_embeds, position_ids, attention_mask
+):
+    # A multi-token forward onto a cache continues after it, as in transformers. Without these the
+    # tokens restart at position 0, and with no mask xFormers attends without any causal bias.
+    past_len = past_key_values[0][0].shape[-2]
+    ref = input_ids if input_ids is not None else inputs_embeds
+    bsz, q_len = ref.shape[:2]
+    if position_ids is None:
+        position_ids = torch.arange(past_len, past_len + q_len, device = ref.device)
+        position_ids = position_ids.unsqueeze(0).expand(bsz, -1)
+    if attention_mask is None:
+        attention_mask = torch.ones((bsz, past_len + q_len), dtype = torch.long, device = ref.device)
+    return position_ids, attention_mask
 
 
 def _slice_position_ids(position_ids, seq_length):
@@ -1495,6 +1513,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        past_key_values = _cache_as_legacy_tuple(past_key_values)
+        if past_key_values is not None and len(past_key_values) == 0:
+            past_key_values = None
         if past_key_values is not None and input_ids is not None and input_ids.shape[1] == 1:
             outputs = fast_forward_inference(
                 self,
@@ -1505,13 +1526,13 @@ def CausalLM_fast_forward(fast_forward_inference):
                 **kwargs,
             )
         else:
-            # Only single-token decode takes the fast path; a multi-token prefill onto a user cache
-            # cannot use the top-left aligned xformers mask.
-            causal_mask = (
-                xformers.attn_bias.LowerTriangularMask()
-                if HAS_XFORMERS and past_key_values is None
-                else None
-            )
+            causal_mask = None
+            if past_key_values is not None:
+                position_ids, attention_mask = _cached_prefill_defaults(
+                    past_key_values, input_ids, inputs_embeds, position_ids, attention_mask
+                )
+            elif HAS_XFORMERS:
+                causal_mask = xformers.attn_bias.LowerTriangularMask()
 
             output_attentions = (
                 output_attentions
