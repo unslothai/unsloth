@@ -97,6 +97,7 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
         ALLOW_PREQUANTIZED_MODELS = True,
         get_model_name = lambda *a, **k: "org/base-unsloth-bnb-4bit",
         on_model_resolved = reports.append,
+        kwargs = {},
     )
     module = ast.Module(body = block.body[:end], type_ignores = [])
     exec(compile(ast.fix_missing_locations(module), str(LOADER), "exec"), scope)
