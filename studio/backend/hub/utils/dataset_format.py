@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from utils.datasets.format_detection import detect_dataset_format
+
 
 def _first_row(dataset) -> Optional[dict]:
     try:
@@ -24,66 +26,6 @@ def _column_names(dataset, sample: Optional[dict] = None) -> list[str]:
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     return re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE) is not None
-
-
-def _unknown_dataset_format(
-    chat_column: Optional[str] = None, sample_keys: Optional[list[str]] = None
-) -> dict:
-    return {
-        "format": "unknown",
-        "chat_column": chat_column,
-        "needs_standardization": None,
-        "sample_keys": sample_keys or [],
-    }
-
-
-def detect_dataset_format(dataset) -> dict:
-    sample = _first_row(dataset)
-    if sample is None:
-        return _unknown_dataset_format()
-    column_names = set(sample.keys())
-    if {"instruction", "output"}.issubset(column_names):
-        return {
-            "format": "alpaca",
-            "chat_column": None,
-            "needs_standardization": False,
-            "sample_keys": [],
-        }
-
-    chat_column = None
-    if "messages" in column_names:
-        chat_column = "messages"
-    elif "conversations" in column_names:
-        chat_column = "conversations"
-    elif "texts" in column_names:
-        chat_column = "texts"
-
-    if not chat_column:
-        return _unknown_dataset_format()
-
-    chat_data = sample.get(chat_column)
-    if not isinstance(chat_data, (list, tuple)) or not chat_data:
-        return _unknown_dataset_format(chat_column)
-    first_msg = chat_data[0]
-    if not isinstance(first_msg, dict):
-        return _unknown_dataset_format(chat_column)
-    msg_keys = set(first_msg.keys())
-    sample_keys = [str(key) for key in msg_keys]
-    if "from" in msg_keys or "value" in msg_keys:
-        return {
-            "format": "sharegpt",
-            "chat_column": chat_column,
-            "needs_standardization": True,
-            "sample_keys": sample_keys,
-        }
-    if "role" in msg_keys and "content" in msg_keys:
-        return {
-            "format": "chatml",
-            "chat_column": chat_column,
-            "needs_standardization": False,
-            "sample_keys": sample_keys,
-        }
-    return _unknown_dataset_format(chat_column, sample_keys)
 
 
 def detect_custom_format_heuristic(dataset):
@@ -742,6 +684,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "suggested_mapping": None,
         "detected_image_column": None,
         "detected_text_column": None,
+        "chat_column": detected.get("chat_column"),
         "is_image": multimodal_info["is_image"],
         "multimodal_columns": multimodal_info.get("multimodal_columns"),
         **audio_fields,

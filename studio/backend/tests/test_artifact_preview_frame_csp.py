@@ -145,3 +145,59 @@ def test_the_shell_generator_matches_the_app_one():
     ):
         assert expression in boot
         assert expression in shell
+
+
+def test_the_shell_reports_runtime_errors_and_console_output():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert '"unsloth:artifact-error"' in shell
+    assert '"unsloth:artifact-console"' in shell
+    assert 'window.addEventListener("error", reportError)' in shell
+    assert 'window.addEventListener("unhandledrejection", reportRejection)' in shell
+    assert "captureConsole();" in shell
+
+
+def test_error_listeners_bind_between_open_and_write():
+    # document.open() clears listeners and inline-script errors fire during write(), so bind between them.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    opened = shell.index("document.open();")
+    wrote = shell.index("document.write(html);")
+    for listener in (
+        'window.addEventListener("error", reportError)',
+        'window.addEventListener("unhandledrejection", reportRejection)',
+        "captureConsole();",
+    ):
+        assert opened < shell.index(listener) < wrote
+
+
+def test_error_and_console_reports_carry_the_load_stamp():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert shell.index("const loadVersion") < shell.index("const report = (fields) =>")
+    assert "{ ...fields, v: loadVersion }" in shell
+
+
+def test_only_the_embedder_can_drive_render():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    listener = shell.index('window.addEventListener("message"')
+    guard = shell.index("if (event.source !== parent) return;", listener)
+    assert guard < shell.index("unslothRenderArtifact(data.html);", listener)
+
+
+def test_the_shell_caps_and_clips_what_it_reports():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert (
+        'const REPORTS_MAX = { "unsloth:artifact-error": 100, "unsloth:artifact-console": 1000 };'
+        in shell
+    )
+    assert "if (!(reportsLeft[fields.type] > 0)) return;" in shell
+    assert "const REPORT_MAX_CHARS = 2048;" in shell
+
+
+def test_console_serialization_stops_at_the_report_budget():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    serialize = shell[shell.index("const serialize = (root)") : shell.index("const describe = ")]
+    assert "let left = REPORT_MAX_CHARS;" in serialize
+    assert 'if (left <= 0) return "…";' in serialize
+    assert (
+        "JSON.stringify(value)"
+        not in shell[shell.index("const describe = ") : shell.index("const report = ")]
+    )

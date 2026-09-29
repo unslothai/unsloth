@@ -4580,7 +4580,12 @@ def patch_enable_input_require_grads():
         return
 
     def _patched_enable_input_require_grads(self):
+        import torch
+
         def make_inputs_require_grads(module, input, output):
+            # Dynamo graph-breaks on requires_grad_(); a compiled decode step records no grad anyway.
+            if torch.compiler.is_compiling() and not torch.is_grad_enabled():
+                return
             output.requires_grad_(True)
 
         hooks = []
@@ -8144,6 +8149,53 @@ def _backfill_missing_conversion_symbols():
     return bool(added)
 
 
+def patch_peft_float8_adapter_upcast():
+    """PEFT < 0.19 builds adapters in an FP8 base weight's dtype; upcast them to float32 as PEFT >= 0.19 does."""
+    try:
+        import torch
+        import peft.tuners.tuners_utils as tu
+    except Exception:
+        return
+    original = getattr(tu, "cast_adapter_dtype", None)
+    if original is None or getattr(original, "_unsloth_float8_upcast", False):
+        return
+    try:
+        from peft.utils.constants import UPCAST_DTYPES  # noqa: F401  (PEFT >= 0.19 already upcasts float8)
+        return
+    except ImportError:
+        pass
+    float8 = tuple(
+        getattr(torch, n)
+        for n in ("float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
+        if hasattr(torch, n)
+    )
+
+    @functools.wraps(original)
+    def cast_adapter_dtype(
+        model,
+        adapter_name,
+        autocast_adapter_dtype = True,
+    ):
+        original(model, adapter_name = adapter_name, autocast_adapter_dtype = autocast_adapter_dtype)
+        if not autocast_adapter_dtype:
+            return
+        for module in model.modules():
+            if not isinstance(module, tu.BaseTunerLayer):
+                continue
+            for name in module.adapter_layer_names:
+                layer = getattr(module, name, None)
+                if not isinstance(layer, torch.nn.Module) or adapter_name not in layer:
+                    continue
+                item = layer[adapter_name]
+                params = item.parameters() if isinstance(item, torch.nn.Module) else (item,)
+                for p in params:
+                    if p.dtype in float8:
+                        p.data = p.data.to(torch.float32)
+
+    cast_adapter_dtype._unsloth_float8_upcast = True
+    tu.cast_adapter_dtype = cast_adapter_dtype
+
+
 def patch_peft_weight_converter_compatibility():
     """Allow PEFT converter rebuilds on legacy converter constructors."""
     try:
@@ -8267,6 +8319,7 @@ CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 VLLM_BROKEN = False
+VLLM_DISABLED_REASON = None  # the warning logged when vLLM was disabled, for fast_inference errors
 _VLLM_PREFIX = "vllm"
 _VLLM_BLOCKER_SENTINEL = "_unsloth_vllm_blocker"
 _ROCM_ENV_HINT_KEYS = (
@@ -8781,6 +8834,19 @@ def _is_broken_vllm_error(error) -> bool:
     return False
 
 
+def _is_vllm_needs_transformers_v5_error(error) -> bool:
+    # vLLM >= 0.24 raises ImportError at import under transformers < 5 (vllm/transformers_utils/config.py).
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current).lower()
+        if "support for transformers v4" in message and "removed in vllm" in message:
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
 _VLLM_RELEASES_URL = "https://github.com/vllm-project/vllm/releases"
 _VLLM_INSTALL_DOCS_URL = "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
 
@@ -9142,8 +9208,8 @@ _VLLM_COMPILED_EXTENSIONS = (
 
 
 def disable_broken_vllm(error = None):
-    """Disable vLLM dynamically when its shared library is ABI-broken."""
-    global VLLM_BROKEN
+    """Disable vLLM dynamically when its shared library is ABI-broken or it refuses this transformers."""
+    global VLLM_BROKEN, VLLM_DISABLED_REASON
     if VLLM_BROKEN:
         _install_vllm_blocker()
         return True
@@ -9170,22 +9236,34 @@ def disable_broken_vllm(error = None):
         except Exception as import_error:
             failure = import_error
 
-    if not _is_broken_vllm_error(failure):
+    needs_transformers_v5 = _is_vllm_needs_transformers_v5_error(failure)
+    if not needs_transformers_v5 and not _is_broken_vllm_error(failure):
         return False
 
     VLLM_BROKEN = True
     _clear_vllm_modules()
     _install_vllm_blocker()
-    cuda_msg = _get_vllm_cuda_mismatch_message(failure)
-    if cuda_msg:
-        logger.warning(cuda_msg)
+    cuda_msg = None if needs_transformers_v5 else _get_vllm_cuda_mismatch_message(failure)
+    if needs_transformers_v5:
+        try:
+            vllm_version = importlib_version("vllm")
+        except Exception:
+            vllm_version = "unknown"
+        VLLM_DISABLED_REASON = (
+            f"Unsloth: vLLM {vllm_version} needs transformers >= 5.0, so vLLM is disabled and "
+            "fast_inference is unavailable; everything else still works.\n"
+            'To use fast_inference, upgrade transformers or install "vllm<0.24".'
+        )
+    elif cuda_msg:
+        VLLM_DISABLED_REASON = cuda_msg
     else:
-        logger.warning(
+        VLLM_DISABLED_REASON = (
             "Unsloth: Detected broken vLLM binary extension; "
             "disabling vLLM imports and continuing import.\n"
             "Please reinstall via `uv pip install unsloth vllm torchvision torchaudio "
             "--torch-backend=auto`."
         )
+    logger.warning(VLLM_DISABLED_REASON)
     return True
 
 
