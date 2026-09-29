@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-const STUDIO_DECISIONS_URL =
-  /^[hH][tT][tT][pP]:\/\/(\[[^\]]+\]|[^/:?#]+)(?::\d+)?\/mcp\/decisions\/?(?:[?#].*)?$/;
+const HTTP_AUTHORITY =
+  /^[hH][tT][tT][pP]:\/\/(?:[^/?#]*@)?(\[[^\]]+\]|[^/:?#]+)(?::\d+)?(?:[/?#]|$)/;
 
 function isStudioLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
@@ -37,8 +37,25 @@ function isStudioLoopbackHost(host: string): boolean {
 // toggle reuses rows saved under older ports and every backend-accepted loopback spelling.
 export function normalizeMcpUrl(url: string): string {
   const trimmed = (url || "").trim().replace(/\/+$/, "");
-  const match = STUDIO_DECISIONS_URL.exec(trimmed);
-  return match && isStudioLoopbackHost(match[1])
-    ? "studio:decisions"
-    : trimmed.toLowerCase();
+  const authority = HTTP_AUTHORITY.exec(trimmed);
+  if (authority && isStudioLoopbackHost(authority[1])) {
+    // WHATWG URL parsing rejects IPv6 zone identifiers. They do not affect loopback identity, so
+    // strip one only for parsing while retaining the raw host above for backend-equivalent checks.
+    const parseable = trimmed.replace(
+      /\[([^\]%]+)(?:%25|%)[^\]]+\]/i,
+      "[$1]",
+    );
+    try {
+      const parsed = new URL(parseable);
+      if (
+        parsed.protocol === "http:" &&
+        parsed.pathname.replace(/\/+$/, "") === "/mcp/decisions"
+      ) {
+        return "studio:decisions";
+      }
+    } catch {
+      // Keep malformed values distinct so the server form can surface its normal validation error.
+    }
+  }
+  return trimmed.toLowerCase();
 }
