@@ -11,11 +11,12 @@ import {
 } from "@/components/assistant-ui/code-themes";
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { EyeIcon, XIcon } from "lucide-react";
+import { EyeIcon, RotateCwIcon, TerminalIcon, XIcon } from "lucide-react";
 import {
   Copy01Icon,
   Download01Icon,
@@ -25,6 +26,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -114,7 +116,37 @@ export function ArtifactSurface({
   const setArtifactView = useChatArtifactsStore(
     (state) => state.setArtifactView,
   );
+  const stageFixPrompt = useChatArtifactsStore((state) => state.stageFixPrompt);
+  // Staged for the thread's composer, never sent; the overlay closes so that composer is reachable.
+  const fixWithModel = useCallback(
+    (prompt: string) => {
+      stageFixPrompt(prompt);
+      if (variant === "overlay") onClose();
+    },
+    [stageFixPrompt, variant, onClose],
+  );
+  // Keeps the card's open/hide toggle in step with the tab on screen.
+  const showView = useCallback(
+    (mode: ArtifactViewMode) => {
+      setViewMode(mode);
+      setArtifactView(mode);
+    },
+    [setArtifactView],
+  );
   const [copied, setCopied] = useState(false);
+  const t = useT();
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  // Tagged with the artifact they came from: a panel switched to one with no frame yet keeps no badge.
+  const [outputCounts, setOutputCounts] = useState({ id: "", errors: 0 });
+  const reportOutputCounts = useCallback(
+    ({ errors }: { errors: number; total: number }) =>
+      setOutputCounts({ id: artifact.id, errors }),
+    [artifact.id],
+  );
+  const errorCount = outputCounts.id === artifact.id ? outputCounts.errors : 0;
+  const consoleLabel = t("settings.chat.artifacts.consoleTitle");
+  const reloadLabel = t("settings.chat.artifacts.reloadCanvas");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -127,6 +159,17 @@ export function ArtifactSurface({
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
   const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
+  const [previewedId, setPreviewedId] = useState<string | null>(null);
+  // Only a finished preview mounts the frame: effectiveViewMode reads preview mid-stream, and viewMode lags a Code open by a render.
+  const previewing =
+    !isLoadingArtifact && viewMode === "preview" && requestedView === "preview";
+  const nextPreviewedId = previewing
+    ? artifact.id
+    : previewedId === artifact.id
+      ? previewedId
+      : null;
+  if (nextPreviewedId !== previewedId) setPreviewedId(nextPreviewedId);
+  const frameMounted = previewing || previewedId === artifact.id;
 
   useEffect(() => {
     return () => {
@@ -245,11 +288,7 @@ export function ArtifactSurface({
                 type="button"
                 role="tab"
                 disabled={isLoadingArtifact && !isPreview}
-                onClick={() => {
-                  setViewMode(mode);
-                  // Keeps the card's open/hide toggle in step with the tab on screen.
-                  setArtifactView(mode);
-                }}
+                onClick={() => showView(mode)}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                   effectiveViewMode === mode
@@ -278,6 +317,51 @@ export function ArtifactSurface({
           })}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={isLoadingArtifact}
+          aria-label={reloadLabel}
+          title={reloadLabel}
+          onClick={() => {
+            if (effectiveViewMode !== "preview") showView("preview");
+            setReloadNonce((nonce) => nonce + 1);
+          }}
+          className={cn(
+            "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+            isLoadingArtifact && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <RotateCwIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          disabled={isLoadingArtifact}
+          aria-pressed={consoleOpen && effectiveViewMode === "preview"}
+          aria-label={consoleLabel}
+          title={consoleLabel}
+          onClick={() => {
+            if (effectiveViewMode !== "preview") {
+              showView("preview");
+              setConsoleOpen(true);
+              return;
+            }
+            setConsoleOpen((open) => !open);
+          }}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors",
+            consoleOpen && effectiveViewMode === "preview"
+              ? "bg-muted/60 text-foreground"
+              : "hover:bg-muted/40 hover:text-foreground",
+            isLoadingArtifact && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <TerminalIcon className="size-4" />
+          {errorCount > 0 ? (
+            <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
+              {errorCount}
+            </span>
+          ) : null}
+        </button>
           <Button
             type="button"
             variant="ghost"
@@ -355,30 +439,47 @@ export function ArtifactSurface({
       >
         {isLoadingArtifact ? (
           <ArtifactGeneratingPanel />
-        ) : effectiveViewMode === "preview" ? (
-          <ArtifactHtmlFrame
-            key={artifact.id}
-            code={artifact.code}
-            title={artifact.title}
-            fill={true}
-            className="h-full"
-            actionFocusTargetRef={
-              variant === "overlay" ? closeButtonRef : undefined
-            }
-          />
         ) : (
-          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
-            <Streamdown
-              // Only computed when the source view is actually on screen.
-              key={buildArtifactSourceKey(artifact)}
-              mode="streaming"
-              plugins={{ code: artifactSourceCodePlugin }}
-              controls={{ code: false }}
-              shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+          <>
+            {/* Hidden, not unmounted, behind the source view: unmounting reruns the page and drops its console. */}
+            {frameMounted && (
+            <div
+              className={cn(
+                "h-full",
+                effectiveViewMode !== "preview" && "hidden",
+              )}
             >
-              {sourceMarkdown}
-            </Streamdown>
-          </div>
+              <ArtifactHtmlFrame
+                key={artifact.id}
+                code={artifact.code}
+                title={artifact.title}
+                fill={true}
+                className="h-full"
+                actionFocusTargetRef={
+                  variant === "overlay" ? closeButtonRef : undefined
+                }
+                consoleOpen={consoleOpen}
+                reloadNonce={reloadNonce}
+                onConsoleOpenChange={setConsoleOpen}
+                onOutputCountChange={reportOutputCounts}
+                onFixWithModel={fixWithModel}
+              />
+            </div>
+            )}
+            {effectiveViewMode === "preview" ? null : (
+              <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+                <Streamdown
+                  key={buildArtifactSourceKey(artifact)}
+                  mode="streaming"
+                  plugins={{ code: artifactSourceCodePlugin }}
+                  controls={{ code: false }}
+                  shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+                >
+                  {sourceMarkdown}
+                </Streamdown>
+              </div>
+            )}
+          </>
         )}
       </div>
     </section>
