@@ -41,6 +41,7 @@ export const ptBR = {
     copyFailed: "Não foi possível copiar o comando",
     commandHint: "Ou execute isto no computador onde o Unsloth roda e escolha o modo de novo:",
     ownerOnly: "Somente o proprietário pode instalar, a partir do computador onde o Unsloth roda.",
+    runInTerminal: "O Unsloth não consegue pedir sua senha aqui. Execute isto em um terminal no computador onde o Unsloth roda e escolha o modo de novo:",
     useAnyway: "Usar mesmo assim (chamadas arriscadas vão perguntar)",
     cancel: "Cancelar",
     close: "Fechar",

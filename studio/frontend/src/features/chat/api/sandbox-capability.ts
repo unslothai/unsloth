@@ -24,6 +24,9 @@ export type SandboxCapability = {
   setupAction: SandboxSetupAction | null;
   manualCommand: string;
   canRunSetup: boolean;
+  // Why a setup exists but this caller cannot start it; "no_elevation" means the owner is at this
+  // computer but Unsloth has no way to ask for the password (no passwordless sudo, no desktop prompt).
+  setupBlocked: "not_owner" | "not_local" | "no_elevation" | null;
   // Windows: the MXC opt-in is still off, so the setup needs the owner's consent first.
   needsConsent: boolean;
 };
@@ -63,6 +66,8 @@ type ApiCapability = {
   manual_command?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   can_run_setup?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  setup_blocked?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   needs_consent?: boolean;
 };
@@ -104,6 +109,12 @@ export function capabilityFromApi(body: ApiCapability): SandboxCapability {
     manualCommand: body.manual_command ?? "",
     // A setup the server did not name cannot be started, whatever the flag says.
     canRunSetup,
+    setupBlocked:
+      body.setup_blocked === "not_owner" ||
+      body.setup_blocked === "not_local" ||
+      body.setup_blocked === "no_elevation"
+        ? body.setup_blocked
+        : null,
     // Only the Windows setup asks for consent, and only from someone who can start it.
     needsConsent:
       canRunSetup &&

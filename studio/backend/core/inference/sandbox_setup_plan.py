@@ -453,11 +453,17 @@ def setup_fields_for(
         local = is_direct_local_request(request)
     except Exception:  # noqa: BLE001 - an unreadable request is not local
         local = False
-    can_run = can_run_here(plan, owner = _is_owner(user), local = local)
+    owner = _is_owner(user)
+    can_run = can_run_here(plan, owner = owner, local = local)
+    blocked = None
+    if plan.action and not can_run:
+        # Why there is no button, so the page does not tell the owner at this computer to find the owner.
+        blocked = "not_owner" if not owner else "not_local" if not local else "no_elevation"
     return {
         "setup_action": plan.action if can_run else None,
         "manual_command": plan.manual_command,
         "can_run_setup": can_run,
+        "setup_blocked": blocked,
         "needs_consent": plan.needs_consent if can_run else False,
         "reason": plan.reason,
     }

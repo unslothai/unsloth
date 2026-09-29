@@ -42,6 +42,7 @@ export const ja = {
     copyFailed: "コマンドをコピーできませんでした",
     commandHint: "または、Unsloth を実行しているコンピューターでこれを実行してから、もう一度モードを選んでください:",
     ownerOnly: "インストールできるのは、Unsloth を実行しているコンピューター上の所有者だけです。",
+    runInTerminal: "Unsloth はここでパスワードを尋ねられません。Unsloth を実行しているコンピューターのターミナルでこれを実行してから、もう一度モードを選んでください:",
     useAnyway: "このまま使う (危険な呼び出しは確認します)",
     cancel: "キャンセル",
     close: "閉じる",

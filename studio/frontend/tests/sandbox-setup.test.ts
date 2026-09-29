@@ -23,6 +23,7 @@ type CapabilityApi = {
     force?: boolean;
   }) => Promise<SandboxCapability | null>;
   forgetSandboxCapability: () => void;
+  capabilityFromApi: (body: Record<string, unknown>) => SandboxCapability;
   sandboxReady: (capability: SandboxCapability) => boolean;
   startSandboxSetup: (
     operation: string,
@@ -90,6 +91,7 @@ test("the capability maps to camelCase and is cached between picker opens", asyn
     setupAction: "linux-install",
     manualCommand: "apt-get install -y apparmor-profiles",
     canRunSetup: true,
+    setupBlocked: null,
     needsConsent: false,
   });
   await api.loadSandboxCapability();
@@ -324,6 +326,7 @@ const capability = (
   setupAction: "linux-install",
   manualCommand: "apt-get install -y bubblewrap",
   canRunSetup: true,
+  setupBlocked: null,
   needsConsent: false,
   ...overrides,
 });
@@ -414,6 +417,30 @@ test("someone who cannot run the setup gets the command and who can", () => {
   });
   assert.equal(macos.showOwnerOnly, false);
   assert.equal(macos.install, null);
+});
+
+test("the owner here without a way to ask for the password is told to run the command", () => {
+  const view = setupState.sandboxSetupView({
+    capability: capability({
+      canRunSetup: false,
+      setupAction: null,
+      setupBlocked: "no_elevation",
+    }),
+    job: null,
+    consent: false,
+  });
+  assert.equal(view.install, null);
+  assert.equal(view.showOwnerOnly, false);
+  assert.equal(view.showRunInTerminal, true);
+  const { api } = loadCapabilityApi(() => json({}));
+  assert.equal(
+    api.capabilityFromApi({ setup_blocked: "no_elevation" }).setupBlocked,
+    "no_elevation",
+  );
+  assert.equal(
+    api.capabilityFromApi({ setup_blocked: "other" }).setupBlocked,
+    null,
+  );
 });
 
 test("a running job disables the button; a failure shows its output and command", () => {

@@ -274,7 +274,9 @@ function SandboxSetupContent({
             <p className={`${NOTE_CLASS} text-muted-foreground`}>
               {view.showOwnerOnly
                 ? t("sandboxSetup.ownerOnly")
-                : t("sandboxSetup.commandHint")}
+                : view.showRunInTerminal
+                  ? t("sandboxSetup.runInTerminal")
+                  : t("sandboxSetup.commandHint")}
             </p>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">
               {view.command}

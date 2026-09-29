@@ -41,6 +41,7 @@ export const ko = {
     copyFailed: "명령을 복사하지 못했습니다",
     commandHint: "또는 Unsloth가 실행 중인 컴퓨터에서 이 명령을 실행한 뒤 모드를 다시 선택하세요:",
     ownerOnly: "Unsloth가 실행 중인 컴퓨터에서 소유자만 설치할 수 있습니다.",
+    runInTerminal: "Unsloth가 여기서 비밀번호를 요청할 수 없습니다. Unsloth가 실행 중인 컴퓨터의 터미널에서 이 명령을 실행한 뒤 모드를 다시 선택하세요:",
     useAnyway: "그대로 사용 (위험한 호출은 묻습니다)",
     cancel: "취소",
     close: "닫기",

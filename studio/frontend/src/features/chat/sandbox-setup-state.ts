@@ -21,6 +21,8 @@ export type SandboxSetupView = {
   // Someone who cannot start the setup (not the owner, or not at the computer running Unsloth)
   // gets the command with a note saying who can.
   showOwnerOnly: boolean;
+  // The owner is here but Unsloth cannot ask for the password: run the command in a terminal.
+  showRunInTerminal: boolean;
   running: boolean;
   result: JobResult;
   outputLines: string[];
@@ -52,6 +54,7 @@ export function sandboxSetupView({
       installDisabled: true,
       command: "",
       showOwnerOnly: false,
+      showRunInTerminal: false,
       running,
       result,
       outputLines: jobOutputLines(job),
@@ -79,7 +82,14 @@ export function sandboxSetupView({
     showConsent,
     installDisabled: running || (showConsent && !consent),
     command,
-    showOwnerOnly: install === null && command !== "",
+    showOwnerOnly:
+      install === null &&
+      command !== "" &&
+      capability.setupBlocked !== "no_elevation",
+    showRunInTerminal:
+      install === null &&
+      command !== "" &&
+      capability.setupBlocked === "no_elevation",
     running,
     result,
     outputLines: jobOutputLines(job),

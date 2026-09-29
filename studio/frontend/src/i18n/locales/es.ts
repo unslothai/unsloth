@@ -41,6 +41,7 @@ export const es = {
     copyFailed: "No se pudo copiar el comando",
     commandHint: "O ejecuta esto en el equipo donde se ejecuta Unsloth y vuelve a elegir el modo:",
     ownerOnly: "Solo el propietario puede instalarlo, desde el equipo donde se ejecuta Unsloth.",
+    runInTerminal: "Unsloth no puede pedir tu contraseña aquí. Ejecuta esto en una terminal del equipo donde se ejecuta Unsloth y vuelve a elegir el modo:",
     useAnyway: "Usarlo de todos modos (las llamadas arriesgadas preguntarán)",
     cancel: "Cancelar",
     close: "Cerrar",

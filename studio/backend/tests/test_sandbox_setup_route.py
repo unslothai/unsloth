@@ -186,8 +186,22 @@ def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatc
     body = _capability_client(account).get("/api/sandbox/capability").json()
     assert body["setup_action"] is None and body["can_run_setup"] is False
     assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
+    assert body["setup_blocked"] == ("not_owner" if who == "other_account" else "not_local")
     # Nobody but the owner on this computer makes Unsloth run the elevation check.
     assert calls["elevation_checks"] == 0
+
+
+def test_capability_tells_the_owner_here_when_no_password_prompt_is_possible(host, linux):
+    _calls, saved, _plan = host
+    saved["elevation"] = (None, None)
+    body = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert body["setup_action"] is None and body["can_run_setup"] is False
+    assert body["setup_blocked"] == "no_elevation" and body["manual_command"]
+
+
+def test_capability_names_no_block_when_the_button_is_offered(host, linux):
+    body = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert body["can_run_setup"] is True and body["setup_blocked"] is None
 
 
 def test_a_remote_status_read_never_checks_elevation(host, linux, monkeypatch):

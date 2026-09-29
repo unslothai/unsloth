@@ -41,6 +41,7 @@ export const de = {
     copyFailed: "Der Befehl konnte nicht kopiert werden",
     commandHint: "Oder führe dies auf dem Computer aus, auf dem Unsloth läuft, und wähle den Modus dann erneut:",
     ownerOnly: "Nur der Besitzer kann sie installieren, und zwar an dem Computer, auf dem Unsloth läuft.",
+    runInTerminal: "Unsloth kann hier nicht nach deinem Passwort fragen. Führe das in einem Terminal auf dem Computer aus, auf dem Unsloth läuft, und wähle den Modus dann erneut:",
     useAnyway: "Trotzdem verwenden (riskante Aufrufe fragen nach)",
     cancel: "Abbrechen",
     close: "Schließen",

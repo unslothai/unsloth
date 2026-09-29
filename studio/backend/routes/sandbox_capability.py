@@ -32,6 +32,8 @@ class SandboxCapabilityResponse(BaseModel):
     # The copyable command, for everyone; empty when there is nothing to set up.
     manual_command: str = ""
     can_run_setup: bool = False
+    # Why a setup exists but this caller gets no button: not_owner | not_local | no_elevation.
+    setup_blocked: Optional[str] = None
     needs_consent: bool = False
 
 

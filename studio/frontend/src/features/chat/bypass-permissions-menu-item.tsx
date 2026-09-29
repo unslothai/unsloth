@@ -73,7 +73,9 @@ export function BypassPermissionsConfirmDialog() {
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle>{t("permissionModes.bypassTitle")}</AlertDialogTitle>
+          <AlertDialogTitle>
+            {t("permissionModes.bypassTitle")}
+          </AlertDialogTitle>
           <AlertDialogDescription>
             {t("permissionModes.bypassWarning")}
           </AlertDialogDescription>

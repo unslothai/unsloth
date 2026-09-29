@@ -41,6 +41,7 @@ export const zhCN = {
     copyFailed: "无法复制命令",
     commandHint: "或者在运行 Unsloth 的电脑上执行以下命令，然后重新选择该模式：",
     ownerOnly: "只有所有者能在运行 Unsloth 的电脑上安装。",
+    runInTerminal: "Unsloth 无法在这里请求你的密码。请在运行 Unsloth 的电脑的终端中运行以下命令，然后重新选择该模式：",
     useAnyway: "仍然使用（高风险调用会询问）",
     cancel: "取消",
     close: "关闭",

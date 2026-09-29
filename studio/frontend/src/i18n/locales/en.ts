@@ -38,6 +38,7 @@ export const en = {
     copyFailed: "Could not copy the command",
     commandHint: "Or run this on the computer running Unsloth, then pick the mode again:",
     ownerOnly: "Only the owner can install it, from the computer running Unsloth.",
+    runInTerminal: "Unsloth cannot ask for your password here. Run this in a terminal on the computer running Unsloth, then pick the mode again:",
     useAnyway: "Use it anyway (risky calls will ask)",
     cancel: "Cancel",
     close: "Close",
