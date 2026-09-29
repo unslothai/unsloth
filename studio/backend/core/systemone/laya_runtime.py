@@ -704,7 +704,7 @@ def _forward(agent, items: list[dict[str, Any]]):
     if agent.device == "mlx":
         try:
             import numpy as np
-            logits = [agent.model.logits(part) for part in _chunks(batch, _CHUNK_TOKENS["mlx"])]
+            logits = [agent.model.logits(part) for part in _chunks(batch, _chunk_budget("mlx"))]
             return np.concatenate(logits), int(batch["attention_mask"].sum())
         except RuntimeError as exc:
             # MLX reports exhausted memory as "[malloc] Unable to allocate ..." or "Insufficient Memory".
@@ -753,9 +753,11 @@ def _forward(agent, items: list[dict[str, Any]]):
 
 
 def _chunks(batch, budget: int):
-    """``batch`` as consecutive row slices of at most ``budget`` padded tokens, each trimmed to its longest row."""
+    """``batch`` as consecutive row slices of at most ``budget`` padded tokens, each trimmed to its longest row.
+
+    ``budget=None`` keeps the whole batch."""
     rows, tokens = batch["input_ids"].shape
-    step = max(1, budget // tokens)
+    step = rows if budget is None else max(1, budget // tokens)
     if rows <= step:
         yield batch
         return
@@ -772,10 +774,31 @@ def _run_model(agent, batch):
 
     if not _marker_head(agent.model):
         return _run_chunk(agent, batch)
-    # Activations grow with rows x tokens; past the budget the device is saturated, so chunks cost little speed.
-    budget = _CHUNK_TOKENS.get(agent.device.type, _CHUNK_TOKENS["cpu"])
+    budget = _chunk_budget(agent.device)
     # cat copies, so no result is a view into a CUDA graph's output buffer, which its next replay overwrites.
     return torch.cat([_run_chunk(agent, part) for part in _chunks(batch, budget)])
+
+
+def _chunk_budget(device):
+    """Padded tokens per forward, or None for one forward.
+
+    Splitting only saves memory: each extra forward costs a fixed overhead. On a CPU host memory is rarely the
+    limit and that overhead dominates (a 16-core Strix Halo ran the 64-question request 5x slower in 4096-token
+    chunks), so the CPU runs one forward. A GPU splits only past a share of its memory, so a large card keeps
+    one forward and its speed, and a small one still bounds its peak.
+    """
+    kind = getattr(device, "type", device)
+    budget = _CHUNK_TOKENS.get(kind)
+    if kind != "cuda" or budget is None:
+        return budget
+    import torch
+
+    try:
+        total = torch.cuda.get_device_properties(device).total_memory
+    except (RuntimeError, AssertionError):
+        return budget
+    per_token = _TOKEN_BYTES["hip" if torch.version.hip else "cuda"]
+    return max(budget, int(total * _GPU_SHARE) // per_token)
 
 
 def _run_chunk(agent, batch):
@@ -811,8 +834,12 @@ def _run_chunk(agent, batch):
 
 
 _INPUTS = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
-# Padded rows x tokens per forward; a larger request runs as several. CPU caches favour small forwards.
-_CHUNK_TOKENS = {"cuda": 16384, "mlx": 8192, "cpu": 4096}
+# Smallest padded rows x tokens per forward; a larger request runs as several (see _chunk_budget). None: one forward.
+_CHUNK_TOKENS = {"cuda": 16384, "mlx": 8192, "cpu": None}
+# Activation bytes per padded token of the worst request (B200 fp16 41 KiB, gfx1151 137 KiB), with headroom.
+_TOKEN_BYTES = {"cuda": 48 << 10, "hip": 160 << 10}
+# Share of the GPU's total memory one Decision API forward may take before the request is split.
+_GPU_SHARE = 0.05
 # Padded rows x tokens above which a batch runs eagerly (B200: graphs win up to 8 x 1024, lose at 16 x 512).
 _GRAPH_TOKENS = 8192
 

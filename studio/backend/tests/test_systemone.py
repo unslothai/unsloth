@@ -1831,3 +1831,26 @@ def test_cuda_graph_results_survive_the_next_replay(tmp_path, monkeypatch):
     kept = a.clone()
     laya_runtime._run_model(agent, second)
     assert torch.equal(a, kept)
+
+
+def test_chunk_budget_splits_only_where_memory_is_short(monkeypatch):
+    torch = pytest.importorskip("torch")
+    # A CPU runs one forward: every extra forward costs a fixed overhead, and host RAM is rarely the limit.
+    assert laya_runtime._chunk_budget(torch.device("cpu")) is None
+    assert laya_runtime._chunk_budget("mlx") == laya_runtime._CHUNK_TOKENS["mlx"]
+    gib = 1 << 30
+    for total, hip, want in (
+        (8 * gib, None, 16384),  # a small card keeps the floor
+        (24 * gib, None, 26214),
+        (180 * gib, None, 196608),  # the 64 x 1024 request stays one forward
+        (96 * gib, "7.1", 31457),  # ROCm activations are larger per token
+    ):
+        monkeypatch.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda device, t = total: SimpleNamespace(total_memory = t),
+        )
+        monkeypatch.setattr(torch.version, "hip", hip)
+        assert laya_runtime._chunk_budget(torch.device("cuda")) == want
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "cuda", None)
+    assert laya_runtime._chunk_budget(torch.device("cuda")) is None
