@@ -414,7 +414,7 @@ export function SandboxTab() {
                         </span>
                       ) : null}
                       {setupOutput.length > 0 ? (
-                        <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-[11px] text-muted-foreground">
+                        <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-ui-11 text-muted-foreground">
                           {setupOutput.join("\n")}
                         </pre>
                       ) : null}
@@ -425,7 +425,7 @@ export function SandboxTab() {
                           >
                             {t("settings.sandbox.setupCommandHint")}
                           </span>
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-[11px]">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
                             {setupRow.command}
                           </pre>
                           <Button
@@ -512,7 +512,7 @@ export function SandboxTab() {
                     <p className="text-xs text-destructive">{setupNote}</p>
                   ) : null}
                   {setupOutput.length > 0 ? (
-                    <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+                    <pre className="whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
                       {setupOutput.join("\n")}
                     </pre>
                   ) : null}

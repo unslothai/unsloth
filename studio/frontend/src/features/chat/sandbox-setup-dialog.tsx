@@ -262,7 +262,7 @@ function SandboxSetupContent({
           <p className={`${NOTE_CLASS} text-destructive`}>{view.note}</p>
         ) : null}
         {view.outputLines.length > 0 ? (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+          <pre className="whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
             {view.outputLines.join("\n")}
           </pre>
         ) : null}
@@ -283,7 +283,7 @@ function SandboxSetupContent({
                   ? t("sandboxSetup.runInTerminal")
                   : t("sandboxSetup.commandHint")}
             </p>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 font-mono text-ui-11">
               {view.command}
             </pre>
           </div>
