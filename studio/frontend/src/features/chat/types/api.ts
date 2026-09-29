@@ -703,7 +703,8 @@ export interface OpenAIChatCompletionsRequest {
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string | null;
+  /** Magistral streams structured content parts: read through extractDeltaText. */
+  content?: string | unknown[] | null;
   /** Streamed assistant tool calls. The Gemini and OpenAI Responses translators emit incremental
    *  deltas so the chat-adapter can render tool cards as they arrive. */
   tool_calls?: OpenAIToolCallPart[];
