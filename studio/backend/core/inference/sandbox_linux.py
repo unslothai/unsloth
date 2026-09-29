@@ -462,8 +462,11 @@ def _identity_files(home: str) -> tuple[str, str, str]:
         home = "/nonexistent"
     passwd, group = os.path.join(directory, "passwd"), os.path.join(directory, "group")
     try:
-        with open(passwd, "w", encoding = "utf-8") as stream:
-            stream.write(f"studio:x:{uid}:{gid}:Studio sandbox:{home}:/bin/sh\n")
+        # Bytes: the workdir may hold non-UTF-8 filename bytes.
+        with open(passwd, "wb") as stream:
+            stream.write(
+                b"studio:x:%d:%d:Studio sandbox:%b:/bin/sh\n" % (uid, gid, os.fsencode(home))
+            )
         with open(group, "w", encoding = "utf-8") as stream:
             stream.write(f"studio:x:{gid}:\n")
         os.chmod(passwd, 0o600)

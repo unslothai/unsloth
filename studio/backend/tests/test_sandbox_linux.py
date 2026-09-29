@@ -125,6 +125,16 @@ def test_a_workdir_that_would_corrupt_the_passwd_entry_is_not_its_home(tmp_path)
         shutil.rmtree(identity_dir)
 
 
+def test_a_non_utf8_workdir_keeps_its_bytes_as_the_passwd_home(tmp_path):
+    home = os.fsdecode(os.fsencode(str(tmp_path)) + b"/caf\xe9")
+    identity_dir, passwd, _ = sandbox_linux._identity_files(home)
+    try:
+        with open(passwd, "rb") as stream:
+            assert stream.read().split(b":")[5] == os.fsencode(home)
+    finally:
+        shutil.rmtree(identity_dir)
+
+
 def test_the_writable_workdir_bind_lands_after_the_root_goes_read_only(prepared, tmp_path):
     argv = prepared.argv
     workdir = os.path.realpath(tmp_path)
