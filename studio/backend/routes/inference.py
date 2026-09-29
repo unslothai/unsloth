@@ -35345,7 +35345,6 @@ def _inline_remote_image_url(
         url,
         "image/png",
         max_bytes = min(_REMOTE_IMAGE_MAX_BYTES, budget_bytes),
-        label = "llama-server image fetch",
         deadline = deadline,
         require_image_content_type = False,
     )
