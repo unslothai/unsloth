@@ -32,6 +32,7 @@ import {
   startSttDownload,
   sttEngineFor,
   unloadSttModel,
+  useChatRuntimeStore,
   useExternalProvidersStore,
   validateSttModel,
 } from "@/features/chat";
@@ -120,6 +121,35 @@ function sttModelSource(model: SttModel): string {
  * Transformers). The trigger is a plain button so the selection never renders
  * inside a text input.
  */
+// llama-server --parallel for the voice-mode GGUF slot, 1-4. Same store field
+// the chat header's gear writes; a change here is picked up by the next
+// /voice/load rather than hot-reloading a slot this tab cannot see.
+function VoiceParallelPicker() {
+  const value = useChatRuntimeStore((s) => s.voiceParallelN);
+  const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
+  return (
+    <div className="flex items-center gap-1" role="radiogroup">
+      {[1, 2, 3, 4].map((n) => (
+        <button
+          key={n}
+          type="button"
+          role="radio"
+          aria-checked={value === n}
+          aria-label={`${n}`}
+          onClick={() => setValue(n)}
+          className={`flex size-7 items-center justify-center rounded-md text-sm transition-colors ${
+            value === n
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:bg-accent/60"
+          }`}
+        >
+          {n}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SttModelPicker({
   value,
   language,
@@ -1176,6 +1206,18 @@ export function VoiceTab() {
             </Select>
           </SettingsRow>
         ) : null}
+
+        {/* Voice-mode knob, kept beside the transcription model it pairs with.
+            The chat header's "Speak with" gear has the same control; this is the
+            one that survives with voice mode closed. Plain strings, like every
+            other voice-mode label: the strict i18n check needs a key in all
+            eleven overlays, and the feature's copy is not localized yet. */}
+        <SettingsRow
+          label="Parallel synthesis"
+          description="How many sentences a GGUF voice synthesizes at once in voice mode. Applies the next time the voice loads."
+        >
+          <VoiceParallelPicker />
+        </SettingsRow>
 
         <SettingsRow
           label={t("settings.voice.dictation.microphoneLabel")}

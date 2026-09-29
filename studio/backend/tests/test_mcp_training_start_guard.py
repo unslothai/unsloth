@@ -142,6 +142,20 @@ def test_stream_finishing_then_retrying_starts(monkeypatch):
 # --------------------------------------------------------------------------------------
 
 
+def test_streaming_speech_is_tracked_like_the_blocking_route():
+    """/audio/speech/stream holds the voice slot for the whole PCM response. The suffix
+    tuple is an endswith test and the route ends in /stream, so the /audio/speech entry
+    never covered it: with it as the only inference in flight, an API-key training start
+    counted 0, unloaded the voice backend and cut the clip off instead of returning 409."""
+    for path in (
+        "/v1/audio/speech",
+        "/api/inference/audio/speech",
+        "/v1/audio/speech/stream",
+        "/api/inference/audio/speech/stream",
+    ):
+        assert keepwarm._is_inference_path(path) is True, path
+
+
 def test_the_mcp_call_does_not_count_itself():
     """/mcp is not an inference path, so the MCP request is never tracked."""
     assert keepwarm._is_inference_path("/mcp") is False
