@@ -155,12 +155,18 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => puts.length === 5);
     assert.deepEqual(puts[4].models, ["manual", "gamma", "delta", "zeta"]);
 
+    // Another tab replaced the IDs by hand and left no catalog: the saved IDs win over this tab's copy.
+    Object.assign(saved, { models: ["typed"], available_models: [] });
+    served = ["gamma", "omega"];
+    await settle(() => puts.length === 6);
+    assert.deepEqual(puts[5].models, ["typed", "gamma", "omega"]);
+
     store.setState({ providers: [{ ...row(), autoReloadModels: false }] });
     served = null;
     await idle();
     served = ["gamma", "epsilon"];
     await idle();
-    assert.equal(puts.length, 5);
+    assert.equal(puts.length, 6);
   } finally {
     stop();
   }

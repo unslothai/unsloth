@@ -67,7 +67,9 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       const saved = (await listProviderConfigs()).find((c) => c.id === provider.id);
       const latest = autoReloadConnections().find((p) => p.id === provider.id);
       if (stopped || !saved || !latest || endpoint(latest) !== endpoint(provider)) return;
-      const hasSaved = (saved.available_models?.length ?? 0) > 0;
+      // Rows saved before model lists reached the backend hold neither: only then trust this tab.
+      const hasSaved =
+        (saved.models?.length ?? 0) > 0 || (saved.available_models?.length ?? 0) > 0;
       const previousModels = hasSaved ? (saved.models ?? []) : latest.models;
       const previousCatalog = hasSaved
         ? (saved.available_models ?? [])
