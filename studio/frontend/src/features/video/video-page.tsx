@@ -854,16 +854,8 @@ type PendingH3Load = {
 
 const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 
-/** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
- *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
- *  without passing through handleModelSelect, so checking it in one place staged the default
- *  fl2va partition, tens of GB, with no way to ask for References.
- *
- *  An on-device copy counts. The same pipeline added as a directory reaches the generic
- *  local-pipeline branch, which a Hub-id equality test never recognises, so an omitted h3_task
- *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
- *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
- *  is read off its filename elsewhere. */
+/** H3 base pipeline (Hub id or on-device copy, by final path segment): both ?model= and
+ *  handleModelSelect must ask for the partition, else fl2va is staged silently. */
 function isH3PipelinePick(
   repoId: string,
   kind: VideoLoadOptions["kind"],

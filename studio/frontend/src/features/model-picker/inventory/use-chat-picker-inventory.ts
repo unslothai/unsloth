@@ -123,8 +123,7 @@ export function useChatPickerInventory(
     enabled?: boolean;
     /** Exact task-page artifacts that may bypass chat's hidden-model list. */
     allowedHiddenModelIds?: ReadonlySet<string>;
-    /** Include Diffusers pipeline roots whose task metadata is opaque. The
-     * task picker still applies the explicit-family gate before rendering them. */
+    /** Include task-opaque pipeline roots; the picker still applies the family gate. */
     opaqueKind?: FamilyOverrideArtifactKind;
   } = {},
 ): ChatPickerInventory {

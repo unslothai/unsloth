@@ -1584,9 +1584,7 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
 
 
 def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
-    """The backend keeps a loaded video pipeline across a browser refresh, while React refs do
-    not. Reapply must therefore reconstruct the physical target, logical picker identity, and H3
-    partition from status instead of requiring the user to select a 100+ GB model again."""
+    """Reapply after refresh rebuilds target, logical identity and H3 partition from status."""
     src = _read("features/video/video-page.tsx")
     assert 'status?.model_kind !== "pipeline"' in src
     assert "displayRepoId: status.display_repo_id ?? undefined," in src
