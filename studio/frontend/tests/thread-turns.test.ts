@@ -37,12 +37,12 @@ test("a reply resolves to the user message that opened its turn", () => {
 
 test("one pass per message array, and a streamed reply keeps the signature", () => {
   assert.equal(threadTurns(thread), threadTurns(thread));
-  // a streamed token rebuilds the array without adding a turn
-  const streamed = [...thread];
+  // a streamed reply rebuilds the array, and may add steps, without adding a turn
+  const streamed = [...thread, { id: "a3-step", role: "assistant" }];
   assert.notEqual(threadTurns(streamed), threadTurns(thread));
   assert.equal(threadTurns(streamed).signature, threadTurns(thread).signature);
-  // a branch switch at turn 2 replaces the later user messages
-  const switched = [...thread.slice(0, 3), { id: "u2-edit", role: "user" }];
+  // a branch switch at turn 3 keeps the turn count but replaces its opener
+  const switched = [...thread.slice(0, 4), { id: "u3-edit", role: "user" }];
   assert.notEqual(
     threadTurns(switched).signature,
     threadTurns(thread).signature,

@@ -42,12 +42,11 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 const MIN_NAVIGATOR_TURNS = 3;
-// the card shows one line of the prompt and three of the reply, so a pasted log is cut well before that
+// cut well past what the card's one prompt line and three reply lines show
 const PROMPT_PREVIEW_CHARS = 240;
 const REPLY_PREVIEW_CHARS = 480;
 // long enough to cross from a marker onto the card
 const PREVIEW_HIDE_DELAY_MS = 150;
-// markers this far either side of the hovered one widen with it
 const PYRAMID_REACH = 3;
 // math blocks above the target settle from placeholder heights once reached, so the jump re-aligns briefly
 const JUMP_ALIGN_FRAMES = 4;
@@ -63,7 +62,7 @@ function useIsTurnBookmarked(
   );
 }
 
-// bookmark state for the turn holding the current message, null when turn bookmarks are unavailable
+// null when the setting is off, in incognito, or before the chat is saved
 function useTurnBookmark(): { bookmarked: boolean; toggle: () => void } | null {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
   const incognito = useChatRuntimeStore((state) => state.incognito);
@@ -162,7 +161,7 @@ const UserTurnLabelText: FC = () => {
   );
 };
 
-// memoized: the thread re-renders on composer resizes and the rail props never change
+// memoized: the thread re-renders on composer resizes
 export const TurnNavigator: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = memo(({ viewportRef }) => {
@@ -190,7 +189,6 @@ function alignTurnTop(
   }
 }
 
-// a metallic band swept across the bubble's own background: a bright core between darker edges, per theme
 const SHINE_GRADIENT = {
   light:
     "linear-gradient(110deg, transparent 36%, rgb(0 0 0 / 0.07) 44%, rgb(255 255 255 / 0.95) 50%, rgb(0 0 0 / 0.07) 56%, transparent 64%)",
@@ -220,7 +218,6 @@ function shineTurn(target: HTMLElement): void {
 
 type PreviewPart = { type: string; text?: string };
 
-// plain text for the card: markdown markers are dropped and every run of whitespace becomes one space
 function previewText(content: readonly PreviewPart[], maxChars: number) {
   const text = content
     .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
@@ -234,7 +231,7 @@ function previewText(content: readonly PreviewPart[], maxChars: number) {
   return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
-// the first reply in the turn that has text, so a tool-only step does not blank the card
+// skips tool-only steps so the card is not blank
 function turnReplyText(
   messages: readonly {
     id: string;
@@ -267,7 +264,7 @@ interface TurnPreview {
   turn: number;
   prompt: string;
   reply: string;
-  // offset of the marker's centre from the anchor, which sits at the rail's centre
+  // marker centre relative to the anchor
   markerTop: number;
 }
 
@@ -302,7 +299,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     [],
   );
   useEffect(() => cancelHide, [cancelHide]);
-  // the pyramid is marked on the elements rather than held in state, so the memoized markers do not re-render on hover
+  // set on the elements, not in state, so hovering never re-renders the memoized markers
   const raisedRef = useRef<HTMLElement[]>([]);
   const setActiveMarker = useCallback((marker: HTMLButtonElement | null) => {
     for (const element of raisedRef.current) {
@@ -363,7 +360,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     [jumpToTurn],
   );
 
-  // read on hover rather than per render, so the rail holds no message text and never goes stale
+  // read on hover so the rail never holds stale message text
   const showPreview = useCallback(
     (
       event: PointerEvent<HTMLButtonElement> | FocusEvent<HTMLButtonElement>,
@@ -431,7 +428,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     markers[Math.min(Math.max(next, 0), markers.length - 1)]?.focus();
   }, []);
 
-  // memoized so showing the card re-renders the rail without touching a marker
   const markers = useMemo(
     () =>
       openerIds.map((openerId, index) => {
@@ -475,22 +471,31 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   }
 
   const previewBookmarked = preview ? bookmarked.has(preview.openerId) : false;
-  // sticky inside the viewport so wheel scrolling over the rail still reaches the thread; the rail sits 2px clear of the scrollbar
+  // sticky so wheel scrolling over the rail still reaches the thread
   return (
     <div
       ref={anchorRef}
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
-      className="aui-turn-navigator-anchor pointer-events-none sticky top-1/2 z-10 hidden h-0 w-full shrink-0 @[52rem]:block"
+      className="aui-turn-navigator-anchor pointer-events-none sticky top-1/2 z-10 h-0 w-full shrink-0"
     >
-      <nav
-        aria-label={t("turns.navigator")}
-        // markers shrink to fit the cap before the rail has to scroll
-        style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
-        onKeyDown={onRailKeyDown}
-        className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] flex w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      {/* the gap beside the message column: the rail shows only when it fits there, never over messages */}
+      <div
+        style={{
+          width:
+            "calc((100% - min(100%, var(--thread-content-max-width))) / 2)",
+        }}
+        className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 right-0 h-0"
       >
-        {markers}
-      </nav>
+        <nav
+          aria-label={t("turns.navigator")}
+          // markers shrink to fit the cap before the rail has to scroll
+          style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
+          onKeyDown={onRailKeyDown}
+          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] @[1.5rem]/turn-gutter:flex [&::-webkit-scrollbar]:hidden"
+        >
+          {markers}
+        </nav>
+      </div>
       {preview && (
         <div
           aria-hidden={true}

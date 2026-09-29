@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// bookmarked turns per chat, keyed by thread id to the opening user message ids, kept in localstorage like pinned chats
+// thread id -> opening user message ids of its bookmarked turns
 export interface BookmarkedTurnsState {
   bookmarkedByThread: Record<string, string[]>;
   toggleBookmarkedTurn: (threadId: string, messageId: string) => void;
