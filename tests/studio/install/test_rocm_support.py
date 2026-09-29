@@ -4631,16 +4631,16 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_unsupported_discrete_does_not_depose_a_supported_igpu(self, monkeypatch):
-        # A supported APU next to a discrete card with no Windows wheels (gfx1010 is absent
-        # from _GFX_TO_AMD_INDEX_ARCH): preferring the dGPU purely for being discrete
+        # A supported APU next to a discrete card with no Windows wheels (gfx803, Polaris, is absent
+        # from _GFX_TO_AMD_INDEX_ARCH; gfx1010 routes since #11755): preferring the dGPU purely for being discrete
         # resolves to no index and falls back to CPU, worse than the shadowing itself.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1010\n"
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx803\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
@@ -4654,14 +4654,14 @@ class TestDetectWindowsGfxArch:
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         assert stack_mod._windows_rocm_index_url("gfx1013") is None
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx1010\n"
+        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx803\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
-        assert result == "gfx1010"
+        assert result == "gfx803"
 
     def test_cuda_visible_devices_also_pins_the_igpu(self, monkeypatch):
         # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own masks, so a
@@ -4765,14 +4765,14 @@ class TestDetectWindowsGfxArch:
         assert self._hipinfo_pick(["gfx1036:xnack-", "gfx1200:xnack-"]) == "gfx1200"
 
     def test_prefers_a_wheel_backed_discrete_over_an_unsupported_one(self, monkeypatch):
-        # gfx1010 has no Windows wheel index, so stopping at the first non-integrated
+        # gfx803 (Polaris) has no Windows wheel index (gfx1010 routes since #11755), so stopping at the first non-integrated
         # token dropped a host with a perfectly good gfx1200 to CPU torch.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
-        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
+        assert self._hipinfo_pick(["gfx1036", "gfx803", "gfx1200"]) == "gfx1200"
         # Same when the iGPU itself has no wheels: still prefer the supported card.
-        assert self._hipinfo_pick(["gfx1013", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert self._hipinfo_pick(["gfx1013", "gfx803", "gfx1200"]) == "gfx1200"
 
     def test_pinning_a_wheelless_gpu_says_why_torch_will_be_cpu(self, monkeypatch, capsys):
         # The pin is honoured, but silently installing CPU torch while another enumerated
@@ -4781,7 +4781,7 @@ class TestDetectWindowsGfxArch:
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
-        assert self._hipinfo_pick(["gfx1010", "gfx1036"]) == "gfx1010"
+        assert self._hipinfo_pick(["gfx803", "gfx1036"]) == "gfx803"
         out = capsys.readouterr().out
         assert "no AMD Windows wheels" in out
         assert "gfx1036" in out
@@ -4800,10 +4800,10 @@ class TestDetectWindowsGfxArch:
 
     def test_advisory_names_the_selected_gpus_real_index(self, monkeypatch, capsys):
         # Not always device 1: here it is device 2, and naming 1 would expose the
-        # gfx1010 the installed wheels do not target.
+        # gfx803 the installed wheels do not target.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
-        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert self._hipinfo_pick(["gfx1036", "gfx803", "gfx1200"]) == "gfx1200"
         out = capsys.readouterr().out
         assert "HIP_VISIBLE_DEVICES 2" in out
         assert "HIP_VISIBLE_DEVICES 1" not in out
@@ -5852,7 +5852,7 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
-    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+    def test_install_python_stack_installs_pypi_torchao_when_windows_rocm_torch_is_installed(
         self,
         mock_pip,
         mock_run,
@@ -5887,11 +5887,18 @@ class TestWindowsRocmTorchaoGuard:
             patch.object(stack_mod.install_manifest, "installed_versions", return_value = ["0"]),
             patch.object(stack_mod.install_manifest, "damaged_payload_files", return_value = []),
             patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+            patch.object(stack_mod, "pip_install_try", return_value = True) as mock_try,
         ):
             assert stack_mod.install_python_stack() == 0
 
-        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
-        assert not any("torchao" in arg for arg in installed_specs)
+        torchao_calls = [
+            [str(arg) for arg in call.args]
+            for call in mock_pip.call_args_list + mock_try.call_args_list
+            if any(str(arg).startswith("torchao") for arg in call.args)
+        ]
+        # From PyPI: download.pytorch.org's rocm leaves serve Linux only.
+        assert torchao_calls
+        assert all("--index-url" not in c for c in torchao_calls)
 
 
 class TestProgressStepCountMatchesTotal:
@@ -6116,9 +6123,9 @@ class TestWorkerWindowsRocmPatches:
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_export_worker_calls_shared_torchao_stub(self):
-        """export/worker.py must invoke the same shared torchao stub entrypoint."""
+        """export/worker.py loads real torchao when it can and otherwise the same shared stub."""
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
-        assert "install_torchao_windows_rocm_stub()" in source
+        assert "install_torchao_windows_rocm_real_or_stub()" in source
 
     def test_embedder_calls_shared_torchao_stub(self):
         """embeddings.py must install the stub before importing sentence-transformers:
