@@ -8,7 +8,9 @@ import types
 import pytest
 
 import unsloth.models.vision as vision
-from unsloth.models.vision import _bucket_static_cache, _compiles_decode, _decode_cache_bucket
+import contextlib
+
+from unsloth.models.vision import _CompileDecodeOnRepeat, _compiles_decode, _decode_cache_bucket
 
 
 def _model(model_type, text_type = None):
@@ -93,30 +95,67 @@ def test_bucket_rounds_up(length, bucket):
     assert _decode_cache_bucket(length) == bucket
 
 
-def _recorder():
-    seen = []
+class _FakeGenerating:
+    """Stands in for the model: records the length transformers would allocate and whether
+    it would compile the decode step."""
 
-    def prepare_static_cache(cache_implementation, batch_size, max_cache_len, *rest, **kwargs):
-        seen.append(max_cache_len)
+    def __init__(self):
+        self.allocated = []
 
-    return seen, prepare_static_cache
+    def _prepare_static_cache(self, cache_implementation, batch_size, max_cache_len, *rest, **kwargs):
+        self.allocated.append(max_cache_len)
+        return types.SimpleNamespace(max_cache_len = max_cache_len)
 
-
-def test_wrapper_buckets_keyword_length():
-    # transformers 5.17 passes max_cache_len by keyword, after counting prompt / inputs_embeds.
-    seen, prepare = _recorder()
-    _bucket_static_cache(prepare)(
-        cache_implementation = "static",
-        batch_size = 1,
-        max_cache_len = 1501,
-        prefill_chunk_size = None,
-        model_kwargs = {},
-    )
-    assert seen == [2048]
+    def _valid_auto_compile_criteria(self, model_kwargs, generation_config):
+        return True
 
 
-def test_wrapper_buckets_positional_length():
-    # transformers 5.2 - 5.5 signature: (cache_implementation, batch_size, max_cache_len, model_kwargs).
-    seen, prepare = _recorder()
-    _bucket_static_cache(prepare)("static", 3, 70, {})
-    assert seen == [1024]
+def _generate(model, scopes, batch_size, length, positional = False):
+    with _CompileDecodeOnRepeat(model):
+        if positional:  # transformers 5.2 - 5.5 call shape
+            model._prepare_static_cache("static", batch_size, length, {})
+        else:  # 5.17 passes keywords
+            model._prepare_static_cache(cache_implementation = "static", batch_size = batch_size, max_cache_len = length, prefill_chunk_size = None, model_kwargs = {})
+        compiled = model._valid_auto_compile_criteria({}, None)
+        return compiled, len(scopes)
+
+
+@pytest.fixture
+def scopes(monkeypatch):
+    entered = []
+
+    @contextlib.contextmanager
+    def fake_scope():
+        entered.append(1)
+        yield
+
+    monkeypatch.setattr(vision, "unsloth_decode_compile", fake_scope)
+    return entered
+
+
+def test_first_shape_stays_eager_then_compiles_on_repeat(scopes):
+    model = _FakeGenerating()
+    assert _generate(model, scopes, 1, 200) == (False, 0)
+    assert _generate(model, scopes, 1, 300) == (True, 1)  # same 1024 bucket
+    assert _generate(model, scopes, 3, 300) == (False, 1)  # new batch size
+    assert _generate(model, scopes, 1, 1500) == (False, 1)  # new 2048 bucket
+    assert _generate(model, scopes, 3, 90, positional = True) == (True, 2)
+    assert model.allocated == [1024, 1024, 1024, 2048, 1024]
+
+
+def test_hooks_are_removed_after_the_call(scopes):
+    model = _FakeGenerating()
+    _generate(model, scopes, 1, 10)
+    assert "_prepare_static_cache" not in model.__dict__
+    assert "_valid_auto_compile_criteria" not in model.__dict__
+
+
+class _Refusing(_FakeGenerating):
+    def _valid_auto_compile_criteria(self, model_kwargs, generation_config):
+        return False  # e.g. bnb 4-bit or CPU offload
+
+
+def test_transformers_refusal_is_respected(scopes):
+    model = _Refusing()
+    _generate(model, scopes, 1, 10)
+    assert _generate(model, scopes, 1, 10) == (False, 0)

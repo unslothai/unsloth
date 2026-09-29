@@ -766,18 +766,51 @@ def _decode_cache_bucket(length):
     return max(1024, 1 << (length - 1).bit_length())
 
 
-def _bucket_static_cache(prepare_static_cache):
-    # Resize where transformers sizes it (prompt, inputs_embeds and max_length already counted);
-    # `max_cache_len` is the third argument of _prepare_static_cache on every 5.x release.
-    @functools.wraps(prepare_static_cache)
-    def bucketed(*args, **kwargs):
+class _CompileDecodeOnRepeat:
+    """One generate() call. Buckets the static cache, and compiles the decode step only for a
+    (batch, cache length) this model has decoded before: compiling costs ~30-45 s per new shape,
+    more than a whole eager call, so a one-off shape stays on the eager path exactly as before.
+    Both hooks sit where transformers decides, so its own batch and length are used."""
+
+    def __init__(self, model):
+        self.model = model
+        self.compile = False
+        self.scopes = contextlib.ExitStack()
+        self.prepare_static_cache = model._prepare_static_cache
+        self.valid_auto_compile_criteria = model._valid_auto_compile_criteria
+
+    def _prepare(self, *args, **kwargs):
+        # `max_cache_len` is the third argument on every 5.x release, by keyword since 5.2.
         if "max_cache_len" in kwargs:
             kwargs["max_cache_len"] = _decode_cache_bucket(kwargs["max_cache_len"])
         elif len(args) >= 3:
             args = (*args[:2], _decode_cache_bucket(args[2]), *args[3:])
-        return prepare_static_cache(*args, **kwargs)
+        cache = self.prepare_static_cache(*args, **kwargs)
+        batch_size = kwargs.get("batch_size", args[1] if len(args) > 1 else None)
+        key = (batch_size, getattr(cache, "max_cache_len", None))
+        seen = getattr(self.model, "_unsloth_decoded_shapes", None)
+        if seen is None:
+            seen = self.model._unsloth_decoded_shapes = set()
+        self.compile = key in seen
+        seen.add(key)
+        return cache
 
-    return bucketed
+    def _criteria(self, *args, **kwargs):
+        if not self.compile or not self.valid_auto_compile_criteria(*args, **kwargs):
+            return False
+        self.scopes.enter_context(unsloth_decode_compile())
+        return True
+
+    def __enter__(self):
+        self.model._prepare_static_cache = self._prepare
+        self.model._valid_auto_compile_criteria = self._criteria
+        return self
+
+    def __exit__(self, *exc):
+        del self.model._prepare_static_cache
+        del self.model._valid_auto_compile_criteria
+        self.scopes.close()
+        return False
 
 
 try:
@@ -1149,7 +1182,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
     compile_decode = (
-        cache_implementation == "static" and not force_dynamic_cache and _compiles_decode(self)
+        cache_implementation == "static"
+        and not force_dynamic_cache
+        and _compiles_decode(self)
+        and hasattr(self, "_prepare_static_cache")
+        and hasattr(self, "_valid_auto_compile_criteria")
+        and "_prepare_static_cache" not in self.__dict__
     )
     compile_config = _decode_compile_config if compile_decode else _compile_config
     if "generation_config" in kwargs:
@@ -1168,20 +1206,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if cache_implementation is not None:
             kwargs["compile_config"] = compile_config
 
-    decode_scope = unsloth_decode_compile() if compile_decode else contextlib.nullcontext()
-    bucketing = (
-        compile_decode
-        and "_prepare_static_cache" not in self.__dict__
-        and hasattr(self, "_prepare_static_cache")
-    )
-    if bucketing:
-        self._prepare_static_cache = _bucket_static_cache(self._prepare_static_cache)
+    decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     try:
         with decode_scope, torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
-        if bucketing:
-            del self._prepare_static_cache
         _clear_generation_caches(self)
 
     return output
