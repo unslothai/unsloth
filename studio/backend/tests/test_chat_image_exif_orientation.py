@@ -120,10 +120,11 @@ def test_a_webp_tag_is_skipped_the_way_chromium_skips_it():
 
 
 @pytest.mark.parametrize("orientation", [3, 6, 8])
-def test_the_transformers_path_decodes_a_tagged_jpeg_upright(orientation):
+def test_the_transformers_and_mlx_path_decodes_a_tagged_jpeg_upright(orientation):
     backend = SimpleNamespace(resize_image = lambda img: img)
     encoded = base64.b64encode(_photo(orientation)).decode("ascii")
     img = _decode_and_resize_image(backend, encoded)
     size, quadrants = _AS_DISPLAYED[orientation]
     assert img.size == size
     assert _quadrants(img) == quadrants
+    assert img.getexif().get(0x0112) in (None, 1)

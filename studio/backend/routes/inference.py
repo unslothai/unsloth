@@ -3736,6 +3736,7 @@ from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
+from core.inference.image_orientation import exif_upright
 from core.inference.llama_http import nonstreaming_client
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -19686,7 +19687,7 @@ def _decode_and_resize_image(backend, encoded: str):
     image_data = base64.b64decode(encoded)
     image = Image.open(BytesIO(image_data))
     image.load()
-    image = _exif_upright(image)
+    image = exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
     image = _scaled_from_16_bit(backend.resize_image(image))
     if image.mode not in ("RGB", "RGBA"):
@@ -35124,28 +35125,6 @@ def _scaled_from_16_bit(image):
     return image.point(lambda v: v * (1.0 / 257), mode = "L")
 
 
-def _exif_upright(image):
-    # Only what the chat preview honours: the EXIF block, not XMP, and never for WebP.
-    from PIL import Image
-
-    exif = Image.Exif()
-    try:
-        if image.info.get("exif"):
-            exif.load(image.info["exif"])
-    except Exception:
-        return image
-    method = {
-        2: Image.Transpose.FLIP_LEFT_RIGHT,
-        3: Image.Transpose.ROTATE_180,
-        4: Image.Transpose.FLIP_TOP_BOTTOM,
-        5: Image.Transpose.TRANSPOSE,
-        6: Image.Transpose.ROTATE_270,
-        7: Image.Transpose.TRANSVERSE,
-        8: Image.Transpose.ROTATE_90,
-    }.get(None if image.format == "WEBP" else exif.get(0x0112))
-    return image if method is None else image.transpose(method)
-
-
 def _pil_to_png_b64(img) -> str:
     buf = io.BytesIO()
     # Composited, not merely converted: convert("RGB") keeps whatever colour sits
@@ -35243,7 +35222,7 @@ def _llama_image_data_url(raw: bytes) -> str:
 
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
-        upright = _exif_upright(img)
+        upright = exif_upright(img)
     if upright is not img:
         buf = io.BytesIO()
         if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
