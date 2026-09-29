@@ -71,7 +71,7 @@ SHARD = re.compile(
 
 
 def _index_name(shard):
-    # The index a sharded save writes next to its shards (transformers' _add_variant naming).
+    # transformers' _add_variant naming.
     m = SHARD.fullmatch(shard)
     if m is None:
         return None
@@ -258,7 +258,6 @@ def test_offloading_device_map_keeps_native_load(zoo):
     assert _helper()("mxfp4", False, {"model.layers.0": 0, "model.layers.1": 1}) is True
     for device_map in ("sequential", "auto"):
         assert _run_branch(False, "mxfp4", False, device_map = device_map) is True
-    # load_in_16bit asked for the dequantize itself, offload or not.
     assert _run_branch(True, "mxfp4", False, device_map = offload) is True
 
 
@@ -549,7 +548,6 @@ def test_index_shards_in_nested_folders_are_sized(zoo, sizes, tmp_path):
 
 
 def test_an_explicit_max_memory_budget_is_used_whole(zoo, sizes):
-    # accelerate uses max_memory as given (no margin).
     sizes["checkpoint"], sizes["free"] = 38, [80]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: "40GiB"}) is True
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b", {0: "36GiB"}) is False

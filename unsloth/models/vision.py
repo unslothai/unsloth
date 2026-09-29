@@ -1571,7 +1571,7 @@ def _mxfp4_lora_keeps_experts_packed(
                 if isinstance(budget, int):
                     free = min(free, budget)
                 free_bytes += free
-            # max_memory is used as given; measured free memory keeps a margin for activations.
+            # Measured free memory keeps an activation margin; an explicit max_memory is taken as given.
             limit = free_bytes if max_memory else 0.9 * free_bytes
             if checkpoint_bytes and probed and checkpoint_bytes > limit:
                 return False
