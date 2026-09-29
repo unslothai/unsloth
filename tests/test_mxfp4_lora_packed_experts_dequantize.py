@@ -618,23 +618,12 @@ def test_balanced_placement_caps_earlier_cards_like_get_balanced_memory(zoo, siz
 
 
 @pytest.mark.parametrize(
-    "key, packed",
-    [
-        ("lm_head", True),
-        ("model.embed_tokens", True),
-        ("model.norm", True),
-        ("model.layers.3.self_attn", True),
-        ("model.layers.3.mlp.router", True),
-        ("model.layers.3.mlp.experts", False),
-        ("model.layers.3.mlp", False),
-        ("model.layers.3", False),
-        ("model", False),
-        ("", False),
-    ],
+    "key", ["lm_head", "model.embed_tokens", "model.layers.3.self_attn", "model.layers.3.mlp.experts", ""]
 )
-def test_an_explicit_map_offloading_only_non_expert_modules_keeps_packed(zoo, sizes, key, packed):
+def test_any_offload_in_an_explicit_map_unpacks_like_the_zoo_guard(zoo, sizes, key):
+    # zoo's _get_device_map guard flags any cpu / disk entry, then every expert is dequantized.
     device_map = {"": 0, key: "cpu"} if key else {"": "cpu"}
-    assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-20b") is packed
+    assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-20b") is False
 
 
 def test_a_previous_load_offload_flag_does_not_decide_this_load(zoo, sizes):

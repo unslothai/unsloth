@@ -1401,18 +1401,10 @@ def _mxfp4_lora_keeps_experts_packed(
             device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
         except Exception:
             device_map = "cpu"
-    # unsloth_zoo only sees offload after this config is built, so check explicit maps here.
-    # Offloading modules that hold no experts (lm_head, embeddings, attention) keeps them packed.
-    import re
-
-    no_experts = re.compile(
-        r"(^|\.)(lm_head|embed_tokens|norm|rotary_emb|self_attn|input_layernorm|"
-        r"post_attention_layernorm|router)(\.|$)"
-    )
+    # unsloth_zoo only sees offload after this config is built, so check explicit maps here. Its guard
+    # unpacks every expert on ANY cpu / disk entry, so offloading even lm_head rules packed out.
     if isinstance(device_map, dict) and any(
-        str(value).split(":")[0] in ("cpu", "disk")
-        and ("experts" in str(key) or not no_experts.search(str(key)))
-        for key, value in device_map.items()
+        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
     ):
         return False
     if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
