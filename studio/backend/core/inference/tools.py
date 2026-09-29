@@ -13212,7 +13212,6 @@ _MCP_COMPACT_SPEC_CHARS = 1500
 _MCP_SUMMARY_CHARS = 240
 _MCP_COMPACT_HINT = "Full parameters via mcp_tool_schema."
 _MCP_MIN_SCHEMA_PAGE_CHARS = 64
-# Large tools are compacted only when the full MCP listing would take more than this share of the window.
 _MCP_FULL_LISTING_SHARE = 0.75
 _MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
 # Window -> whether the last MCP listing built for it was compacted, read back when a call from it runs.
@@ -13828,7 +13827,6 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
-        # Only a call from a compacted listing, to a tool that listing compacted, is answered with its schema.
         tool = _mcp_cached_tool(server, tool_name) if _mcp_listing_compacted() else None
         if tool is not None and not _mcp_spec_compacted(tool):
             tool = None
@@ -13882,7 +13880,6 @@ def execute_tool(
             config_check = _config_current,
         )
         if tool is not None and isinstance(result, str) and result.startswith("Error:"):
-            # The model never saw this tool's full schema, so a rejected call comes back with it.
             return _mcp_schema_page(
                 result.rstrip() + "\n\n", _mcp_tool_schema_text(display, tool), 0
             )

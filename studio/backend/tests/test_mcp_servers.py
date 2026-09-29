@@ -2195,9 +2195,6 @@ def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch
     assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display
 
 
-# ── core/inference/tools: compact MCP schemas ───────────────────────
-
-
 def _big_mcp_tool():
     return {
         "name": "query",
@@ -2249,9 +2246,7 @@ def listing_window():
 
 @pytest.fixture
 def compacting(monkeypatch, listing_window):
-    """A window every MCP listing overflows, so large tools are always compacted."""
     from core.inference import tools as tools_mod
-
     monkeypatch.setattr(tools_mod, "_MCP_FULL_LISTING_SHARE", 0.0)
     return listing_window(100_000)
 
