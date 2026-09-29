@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A torchao int8 / fp8 denoiser stays quantised when the image plan offloads it.
-
-Which placement each weight class survives (``torchao_offload_plan``), the group-offload kwargs a torchao module is
-given, the render's no_grad switch, and the auto precision the real planner picks per family at 8-32 GiB."""
+"""A torchao int8 / fp8 denoiser stays quantised when the image plan offloads it."""
 
 from __future__ import annotations
 
@@ -33,14 +30,12 @@ T017, T018, T016 = (0, 17), (0, 18), (0, 16)
 
 @pytest.fixture(autouse = True)
 def _roomy_host(monkeypatch):
-    """Host RAM that pins any streamed denoiser, whatever the machine running the tests has."""
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 10 ** 7)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
 
 
 def _plan(policy, *, stream_transformer = True, fits_model_offload = True):
-    """A real MemoryPlan with the requested placement; ``fits_model_offload`` sizes the whole-module check."""
     device = DeviceMemory("cuda", "cuda:0", "discrete_vram", 15_000, 16_384)
     plan = plan_diffusion_memory(
         target = types.SimpleNamespace(supports_model_cpu_offload = True),
@@ -78,7 +73,6 @@ SURVIVAL = {
         s: {v: (True, OFFLOAD_GROUP) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
     "group_dit_streamed": {
-        # 0.17's v1 int8 survives only stream-free, measured 14x slower than streaming bf16
         "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_GROUP)},
         "fp8": {T016: (False, None), T017: (True, OFFLOAD_GROUP), T018: (True, OFFLOAD_GROUP)},
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
@@ -114,14 +108,12 @@ def test_survival_table(placement, scheme, version, survives, policy):
 
 @pytest.mark.parametrize("diffusers_version, streams", [((0, 36), False), ((0, 37), False), ((0, 38), True), (None, False)])
 def test_diffusers_before_the_torchao_swap_keeps_the_resident_rule(monkeypatch, diffusers_version, streams):
-    """diffusers < 0.38 moved only a torchao weight's wrapper under group offload."""
     monkeypatch.setattr(mem, "_installed_diffusers_version", lambda: diffusers_version)
     assert torchao_survives_plan(PLACEMENTS["group_dit_streamed"], "int8", torchao_version = T018) is streams
     assert torchao_survives_plan(PLACEMENTS["group_dit_resident"], "int8", torchao_version = T018)
 
 
 def test_swap_retry_collects_once_then_gives_up(monkeypatch):
-    """A weakref left by uncollected garbage is retried after gc; any other failure, or a live weakref, raises."""
     import sys
 
     calls: list = []
@@ -151,9 +143,7 @@ def test_swap_retry_collects_once_then_gives_up(monkeypatch):
     "capped, budget, env, streams",
     [
         (False, 10 ** 7, None, True),
-        # Windows / WSL cap pinned memory near 1 GiB
         (True, 10 ** 7, None, False),
-        # the quantised denoiser (8000 MiB here) does not fit the pinnable host RAM
         (False, 7_999, None, False),
         (False, None, None, False),
         (False, 10 ** 7, "0", False),
@@ -161,8 +151,6 @@ def test_swap_retry_collects_once_then_gives_up(monkeypatch):
     ],
 )
 def test_a_streamed_torchao_denoiser_needs_its_pin(monkeypatch, capped, budget, env, streams):
-    """Lazy pinning refuses torchao and the stream-free fallback copies back every step, so a streamed torchao tier
-    needs the up-front pin; a resident one does not."""
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: capped)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: budget)
     if env is not None:
@@ -179,7 +167,6 @@ def test_no_torchao_keeps_the_resident_rule():
 
 
 def test_never_moves_still_means_resident_only():
-    """The old predicate is unchanged for callers that mean "the denoiser never moves" (the GGUF gates)."""
     keeps = mem.plan_keeps_transformer_resident
     assert keeps(PLACEMENTS["resident"]) and keeps(PLACEMENTS["group_dit_resident"])
     for name in ("group_dit_streamed", "model_fits", "streaming"):
@@ -217,7 +204,6 @@ NO_STREAM = {"onload_device": "cuda", "use_stream": False}
         (("Int8Tensor",), False, 10 ** 7, "as is"),
         (("Float8Tensor",), False, 10 ** 7, "as is"),
         (("Int8Tensor", "Float8Tensor"), False, 10 ** 7, "as is"),
-        # lazy pinning refuses every torchao subclass: pin up front where host RAM allows
         (("Int8Tensor",), True, 10 ** 7, "pinned"),
         (("Float8Tensor",), True, 10 ** 7, "pinned"),
         (("Int8Tensor",), True, None, "no stream"),
@@ -253,7 +239,6 @@ def test_group_offload_kwargs_leave_dense_and_stream_free_modules_alone():
         (OFFLOAD_GROUP, "fp8", None, True),
         (OFFLOAD_STREAMING, "int8", None, True),
         (OFFLOAD_GROUP, None, "fp8", True),
-        # GGUF or dense bf16 under offload keeps inference_mode
         (OFFLOAD_GROUP, None, None, False),
         (OFFLOAD_MODEL, None, None, False),
     ],
@@ -268,7 +253,6 @@ def test_render_grad_mode(policy, transformer_quant, text_encoder_quant, no_grad
 
 
 def test_render_uses_the_widened_switch():
-    """The render context asks the helper, not the model-offload-only condition #11558 shipped."""
     import inspect
 
     source = inspect.getsource(dmod.DiffusionBackend)
@@ -286,7 +270,6 @@ def _estimate(steady):
         ("resident", 6_000, 4_000, T018, OFFLOAD_NONE, False),
         ("group_dit_streamed", 6_000, 4_000, T018, OFFLOAD_GROUP, False),
         ("group_dit_streamed", 6_000, 4_000, T016, OFFLOAD_GROUP, True),
-        # whole module fits: keep model offload
         ("model_fits", 6_000, 4_000, T018, OFFLOAD_MODEL, False),
         # quantised denoiser or encoder too big to onload whole: stream instead of falling back to bf16
         ("model_fits", 60_000, 4_000, T018, OFFLOAD_STREAMING, False),
@@ -313,14 +296,12 @@ def test_inplace_quant_no_longer_calls_group_offload_wrong():
     assert "Group offload is WRONG for torchao" not in source
 
 
-# --- auto precision per family, real planner, spoofed card -------------------------------------------------------
 
 GIB = 1024
 
 
 @pytest.fixture
 def planner(monkeypatch):
-    """The real image planner on a spoofed sm_120 card with nothing cached (a fresh install)."""
     import torch
 
     from core.inference import diffusion_auto_policy as ap
@@ -462,21 +443,16 @@ FAMILY_TABLE = {
     ],
 )
 def test_auto_keeps_int8_on_the_offload_tier(planner, family, base, gib, expected):
-    """Every cell the audit found falling back to released bf16 because the tier offloads now keeps int8 with the
-    offload tier; only Lumina's measured keep-bf16-while-resident cell stays bf16."""
     assert planner(family, base, gib) == expected
 
 
 @pytest.mark.parametrize("version, expected", [(T016, "bf16"), (T017, "hosted fp8")])
 def test_older_torchao_streamed_seeds(planner, monkeypatch, version, expected):
-    """0.16 has no measured streaming path and keeps the released weights, as before. On 0.17 the int8 rung (v1,
-    stream-free only) yields to the hosted fp8 one, which streams."""
     monkeypatch.setattr(mem, "_installed_torchao_version", lambda: version)
     precision, _policy = planner("hunyuanimage-2.1", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 16)
     assert precision == expected
 
 
-# --- real torchao weights through diffusers group offload (GPU) ---------------------------------------------------
 
 
 def _gpu_stack():
@@ -492,9 +468,6 @@ def _gpu_stack():
 @pytest.mark.parametrize("low_cpu_mem_usage", [False, True])
 @pytest.mark.parametrize("requires_grad", [False, True])
 def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_mem_usage, requires_grad):
-    """Studio's stream kwargs, passed through ``_torchao_group_offload_kwargs``, run a quantised block stack bit-exact
-    vs resident under no_grad; inference_mode is what the render switch avoids. ``requires_grad`` is how a hosted
-    checkpoint's weights load (``quantize_`` leaves them frozen), which diffusers' swap_tensors cannot move."""
     import copy
     import inspect
 
@@ -544,7 +517,6 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_me
         offloaded(x)
 
 
-# --- CUDA graphs on the resident-denoiser tier ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -552,7 +524,6 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_me
     [(False, None, False), (True, None, True), (True, False, False), (True, True, True)],
 )
 def test_graph_gate_follows_the_denoiser(monkeypatch, offload_active, denoiser_offloaded, expected):
-    """Graphs are refused for a plan that moves the denoiser, not for one that only streams the text encoders."""
     from core.inference import diffusion_cuda_graph as dcg
     from core.inference import diffusion_speed
 

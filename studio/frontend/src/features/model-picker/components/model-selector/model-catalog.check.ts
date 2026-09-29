@@ -1158,8 +1158,7 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo needs 27.3 GB of card dense (19.1 GiB bf16-resident, not the 30 GB fp32 download) and 19.3 GB
-// pre-quantised under the 70% rule.
+// Z-Image-Turbo: 27.3 GB card dense (bf16, not the fp32 download), 19.3 GB pre-quantised, under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
@@ -1294,7 +1293,6 @@ assert.equal(
   }).repoId,
   zTurboId,
 );
-// 24 GB takes the hosted fp8 pipeline (13.5 GiB); the fp32 download size used to push it to bnb-4bit.
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
     gpuGb: 24,

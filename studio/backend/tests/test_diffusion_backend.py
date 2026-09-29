@@ -56,8 +56,7 @@ from core.inference.diffusion_families import (
 
 @pytest.fixture(autouse = True)
 def _unmeasured_torchao(monkeypatch):
-    """Hermetic: the installed torchao must not decide which offload tiers a stubbed load quantises on. Pinned to
-    "no measured torchao" (the resident rule); tests of the streamed tiers pin a release themselves."""
+    """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
@@ -12138,8 +12137,7 @@ def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_
 def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
     fake_runtime, tmp_path, monkeypatch, offload_policy, expected
 ):
-    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad, whichever
-    offload hook moves them."""
+    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad."""
     import torch
 
     from core.inference import diffusion_memory
@@ -12269,8 +12267,6 @@ def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_
 def test_a_pipeline_pick_quantises_under_streamed_group_offload_on_a_measured_torchao(
     fake_runtime, tmp_path, monkeypatch, torchao_version
 ):
-    """fp8 weights survive group offload of a streamed transformer from torchao 0.17 on, so auto keeps the quantised
-    build there instead of streaming the released bf16 weights."""
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: torchao_version)
@@ -12293,8 +12289,6 @@ def test_a_pipeline_pick_quantises_under_streamed_group_offload_on_a_measured_to
 def test_a_quantised_transformer_too_big_to_onload_whole_streams_instead(
     fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
 ):
-    """Where the quantised transformer or an encoder cannot be onloaded whole, a measured torchao streams it (the
-    placement the bf16 weights would get) rather than dropping to bf16."""
     from core.inference import diffusion as dmod
     from core.inference import diffusion_memory
 
@@ -13466,7 +13460,6 @@ def test_an_explicit_fp8_under_group_offload_engages_on_a_measured_torchao(
 def test_an_explicit_int8_under_offload_stays_native_on_a_measured_torchao(
     fake_runtime, tmp_path, monkeypatch, memory
 ):
-    """An explicit int8 keeps its torchao-free offload build; the torchao placement rules are for auto / fp8."""
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))

@@ -894,16 +894,11 @@ def plan_keeps_transformer_resident(plan: Any) -> bool:
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
 
 
-# Oldest torchao whose weights were measured surviving diffusers group offload of a streamed denoiser under no_grad,
-# eager and regionally compiled, bit-exact vs the compiled resident module: Float8Tensor from 0.17, Int8Tensor from
-# 0.18. 0.17's default int8 is the v1 LinearActivationQuantizedTensor, which survives only without a copy stream and
-# then ran a real Z-Image-Turbo 14x slower than streaming the bf16 weights, so int8 keeps the resident rule there.
-# Older releases were never measured.
+# Oldest torchao measured bit-exact under streamed group offload. 0.17's v1 int8 needs no copy stream and ran 14x
+# slower than streaming bf16, so int8 starts at 0.18. Older releases were never measured.
 _TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
-# Weight classes that survive the copy-stream path when their host copies are pinned up front.
 _TORCHAO_STREAM_SAFE_CLASSES = frozenset(("Int8Tensor", "Float8Tensor"))
-# diffusers group offload moves a torchao weight whole (swap_tensors) from 0.38 on; before it, ``param.data = ...``
-# moved only the wrapper and left the quantised data on the host.
+# Before 0.38 diffusers moved only the torchao wrapper, leaving quantised data on the host.
 _DIFFUSERS_TORCHAO_GROUP_OFFLOAD_MIN = (0, 38)
 _UNSET: Any = object()
 
@@ -921,7 +916,6 @@ def _installed_version(package: str) -> Optional[tuple[int, int]]:
 
 @functools.lru_cache(maxsize = 1)
 def _installed_torchao_version() -> Optional[tuple[int, int]]:
-    """(major, minor) of the installed torchao from its metadata, without importing it; None when absent."""
     return _installed_version("torchao")
 
 
@@ -931,9 +925,8 @@ def _installed_diffusers_version() -> Optional[tuple[int, int]]:
 
 
 def _model_offload_fits_quantised(plan: Any) -> bool:
-    """Whole-module offload onloads each component whole and cannot fall back to streaming a torchao denoiser
-    (refine_memory_plan_for_components bails on it), so the quantised denoiser plus the runtime, and the text
-    encoders, must each fit the budget on their own. The encoder SUM stands in for the largest one."""
+    """Whole-module offload cannot fall back to streaming a torchao denoiser, so the quantised denoiser and the
+    encoders (SUM stands in for the largest) must each fit the budget."""
     try:
         est = plan.estimates
         budget = est.get("safe_device_budget_mib")
@@ -955,15 +948,7 @@ def torchao_offload_plan(
     plan: Any, scheme: Optional[str], *, torchao_version: Any = _UNSET
 ) -> Optional[Any]:
     """The placement a torchao ``scheme`` denoiser runs on under ``plan``, or None when its weights would not survive.
-
-    Resident, or group offload with the denoiser resident: ``plan`` as is (nothing moves the denoiser). Whole-module
-    offload: ``plan`` when the quantised denoiser and the encoders each fit the budget (#11558). Otherwise int8 / fp8
-    stream (fp8 on torchao 0.17+, int8 on 0.18+, diffusers 0.38+): group and streaming plans as they are, and a
-    whole-module plan that does not fit becomes the streaming tier, the placement refinement gives bf16. The
-    denoiser streams without a copy stream where its weights need that (``_torchao_group_offload_kwargs``). Sequential
-    offload and every other scheme were never measured, so they stay refused. Offloaded torchao renders need no_grad
-    (``_torchao_render_needs_no_grad`` in diffusion.py). ``plan_keeps_transformer_resident`` still answers "never
-    moves"."""
+    Sequential offload and other schemes were never measured, so they stay refused."""
     if plan_keeps_transformer_resident(plan):
         return plan
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
@@ -981,9 +966,8 @@ def torchao_offload_plan(
 
 
 def _torchao_stream_pinnable(plan: Any) -> bool:
-    """Whether host RAM can pin a streamed torchao denoiser up front. Lazy pinning refuses a torchao subclass, and the
-    stream-free fallback copies every group back to the host each step (a real Z-Image-Turbo ran ~35x slower than the
-    pinned stream), so where pinned memory is capped (Windows, WSL) or short, the released weights stream instead."""
+    """Lazy pinning refuses torchao and the stream-free fallback ran ~35x slower, so torchao streams only where the
+    denoiser can be pinned up front."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no"):
         return False
@@ -1001,13 +985,10 @@ def _torchao_stream_pinnable(plan: Any) -> bool:
 
 
 def torchao_survives_plan(plan: Any, scheme: Optional[str], *, torchao_version: Any = _UNSET) -> bool:
-    """Whether a torchao ``scheme`` denoiser runs under ``plan`` (possibly moved to the streaming tier)."""
     return torchao_offload_plan(plan, scheme, torchao_version = torchao_version) is not None
 
 
 def torchao_scheme_streams(scheme: Optional[str], *, torchao_version: Any = _UNSET) -> bool:
-    """Whether ``scheme``'s torchao weights survive group offload of a streamed denoiser on this torchao and
-    diffusers."""
     floor = _TORCHAO_GROUP_OFFLOAD_MIN.get(str(scheme))
     if floor is None:
         return False
@@ -1019,7 +1000,6 @@ def torchao_scheme_streams(scheme: Optional[str], *, torchao_version: Any = _UNS
 
 
 def torchao_streaming_plan(plan: Any) -> Any:
-    """``plan`` moved to the streaming tier: denoiser blocks and text-encoder layers stream, nothing onloads whole."""
     return replace(
         plan,
         offload_policy = OFFLOAD_STREAMING,
@@ -1044,14 +1024,9 @@ def _torchao_weight_classes(module: Any) -> set[str]:
 
 
 def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """``apply_group_offloading`` kwargs a torchao-weighted ``module`` survives, freezing its torchao weights first.
-
-    diffusers moves a torchao weight with ``swap_tensors``, which walks the autograd graph of a weight that requires
-    grad through an ``aten.view`` torchao does not implement; a hosted checkpoint loads its weights that way,
-    ``quantize_`` does not. The copy stream pins host copies: torch refuses to pin a torchao subclass lazily
-    (``low_cpu_mem_usage``), so its copies are pinned up front where host RAM allows, and 0.17's v1 int8 has no
-    ``aten.is_pinned`` at all. Otherwise the module streams without the copy stream: correct, but it copies each group
-    back to the host every step, which is why the planner only streams torchao where the pin fits."""
+    """``apply_group_offloading`` kwargs a torchao-weighted ``module`` survives. Weights are frozen first: swap_tensors
+    on a requires_grad torchao weight hits an unimplemented ``aten.view``. Lazy pinning refuses torchao, so the copy
+    stream needs an up-front pin, else it is dropped."""
     classes = _torchao_weight_classes(module)
     if not classes:
         return kwargs
@@ -1062,7 +1037,6 @@ def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[s
     if classes <= _TORCHAO_STREAM_SAFE_CLASSES:
         if not kwargs.get("low_cpu_mem_usage"):
             return kwargs
-        # The plan checked the pin fits (_torchao_stream_pinnable); re-check against the loaded bytes.
         budget = None if _pinned_memory_capped() else _pin_budget_mib()
         if budget is not None and _module_host_mib(module) <= budget:
             return {**kwargs, "low_cpu_mem_usage": False}
@@ -1763,9 +1737,7 @@ def _streamed_pin_plan(
 
 
 def install_group_offload_torchao_swap_retry() -> bool:
-    """diffusers moves a torchao weight with ``swap_tensors``, which refuses a tensor any weakref points at. Retry once
-    after a collection, so a reference cycle not yet collected (a finished compile's tracing state) does not fail a
-    render; a live weakref still raises."""
+    """``swap_tensors`` refuses a weakref'd tensor; retry once after gc so uncollected compile garbage does not fail."""
     try:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers

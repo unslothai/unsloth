@@ -58,8 +58,7 @@ ALL_BYTES = sum(size for _name, size in Z_IMAGE_FILES)
 
 @pytest.fixture(autouse = True)
 def _unmeasured_torchao(monkeypatch):
-    """Hermetic: the installed torchao must not decide which offload tiers a stubbed load quantises on. Pinned to
-    "no measured torchao" (the resident rule); tests of the streamed tiers pin a release themselves."""
+    """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
@@ -1041,8 +1040,6 @@ def test_an_artifact_plan_that_streams_the_transformer_still_declines(monkeypatc
 
 @pytest.mark.parametrize("policy", ["group", "streaming"])
 def test_an_artifact_plan_that_streams_the_transformer_seeds_on_a_measured_torchao(monkeypatch, policy):
-    """int8 / fp8 weights survive a streamed transformer from torchao 0.17 on: seed the artifact rather than
-    download and stream the released bf16 shards."""
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
@@ -1057,7 +1054,6 @@ def test_an_artifact_plan_that_streams_the_transformer_seeds_on_a_measured_torch
 
 
 def test_a_resident_rung_still_beats_a_streamed_one(monkeypatch):
-    """A lower rung that fits resident wins over a higher one that only survives streamed."""
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))

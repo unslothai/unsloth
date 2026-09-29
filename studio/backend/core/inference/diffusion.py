@@ -1636,11 +1636,7 @@ def _inplace_torchao_placement(
     largest_companion_mib: Callable[[], Optional[int]],
 ) -> tuple[Any, Optional[str]]:
     """(placement, None) the in-place torchao quant of a pipeline denoiser runs on, or (``plan``, why it cannot).
-
-    Offloaded torchao renders under no_grad (``_torchao_render_needs_no_grad``). Whole-module offload keeps the plan
-    when the quantised estimate and the LOADED encoders (which the plan's estimates do not carry) each fit the budget;
-    otherwise, like group and streaming plans, it needs a scheme that streams on this torchao
-    (``torchao_scheme_streams``) and moves to the streaming tier."""
+    Whole-module offload also checks the LOADED encoders, which the plan's estimates do not carry."""
     if plan_keeps_transformer_resident(plan):
         return plan, None
     if plan.offload_policy == OFFLOAD_MODEL:
@@ -1671,8 +1667,7 @@ def _inplace_torchao_placement(
 
 
 def _denoiser_hooked(pipe: Any) -> bool:
-    """Whether an offload hook moves a denoiser of ``pipe`` (diffusers group offload registers on the denoiser,
-    accelerate whole-module offload sets ``_hf_hook``); a CUDA graph over it would replay stale pointers."""
+    """Whether an offload hook moves a denoiser of ``pipe``; a CUDA graph over it would replay stale pointers."""
     for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
         module = getattr(pipe, name, None)
         if module is None:
@@ -1687,10 +1682,8 @@ def _denoiser_hooked(pipe: Any) -> bool:
 
 
 def _torchao_render_needs_no_grad(state: Any) -> bool:
-    """Whether this load renders under ``no_grad`` instead of ``inference_mode``: a quantised denoiser or text encoder
-    behind ANY offload hook. Whole-module, group (streamed or stream-free) and streaming offload all move torchao
-    weights between devices, which inference_mode rejects (storage device mismatch / version counter). A GGUF or dense
-    load, or a resident one, keeps inference_mode."""
+    """Quantised weights behind ANY offload hook render under ``no_grad``: inference_mode rejects moving torchao
+    weights between devices."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
     return bool(getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None))
@@ -3482,8 +3475,7 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 -- no lower rungs is just "no retry"
                         pass
                 declined = False
-                # A rung whose denoiser survives an offloaded placement still beats the released bf16 shards (half the
-                # bytes to download and to stream), but a later rung that stays resident beats it.
+                # An offloaded quantised rung beats bf16 shards; a later resident rung beats both.
                 offloaded_rung: Optional[str] = None
                 memory = snapshot_device_memory(target)
                 for rung in rungs:
@@ -5240,8 +5232,7 @@ class DiffusionBackend:
                         else torchao_offload_plan(seeded_plan, pipeline_seed_scheme)
                     )
                     if seeded_placement is None:
-                        # Live free memory can undercut the CAPACITY the plan settled this against, and the
-                        # placement it lands on may be one torchao weights do not survive.
+                        # Live free memory can undercut the CAPACITY the plan settled this against.
                         logger.info(
                             "diffusion.denoiser_prequant: an artifact-sized plan for %s places the "
                             "denoiser where its torchao weights do not survive on this card, so the "
@@ -6385,9 +6376,7 @@ class DiffusionBackend:
                                         ),
                                         text_encoder_quant = text_encoder_quant,
                                     )
-                                    # A torchao build takes any placement its weights survive. A native scheme, or
-                                    # an explicit int8 that runs native once offloaded (picked below), keeps the
-                                    # resident-only rule.
+                                    # Native schemes (incl. explicit int8 offloaded) keep the resident-only rule.
                                     placed = (
                                         (replanned if plan_keeps_transformer_resident(replanned) else None)
                                         if native_scheme is not None or native_offload_scheme is not None
@@ -6821,7 +6810,6 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     if speed_applied.get("cuda_graph") and _denoiser_hooked(pipe):
-                        # Graphed for a resident denoiser, but placement fell back to a tier that moves it.
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
@@ -9009,8 +8997,7 @@ class DiffusionBackend:
                             gen.eta_seconds = None
 
                         try:
-                            # torchao aten.to fails torch's aliasing check under inference_mode once any offload hook
-                            # moves its weights.
+                            # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
                             with (
                                 (
                                     torch.no_grad()
