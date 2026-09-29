@@ -58,7 +58,6 @@ from core.inference.diffusion_families import (
 def _unmeasured_torchao(monkeypatch):
     """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
     from core.inference import diffusion_memory
-
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
 
 

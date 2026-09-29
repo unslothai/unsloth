@@ -935,7 +935,9 @@ def _model_offload_fits_quantised(plan: Any) -> bool:
         if budget is None or model is None or companions is None:
             return False
         denoiser = max(0, int(model) - int(companions))
-        overhead = int(est.get("runtime_headroom_mib") or 0) + int(est.get("base_overhead_mib") or 0)
+        overhead = int(est.get("runtime_headroom_mib") or 0) + int(
+            est.get("base_overhead_mib") or 0
+        )
         encoders = est.get("text_encoder_dense_mib")
         if encoders is None:
             encoders = companions
@@ -945,7 +947,10 @@ def _model_offload_fits_quantised(plan: Any) -> bool:
 
 
 def torchao_offload_plan(
-    plan: Any, scheme: Optional[str], *, torchao_version: Any = _UNSET
+    plan: Any,
+    scheme: Optional[str],
+    *,
+    torchao_version: Any = _UNSET,
 ) -> Optional[Any]:
     """The placement a torchao ``scheme`` denoiser runs on under ``plan``, or None when its weights would not survive.
     Sequential offload and other schemes were never measured, so they stay refused."""
@@ -984,7 +989,12 @@ def _torchao_stream_pinnable(plan: Any) -> bool:
     return budget is not None and 0 <= denoiser <= budget
 
 
-def torchao_survives_plan(plan: Any, scheme: Optional[str], *, torchao_version: Any = _UNSET) -> bool:
+def torchao_survives_plan(
+    plan: Any,
+    scheme: Optional[str],
+    *,
+    torchao_version: Any = _UNSET,
+) -> bool:
     return torchao_offload_plan(plan, scheme, torchao_version = torchao_version) is not None
 
 
@@ -1041,7 +1051,11 @@ def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[s
         forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
         if forced in ("1", "on", "true", "yes"):
             return {**kwargs, "low_cpu_mem_usage": False}
-        budget = None if forced in ("0", "off", "false", "no") or _pinned_memory_capped() else _pin_budget_mib()
+        budget = (
+            None
+            if forced in ("0", "off", "false", "no") or _pinned_memory_capped()
+            else _pin_budget_mib()
+        )
         if budget is not None and _module_host_mib(module) <= budget:
             return {**kwargs, "low_cpu_mem_usage": False}
     safe = {
@@ -1056,7 +1070,9 @@ def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[s
 def _freeze_torchao_weights(module: Any) -> None:
     try:
         for param in module.parameters():
-            if type(param).__module__.startswith("torchao") and getattr(param, "requires_grad", False):
+            if type(param).__module__.startswith("torchao") and getattr(
+                param, "requires_grad", False
+            ):
                 param.requires_grad_(False)
     except Exception:  # noqa: BLE001 - an inference-only flag: leave the module as it is
         pass
@@ -1944,7 +1960,9 @@ def _apply_group_offload(
                             dkwargs = dict(gkwargs)
                             if "low_cpu_mem_usage" in _params and use_stream:
                                 dkwargs["low_cpu_mem_usage"] = True
-                            apply_group_offloading(dit, **_torchao_group_offload_kwargs(dit, dkwargs))
+                            apply_group_offloading(
+                                dit, **_torchao_group_offload_kwargs(dit, dkwargs)
+                            )
                             installed += 1
                     transformer_demoted = True
                     if logger is not None:

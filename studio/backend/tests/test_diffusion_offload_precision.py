@@ -30,12 +30,17 @@ T017, T018, T016 = (0, 17), (0, 18), (0, 16)
 
 @pytest.fixture(autouse = True)
 def _roomy_host(monkeypatch):
-    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 10 ** 7)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 10**7)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
 
 
-def _plan(policy, *, stream_transformer = True, fits_model_offload = True):
+def _plan(
+    policy,
+    *,
+    stream_transformer = True,
+    fits_model_offload = True,
+):
     device = DeviceMemory("cuda", "cuda:0", "discrete_vram", 15_000, 16_384)
     plan = plan_diffusion_memory(
         target = types.SimpleNamespace(supports_model_cpu_offload = True),
@@ -68,7 +73,9 @@ PLACEMENTS = {
 
 # placement -> scheme -> torchao version -> (survives, policy it runs on)
 SURVIVAL = {
-    "resident": {s: {v: (True, OFFLOAD_NONE) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")},
+    "resident": {
+        s: {v: (True, OFFLOAD_NONE) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
+    },
     "group_dit_resident": {
         s: {v: (True, OFFLOAD_GROUP) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
@@ -77,18 +84,30 @@ SURVIVAL = {
         "fp8": {T016: (False, None), T017: (True, OFFLOAD_GROUP), T018: (True, OFFLOAD_GROUP)},
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
-    "model_fits": {s: {v: (True, OFFLOAD_MODEL) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")},
+    "model_fits": {
+        s: {v: (True, OFFLOAD_MODEL) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
+    },
     "model_too_big": {
         "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_STREAMING)},
-        "fp8": {T016: (False, None), T017: (True, OFFLOAD_STREAMING), T018: (True, OFFLOAD_STREAMING)},
+        "fp8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
     "streaming": {
         "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_STREAMING)},
-        "fp8": {T016: (False, None), T017: (True, OFFLOAD_STREAMING), T018: (True, OFFLOAD_STREAMING)},
+        "fp8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
-    "sequential": {s: {v: (False, None) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")},
+    "sequential": {
+        s: {v: (False, None) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
+    },
 }
 CASES = [
     (placement, scheme, version, *expected)
@@ -106,10 +125,18 @@ def test_survival_table(placement, scheme, version, survives, policy):
     assert (placed.offload_policy if placed is not None else None) == policy
 
 
-@pytest.mark.parametrize("diffusers_version, streams", [((0, 36), False), ((0, 37), False), ((0, 38), True), (None, False)])
-def test_diffusers_before_the_torchao_swap_keeps_the_resident_rule(monkeypatch, diffusers_version, streams):
+@pytest.mark.parametrize(
+    "diffusers_version, streams",
+    [((0, 36), False), ((0, 37), False), ((0, 38), True), (None, False)],
+)
+def test_diffusers_before_the_torchao_swap_keeps_the_resident_rule(
+    monkeypatch, diffusers_version, streams
+):
     monkeypatch.setattr(mem, "_installed_diffusers_version", lambda: diffusers_version)
-    assert torchao_survives_plan(PLACEMENTS["group_dit_streamed"], "int8", torchao_version = T018) is streams
+    assert (
+        torchao_survives_plan(PLACEMENTS["group_dit_streamed"], "int8", torchao_version = T018)
+        is streams
+    )
     assert torchao_survives_plan(PLACEMENTS["group_dit_resident"], "int8", torchao_version = T018)
 
 
@@ -142,11 +169,11 @@ def test_swap_retry_collects_once_then_gives_up(monkeypatch):
 @pytest.mark.parametrize(
     "capped, budget, env, streams",
     [
-        (False, 10 ** 7, None, True),
-        (True, 10 ** 7, None, False),
+        (False, 10**7, None, True),
+        (True, 10**7, None, False),
         (False, 7_999, None, False),
         (False, None, None, False),
-        (False, 10 ** 7, "0", False),
+        (False, 10**7, "0", False),
         (True, 0, "1", True),
     ],
 )
@@ -156,7 +183,9 @@ def test_a_streamed_torchao_denoiser_needs_its_pin(monkeypatch, capped, budget, 
     if env is not None:
         monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, env)
     for name in ("group_dit_streamed", "streaming", "model_too_big"):
-        assert torchao_survives_plan(PLACEMENTS[name], "int8", torchao_version = T018) is streams, name
+        assert (
+            torchao_survives_plan(PLACEMENTS[name], "int8", torchao_version = T018) is streams
+        ), name
     assert torchao_survives_plan(PLACEMENTS["group_dit_resident"], "int8", torchao_version = T018)
     assert torchao_survives_plan(PLACEMENTS["model_fits"], "int8", torchao_version = T018)
 
@@ -174,13 +203,21 @@ def test_never_moves_still_means_resident_only():
 
 
 class _Weight:
-    def __init__(self, cls_name: str, module: str = "torchao.quantization.fake"):
+    def __init__(
+        self,
+        cls_name: str,
+        module: str = "torchao.quantization.fake",
+    ):
         self.data = None
         self.__class__ = type(cls_name, (_Weight,), {"__module__": module})
 
 
 class _Module:
-    def __init__(self, *class_names: str, plain: bool = False):
+    def __init__(
+        self,
+        *class_names: str,
+        plain: bool = False,
+    ):
         self._params = [_Weight(name) for name in class_names]
         if plain:
             self._params.append(_Weight("Parameter", module = "torch.nn.parameter"))
@@ -201,17 +238,19 @@ NO_STREAM = {"onload_device": "cuda", "use_stream": False}
 @pytest.mark.parametrize(
     "classes, low_cpu_mem_usage, pin_budget, expected",
     [
-        (("Int8Tensor",), False, 10 ** 7, "as is"),
-        (("Float8Tensor",), False, 10 ** 7, "as is"),
-        (("Int8Tensor", "Float8Tensor"), False, 10 ** 7, "as is"),
-        (("Int8Tensor",), True, 10 ** 7, "pinned"),
-        (("Float8Tensor",), True, 10 ** 7, "pinned"),
+        (("Int8Tensor",), False, 10**7, "as is"),
+        (("Float8Tensor",), False, 10**7, "as is"),
+        (("Int8Tensor", "Float8Tensor"), False, 10**7, "as is"),
+        (("Int8Tensor",), True, 10**7, "pinned"),
+        (("Float8Tensor",), True, 10**7, "pinned"),
         (("Int8Tensor",), True, None, "no stream"),
         # torchao 0.17 default int8: no aten.is_pinned, so no copy stream
-        (("LinearActivationQuantizedTensor",), False, 10 ** 7, "no stream"),
+        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream"),
     ],
 )
-def test_group_offload_kwargs_per_weight_class(monkeypatch, classes, low_cpu_mem_usage, pin_budget, expected):
+def test_group_offload_kwargs_per_weight_class(
+    monkeypatch, classes, low_cpu_mem_usage, pin_budget, expected
+):
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: pin_budget)
     kwargs = {**STREAM_KW, "low_cpu_mem_usage": low_cpu_mem_usage}
     out = mem._torchao_group_offload_kwargs(_Module(*classes, plain = True), kwargs)
@@ -303,10 +342,8 @@ def test_inplace_quant_declines_streaming_it_cannot_pin(monkeypatch, estimate_mi
 
 def test_inplace_quant_no_longer_calls_group_offload_wrong():
     import inspect
-
     source = inspect.getsource(dmod)
     assert "Group offload is WRONG for torchao" not in source
-
 
 
 GIB = 1024
@@ -323,12 +360,16 @@ def planner(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *_a, **_k: (12, 0))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
-    def _supported(scheme, device = None, unproven_ok = False):
+    def _supported(
+        scheme,
+        device = None,
+        unproven_ok = False,
+    ):
         return scheme in ("int8", "fp8")
 
     monkeypatch.setattr(tq, "_scheme_supported", _supported)
     monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *_a, **_k: True)
-    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 10 ** 7)
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 10**7)
     card: dict = {}
     for module in (dmod, mem):
         for fn in (
@@ -370,7 +411,15 @@ def planner(monkeypatch):
         )
         if seed not in (None, PIPELINE_SEED_DECLINED):
             seeded = backend._seeded_pipeline_plan(
-                seed, target, base, fam, None, False, repo_id = base, base_local_dir = None, fetch_base = base
+                seed,
+                target,
+                base,
+                fam,
+                None,
+                False,
+                repo_id = base,
+                base_local_dir = None,
+                fetch_base = base,
             )
             placed = torchao_offload_plan(seeded, seed)
             assert placed is not None
@@ -399,7 +448,7 @@ def planner(monkeypatch):
             placed = torchao_offload_plan(replanned, scheme)
             if placed is not None:
                 plan = placed
-        largest_te = int(ap.family_bf16_components_gb(fam, base)[1] * 1000 ** 3 / 1024 ** 2)
+        largest_te = int(ap.family_bf16_components_gb(fam, base)[1] * 1000**3 / 1024**2)
         plan, why = dmod._inplace_torchao_placement(plan, scheme, estimate, lambda: largest_te)
         return ("bf16" if why else f"on-the-fly {scheme}"), plan.offload_policy
 
@@ -461,10 +510,10 @@ def test_auto_keeps_int8_on_the_offload_tier(planner, family, base, gib, expecte
 @pytest.mark.parametrize("version, expected", [(T016, "bf16"), (T017, "hosted fp8")])
 def test_older_torchao_streamed_seeds(planner, monkeypatch, version, expected):
     monkeypatch.setattr(mem, "_installed_torchao_version", lambda: version)
-    precision, _policy = planner("hunyuanimage-2.1", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 16)
+    precision, _policy = planner(
+        "hunyuanimage-2.1", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 16
+    )
     assert precision == expected
-
-
 
 
 def _gpu_stack():
@@ -479,7 +528,9 @@ def _gpu_stack():
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 @pytest.mark.parametrize("low_cpu_mem_usage", [False, True])
 @pytest.mark.parametrize("requires_grad", [False, True])
-def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_mem_usage, requires_grad):
+def test_quantised_blocks_survive_group_offload_under_no_grad(
+    scheme, low_cpu_mem_usage, requires_grad
+):
     import copy
     import inspect
 
@@ -495,7 +546,12 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_me
         pytest.skip("fp8 needs sm_89+")
     torch.manual_seed(0)
     blocks = torch.nn.Sequential(
-        *[torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)) for _ in range(3)]
+        *[
+            torch.nn.Sequential(
+                torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)
+            )
+            for _ in range(3)
+        ]
     ).to(torch.bfloat16)
     config = (
         Int8DynamicActivationInt8WeightConfig
@@ -516,7 +572,11 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_me
         "num_blocks_per_group": 1,
         "use_stream": True,
     }
-    for name, value in (("non_blocking", True), ("record_stream", True), ("low_cpu_mem_usage", low_cpu_mem_usage)):
+    for name, value in (
+        ("non_blocking", True),
+        ("record_stream", True),
+        ("low_cpu_mem_usage", low_cpu_mem_usage),
+    ):
         if name in params:
             kwargs[name] = value
     hooks.apply_group_offloading(offloaded, **mem._torchao_group_offload_kwargs(offloaded, kwargs))
@@ -527,8 +587,6 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(scheme, low_cpu_me
             assert torch.equal(offloaded(x), want)
     with pytest.raises(Exception), torch.inference_mode():
         offloaded(x)
-
-
 
 
 @pytest.mark.parametrize(
@@ -562,7 +620,11 @@ def test_graph_gate_follows_the_denoiser(monkeypatch, offload_active, denoiser_o
 
 
 class _Hooked:
-    def __init__(self, keys = (), hf_hook = None):
+    def __init__(
+        self,
+        keys = (),
+        hf_hook = None,
+    ):
         self._diffusers_hook = types.SimpleNamespace(hooks = {k: object() for k in keys})
         self._hf_hook = hf_hook
 
@@ -606,7 +668,9 @@ def test_stream_kept_when_the_packed_weights_fit_the_pin_budget(monkeypatch):
     monkeypatch.setattr(mem, "install_group_offload_torchao_swap_retry", lambda: None)
     # Between the packed (~4 MiB) and logical bf16 (8 MiB) sizes.
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 6)
-    kwargs = mem._torchao_group_offload_kwargs(linear, {"use_stream": True, "low_cpu_mem_usage": True})
+    kwargs = mem._torchao_group_offload_kwargs(
+        linear, {"use_stream": True, "low_cpu_mem_usage": True}
+    )
     assert kwargs["use_stream"] is True
     assert kwargs["low_cpu_mem_usage"] is False
 
@@ -632,7 +696,7 @@ def test_storage_size_recurses_through_nested_wrappers():
             return [f"t{i}" for i in range(len(self._inner))], None
 
         def numel(self):
-            return 10 ** 9
+            return 10**9
 
         def element_size(self):
             return 2
@@ -641,17 +705,24 @@ def test_storage_size_recurses_through_nested_wrappers():
     assert mem._storage_nbytes(nested) == [100, 4, 7]
 
 
-@pytest.mark.parametrize("env, capped, budget, keeps_stream", [
-    ("1", True, None, True),
-    ("1", False, 0, True),
-    ("0", False, 10 ** 7, False),
-    ("", False, 10 ** 7, True),
-])
-def test_runtime_pinning_honours_the_same_override_as_the_planner(monkeypatch, env, capped, budget, keeps_stream):
+@pytest.mark.parametrize(
+    "env, capped, budget, keeps_stream",
+    [
+        ("1", True, None, True),
+        ("1", False, 0, True),
+        ("0", False, 10**7, False),
+        ("", False, 10**7, True),
+    ],
+)
+def test_runtime_pinning_honours_the_same_override_as_the_planner(
+    monkeypatch, env, capped, budget, keeps_stream
+):
     linear = _int8_linear(256, 256)
     monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, env)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: capped)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: budget)
     monkeypatch.setattr(mem, "install_group_offload_torchao_swap_retry", lambda: None)
-    kwargs = mem._torchao_group_offload_kwargs(linear, {"use_stream": True, "low_cpu_mem_usage": True})
+    kwargs = mem._torchao_group_offload_kwargs(
+        linear, {"use_stream": True, "low_cpu_mem_usage": True}
+    )
     assert kwargs["use_stream"] is keeps_stream

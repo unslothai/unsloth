@@ -60,9 +60,7 @@ ALL_BYTES = sum(size for _name, size in Z_IMAGE_FILES)
 def _unmeasured_torchao(monkeypatch):
     """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
     from core.inference import diffusion_memory
-
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
-
 
 
 @pytest.fixture(autouse = True)
@@ -1039,7 +1037,9 @@ def test_an_artifact_plan_that_streams_the_transformer_still_declines(monkeypatc
 
 
 @pytest.mark.parametrize("policy", ["group", "streaming"])
-def test_an_artifact_plan_that_streams_the_transformer_seeds_on_a_measured_torchao(monkeypatch, policy):
+def test_an_artifact_plan_that_streams_the_transformer_seeds_on_a_measured_torchao(
+    monkeypatch, policy
+):
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))

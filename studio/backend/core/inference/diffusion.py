@@ -1687,7 +1687,9 @@ def _torchao_render_needs_no_grad(state: Any) -> bool:
     weights between devices."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
-    return bool(getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None))
+    return bool(
+        getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None)
+    )
 
 
 def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
@@ -6379,8 +6381,13 @@ class DiffusionBackend:
                                     )
                                     # Native schemes (incl. explicit int8 offloaded) keep the resident-only rule.
                                     placed = (
-                                        (replanned if plan_keeps_transformer_resident(replanned) else None)
-                                        if native_scheme is not None or native_offload_scheme is not None
+                                        (
+                                            replanned
+                                            if plan_keeps_transformer_resident(replanned)
+                                            else None
+                                        )
+                                        if native_scheme is not None
+                                        or native_offload_scheme is not None
                                         else torchao_offload_plan(replanned, preview_scheme)
                                     )
                                     if placed is not None:
