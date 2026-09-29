@@ -62,13 +62,17 @@ export function ModelMemorySection() {
 
   useEffect(() => {
     let cancelled = false;
-    const refresh = () =>
+    let latest = 0;
+    const refresh = () => {
+      const id = ++latest;
+      // An overlapping older read can resolve last; only the newest may set state.
       refreshModelMemory(
-        () => cancelled,
+        () => cancelled || id !== latest,
         setSettings,
         setError,
         t("settings.resources.modelMemory.loadError"),
       );
+    };
     refresh();
     const unsubscribe = subscribeModelLifecycle(({ loading }) => {
       if (!loading) {
