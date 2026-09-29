@@ -183,6 +183,16 @@ def test_pipeline_available_names_never_import_pipeline_classes(monkeypatch):
         raise AssertionError("the selector must stay import-free")
 
     monkeypatch.setattr(families, "assert_pipeline_class_available", _strict)
+    # Installed but unimported, as when a status poll runs before any load; independent of this host's install.
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "diffusers" else real_find_spec(name, *a, **k),
+    )
     assert "flux.1" in pipeline_available_family_names()
 
 
