@@ -86,6 +86,25 @@ def _deepseek_v3():
     return transformers.DeepseekV3ForCausalLM(config).eval()
 
 
+def _qwen2_moe():
+    torch.manual_seed(0)
+    config = transformers.Qwen2MoeConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 48,
+        moe_intermediate_size = 16,
+        shared_expert_intermediate_size = 24,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        max_position_embeddings = 64,
+        attn_implementation = "eager",
+    )
+    return transformers.Qwen2MoeForCausalLM(config).eval()
+
+
 def _dense_linears(model):
     return {
         name
@@ -162,11 +181,15 @@ def test_model_without_dense_namesakes_converts_as_before():
     assert lora.rank_pattern == {r".*\.gate_up_proj": 8}
 
 
-def test_v4_adapter_reloads_dense_and_expert_weights(tmp_path):
-    """A transformers v4 adapter (per-expert Linear keys) matches the model merged by hand."""
+@pytest.mark.parametrize("make_model", [_deepseek_v3, _qwen2_moe], ids = ["deepseek_v3", "qwen2_moe"])
+def test_v4_adapter_reloads_dense_and_expert_weights(tmp_path, make_model):
+    """A transformers v4 adapter (per-expert Linear keys) matches the model merged by hand.
+
+    qwen2_moe also checks the base family is mapped onto itself: without it its experts stay unconverted.
+    """
     from safetensors.torch import save_file
 
-    model = _deepseek_v3()
+    model = make_model()
     reference = copy.deepcopy(model)
     ref_modules = dict(reference.named_modules())
     r, alpha = 4, 8

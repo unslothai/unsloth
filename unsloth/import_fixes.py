@@ -8261,6 +8261,13 @@ def _patch_peft_moe_target_conversion(twc):
         peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
 
     twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    # transformers maps other families onto a base pattern but not the base onto itself; peft adds
+    # only "mixtral", so a qwen2_moe v4 adapter loaded with its experts silently unconverted.
+    pattern_map = getattr(twc, "_MODEL_TO_CONVERSION_PATTERN", None)
+    if isinstance(pattern_map, dict):
+        for base_model_type in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}):
+            if not dict.__contains__(pattern_map, base_model_type):
+                pattern_map[base_model_type] = base_model_type
     _patch_peft_moe_keep_linear_targets(twc)
     twc._unsloth_moe_target_conversion_patch = True
 
