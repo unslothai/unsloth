@@ -540,8 +540,7 @@ def delete_document(
 def _copy_chunk_rows(
     conn: sqlite3.Connection, source_id: str, target_id: str, scope: str
 ) -> dict[str, str]:
-    """Copy chunk + FTS rows without committing; returns source -> target chunk ids for
-    remapping chunks_vec, which has no foreign key to join on."""
+    """Uncommitted chunk + FTS copy; returns source -> target ids (chunks_vec has no FK)."""
     chunk_ids: dict[str, str] = {}
     for r in conn.execute(
         "SELECT id, chunk_index FROM chunks WHERE document_id=?", (source_id,)
@@ -565,8 +564,7 @@ def _copy_chunk_rows(
 
 
 def copy_document_index(conn: sqlite3.Connection, source: dict, target_id: str, scope: str) -> int:
-    """Copy chunk + FTS + vector rows without committing; returns vector rows copied
-    (0 without chunks_vec) so the caller can detect a donor with missing vectors."""
+    """Uncommitted chunk + FTS + vector copy; returns vector rows copied (0 without chunks_vec)."""
     chunk_ids = _copy_chunk_rows(conn, source["id"], target_id, scope)
     if not rag_db.vec_table_exists(conn):
         return 0
