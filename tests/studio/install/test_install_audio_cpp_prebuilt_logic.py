@@ -209,6 +209,7 @@ def _stub_install_io(monkeypatch, version = "audio.cpp test\nbackends: cpu"):
     monkeypatch.setattr(M, "_download", _fake_download)
     monkeypatch.setattr(M, "smoke_test_staged_server", lambda server, **kw: version)
     monkeypatch.setattr(M, "detect_accelerator", lambda: "cpu")
+    monkeypatch.setattr(M, "_linux_nccl_available", lambda: True)
 
 
 def _install(
@@ -433,6 +434,52 @@ def test_main_auto_detected_gpu_without_a_bundle_installs_the_cpu_build(
         "auto",
         "cuda",
     )
+
+
+def test_auto_cuda_without_nccl_installs_the_cpu_build_and_reruns_offline(
+    monkeypatch, tmp_path, pins
+):
+    release = _release(tmp_path, CPU_ZIP)
+    _pin_release(pins, release)
+    asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
+    _stub_install_io(monkeypatch)
+    monkeypatch.setattr(M, "_linux_nccl_available", lambda: False)
+    monkeypatch.setattr(M, "resolve", resolve)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert asked == ["cpu"]
+    record = json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
+    assert (record["backend"], record["accelerator_request"], record["detected_accelerator"]) == (
+        "cpu",
+        "auto",
+        "cuda",
+    )
+    monkeypatch.setattr(M, "resolve", lambda *a: pytest.fail("a matching rerun must not look up"))
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+
+
+def test_explicit_cuda_is_not_downgraded_for_missing_nccl(monkeypatch):
+    monkeypatch.setattr(M, "_linux_nccl_available", lambda: False)
+    asked = []
+    monkeypatch.setattr(
+        M, "resolve", lambda accel, token: asked.append(accel) or (FORK, None, None)
+    )
+    M.resolve_for_request("cuda", None, None)
+    assert asked == ["cuda"]
+
+
+def test_nccl_probe(monkeypatch, tmp_path):
+    monkeypatch.setattr(M.sys, "platform", "linux")
+    monkeypatch.setattr(M, "_cuda_runtime_dirs", lambda backend: [str(tmp_path)])
+    import ctypes.util
+
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    assert M._linux_nccl_available() is False
+    (tmp_path / "libnccl.so.2").write_bytes(b"")
+    assert M._linux_nccl_available() is True
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    monkeypatch.setattr(M, "_cuda_runtime_dirs", lambda backend: [])
+    assert M._linux_nccl_available() is True
 
 
 def test_main_explicit_gpu_request_is_never_downgraded(monkeypatch, tmp_path, pins):

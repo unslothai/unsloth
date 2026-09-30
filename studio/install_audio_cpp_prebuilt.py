@@ -469,6 +469,13 @@ def resolve_for_request(
     cover (an older driver, Linux arm64) falls back to the CPU build, which still runs every model;
     an explicit request is never downgraded."""
     accel = detected if requested == "auto" and detected else requested
+    if requested == "auto" and accel == "cuda" and not _linux_nccl_available():
+        # A no-torch Studio venv: the Linux CUDA bundle cannot start without NCCL.
+        print(
+            "audio.cpp: no NCCL for the CUDA build (Studio without torch); installing the CPU build",
+            flush = True,
+        )
+        accel = "cpu"
     repo, release, chosen = resolve(accel, token)
     if (release is None or not chosen) and requested == "auto" and accel != "cpu":
         print(f"audio.cpp: no {accel} bundle for this host; installing the CPU build", flush = True)
@@ -731,6 +738,18 @@ def _cuda_runtime_dirs(backend: str) -> list[str]:
         return list(python_runtime_dirs())
     except Exception:  # noqa: BLE001 - no wheel runtime to offer
         return []
+
+
+def _linux_nccl_available() -> bool:
+    """The Linux CUDA bundles ship cuBLAS, cudart and cuFFT but load ``libnccl.so.2`` from torch's
+    nvidia-nccl wheel (or the system). Always true off Linux."""
+    if not sys.platform.startswith("linux"):
+        return True
+    if any(any(Path(d).glob("libnccl.so*")) for d in _cuda_runtime_dirs("cuda")):
+        return True
+    import ctypes.util
+
+    return ctypes.util.find_library("nccl") is not None
 
 
 def _run_staged(server: Path, arg: str, env: dict, timeout: float) -> subprocess.CompletedProcess:
