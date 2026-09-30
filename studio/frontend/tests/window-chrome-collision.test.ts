@@ -79,3 +79,11 @@ test("the titlebar height is re-read whenever it can change", async () => {
     /subscribeAppliedInterfaceZoom\(refreshWindowChromeTop\)/,
   );
 });
+
+test("popovers stop at the titlebar and scroll", async () => {
+  const popover = await readSrcAsync("components/ui/popover.tsx");
+  assert.match(
+    popover,
+    /max-h-\(--radix-popover-content-available-height\) overflow-y-auto/,
+  );
+});
