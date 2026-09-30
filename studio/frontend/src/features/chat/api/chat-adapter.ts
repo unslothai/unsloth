@@ -214,7 +214,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  loadedGpuMemoryFields,
+  managedGpuMemoryFields,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -3674,7 +3674,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // loaded projector, and the next Apply would send it.
           disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
-          ...loadedGpuMemoryFields(loadResp),
+          ...managedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
@@ -3729,7 +3729,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
-          ...loadedGpuMemoryFields(loadResp),
+          ...managedGpuMemoryFields(loadResp),
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -4069,7 +4069,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
-          ...loadedGpuMemoryFields(loadResp),
+          ...managedGpuMemoryFields(loadResp),
           // Drives the GPU Memory controls' diffusion gate; set on every load path so the gate cannot read stale.
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           defaultChatTemplate: loadResp.chat_template ?? null,

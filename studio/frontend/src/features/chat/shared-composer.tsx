@@ -204,7 +204,7 @@ import {
   shouldPinDiffusionPlacement,
 } from "./lib/gpu-placement";
 import {
-  loadedGpuMemoryFields,
+  managedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
@@ -1961,7 +1961,7 @@ export function SharedComposer({
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick plus loaded baselines)
           // so the GPU controls round-trip. The context group and native-path token/expiry clear below.
-          ...loadedGpuMemoryFields(resp),
+          ...managedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
           // so the gate cannot read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,

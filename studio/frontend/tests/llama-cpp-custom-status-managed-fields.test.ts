@@ -72,3 +72,20 @@ test("a managed load reporting the same placement still hydrates the controls", 
   assert.equal(s.gpuMemoryMode, "manual");
   assert.equal(s.gpuLayers, 0);
 });
+
+test("a custom load's response leaves the managed placement alone", async () => {
+  const { managedGpuMemoryFields } = await import(
+    "../src/features/chat/stores/chat-runtime-store.ts"
+  );
+  const resp = { is_gguf: true, gpu_memory_mode: "manual", gpu_layers: 0, n_layers: 28 } as const;
+  assert.deepEqual(
+    managedGpuMemoryFields({ ...resp, requested_llama_cpp_config: custom }),
+    { ggufLayerCount: 28, moeLayerCount: null },
+  );
+  const managed = managedGpuMemoryFields({
+    ...resp,
+    requested_llama_cpp_config: { version: 1, mode: "managed" },
+  }) as { gpuMemoryMode?: string; gpuLayers?: number };
+  assert.equal(managed.gpuMemoryMode, "manual");
+  assert.equal(managed.gpuLayers, 0);
+});

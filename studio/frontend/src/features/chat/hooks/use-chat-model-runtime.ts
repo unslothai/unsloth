@@ -99,7 +99,7 @@ import {
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
-  loadedGpuMemoryFields,
+  managedGpuMemoryFields,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
   pinHoldsLiveEffort,
@@ -2716,7 +2716,7 @@ export function useChatModelRuntime() {
               // Set alongside loadedIsMultimodal so the composer can say WHY images are unavailable.
               loadedVisionDisabledByUser:
                 loadResponse.vision_disabled_by_user ?? false,
-              ...loadedGpuMemoryFields(loadResponse),
+              ...managedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
@@ -3001,7 +3001,7 @@ export function useChatModelRuntime() {
                   mlxKvQuant: previousMlxKvQuant,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
-                  ...loadedGpuMemoryFields(rollbackResponse),
+                  ...managedGpuMemoryFields(rollbackResponse),
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,

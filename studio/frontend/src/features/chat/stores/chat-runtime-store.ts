@@ -2123,6 +2123,22 @@ export function requestedGpuIdsFromResponse(resp: {
 
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
+// A custom llama.cpp load reports its INI's placement, which is not what the managed controls
+// asked for; adopting it carries that placement into the next managed load.
+export function managedGpuMemoryFields(
+  resp: Parameters<typeof loadedGpuMemoryFields>[0] & {
+    requested_llama_cpp_config?: { mode: string } | null;
+  },
+) {
+  if (resp.requested_llama_cpp_config?.mode === "custom") {
+    return {
+      ggufLayerCount: resp.n_layers ?? null,
+      moeLayerCount: resp.n_moe_layers ?? null,
+    };
+  }
+  return loadedGpuMemoryFields(resp);
+}
+
 export function loadedGpuMemoryFields(resp: {
   is_gguf?: boolean;
   is_diffusion?: boolean;
