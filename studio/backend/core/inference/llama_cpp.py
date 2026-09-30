@@ -6311,6 +6311,11 @@ def _widen_pin_ids_for_companion_devices(
     if not pin_ids:
         return list(pin_ids), ""
     main_ids = [int(i) for i in pin_ids]
+    # A main --device past the pinned positions would resolve to a widened companion card.
+    for token in str(_extra_args_main_device(cmd) or "").split(","):
+        match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+        if match and int(match.group(2)) >= len(main_ids):
+            return list(main_ids), ""
     # (value index, prefix before "=" or None, [(token, physical id or None)])
     sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
     prefix_word = None

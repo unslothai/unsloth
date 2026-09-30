@@ -84,6 +84,13 @@ def test_no_device_flag_is_emitted_when_the_user_named_one():
     assert note
 
 
+def test_a_main_device_past_the_pin_is_not_moved_onto_a_companion_card():
+    cmd, pin, note = _widen([0], ["--device", "CUDA1", "--mmproj-device", "CUDA2"])
+    assert pin == [0]
+    assert cmd == ["--device", "CUDA1", "--mmproj-device", "CUDA2"]
+    assert note == ""
+
+
 def test_a_flag_already_on_the_childs_numbering_changes_nothing():
     cmd, pin, note = _widen([0, 1], ["--mmproj-device", "CUDA1"])
     assert pin == [0, 1]
