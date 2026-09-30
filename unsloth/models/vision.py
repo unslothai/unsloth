@@ -4227,7 +4227,13 @@ class FastBaseModel:
                 gc_kwargs = dict(kwargs.get("gradient_checkpointing_kwargs", None) or {})
                 gc_kwargs["use_reentrant"] = False
                 kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
-                return _original_gc_enable_nr(**kwargs)
+                # Bind this model's wrapper (and its offloading) even if a later load restored the global.
+                _prev_checkpoint = hf_modeling_utils.checkpoint
+                hf_modeling_utils.checkpoint = _nonre_checkpoint
+                try:
+                    return _original_gc_enable_nr(**kwargs)
+                finally:
+                    hf_modeling_utils.checkpoint = _prev_checkpoint
 
             model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 

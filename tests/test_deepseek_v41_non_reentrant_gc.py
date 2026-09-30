@@ -23,7 +23,7 @@ import torch.utils.checkpoint as torch_checkpoint
 from transformers import LlamaConfig, LlamaForCausalLM
 from unsloth.models.vision import FastBaseModel
 
-results = []
+results, models = [], []
 for model_type in sys.argv[1:]:
     config = LlamaConfig(
         vocab_size = 128, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
@@ -55,6 +55,13 @@ for model_type in sys.argv[1:]:
     model(input_ids = ids, labels = ids).loss.backward()
     out["layer0_grad"] = q_proj.grad is not None and bool(q_proj.grad.abs().sum() > 0)
     results.append(out)
+    models.append(model)
+# Re-enabling the first model (what the trainer does) after later loads.
+models[0].gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+results[0]["reenable_wrapper_in_use"] = all(
+    hasattr(getattr(m._gradient_checkpointing_func, "func", None), "_unsloth_original")
+    for m in models[0].modules() if getattr(m, "_gradient_checkpointing_func", None) is not None
+)
 print("@@@" + json.dumps(results))
 """
 
@@ -97,6 +104,7 @@ def test_later_model_gets_reentrant_back(tmp_path):
     # Same process: the deepseek_v41 wrapper must not leak into the next model's checkpointing.
     v41, llama = _run(tmp_path, "deepseek_v41", "llama")
     assert v41["wrapper_in_use"], v41
+    assert v41["reenable_wrapper_in_use"], v41
     assert not llama["global_checkpoint_patched"], llama
     assert not llama["wrapper_in_use"], llama
     assert llama["layer0_grad"], llama
