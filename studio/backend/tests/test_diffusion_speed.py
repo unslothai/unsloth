@@ -434,6 +434,7 @@ def test_speed_off_applies_nothing(monkeypatch):
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "fp16_accum": False,
         "cuda_graph": False,

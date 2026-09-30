@@ -3292,6 +3292,99 @@ class TestLoopRePrompt:
         contents = [e for e in events if e["type"] == "content"]
         assert contents and contents[-1]["text"].strip() == "4"
 
+    @pytest.mark.parametrize(
+        "reasoning, answer, reasoning_prefilled",
+        [
+            pytest.param(
+                "",
+                "I'll write a small Python function that reverses a string.\n"
+                "```python\ndef reverse(s):\n    return s[::-1]\n```\n",
+                False,
+                id = "plain",
+            ),
+            pytest.param(
+                "",
+                "Let me run this:\n```python\nprint(1)\n```\n",
+                False,
+                id = "run_intent_with_code",
+            ),
+            pytest.param(
+                "Plan it.</think>",
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_then_answer",
+            ),
+        ],
+    )
+    def test_finished_code_answer_is_not_reprompted(self, reasoning, answer, reasoning_prefilled):
+        loop, exec_fn = _make_loop(
+            turns = [[reasoning + answer], ["No tool is needed. Here it is again."]],
+            nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert NUDGE_TOOL_CALLS_STATUS not in statuses
+        assert exec_fn.calls == []
+        assert contents[-1] == reasoning + answer
+
+    @pytest.mark.parametrize(
+        "chunk, reasoning_prefilled",
+        [
+            pytest.param(
+                "<think>I'll write it.\n```python\ndef f(): pass\n```\n</think>",
+                False,
+                id = "think_block_only",
+            ),
+            pytest.param(
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_unclosed",
+            ),
+            pytest.param(
+                "I'll write it.\n```python\ndef f(): pass\n```\n</think>",
+                True,
+                id = "prefilled_closed_empty_answer",
+            ),
+        ],
+    )
+    def test_code_only_in_reasoning_is_still_reprompted(self, chunk, reasoning_prefilled):
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], ["Done."]],
+            nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            pytest.param(
+                'Let me run it.\n<tool_call>\n```json\n{"name": "python", "arguments": '
+                '{"code": "print(1)"}}\n```\n</tool_call>',
+                id = "fenced_json_call",
+            ),
+            pytest.param(
+                "Let me run it.\n<tool_call>\n```python\nprint(1)\n```\n</tool_call>",
+                id = "fenced_code_call",
+            ),
+        ],
+    )
+    def test_unparsed_call_with_a_fence_is_still_reprompted(self, chunk):
+        call = '<tool_call>\n{"name": "python", "arguments": {"code": "print(1)"}}\n</tool_call>'
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], [call], ["1"]],
+            exec_results = ["1"],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+
     def test_max_reprompts_capped(self):
         # Model keeps stalling with intent -- after MAX_ACT_REPROMPTS re-prompts
         # the loop must give up rather than burn forever.

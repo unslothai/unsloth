@@ -487,10 +487,13 @@ test("Compare queue setup preserves an upload until a queued send is accepted", 
   );
   assert.doesNotMatch(advanceQueue, /audioUpload\.cancel\(\)/);
 
-  const runListStart = sharedComposerSource.indexOf("onRunList={(items) => {");
+  // The dialog's Run button and bookmarked lists share runPromptList.
+  assert.match(sharedComposerSource, /onRunList=\{runPromptList\}/);
+  const runListStart = sharedComposerSource.indexOf("const runPromptList = useCallback(");
+  assert.ok(runListStart >= 0);
   const runList = sharedComposerSource.slice(
     runListStart,
-    sharedComposerSource.indexOf("        }}", runListStart),
+    sharedComposerSource.indexOf("\n  );", runListStart),
   );
   const incompleteModelGuard = runList.indexOf(
     "if (hasCompareHandles && !isGeneralizedCompare)",

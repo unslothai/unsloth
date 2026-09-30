@@ -52,6 +52,8 @@ export interface PlusMenuPrefsState {
   // the menu pins above, since prompts are addressed by their stable server id.
   pinnedPromptIds: string[];
   togglePinnedPrompt: (id: string) => void;
+  pinnedListIds: string[];
+  togglePinnedList: (id: string) => void;
 }
 
 export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
@@ -69,6 +71,13 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
             ? state.pinnedPromptIds.filter((x) => x !== id)
             : [...state.pinnedPromptIds, id],
         })),
+      pinnedListIds: [],
+      togglePinnedList: (id) =>
+        set((state) => ({
+          pinnedListIds: state.pinnedListIds.includes(id)
+            ? state.pinnedListIds.filter((x) => x !== id)
+            : [...state.pinnedListIds, id],
+        })),
     }),
     {
       name: PLUS_MENU_PINS_STORAGE_KEY,
@@ -81,6 +90,7 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
           ...current,
           pins: { ...DEFAULT_PINS, ...(saved?.pins ?? {}) },
           pinnedPromptIds: saved?.pinnedPromptIds ?? [],
+          pinnedListIds: saved?.pinnedListIds ?? [],
         };
       },
     },

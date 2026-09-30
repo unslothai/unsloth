@@ -2095,6 +2095,123 @@
       "evidence": "L182:     r\"/etc/systemd/\" | L185:     r\"|/etc/cron\" | L188:     r\"|/Library/LaunchDaemons\" | L189:     r\"|/Library/LaunchAgents\" | L191:     r\"|~/.local/share/systemd\" | L193:     r\"|HKEY_LOCAL_MACHINE.*\\\\\\\\Run\" | L194:     r\"|HKEY_CURRENT_USER.*\\\\\\\\Run\"",
       "evidence_hash": "23e53d85cbd99e32168cc24464299379df5a1864ad465d52aae6ca3d68684cfa",
       "file_sha256": "747bc4f3f23f7d2e445cc7fc2c9a9a2a825cf7118b22e7ac42718a215b926bf5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/converter_scan.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L1768:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", | L1768:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", sha256:8f6aa9a429370960eeaa339f9cbbc6069dfda34e6a9dc8e7c64689a74a42cf1a",
+      "evidence_hash": "2e35147c040613a5f7e8bdf6b4595b5a5ff1c7530425963f18f9b3f79a78d5f4",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/converter_scan.py",
+      "check": "May-12 Shai-Hulud IOC string present in Python file",
+      "severity": "CRITICAL",
+      "evidence": "L1781:     r\"|With Love TeamPCP|We've been online over 2 hours)\",",
+      "evidence_hash": "1fc2637d45f3b1dc5a94c41c13abc5fde05e224b9fcac3f8ddd861e84f90ec57",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/converter_scan.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L1579:     r\"|/etc/shadow|/etc/passwd\" | L1717:     r\"|\\b\\.bash_history\\b\" | L1718:     r\"|\\b\\.zsh_history\\b\" | L1719:     r\"|/etc/shadow\" | L1720:     r\"|/etc/passwd\",\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
+      "evidence_hash": "0fdf64299d5f20fcbf674e369e9a9c66a6d8618fde6ac93c64ec66ffe76a8aff",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/converter_scan.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L1618:     r\"|/latest/meta-data\" | L1619:     r\"|/metadata/instance\" | L1620:     r\"|/metadata/identity\"\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
+      "evidence_hash": "05d185bd26aef977ac79dd0248a6ebf8c621c3e7f769c23dcee5f6ccfc72f317",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/converter_scan.py",
+      "check": "Targets cryptocurrency wallets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Crypto: L1757:     r\"|\\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\\b\",\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
+      "evidence_hash": "e97eb692e16a2a8a41097e62fec4db501b9d9617f45ecf69d61c95b28f21d061",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/converter_scan.py",
+      "check": "Installs persistence AND makes network calls (backdoor pattern)",
+      "severity": "CRITICAL",
+      "evidence": "Persist: L1626:     r\"/etc/systemd/\" | L1629:     r\"|/etc/cron\" | L1632:     r\"|/Library/LaunchDaemons\" | L1633:     r\"|/Library/LaunchAgents\" | L1635:     r\"|~/.local/share/systemd\" | L1637:     r\"|HKEY_LOCAL_MACHINE.*\\\\\\\\Run\" | L1638:     r\"|HKEY_CURRENT_USER.*\\\\\\\\Run\"\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
+      "evidence_hash": "c68642625a026459571a7c7e5609254c64fd2f5625ff02d0556ef444d223462f",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/vision_utils.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L152:     return os.environ.get(UNSLOTH_ALLOW_PRIVATE_URL_FETCH_VAR, \"0\") == \"1\"\nNetwork: L110:     from urllib.request import url2pathname | L479:     session = requests.Session()",
+      "evidence_hash": "3bbd70075adbff1b2cb50de320002a0dce6324653a8727ec60c42e0943dccdac",
+      "file_sha256": "2e6964fb27d42029b493913896c46b1558140a11b0f9c8142ee16e57ffb43051"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/vision_utils.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L145:     \"metadata.google.internal\", \"metadata.goog\", \"metadata\",\nNetwork: L110:     from urllib.request import url2pathname | L479:     session = requests.Session()",
+      "evidence_hash": "972786b837f20621c6615cf1c38a0b84abe925d302d7317679bc0272643c0793",
+      "file_sha256": "2e6964fb27d42029b493913896c46b1558140a11b0f9c8142ee16e57ffb43051"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/compiler.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1718:         exec(compile(source, file_location, \"exec\"), new_module.__dict__) | L1967:             _mod = __import__(model_location, fromlist=items) | L6436:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\\nL6437:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL6438:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nL6439:         f' \"-____-\"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_p sha256:9e832c1e7b2815aa44dc42638d821cb9df22550db88d85bd4bfb29c13f984b53 | L6437:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL6438:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nL6439:         f' \"-____-\"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_p sha256:9e832c1e7b2815aa44dc42638d821cb9df22550db88d85bd4bfb29c13f984b53 | L6436:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\\nL6437:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL6438:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nExec: L1718:         exec(compile(source, file_location, \"exec\"), new_module.__dict__) | L1895:         _modeling_file = eval(model_location) | L2623:     f = eval(f\"{model_location}.{module}\") | L2964:         exec(f\"def raise_{j}(*args, **kwargs): print('{function}')\", globals(), locals()) | L2965:         try: exec(f\"EMPTY_LOGITS.{function} = raise_{j}\", globals(), locals()) | L4470:         exec(f\"import {parent}\", locals(), globals()) | L4576:                 dir(eval(parent)), | L4582:             exec(f\"{parent}.{child}.forward = forward\", globals(), locals()) | L4662:         module = eval(f\"modeling_file.{module}\") | L4689:             inner_class = eval(f\"modeling_file.{inner_class}\") | L4835:                 exec(f\"from timm.layers.norm_act import {norm}\") | L4843:             forward = eval(norm).forward | L4849:             exec(f\"timm.layers.norm_act.{norm}.forward = forward\") | L4866:                 exec(f\"from timm.models._efficientnet_blocks import {block}\") | L4874:             forward = eval(block).forward | L4880:             exec(f\"timm.models._efficientnet_blocks.{block}.forward = forward\") | L5124:     exec(\nL5125:         f\"{model_location}.torch.nn.{module}.forward = forward\",\nL5126:         globals(),\nL5127:         locals(),\nL5128:     ) | L5130:         exec(f\"{model_location}.nn.{module}.forward = forward\", globals(), locals()) | L5134:         exec(\nL5135:             f\"combined_module.torch.nn.{module}.forward = forward\",\nL5136:             globals(),\nL5137:             locals(),\nL5138:         ) | L5140:             exec(f\"combined_module.nn.{module}.forward = forward\", globals(), locals()) | L5217:                 source = eval(f\"{model_location}.torch\") | L5224:             function = eval(f\"source.nn.{module}\") | L5418:     exec(\"import transformers\", globals()) | L5432:     exec(\nL5433:         \"model_logger.addFilter(HideLoggingMessage('`use_cache`'))\", globals(), locals()\nL5434:     ) | L5436:     exec(\nL5437:         \"model_logger.addFilter(HideLoggingMessage('compile_config'))\",\nL5438:         globals(),\nL5439:         locals(),\nL5440:     ) | L5674:         source = eval(f\"modeling_file.{module}\") | L5688:         source = eval(f\"modeling_file.{module}\") | L5799:         source = eval(f\"modeling_file.{module}\") | L5837:             source = eval(f\"{model_location}.{module}\") | L5917:                 source = eval(f\"{model_location}.{module}\") | L5965:             source = eval(f\"{model_location}.{module}\") | L6198:         source = eval(f\"{model_location}.{module}\") | L6209:         exec(\nL6210:             f\"{model_location}.{module}._update_causal_mask = no_update_causal_mask\",\nL6211:             globals(),\nL6212:         ) | L6276:                 source = eval(f\"{model_location}.{module}\") | L6317:                 module_cls = eval(f\"{model_location}.{module}\") | L6354:                 module_cls = eval(f\"{model_location}.{module}\") | L6421:     exec(\nL6422:         \"from transformers.trainer import (\" + \", \".join(x for x in good_items) + \")\",\nL6423:         globals(),\nL6424:     ) | L6486:     exec(inner_training_loop, globals()) | L6495:             function = eval(f\"{model_location}.{module}\") | L6582:             function = eval(f\"{model_location}.{module}\") | L6746:             exec(\nL6747:                 f\"{model_location}.{module} = combined_module.{module}\",\nL6748:                 globals(),\nL6749:                 locals(),\nL6750:             ) | L6760:     check_dicts = dir(eval(f\"{model_location}\")) | L6762:         item = eval(f\"{model_location}.{check}\") | L6772:                         exec(\nL6773:                             f\"{model_location}.{check}['{key}'] = combined_module.{replaced_class}\",\nL6774:                             globals(),\nL6775:                             locals(),\nL6776:                         )",
+      "evidence_hash": "aaba0e6f7c289e2d6ee4ac8ff927d691a450fb3913a4245aa0fab585dd28d871",
+      "file_sha256": "23dcdb50da80923669e3f2198c1432dfef4dd3b01440271c7dc7925a62a9c41c"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/vllm_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L3853:             lora_types.append(getattr(__import__(module_path, fromlist = [class_name]), class_name))\nExec: L1294:             cross_attn_layer = eval(f'vllm_internals.{name}') | L1329:                 layernorm = eval(vllm_name).state_dict()[\"weight\"] | L1630:                 parent = eval(f\"new_model.{parent_path}\") if parent_path else new_model | L1635:                     exec(f\"new_model.{layer_name_br} = layer\") | L1705:                 exec(f\"new_model.{layer_name_br}.weight = None\") | L1706:                 exec(f\"new_model.{layer_name_br}.weight = weight_param\") | L1708:                     exec(f\"new_model.{layer_name_br}.bias = None\") | L1709:                     exec(f\"new_model.{layer_name_br}.bias = bias\") | L1715:             exec(f\"new_model.{layer_name} = layer\") | L1731:     new_model.eval() | L3672:                 exec(f\"module.to({dtype})\") | L3695:                 exec(f\"module.to({dtype})\") | L4608:     model.eval() | L4648:     new_model.eval()",
+      "evidence_hash": "4928e730b84a3fa71dcc50cfe185c77c2028be09ad908706710ab864786b4659",
+      "file_sha256": "28c81f25d4b17cf62ec419f4b2573f94de182b81d6902373ad78ab5faa6547ee"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4980:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L159:     mx.eval(model.parameters()) | L193:     mx.eval([v for k, v in tree_flatten(casted) if is_mlx_norm_parameter_path(k)]) | L1255:                 mx.eval(model.parameters()) | L1256:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1323:             mx.eval(model.parameters()) | L1326:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L2742:         mx.eval(altup.correct(predictions, activated)) | L3286:             mx.eval(baseline, perturbed) | L4627:         model.eval() | L5385:         mx.eval(model.parameters()) | L5501:         mx.eval(module.weight) | L8082:         mx.eval(model.parameters()) | L8099:             mx.eval(target.parameters()) | L9074:                     lambda: mx.eval(model.parameters()), | L9138:                     lambda: mx.eval(model.parameters()), | L9295:                 mx.eval(model.parameters())",
+      "evidence_hash": "33ed0a28c99198e85c768e9d9e799e0762c433cfdab71992fa1e047c67b23046",
+      "file_sha256": "8082b77d864693fb5c210ead4a966b35240d888fbb3f3ecec09bc4a402739092"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/temporary_patches/granitemoehybrid.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L73:     exec(compile(source, f\"<unsloth granitemoehybrid float16 {module.__name__}>\", \"exec\"), namespace)\nExec: L73:     exec(compile(source, f\"<unsloth granitemoehybrid float16 {module.__name__}>\", \"exec\"), namespace)",
+      "evidence_hash": "5daea207e575087c8cefc30b8d2d947a88640b3be52de1de592d365ab74e978f",
+      "file_sha256": "d53b1826588c19a5146dcc66046b8787c7d882259bdc8617de8d3fbce6b37c9e"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/temporary_patches/moe_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L332:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)\nExec: L332:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)",
+      "evidence_hash": "ef22a4fe0d8ec7e2b0e4afc6e6a3d997cd94c981bf59790562217d4f9dd70732",
+      "file_sha256": "1d8b60e48ec8f0faf6156f6eac7368e99c2b6d34690957ef7c5e8e505cacc7db"
     }
   ]
 }

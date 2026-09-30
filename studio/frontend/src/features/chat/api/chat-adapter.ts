@@ -127,8 +127,6 @@ import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
-  getExternalProviderApiKey,
-  isCustomProviderType,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -138,7 +136,6 @@ import {
   providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
-  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -171,6 +168,11 @@ import {
 import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
+  buildExternalRoutingFields,
+  type ExternalRoutingUnavailableReason,
+  resolveExternalRouting,
+} from "../utils/chat-title";
+import {
   reasoningCapsFromLoad,
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
@@ -191,7 +193,6 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
-  isGeminiCustomOpenAICompatBase,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -337,10 +338,7 @@ import {
   createOpenAIContainer,
   listOpenAIContainers,
 } from "./openai-containers";
-import {
-  encryptProviderApiKey,
-  isProviderKeyRotationError,
-} from "./providers-api";
+import { isProviderKeyRotationError } from "./providers-api";
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
@@ -376,6 +374,28 @@ import {
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+const EXTERNAL_ROUTING_REFUSALS: Record<
+  ExternalRoutingUnavailableReason,
+  { title: string; description: string; error: string }
+> = {
+  "connections-disabled": {
+    title: "Connections are disabled.",
+    description:
+      "Turn on Enable connections in Settings → Connections to use hosted models.",
+    error: "Connections disabled.",
+  },
+  "connection-missing": {
+    title: "Connection not found.",
+    description: "Open Settings → Connections and add it again.",
+    error: "Connection not found.",
+  },
+  "missing-api-key": {
+    title: "Missing API key for selected connection.",
+    description: "Open Settings → Connections and set the API key again.",
+    error: "Missing connection API key.",
+  },
+};
 
 class ChatGenerationTerminalError extends Error {
   readonly generationStatus: "cancelled" | "failed";
@@ -1678,24 +1698,23 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
   });
 }
 
-export function findLatestUserAudioBase64(
-  messages: RunMessages,
-  includePendingAudio = true,
-): string | undefined {
+/** Every clip on the newest user message, in the order it was attached. */
+function latestUserAudioClips(messages: RunMessages): string[] {
+  const clips: string[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
     for (const part of message.content ?? []) {
       const base64 = extractAudioPartBase64(part);
-      if (base64) return base64;
+      if (base64) clips.push(base64);
     }
 
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
           const base64 = extractAudioPartBase64(part);
-          if (base64) return base64;
+          if (base64) clips.push(base64);
         }
       }
     }
@@ -1706,11 +1725,28 @@ export function findLatestUserAudioBase64(
     // retranscribe the stale clip. Matches the consumed-on-send semantics of the legacy pendingAudio.
     break;
   }
+  return clips;
+}
+
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+  includePendingAudio = true,
+): string | undefined {
+  const [first] = latestUserAudioClips(messages);
+  if (first) return first;
 
   const pendingAudio = includePendingAudio
     ? useChatRuntimeStore.getState().pendingAudioBase64
     : null;
   return pendingAudio ?? undefined;
+}
+
+/** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
+export function findLatestUserExtraAudioBase64(
+  messages: RunMessages,
+): string[] | undefined {
+  const extra = latestUserAudioClips(messages).slice(1);
+  return extra.length > 0 ? extra : undefined;
 }
 
 function extractVideoPartBase64(
@@ -2254,7 +2290,7 @@ const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
-  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)/i;
 
 type AutoLoadCandidate = {
   id: string;
@@ -4817,22 +4853,15 @@ export function createOpenAIStreamAdapter(
         : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
-      if (
-        isExternalRequest &&
-        !useExternalProvidersStore.getState().connectionsEnabled
-      ) {
-        toast.error("Connections are disabled.", {
-          description:
-            "Turn on Enable connections in Settings → Connections to use hosted models.",
-        });
+      const externalRouting = resolveExternalRouting(params.checkpoint);
+      if (externalRouting.kind === "unavailable") {
+        const refusal = EXTERNAL_ROUTING_REFUSALS[externalRouting.reason];
+        toast.error(refusal.title, { description: refusal.description });
         clearSelectedImageEditReference();
-        throw new Error("Connections disabled.");
+        throw new Error(refusal.error);
       }
-      const externalProvider = isExternalRequest
-        ? loadExternalProviders().find(
-            (provider) => provider.id === externalSelection.providerId,
-          )
-        : null;
+      const externalProvider =
+        externalRouting.kind === "external" ? externalRouting.provider : null;
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -4847,43 +4876,9 @@ export function createOpenAIStreamAdapter(
         (model) => model.id === params.checkpoint,
       );
       const externalApiKey =
-        externalProvider && !externalProvider.hasApiKey
-          ? getExternalProviderApiKey(externalProvider.id).trim()
-          : "";
-
-      if (isExternalRequest && !externalProvider) {
-        toast.error("Connection not found.", {
-          description: "Open Settings → Connections and add it again.",
-        });
-        clearSelectedImageEditReference();
-        throw new Error("Connection not found.");
-      }
-      // Local providers and custom Gemini bases allow an empty key.
-      const externalProviderIsCustom = externalProvider
-        ? isCustomProviderType(externalProvider.providerType)
-        : false;
-      const externalProviderIsGeminiCustomBase = Boolean(
-        externalProvider &&
-          externalProvider.providerType === "gemini" &&
-          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
-      );
-      const externalProviderUsesOAuth =
-        externalProvider?.authKind === "chatgpt_oauth";
-
-      if (
-        isExternalRequest &&
-        !externalApiKey &&
-        !externalProvider?.hasApiKey &&
-        !externalProviderUsesOAuth &&
-        !externalProviderIsCustom &&
-        !externalProviderIsGeminiCustomBase
-      ) {
-        toast.error("Missing API key for selected connection.", {
-          description: "Open Settings → Connections and set the API key again.",
-        });
-        clearSelectedImageEditReference();
-        throw new Error("Missing connection API key.");
-      }
+        externalRouting.kind === "external" ? externalRouting.apiKey : "";
+      const externalModelId =
+        externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
       const imageGenerationEnabledForThisTurn = Boolean(
@@ -5221,6 +5216,7 @@ export function createOpenAIStreamAdapter(
           externalModelLabel(params.checkpoint) ||
           params.checkpoint,
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
+        audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
       });
       if (attachedMediaReason) {
@@ -5508,6 +5504,7 @@ export function createOpenAIStreamAdapter(
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Declared above the live metadata that reads it, or it is in its temporal dead zone.
       let contextWindowExceeded = false;
+      let quoteCut = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
@@ -6097,9 +6094,6 @@ export function createOpenAIStreamAdapter(
         }
 
         const { supportsPreserveThinking, preserveThinking } = runtime;
-        const externalBackendProviderType = toExternalBackendProviderType(
-          externalProvider?.providerType,
-        );
         const buildResponseDetails = (
           finishedAt: number,
         ): ResponseDetailsMetadata => ({
@@ -6438,19 +6432,14 @@ export function createOpenAIStreamAdapter(
               // Also on this body: a provider whose models run Studio tools can hand off too, and omitting
               // it makes arming research a no-op.
               ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-              provider_id: externalProvider.id,
-              provider_type: externalBackendProviderType,
-              external_model: externalSelection.modelId,
-              ...(externalApiKey
-                ? {
-                    encrypted_api_key: await encryptProviderApiKey(
-                      externalApiKey,
-                      forceRefreshPublicKey,
-                    ),
-                  }
-                : {}),
-              provider_base_url: externalProvider.baseUrl || null,
-              provider_api_type: externalProvider.apiType ?? "chat_completions",
+              ...(await buildExternalRoutingFields(
+                {
+                  provider: externalProvider,
+                  modelId: externalModelId,
+                  apiKey: externalApiKey,
+                },
+                { forceRefreshPublicKey },
+              )),
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
@@ -6523,6 +6512,8 @@ export function createOpenAIStreamAdapter(
               currentTurnMessages,
               !queuedRunSettings && !continuation,
             ),
+            extra_audio_base64:
+              findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
@@ -6814,6 +6805,11 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.quote_cut) {
+                quoteCut = true;
                 continue;
               }
 
@@ -8185,6 +8181,7 @@ export function createOpenAIStreamAdapter(
         ];
         const finalIncompleteReason =
           resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          (quoteCut ? "quote_cut" : null) ??
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
