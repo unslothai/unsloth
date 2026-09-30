@@ -38,7 +38,7 @@ import {
   PauseIcon,
   PlayIcon,
   PowerSocket01Icon,
-  RefreshIcon,
+  Refresh01Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -774,7 +774,7 @@ export function ApiMonitorPage(): ReactElement {
             className="h-9 gap-1.5 rounded-full"
           >
             <HugeiconsIcon
-              icon={RefreshIcon}
+              icon={Refresh01Icon}
               strokeWidth={1.75}
               className={cn("size-4", refreshing && "animate-spin")}
             />

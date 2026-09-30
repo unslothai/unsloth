@@ -28,6 +28,8 @@ import { InternetGlyph } from "@/lib/internet-icon";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
+import { FileGlyph } from "@/lib/file-icon";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
   Telescope02Icon,
@@ -39,10 +41,8 @@ import {
   Check,
   ChevronDown,
   ExternalLink,
-  FileText,
   Pencil,
   Plus,
-  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -326,8 +326,8 @@ function ActivityIcon({
     );
   if (activity.kind === "reasoning")
     return <BulbIcon className={className} />;
-  if (activity.kind === "plan") return <FileText className={className} />;
-  if (activity.kind === "report") return <FileText className={className} />;
+  if (activity.kind === "plan") return <FileGlyph className={className} />;
+  if (activity.kind === "report") return <FileGlyph className={className} />;
   if (activity.action === "fetch" || activity.action === "search")
     return <InternetGlyph className={className} />;
   return <Check className={className} />;
@@ -819,7 +819,7 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
         disabled={pending}
         onClick={() => void retry()}
       >
-        {pending ? <Spinner /> : <RotateCcw />} Retry research
+        {pending ? <Spinner /> : <RefreshGlyph />} Retry research
       </Button>
     </div>
   );
