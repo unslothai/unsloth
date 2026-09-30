@@ -230,6 +230,7 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
         "evil @ https://example.invalid/evil-1.0.tar.gz",
         "evil-1.0.tar.gz",
         "evil.zip[x]",
+        "evil.zip [x]",
         "evil.tar.gz[a] ; python_version>'3'",
     ],
 )

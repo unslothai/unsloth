@@ -1764,7 +1764,7 @@ def _split_index_specs(specs: list[str], download_errors: list[str]) -> list[str
     for spec in specs:
         requirement = spec.split(";", 1)[0].strip()
         # pip drops trailing extras before its local-archive check.
-        path_like = re.sub(r"\[[^\]]*\]\s*$", "", requirement).lower()
+        path_like = re.sub(r"\[[^\]]*\]$", "", requirement).rstrip().lower()
         if _RE_INDEX_SPEC.match(requirement) and not path_like.endswith(_LOCAL_ARCHIVE_SUFFIXES):
             kept.append(spec)
             continue
