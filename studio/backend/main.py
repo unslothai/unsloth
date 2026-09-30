@@ -2419,7 +2419,15 @@ def _refresh_quantised_streaming_capability() -> bool:
 
 
 def _quantised_streaming() -> bool:
-    """The streaming bit for ``/api/system``, a pure read of already-resolved state."""
+    """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    if _quantised_streaming_capability is None and all(
+        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+    ):
+        try:
+            return _refresh_quantised_streaming_capability()
+        except Exception:  # noqa: BLE001 -- the picker then keeps the tier hidden
+            return False
     return bool(_quantised_streaming_capability)
 
 
