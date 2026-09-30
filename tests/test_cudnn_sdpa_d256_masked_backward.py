@@ -25,7 +25,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
-
 def _detour(*args):
     # Imported per test, not at module scope: the GPU tests below must still run (and fail) on a
     # tree that predates the fix.
@@ -33,8 +32,15 @@ def _detour(*args):
     return _sdpa_needs_cudnn_d256_detour(*args)
 
 
-def _t(*shape, dtype = None, requires_grad = False, device = "cpu"):
-    return torch.zeros(*shape, dtype = dtype or torch.bfloat16, device = device, requires_grad = requires_grad)
+def _t(
+    *shape,
+    dtype = None,
+    requires_grad = False,
+    device = "cpu",
+):
+    return torch.zeros(
+        *shape, dtype = dtype or torch.bfloat16, device = device, requires_grad = requires_grad
+    )
 
 
 class TestDetourDecision:
@@ -60,7 +66,9 @@ def _gpu_sm100():
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
     try:
-        return any(torch.cuda.get_device_capability(i)[0] == 10 for i in range(torch.cuda.device_count()))
+        return any(
+            torch.cuda.get_device_capability(i)[0] == 10 for i in range(torch.cuda.device_count())
+        )
     except Exception:
         return False
 
@@ -111,10 +119,12 @@ _PROBE = textwrap.dedent(
 def _run_probe(extra_env = None):
     env = dict(os.environ)
     env.update(extra_env or {})
-    r = subprocess.run([sys.executable, "-c", _PROBE], capture_output = True, text = True, env = env, timeout = 900)
+    r = subprocess.run(
+        [sys.executable, "-c", _PROBE], capture_output = True, text = True, env = env, timeout = 900
+    )
     line = [x for x in r.stdout.splitlines() if x.startswith("PROBE_RESULT ")]
     assert line, f"probe crashed (rc {r.returncode}):\n{r.stdout[-3000:]}\n{r.stderr[-3000:]}"
-    return json.loads(line[-1][len("PROBE_RESULT "):])
+    return json.loads(line[-1][len("PROBE_RESULT ") :])
 
 
 @pytest.mark.gpu
@@ -138,5 +148,7 @@ def test_opt_out_env_leaves_torch_dispatch_alone():
         e = dict(os.environ)
         e.pop("UNSLOTH_ALLOW_CUDNN_SDPA_D256", None)
         e.update(env)
-        r = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = e, timeout = 600)
+        r = subprocess.run(
+            [sys.executable, "-c", code], capture_output = True, text = True, env = e, timeout = 600
+        )
         assert f"WRAPPED {want}" in r.stdout, (env, r.stdout[-2000:], r.stderr[-2000:])

@@ -6523,11 +6523,11 @@ def _sdpa_cudnn_d256_sm100_devices():
     """CUDA device indices with compute capability 10.x (B200 / B300), or an empty set."""
     try:
         import torch
-
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return frozenset()
         return frozenset(
-            i for i in range(torch.cuda.device_count())
+            i
+            for i in range(torch.cuda.device_count())
             if torch.cuda.get_device_capability(i)[0] == 10
         )
     except Exception:
@@ -6592,7 +6592,14 @@ def fix_cudnn_sdpa_d256_masked_backward():
     backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
 
     @functools.wraps(original)
-    def scaled_dot_product_attention(query, key, value, attn_mask = None, *args, **kwargs):
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        *args,
+        **kwargs,
+    ):
         global _SDPA_CUDNN_D256_WARNED
         if _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
             if not torch.compiler.is_compiling():
