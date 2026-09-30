@@ -4848,37 +4848,28 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
-/* Rounded scroll boxes: keep the thumb inside the corners. Chromium ignores
-   ::-webkit-scrollbar while scrollbar-width or scrollbar-color is set. */
+/* Images prompt boxes: inset the scroll track so the thumb stays inside the
+   rounded corners. Chromium ignores ::-webkit-scrollbar while scrollbar-width
+   or scrollbar-color is set, so reset them. */
 @supports selector(::-webkit-scrollbar) {
 	.image-prompt-box,
-	.dark .image-prompt-box,
-	.rounded-scroll-box,
-	.dark .rounded-scroll-box {
+	.dark .image-prompt-box {
 		scrollbar-width: auto;
 		scrollbar-color: auto;
 	}
 }
 
-.image-prompt-box::-webkit-scrollbar,
-.rounded-scroll-box::-webkit-scrollbar {
+.image-prompt-box::-webkit-scrollbar {
 	width: 12px;
 }
 
-.image-prompt-box::-webkit-scrollbar-track,
-.rounded-scroll-box::-webkit-scrollbar-track {
+.image-prompt-box::-webkit-scrollbar-track {
 	margin-block: 12px;
 }
 
-.image-prompt-box::-webkit-scrollbar-thumb,
-.rounded-scroll-box::-webkit-scrollbar-thumb {
+.image-prompt-box::-webkit-scrollbar-thumb {
 	border: 4px solid transparent;
 	background-clip: padding-box;
-}
-
-/* Hide the square resize grip; resizing still works. */
-.rounded-scroll-box::-webkit-resizer {
-	background: transparent;
 }
 
 /* Attachment card page previews: drop the viewer's gray backdrop, padding and
