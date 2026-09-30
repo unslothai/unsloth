@@ -11,9 +11,12 @@ interface BrowserPrefsState {
   /** Open attached documents in the browser panel instead of the preview dialog. */
   openFilesInBrowser: boolean;
   searchEngine: SearchEngineId;
+  /** Show the query and fragment in the address bar, not just the site and path. */
+  showFullUrl: boolean;
   setOpenLinksInBrowser: (value: boolean) => void;
   setOpenFilesInBrowser: (value: boolean) => void;
   setSearchEngine: (value: SearchEngineId) => void;
+  setShowFullUrl: (value: boolean) => void;
 }
 
 export const useBrowserPrefsStore = create<BrowserPrefsState>()(
@@ -22,9 +25,11 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       openLinksInBrowser: false,
       openFilesInBrowser: true,
       searchEngine: "duckduckgo",
+      showFullUrl: false,
       setOpenLinksInBrowser: (openLinksInBrowser) => set({ openLinksInBrowser }),
       setOpenFilesInBrowser: (openFilesInBrowser) => set({ openFilesInBrowser }),
       setSearchEngine: (searchEngine) => set({ searchEngine }),
+      setShowFullUrl: (showFullUrl) => set({ showFullUrl }),
     }),
     {
       name: "unsloth_browser_prefs",

@@ -47,11 +47,13 @@ function TextFile({
   name,
   contentType,
   plainText,
+  scale,
 }: {
   blob: Blob;
   name: string;
   contentType: string;
   plainText: boolean;
+  scale: number;
 }) {
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
@@ -77,7 +79,7 @@ function TextFile({
   }
   if (!plainText && isMarkdown(name, contentType)) {
     return (
-      <div className="size-full overflow-auto px-6">
+      <div className="size-full overflow-auto px-6" style={{ zoom: scale }}>
         <MarkdownPreview
           markdown={preview.text}
           defer={true}
@@ -86,9 +88,18 @@ function TextFile({
       </div>
     );
   }
-  if (language) return <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />;
+  if (language) {
+    return (
+      <div className="size-full overflow-auto" style={{ zoom: scale }}>
+        <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />
+      </div>
+    );
+  }
   return (
-    <pre className="size-full overflow-auto whitespace-pre-wrap break-words px-6 py-4 font-mono text-sm leading-relaxed select-text">
+    <pre
+      style={{ zoom: scale }}
+      className="size-full overflow-auto whitespace-pre-wrap break-words px-6 py-4 font-mono text-sm leading-relaxed select-text"
+    >
       {preview.text}
     </pre>
   );
@@ -100,11 +111,13 @@ export function FileView({
   name,
   contentType,
   plainText = false,
+  scale = 1,
 }: {
   blob: Blob;
   name: string;
   contentType: string;
   plainText?: boolean;
+  scale?: number;
 }) {
   const t = useT();
   const media = plainText ? null : mediaKind(name, contentType);
@@ -115,8 +128,8 @@ export function FileView({
   if (docKind) {
     if (blob.size > MAX_DOCUMENT_PREVIEW_BYTES) return <Unavailable message={t("library.preview.cannotPreview")} />;
     return (
-      <div className="flex size-full min-h-0 flex-col bg-muted/20">
-        <DocumentView file={blob} kind={docKind} name={name} contentType={contentType} />
+      <div className="flex size-full min-h-0 flex-col">
+        <DocumentView file={blob} kind={docKind} name={name} contentType={contentType} scale={scale} />
       </div>
     );
   }
@@ -126,7 +139,13 @@ export function FileView({
     if (media === "image") {
       return (
         <div className="flex size-full items-center justify-center overflow-auto bg-muted/20 p-4">
-          <img src={src} alt={name} onError={() => setFailed(true)} className="max-h-full max-w-full object-contain" />
+          <img
+            src={src}
+            alt={name}
+            onError={() => setFailed(true)}
+            style={{ zoom: scale }}
+            className="max-h-full max-w-full object-contain"
+          />
         </div>
       );
     }
@@ -144,7 +163,7 @@ export function FileView({
   }
   if (plainText || TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType) {
     return (
-      <TextFile blob={blob} name={name} contentType={contentType} plainText={plainText} />
+      <TextFile blob={blob} name={name} contentType={contentType} plainText={plainText} scale={scale} />
     );
   }
   return <Unavailable message={t("browser.cannotShowFile")} />;

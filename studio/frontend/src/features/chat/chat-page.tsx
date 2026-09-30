@@ -390,11 +390,21 @@ const SingleContent = memo(function SingleContent({
     if (!chatActive || isMobile) return;
     setBrowserPanelAvailable(true);
     setInAppLinkHandler(openUrlInBrowser);
+    // Request edits on an opened file stages its prompt here.
+    useBrowserStore.setState({
+      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
+    });
     return () => {
       setBrowserPanelAvailable(false);
       setInAppLinkHandler(null);
+      useBrowserStore.setState({ requestEdits: null });
     };
   }, [chatActive, isMobile]);
+  // The header's browser button only shows once the chat has messages.
+  const threadHasMessages = useAuiState(({ thread }) => thread.messages.length > 0);
+  useEffect(() => {
+    if (chatActive) useBrowserStore.setState({ chatHasMessages: threadHasMessages });
+  }, [chatActive, threadHasMessages]);
   useEffect(() => {
     if (!pendingFixPrompt || !chatActive) return;
     useChatArtifactsStore.getState().clearFixPrompt();

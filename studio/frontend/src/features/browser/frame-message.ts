@@ -16,13 +16,14 @@ export type FrameMessage =
   | { type: "title"; title: string }
   | { type: "url"; url: string }
   | { type: "reload" }
+  | { type: "found"; found: boolean }
   | { type: "shortcut"; key: string; shift: boolean };
 
 // Same limits as the fetch endpoint.
 const MAX_URL_CHARS = 8192;
 const MAX_BODY_CHARS = 1024 * 1024;
 const MAX_TITLE_CHARS = 1024;
-const SHORTCUT_KEYS = new Set(["l", "t", "w", "r"]);
+const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f"]);
 
 const text = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.length <= max ? value : null;
@@ -58,6 +59,8 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return { type: "title", title: title(message.title) };
     case "reload":
       return { type: "reload" };
+    case "found":
+      return { type: "found", found: message.found === true };
     case "shortcut":
       return typeof message.key === "string" && SHORTCUT_KEYS.has(message.key)
         ? { type: "shortcut", key: message.key, shift: message.shift === true }

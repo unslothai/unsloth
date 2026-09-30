@@ -4,9 +4,10 @@
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type OpenFileInput, useBrowserStore } from "./store";
 
-export { BrowserPanel } from "./browser-panel";
+export { BrowserPanel, ClearBrowsingDataDialog } from "./browser-panel";
 export { BrowserToggleButton } from "./browser-toggle";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
+export { useBrowserHistoryStore } from "./history-store";
 export { useBrowserPrefsStore } from "./prefs-store";
 export { type OpenFileInput, useBrowserStore } from "./store";
 
@@ -15,6 +16,10 @@ let panelAvailable = false;
 
 export function setBrowserPanelAvailable(available: boolean): void {
   panelAvailable = available;
+}
+
+export function browserPanelAvailable(): boolean {
+  return panelAvailable;
 }
 
 /** Open a link in the browser panel; false if unavailable or links go to the system browser. */

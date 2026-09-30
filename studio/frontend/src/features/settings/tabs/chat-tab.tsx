@@ -25,9 +25,12 @@ import {
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import {
+  ClearBrowsingDataDialog,
   SEARCH_ENGINES,
   type SearchEngineId,
+  browserPanelAvailable,
   useBrowserPrefsStore,
+  useBrowserStore,
 } from "@/features/browser";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
@@ -760,9 +763,18 @@ function BrowserSettings() {
   const openLinksInBrowser = useBrowserPrefsStore((state) => state.openLinksInBrowser);
   const openFilesInBrowser = useBrowserPrefsStore((state) => state.openFilesInBrowser);
   const searchEngine = useBrowserPrefsStore((state) => state.searchEngine);
-  const { setOpenLinksInBrowser, setOpenFilesInBrowser, setSearchEngine } =
+  const showFullUrl = useBrowserPrefsStore((state) => state.showFullUrl);
+  const { setOpenLinksInBrowser, setOpenFilesInBrowser, setSearchEngine, setShowFullUrl } =
     useBrowserPrefsStore.getState();
+  const [clearOpen, setClearOpen] = useState(false);
+  // History and downloads open as browser tabs, so only beside a chat.
+  const canOpenPages = browserPanelAvailable();
+  const openPage = (page: "history" | "downloads") => {
+    useSettingsDialogStore.getState().closeDialog();
+    useBrowserStore.getState().openInternal(page);
+  };
   return (
+    <>
     <SettingsSection title={t("browser.settingsTitle")}>
       <SettingsRow
         label={t("browser.openLinksSetting")}
@@ -811,6 +823,44 @@ function BrowserSettings() {
           </SelectContent>
         </Select>
       </SettingsRow>
+      <SettingsRow
+        label={t("browser.showFullUrlSetting")}
+        description={t("browser.showFullUrlSettingDescription")}
+      >
+        <Switch
+          aria-label={t("browser.showFullUrlSetting")}
+          checked={showFullUrl}
+          onCheckedChange={setShowFullUrl}
+        />
+      </SettingsRow>
     </SettingsSection>
+    <SettingsSection title={t("browser.browsingDataTitle")}>
+      <SettingsRow
+        label={t("browser.historySetting")}
+        description={t(canOpenPages ? "browser.historySettingDescription" : "browser.pagesFromChat")}
+      >
+        <Button variant="outline" size="sm" disabled={!canOpenPages} onClick={() => openPage("history")}>
+          {t("browser.manage")}
+        </Button>
+      </SettingsRow>
+      <SettingsRow
+        label={t("browser.downloadsSetting")}
+        description={t(canOpenPages ? "browser.downloadsSettingDescription" : "browser.pagesFromChat")}
+      >
+        <Button variant="outline" size="sm" disabled={!canOpenPages} onClick={() => openPage("downloads")}>
+          {t("browser.manage")}
+        </Button>
+      </SettingsRow>
+      <SettingsRow
+        label={t("browser.clearDataSetting")}
+        description={t("browser.clearDataSettingDescription")}
+      >
+        <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>
+          {t("browser.menu.clearData")}
+        </Button>
+      </SettingsRow>
+    </SettingsSection>
+    <ClearBrowsingDataDialog open={clearOpen} onOpenChange={setClearOpen} />
+    </>
   );
 }

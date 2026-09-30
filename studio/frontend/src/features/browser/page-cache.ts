@@ -57,6 +57,11 @@ export class PageCache<Key extends object> {
     }
   }
 
+  clear(): void {
+    this.pages.clear();
+    this.total = 0;
+  }
+
   delete(key: Key): void {
     const hit = this.pages.get(key);
     if (!hit) return;

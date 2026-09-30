@@ -9,6 +9,8 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
 import { FileView } from "./file-view";
+import { useBrowserHistoryStore } from "./history-store";
+import { InternalPageView } from "./internal-pages";
 import { NewTabPage } from "./new-tab-page";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
@@ -63,8 +65,18 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "external":
           openExternalLink(message.url);
           break;
-        case "loaded":
+        case "loaded": {
           store.updateTab(tabId, { title: message.title, favicon: safeFavicon(message.favicon), loading: false });
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          const entry = tab ? currentEntry(tab) : null;
+          // POST results can't be revisited, so they stay out of history.
+          if (tab && entry?.kind === "web" && entry.method !== "POST") {
+            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title);
+          }
+          break;
+        }
+        case "found":
+          store.setFindMiss(!message.found);
           break;
         case "title":
           if (message.title) store.updateTab(tabId, { title: message.title });
@@ -78,6 +90,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
         case "shortcut":
           if (message.key === "l") store.focusAddress();
+          else if (message.key === "f") store.setFindOpen(true);
           else if (message.key === "t") store.newTab();
           else if (message.key === "w") store.closeTab(tabId);
           else if (message.key === "r") store.reload(tabId);
@@ -133,7 +146,8 @@ function WebPage({
       if (page.kind === "raw") {
         const name = fileNameFromUrl(page.url);
         setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
-        updateTab(tab.id, { loading: false, title: name, displayUrl: page.url });
+        updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
+        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
       } else {
         // Host until the frame reports the title.
         updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
@@ -170,7 +184,7 @@ function WebPage({
   const { page } = state;
   if (page.kind === "raw") {
     return (
-      <FileView blob={page.blob} name={fileNameFromUrl(page.url)} contentType={page.contentType} />
+      <FileView blob={page.blob} name={fileNameFromUrl(page.url)} contentType={page.contentType} scale={tab.zoom} />
     );
   }
   return (
@@ -180,6 +194,8 @@ function WebPage({
       base={page.base}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
+      tabId={tab.id}
+      zoom={tab.zoom}
       onMessage={onFrameMessage}
     />
   );
@@ -199,6 +215,7 @@ function LocalFile({ tab }: { tab: BrowserTab }) {
       name={entry.name}
       contentType={entry.contentType}
       plainText={entry.plainText}
+      scale={tab.zoom}
     />
   );
 }
@@ -212,6 +229,8 @@ export const TabView = memo(function TabView({ tab, active }: { tab: BrowserTab;
         <NewTabPage tabId={tab.id} />
       ) : entry.kind === "web" ? (
         <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />
+      ) : entry.kind === "internal" ? (
+        <InternalPageView page={entry.page} tabId={tab.id} />
       ) : (
         <LocalFile key={entry.fileId} tab={tab} />
       )}

@@ -273,11 +273,32 @@ _FRAME_HTML = r"""<!doctype html>
           setTimeout(() => post({ type: "navigate", url: cfg.refresh.url, replace: true }), cfg.refresh.delay * 1000);
         }
         window.addEventListener("keydown", (event) => {
-          if ((event.metaKey || event.ctrlKey) && ["l", "t", "w", "r"].includes(event.key.toLowerCase())) {
+          if ((event.metaKey || event.ctrlKey) && ["l", "t", "w", "r", "f"].includes(event.key.toLowerCase())) {
             event.preventDefault();
             post({ type: "shortcut", key: event.key.toLowerCase(), shift: event.shiftKey });
           }
         }, true);
+        const applyZoom = (zoom) => {
+          const value = Number(zoom);
+          if (!(value >= 0.25 && value <= 5)) return;
+          document.documentElement.style.zoom = value === 1 ? "" : String(value);
+        };
+        if (cfg.zoom) {
+          if (document.documentElement) applyZoom(cfg.zoom);
+          document.addEventListener("DOMContentLoaded", () => applyZoom(cfg.zoom), { once: true });
+        }
+        // Commands from the panel, relayed by the shell (the only parent this page has).
+        window.addEventListener("message", (event) => {
+          if (event.source !== parent) return;
+          const data = event.data;
+          if (!data || data.type !== "unsloth:browser-command") return;
+          if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "find" && typeof data.query === "string" && data.query) {
+            let found = false;
+            try { found = window.find(data.query, false, Boolean(data.backwards), true, false, false, false); } catch {}
+            post({ type: "found", found });
+          }
+        });
       };
       const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
       const inject = (html, tags) => {
@@ -295,11 +316,15 @@ _FRAME_HTML = r"""<!doctype html>
           if (event.data && event.data.source === "unsloth-browser") parent.postMessage(event.data, "*");
           return;
         }
-        // Only the parent may drive the shell, once.
-        if (event.source !== parent || page) return;
+        if (event.source !== parent) return;
         const data = event.data;
+        if (page) {
+          if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");
+          return;
+        }
+        // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null };
+        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1 };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");

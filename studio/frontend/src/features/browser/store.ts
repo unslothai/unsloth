@@ -9,6 +9,7 @@ import { PageCache } from "./page-cache";
 
 export type BrowserEntry =
   | { kind: "newtab" }
+  | { kind: "internal"; page: InternalPage }
   | { kind: "web"; url: string; method?: "GET" | "POST"; body?: string }
   | {
       kind: "file";
@@ -19,12 +20,20 @@ export type BrowserEntry =
       plainText?: boolean;
     };
 
+export type InternalPage = "history" | "downloads";
+
+export type DeviceMode = "off" | "mobile" | "tablet";
+
+export type RequestEdits = (prompt: string) => void;
+
 export type BrowserTab = {
   id: string;
   history: BrowserEntry[];
   index: number;
   title: string;
   favicon: string | null;
+  /** Content type of a document the web tab shows (a PDF link), for its icon. */
+  documentType: string | null;
   /** Address from pushState, shown instead of the loaded URL. */
   displayUrl: string | null;
   loading: boolean;
@@ -32,6 +41,8 @@ export type BrowserTab = {
   reloadKey: number;
   /** What the tab was opened for; opening it again focuses the tab. */
   openKey: string | null;
+  /** Page zoom, kept across navigations like a browser's per-tab zoom. */
+  zoom: number;
 };
 
 export type OpenFileInput = {
@@ -92,6 +103,10 @@ export function cachePage(entry: BrowserEntry, reloadKey: number, page: BrowserP
   pageCache.set(entry, reloadKey, page);
 }
 
+export function clearPageCache(): void {
+  pageCache.clear();
+}
+
 let nextId = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 
@@ -102,10 +117,12 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     index: 0,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
+    documentType: null,
     displayUrl: null,
     loading: false,
     reloadKey: 0,
     openKey,
+    zoom: 1,
   };
 }
 
@@ -134,6 +151,15 @@ type BrowserState = {
   openSequence: number;
   /** Bumped to ask the address bar for focus (Cmd+L, a new tab). */
   focusAddressSequence: number;
+  /** Find bar for the active tab, and whether its last search missed. */
+  findOpen: boolean;
+  findMiss: boolean;
+  /** Device toolbar: pages shown at a phone or tablet width. */
+  device: DeviceMode;
+  /** Whether the chat beside the panel has messages; the header toggle hides in a new chat. */
+  chatHasMessages: boolean;
+  /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
+  requestEdits: RequestEdits | null;
   openPanel: () => void;
   closePanel: () => void;
   togglePanel: () => void;
@@ -150,8 +176,13 @@ type BrowserState = {
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
-  updateTab: (tabId: string, patch: Partial<Pick<BrowserTab, "title" | "favicon" | "displayUrl" | "loading">>) => void;
+  updateTab: (tabId: string, patch: Partial<Pick<BrowserTab, "title" | "favicon" | "documentType" | "displayUrl" | "loading">>) => void;
   focusAddress: () => void;
+  openInternal: (page: InternalPage) => void;
+  setZoom: (tabId: string, zoom: number) => void;
+  setFindOpen: (open: boolean) => void;
+  setFindMiss: (miss: boolean) => void;
+  setDevice: (device: DeviceMode) => void;
 };
 
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
@@ -167,6 +198,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     index: history.length - 1,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
+    documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
     openKey: null,
@@ -180,6 +212,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     index,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
+    documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
   };
@@ -214,6 +247,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     activeTabId: null,
     openSequence: 0,
     focusAddressSequence: 0,
+    findOpen: false,
+    findMiss: false,
+    device: "off",
+    chatHasMessages: false,
+    requestEdits: null,
     openPanel: () => {
       if (get().tabs.length === 0) {
         get().newTab();
@@ -276,7 +314,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
       })),
-    activateTab: (tabId) => set({ activeTabId: tabId }),
+    activateTab: (tabId) => set({ activeTabId: tabId, findOpen: false, findMiss: false }),
     closeTab: (tabId) => {
       const { tabs, activeTabId } = get();
       const index = tabs.findIndex((tab) => tab.id === tabId);
@@ -302,5 +340,17 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return { tabs: patchTab(state.tabs, tabId, (current) => ({ ...current, ...patch })) };
       }),
     focusAddress: () => set((state) => ({ focusAddressSequence: state.focusAddressSequence + 1 })),
+    openInternal: (page) => {
+      const openKey = `internal:${page}`;
+      if (focusExisting(openKey)) return;
+      openTab(createTab({ kind: "internal", page }, openKey));
+    },
+    setZoom: (tabId, zoom) =>
+      set((state) => ({
+        tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, zoom: Math.min(5, Math.max(0.25, zoom)) })),
+      })),
+    setFindOpen: (findOpen) => set({ findOpen, findMiss: false }),
+    setFindMiss: (findMiss) => set({ findMiss }),
+    setDevice: (device) => set({ device }),
   };
 });
