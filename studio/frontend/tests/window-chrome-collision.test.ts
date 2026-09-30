@@ -54,6 +54,23 @@ test("every floating primitive clears the titlebar", async () => {
   }
 });
 
+test("the message More menu clears the titlebar", async () => {
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
+  assert.match(
+    thread,
+    /const moreMenuCollisionPadding = useWindowChromeCollisionPadding\(undefined\);/,
+  );
+  assert.match(
+    thread,
+    /<ActionBarMorePrimitive\.Content[^>]*collisionPadding=\{moreMenuCollisionPadding\}/,
+  );
+  // Padding alone can't stop a flipped menu growing under the titlebar.
+  assert.match(
+    thread,
+    /aui-action-bar-more-content[^"]*max-h-\(--radix-dropdown-menu-content-available-height\)[^"]*overflow-y-auto/,
+  );
+});
+
 test("the titlebar height is re-read whenever it can change", async () => {
   const provider = await readSrcAsync("app/provider.tsx");
   assert.equal(provider.match(/refreshWindowChromeTop\(\);/g)?.length, 2);
