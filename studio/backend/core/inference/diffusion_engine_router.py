@@ -303,8 +303,10 @@ def select_and_activate_engine(
     hf_token: Optional[str] = None,
     model_kind: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
+    before_fallback: Optional[Callable[[], None]] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
+    ``before_fallback`` may raise to refuse a diffusers fallback before it unloads the resident model.
 
     Falls back to diffusers (recording a reason) when the native route is disabled, the device has
     a usable GPU, MPS is not enabled, the family has no native asset, or the binary is unavailable
@@ -444,6 +446,8 @@ def select_and_activate_engine(
     if off_torch is not None:
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
+    if before_fallback is not None:
+        before_fallback()
     return _activate(ENGINE_DIFFUSERS, reason)
 
 

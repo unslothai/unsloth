@@ -41221,6 +41221,10 @@ async def load_diffusion_model_gated(
                 model_kind = kind,
                 # The ordinal resolved above: re-resolving re-ranks by free VRAM and can pick another card.
                 gpu_ordinal = gpu_ordinal,
+                # A fallback lands on torch's card: refuse it during training before it unloads anything.
+                before_fallback = (
+                    _guard_diffusion_load_against_training if off_torch is not None else None
+                ),
             )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli

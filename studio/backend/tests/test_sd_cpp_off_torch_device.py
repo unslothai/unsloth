@@ -510,3 +510,21 @@ def test_an_off_torch_image_load_frees_a_native_video_model(monkeypatch, video_e
     assert raised is None, raised
     assert ("video_unload" in calls) is evicted
     assert calls.index("select_and_activate") > (calls.index("video_unload") if evicted else -1)
+
+
+def test_a_refused_fallback_keeps_the_resident_engine(monkeypatch):
+    """A native prediction whose selection then falls back must be refused before _activate unloads."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")
+    _record_cli_requests(monkeypatch, path = None)
+    activated: list = []
+    monkeypatch.setattr(r, "_activate", lambda *a, **_k: activated.append(a))
+
+    def _refuse():
+        raise RuntimeError("training is running")
+
+    with pytest.raises(RuntimeError, match = "training"):
+        r.select_and_activate_engine(detect_family("z-image"), before_fallback = _refuse)
+    assert activated == []
+    # Without a guard the fallback still activates as before.
+    r.select_and_activate_engine(detect_family("z-image"))
+    assert activated and activated[-1][0] == ENGINE_DIFFUSERS
