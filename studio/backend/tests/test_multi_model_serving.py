@@ -934,3 +934,15 @@ def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():
     # Integrated (total 0, shared RAM): the free reading is left alone, not zeroed.
     assert _net_of_held_vram([(0, 60_000, 0)], held) == [(0, 60_000, 0)]
     assert _net_of_held_vram([(0, 60_000, 0)], {}) == [(0, 60_000, 0)]
+
+
+def test_a_public_preview_never_reaches_a_model_kept_alongside(backends):
+    primary, extra = backends
+    preview = SimpleNamespace(scope = {}, headers = {}, state = SimpleNamespace())
+    inf.disable_openai_auto_switch_for_request(preview.scope)
+
+    async def chat(model):
+        await inf._maybe_auto_switch_model(model, preview, "s")
+        return inf.get_llama_cpp_backend()
+
+    assert asyncio.run(chat("org/B-GGUF")) is primary

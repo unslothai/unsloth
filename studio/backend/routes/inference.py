@@ -9379,6 +9379,11 @@ def _anthropic_local_image_payloads(payload) -> list[str]:
     return encoded_images
 
 
+def _auto_switch_opted_out(fastapi_request) -> bool:
+    scope = getattr(fastapi_request, "scope", None)
+    return isinstance(scope, dict) and bool(scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY))
+
+
 def disable_openai_auto_switch_for_request(scope) -> None:
     """Opt a request out of OpenAI auto-switch. The public preview route uses this:
     it always serves its pinned checkpoint, so a caller-supplied model must never
@@ -10386,7 +10391,10 @@ async def _maybe_auto_switch_model(
     )
     # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
-    routed = await _route_to_extra_slot(named_model)
+    # The public preview serves its pinned checkpoint only, never a model kept alongside.
+    routed = await _route_to_extra_slot(
+        None if _auto_switch_opted_out(fastapi_request) else named_model
+    )
     if account_access.managed_account():
         if named_model:
             await _require_named_model_access(named_model, fastapi_request)
@@ -10465,8 +10473,7 @@ async def _maybe_auto_switch_model(
         return
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
-    scope = getattr(fastapi_request, "scope", None)
-    if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
+    if _auto_switch_opted_out(fastapi_request):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
 
