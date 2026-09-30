@@ -983,3 +983,16 @@ def test_a_transformers_install_stops_the_workers_of_models_kept_alongside(backe
             )
         )
     assert alive_at_swap == [False] and kept not in model_slots.slots
+
+
+def test_a_zero_vram_primary_keeps_the_chat_claim_a_kept_model_holds(backends, monkeypatch):
+    _, extra = backends
+    _hold_chat_claim(monkeypatch)
+    source = inspect.getsource(inf._load_model_impl)
+    assert "release, CHAT)" not in source and "release(CHAT)" not in source
+    assert source.count("_release_chat_for_zero_vram_primary") == 3
+    inf._release_chat_for_zero_vram_primary()
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    model_slots.drop(extra)
+    inf._release_chat_for_zero_vram_primary()
+    assert gpu_arbiter.current_owner() is None

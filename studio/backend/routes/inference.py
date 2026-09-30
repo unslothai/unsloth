@@ -11205,6 +11205,12 @@ def release_chat_gpu_claim() -> bool:
     return model_slots.in_slot(None, lambda: release_if(CHAT, chat_idle))
 
 
+def _release_chat_for_zero_vram_primary() -> None:
+    """A primary that holds no VRAM drops CHAT, unless a model kept alongside still holds it."""
+    from core.inference.gpu_arbiter import CHAT, release_if
+    release_if(CHAT, lambda: not model_slots.busy())
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -17232,7 +17238,6 @@ async def _load_model_impl(
         from core.inference.gpu_arbiter import (
             acquire_for_request,
             current_owner,
-            release,
             CHAT,
             DIFFUSION,
             VIDEO,
@@ -17932,7 +17937,7 @@ async def _load_model_impl(
                 )
             if replacing and not chat_load_needs_gpu:
                 # Drop the stale CHAT claim after any zero-VRAM load.
-                await asyncio.to_thread(release, CHAT)
+                await asyncio.to_thread(_release_chat_for_zero_vram_primary)
 
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
@@ -18048,7 +18053,7 @@ async def _load_model_impl(
         # claim is all that stops a second pipeline allocating over a resident model).
         # load_model fires it in between; the post-load release covers a re-taken claim.
         _release_chat_after_teardown = (
-            (lambda: release(CHAT)) if replacing and not chat_load_needs_gpu else None
+            _release_chat_for_zero_vram_primary if replacing and not chat_load_needs_gpu else None
         )
         anonymous_hf_kw = {"anonymous_hf_access": True} if anonymous_hf_access else {}
         speech_codec_kw = (
@@ -18124,7 +18129,7 @@ async def _load_model_impl(
         if replacing and not chat_load_needs_gpu:
             # This load replaced whatever held CHAT; leaving the claim makes the next
             # Images/Video acquire evict a model that never used the GPU.
-            await asyncio.to_thread(release, CHAT)
+            await asyncio.to_thread(_release_chat_for_zero_vram_primary)
 
         # Stamped here, not in backend.load_model: that entry is built in the load
         # subprocess and only a fixed model_info mirror crosses back, so it would
