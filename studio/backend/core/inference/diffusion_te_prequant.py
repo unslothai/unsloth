@@ -212,8 +212,7 @@ def te_candidate_is_readable(name: Optional[str]) -> bool:
     NOT the transformer's ``restricted_prequant_load_supported``: this state dict is plain
     tensors, read under a bare ``weights_only`` load with no constructor allowlist, so a ``.pt``
     is always readable and asking the DiT's question would refuse one on every install whose
-    torchao lacks some DiT scheme's constructors. The safetensors container needs only
-    safetensors, not torchao. Check that dependency before planning without dense shards.
+    torchao lacks some DiT scheme's constructors. The safetensors container needs safetensors, not torchao.
     """
     if not name:
         return False

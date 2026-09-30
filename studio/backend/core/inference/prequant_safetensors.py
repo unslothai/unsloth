@@ -145,11 +145,7 @@ def plain_safetensors_supported() -> bool:
 
 
 def load_plain_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
-    """Read a plain-tensor prequant checkpoint without importing torchao.
-
-    Refuse subclass metadata and unaccounted tensors before reading weights. The
-    caller still validates the component, scheme, base model and state-dict keys.
-    """
+    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:
