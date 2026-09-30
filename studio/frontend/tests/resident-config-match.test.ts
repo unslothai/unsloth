@@ -1981,7 +1981,7 @@ test("a pick asks the status about its own model and keeps or replaces the other
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive \|\| replacesOneOfSeveral\) \{/);
   assert.equal(
-    USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| replacesOneOfSeveral,/g)?.length,
+    USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| touchesOnlySelected,/g)?.length,
     2,
   );
   assert.match(CONFIRM, /let running = model\s*\?\s*\[\]/);
@@ -2017,4 +2017,11 @@ test("cancelling a load clears the selection unless kept models stay loaded and 
     USE_CHAT_MODEL_RUNTIME,
     /if \(!preserveCheckpoint\) \{[\s\S]{0,160}?if \(!useChatRuntimeStore\.getState\(\)\.keepModelsLoaded \|\| run\.residentModelUnloaded\) \{\s*clearCheckpoint\(\);\s*\}\s*await refresh\(\);/,
   );
+});
+
+test("reloading a kept model with the box off keeps it beside the primary, not in the primary seat", () => {
+  // forceReload leaves replacesOneOfSeveral false; its preliminary unload frees the slot, so
+  // alongside: false would send the reload to the primary seat and replace the other model.
+  assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /alongside: keepModelsLoaded \|\| replacesOneOfSeveral/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /const replacesOneOfSeveral = touchesOnlySelected && !forceReload;/);
 });

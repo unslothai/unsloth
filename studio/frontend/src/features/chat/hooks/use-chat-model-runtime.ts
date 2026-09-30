@@ -2621,7 +2621,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
-              alongside: keepModelsLoaded || replacesOneOfSeveral,
+              alongside: keepModelsLoaded || touchesOnlySelected,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -3015,7 +3015,7 @@ export function useChatModelRuntime() {
                   // unloaded the live server.
                   cpu_fallback: rollbackState.loadedCpuFallback,
                   n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
-                  alongside: keepModelsLoaded || replacesOneOfSeveral,
+                  alongside: keepModelsLoaded || touchesOnlySelected,
                   tensor_split: rollbackState.loadedSplitRatio ?? undefined,
                   gpu_ids: rollbackState.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
