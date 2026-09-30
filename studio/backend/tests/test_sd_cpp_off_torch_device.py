@@ -272,6 +272,7 @@ def _drive_load_route(
     predicted,
     training_active,
     video_engine = None,
+    video_loading = None,
 ):
     """Run the real image-load route with every hardware and engine answer stubbed; returns the
     route calls in order, plus what the route raised."""
@@ -331,6 +332,7 @@ def _drive_load_route(
         lambda: SimpleNamespace(
             status = lambda: {"engine": video_engine},
             unload = lambda: calls.append("video_unload"),
+            _loading = video_loading,
         ),
     )
     monkeypatch.setattr(arb, "release", lambda owner: calls.append(f"release:{owner}"))
@@ -528,3 +530,18 @@ def test_a_refused_fallback_keeps_the_resident_engine(monkeypatch):
     # Without a guard the fallback still activates as before.
     r.select_and_activate_engine(detect_family("z-image"))
     assert activated and activated[-1][0] == ENGINE_DIFFUSERS
+
+
+@pytest.mark.parametrize(
+    "repos, evicted", [(("unsloth/MiniMax-H3-GGUF",), True), (("org/ltx",), False)]
+)
+def test_an_in_flight_native_video_load_is_cancelled_too(monkeypatch, repos, evicted):
+    from core.inference import video_minimax_h3
+
+    h3_repos = (video_minimax_h3.H3_GGUF_REPO,) if evicted else repos
+    loading = SimpleNamespace(error = None, asset_repos = h3_repos)
+    calls, raised = _drive_load_route(
+        monkeypatch, predicted = ENGINE_SD_CPP, training_active = False, video_loading = loading
+    )
+    assert raised is None, raised
+    assert ("video_unload" in calls) is evicted

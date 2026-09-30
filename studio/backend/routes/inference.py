@@ -40725,8 +40725,17 @@ def _unload_native_video_sharing_the_sd_cpp_tree() -> None:
     from core.inference import gpu_arbiter
     from core.inference.video import get_video_backend
 
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
     video = get_video_backend()
-    if video.status().get("engine") == "sd_cpp":
+    # engine is published at commit; a downloading H3 load shows only in _loading, from begin_load on.
+    loading = getattr(video, "_loading", None)
+    h3_loading = (
+        loading is not None
+        and loading.error is None
+        and H3_GGUF_REPO in (getattr(loading, "asset_repos", None) or ())
+    )
+    if h3_loading or video.status().get("engine") == "sd_cpp":
         logger.info("Unloading the native video model: the Images load replaces its sd.cpp build")
         video.unload()
         gpu_arbiter.release(gpu_arbiter.VIDEO)
