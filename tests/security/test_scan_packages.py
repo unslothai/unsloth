@@ -222,6 +222,41 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
     assert "SCAN INCOMPLETE" in combined or "pip download failed" in combined
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "./evilpkg",
+        "git+https://example.invalid/evil.git",
+        "evil @ https://example.invalid/evil-1.0.tar.gz",
+        "evil-1.0.tar.gz",
+        "evil.zip[x]",
+        "evil.zip [x]",
+        "evil.tar.gz[a] ; python_version>'3'",
+    ],
+)
+def test_direct_source_specs_never_reach_pip(tmp_path, monkeypatch, spec):
+    calls = []
+    monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: calls.append(a))
+    for with_deps in (False, True):
+        results, errors = sp.download_packages([spec], str(tmp_path), with_deps = with_deps)
+        assert results == []
+        assert errors and "refusing to download" in errors[0]
+    assert calls == []
+
+
+def test_index_specs_still_reach_pip():
+    errors = []
+    specs = [
+        "torch>=2.4.0",
+        "foo[bar,baz]>=1,<2",
+        "six>=1.16 ; python_version>'3'",
+        "zope.interface!=5.*",
+        "backports.lzma",
+    ]
+    assert sp._split_index_specs(specs, errors) == specs
+    assert errors == []
+
+
 def test_archive_corruption_produces_critical_finding(tmp_path):
     """SF1: a corrupted wheel (once silently skipped) must yield a CRITICAL `archive_corrupted`."""
     bad = tmp_path / "broken-0.0.1-py3-none-any.whl"

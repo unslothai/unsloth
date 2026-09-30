@@ -1404,6 +1404,155 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
     assert cmd[cmd.index("--fit") + 1] == "off"
 
 
+def _replayed_context_mtp_backend(tmp_path: Path):
+    gb = 1024**3
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 45_914, 46_080), (1, 8_032, 8_176)]
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 262_144
+
+    backend._read_gguf_metadata = read_metadata
+    backend._get_gguf_size_bytes = lambda _path: 31 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 106_000
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 20_000
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def _launched_ctx(result) -> int:
+    return int(result["cmd"][result["cmd"].index("-c") + 1])
+
+
+def _replayed_auto_context(tmp_path: Path) -> int:
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    assert auto["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    return _launched_ctx(auto)
+
+
+def test_forcing_the_drafter_refits_a_context_replayed_from_auto(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert _launched_ctx(fresh) < replayed
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert result["cmd"][result["cmd"].index("--spec-type") + 1] == "draft-mtp"
+    assert backend._requested_n_ctx == _launched_ctx(result)
+
+
+def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path):
+    def slot_bound_backend():
+        backend, gguf = _replayed_context_mtp_backend(tmp_path)
+        backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 45_914, 46_080)]
+        backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 45_914)]
+        backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 16_000
+        backend._estimate_mtp_overhead_bytes = (
+            lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: n_ctx * 5_000
+            + int(_np or n_parallel or 4) * 3 * 1024**3
+        )
+        caps = backend.probe_server_capabilities()
+        backend.probe_server_capabilities = lambda _binary = None: {
+            **caps,
+            "supports_kv_unified": True,
+        }
+        return backend, gguf
+
+    backend, gguf = slot_bound_backend()
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    backend, gguf = slot_bound_backend()
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = slot_bound_backend()
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = _launched_ctx(auto),
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert fresh["cmd"][fresh["cmd"].index("--parallel") + 1] != "4"
+    assert _launched_ctx(fresh) > 8192
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert (
+        result["cmd"][result["cmd"].index("--parallel") + 1]
+        == (fresh["cmd"][fresh["cmd"].index("--parallel") + 1])
+    )
+
+
+def test_a_drafter_forced_through_extra_args_also_refits(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "auto",
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    assert _launched_ctx(result) == _launched_ctx(fresh) < replayed
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_forcing_the_drafter_keeps_a_ctx_size_passed_through_extra_args(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+        extra_args = ["-c", str(replayed)],
+    )
+
+    assert _launched_ctx(result) == replayed
+
+
+def test_forcing_the_drafter_keeps_a_typed_context(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(backend, gguf, n_ctx = replayed, n_parallel = 4, speculative_type = "mtp")
+
+    assert _launched_ctx(result) == replayed
+    assert backend._requested_n_ctx == replayed
+
+
 def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_path):
     """The drafter that launches decides, not one that merely exists.
 

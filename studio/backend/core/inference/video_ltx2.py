@@ -988,6 +988,10 @@ def load_ltx23_pipeline(
     scheduler, the tokenizer, the dense Gemma3 encoder and the companion VAE/vocoder artifacts are
     all fetched by a load that promised to fetch nothing."""
     import transformers
+
+    from .ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+    ensure_ltx2_pipelines_importable(logger)
     from diffusers import LTX2Pipeline
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
 

@@ -447,6 +447,7 @@ def apply_speed_optims(
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "cuda_graph": False,
     }
@@ -455,6 +456,13 @@ def apply_speed_optims(
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
+
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from .diffusion_qwenimage21_rocm import install as install_rocm_query_chunks
+            applied["rocm_query_chunks"] = install_rocm_query_chunks(pipe, target, logger)
+        except Exception as exc:  # noqa: BLE001 - keep stock attention on unsupported installs
+            _warn(logger, "qwen-image-2.1 ROCm query chunks", exc)
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))

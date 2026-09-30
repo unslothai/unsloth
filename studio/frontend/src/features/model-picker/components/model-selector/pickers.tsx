@@ -953,12 +953,14 @@ function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
   denseQuantSchemes?: readonly string[];
+  quantisedStreaming?: boolean;
 }): DeviceBudget {
   return {
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
     // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
     denseQuantSchemes: gpu.denseQuantSchemes,
+    quantisedStreaming: gpu.quantisedStreaming,
   };
 }
 
@@ -5635,7 +5637,7 @@ export function HubModelPicker({
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.
   const sortTriggerClassName =
-    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";

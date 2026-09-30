@@ -210,8 +210,9 @@ def _pin_host_weights(
     module: Any,
     host: dict,
     logger: Any = None,
+    buffer_host: Optional[dict] = None,
 ) -> int:
-    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
+    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
     import torch
 
     mode = _pin_mode()
@@ -226,6 +227,16 @@ def _pin_host_weights(
         and p.data.is_contiguous()
         and not p.data.is_pinned()
     ]
+    buffers = [
+        (name, b)
+        for name, b in _named_buffers(module)
+        if (buffer_host or {}).get(name) is b
+        and b.device.type == "cpu"
+        and _keepable_buffer(b)
+        and b.is_contiguous()
+        and not b.is_pinned()
+    ]
+    params = params + [("\0" + name, b) for name, b in buffers]
     sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
     if not sizes or sum(sizes) == 0:
         return 0
@@ -288,9 +299,38 @@ def _pin_host_weights(
             )
         return 0
     for name, p, view in placed:
+        if name.startswith("\0"):
+            name = name[1:]
+            _set_buffer(module, name, view)
+            buffer_host[name] = view
+            continue
         p.data = view
         host[name] = view
     return need
+
+
+def _named_buffers(module: Any) -> list:
+    named = getattr(module, "named_buffers", None)
+    return list(named()) if callable(named) else []
+
+
+def _keepable_buffer(buffer: Any) -> bool:
+    import torch
+    return type(buffer) is torch.Tensor
+
+
+def _buffer_version(buffer: Any) -> Optional[int]:
+    """``_version``, or None for an inference tensor (moved under inference_mode), which has no version counter."""
+    try:
+        return None if buffer.is_inference() else int(buffer._version)
+    except Exception:  # noqa: BLE001 - untracked: the stock copy handles it
+        return None
+
+
+def _set_buffer(module: Any, name: str, tensor: Any) -> None:
+    prefix, _, leaf = name.rpartition(".")
+    owner = module.get_submodule(prefix) if prefix else module
+    owner._buffers[leaf] = tensor
 
 
 def _wrap_cpu_offload_hook(
@@ -305,20 +345,45 @@ def _wrap_cpu_offload_hook(
         module.__dict__[_KEEP_ATTR] = state
     state.setdefault("owner", {})
     host, owner, version = state["host"], state["owner"], state["version"]
+    # Plain buffers too (torchao-free int8): the stock offload re-copied them every call, 6.3 s vs a 1.2 s denoise on Wan2.2-5B.
+    # Kept while the device copy is the same tensor at the same version.
+    buffer_host = state.setdefault("buffer_host", {})
+    buffer_version = state.setdefault("buffer_version", {})
 
     def _capture(mod: Any) -> None:
         host.clear()
         owner.clear()
+        buffer_host.clear()
         for name, p in mod.named_parameters():
             if p.device.type == "cpu" and _keepable(p):
                 host[name] = p.data
                 owner[name] = p
+        for name, b in _named_buffers(mod):
+            if b.device.type == "cpu" and _keepable_buffer(b):
+                buffer_host[name] = b
 
     _capture(module)
     version.clear()
+    buffer_version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
 
     def _init_hook(mod: Any) -> Any:
+        for name, b in _named_buffers(mod):
+            kept = buffer_host.get(name)
+            seen = buffer_version.get(name)
+            if (
+                kept is None
+                or b.device.type == "cpu"
+                or seen is None
+                or seen[0] is not b
+                or seen[1] != _buffer_version(b)
+                or seen[2] != b.data_ptr()
+            ):
+                continue
+            try:
+                _set_buffer(mod, name, kept)
+            except Exception:  # noqa: BLE001 - the stock copy below handles it
+                pass
         for name, p in mod.named_parameters():
             kept = host.get(name)
             seen = version.get(name)
@@ -339,11 +404,12 @@ def _wrap_cpu_offload_hook(
         out = init_hook(mod)
         _capture(mod)
         version.clear()
+        buffer_version.clear()
         return out
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         # `host` gate: an all-subclass module (GGUF, torchao) never fills `version`, so would rescan every forward.
-        onload = not version and bool(host)
+        onload = not version and not buffer_version and bool(host or buffer_host)
         if onload:
             for name, p in mod.named_parameters():
                 kept = host.get(name)
@@ -354,11 +420,15 @@ def _wrap_cpu_offload_hook(
                 ):
                     host.pop(name, None)
                     owner.pop(name, None)
+            current = dict(_named_buffers(mod))
+            for name in list(buffer_host):
+                if current.get(name) is not buffer_host[name]:
+                    buffer_host.pop(name, None)
         if onload and not state.get("pin_tried"):
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
             try:
-                pinned = _pin_host_weights(mod, host, logger)
+                pinned = _pin_host_weights(mod, host, logger, buffer_host = buffer_host)
             except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
                 pinned = 0
             if pinned and logger is not None:
@@ -372,6 +442,13 @@ def _wrap_cpu_offload_hook(
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version, p.data_ptr())
+            for name, b in _named_buffers(mod):
+                if (
+                    name in buffer_host
+                    and b.device.type != "cpu"
+                    and _buffer_version(b) is not None
+                ):
+                    buffer_version[name] = (b, _buffer_version(b), b.data_ptr())
         return out
 
     try:
@@ -806,6 +883,27 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
+def safetensors_prefix_mib(path: Any, prefix: str) -> Optional[int]:
+    """MiB of the ``prefix*`` tensors, from the safetensors header alone; None if unreadable or unmatched."""
+    import json
+    import struct
+
+    try:
+        with open(path, "rb") as fh:
+            (header_len,) = struct.unpack("<Q", fh.read(8))
+            if not 0 < header_len <= 256 * 1024 * 1024:
+                return None
+            header = json.loads(fh.read(header_len))
+        total = 0
+        for name, meta in header.items():
+            if name != "__metadata__" and name.startswith(prefix):
+                start, end = meta["data_offsets"]
+                total += int(end) - int(start)
+    except Exception:  # noqa: BLE001 - not a readable safetensors header
+        return None
+    return -(-total // (1024 * 1024)) if total > 0 else None
+
+
 def estimate_gguf_resident_mib(storage_mib: Optional[int]) -> Optional[int]:
     """Approximate the RESIDENT device size of a GGUF transformer under ``GGUFQuantizationConfig``.
 
@@ -884,6 +982,16 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
         return None
     base = memory.total_mib or memory.free_mib
     return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
+
+
+def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
+    """Free memory minus half the standard reserve (min 2 GiB): an explicit ``fast`` offloads only when resident
+    would not fit, not to keep ``auto``'s headroom for other tenants."""
+    if memory.free_mib is None:
+        return None
+    base = memory.total_mib or memory.free_mib
+    reserve = max(2048, _reserve_mib(memory.memory_kind, base) // 2)
+    return max(0, int(memory.free_mib) - reserve)
 
 
 def plan_keeps_transformer_resident(plan: Any) -> bool:
@@ -1393,9 +1501,14 @@ def plan_diffusion_memory(
             reasons.append(f"{device_memory.backend}: CPU offload unavailable; staying resident")
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
-        if budget is not None and required is not None and required > budget:
+        fast_budget = _fast_device_budget_mib(device_memory)
+        estimates["resident_budget_mib"] = fast_budget
+        if fast_budget is not None and required is not None and required > fast_budget:
             policy, stream_text_encoders, stream_transformer = _offload_tier()
-            reasons.append("fast requested but weights do not fit resident; offloading")
+            reasons.append(
+                f"fast requested but weights do not fit resident ({required} MiB needed, "
+                f"{fast_budget} MiB free after the reserve); offloading"
+            )
             if not stream_transformer:
                 reasons.append(_RESIDENT_TRANSFORMER_REASON)
             elif stream_text_encoders:
@@ -1847,6 +1960,259 @@ def install_group_offload_torchao_swap_retry() -> bool:
     return True
 
 
+BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_BACKGROUND_PIN"
+_BG_PIN_ATTR = "_unsloth_background_pin"
+_PENDING_PINS_ATTR = "_unsloth_background_pins"
+_BACKGROUND_PIN_REQUEST_ATTR = "_unsloth_background_pin_requested"
+
+
+def request_background_pins(pipe: Any) -> None:
+    """Ask the next group offload apply on ``pipe`` to pin off the load path (see _GroupPinner)."""
+    try:
+        setattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, True)
+    except Exception:  # noqa: BLE001 - a pipe refusing attributes pins eagerly, as before
+        pass
+
+
+def _background_pin_enabled() -> bool:
+    return (os.environ.get(BACKGROUND_PIN_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _offload_groups(module: Any) -> list:
+    """The diffusers offload groups hooked under ``module``, in registration (block) order."""
+    try:
+        from diffusers.hooks import group_offloading as go
+        name = getattr(go, "_GROUP_OFFLOADING", "group_offloading")
+    except Exception:  # noqa: BLE001
+        return []
+    groups: list = []
+    seen: set = set()
+    for sub in module.modules():
+        registry = getattr(sub, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        group = getattr(get_hook(name), "group", None) if callable(get_hook) else None
+        if group is not None and id(group) not in seen:
+            seen.add(id(group))
+            groups.append(group)
+    return groups
+
+
+class _GroupPinner:
+    """Pins a streamed module's offload groups on a worker thread, first block first.
+
+    Pinning at load reads every streamed byte from disk before the load returns: 125-139 s of LTX-2.3's 37 GB DiT,
+    20-44 s of Wan2.2-5B's text encoder on Colab. Off the load path the read overlaps the prompt encode and the
+    first compile. A group's ``onload_`` waits for that group only, and the swap happens before the wait releases,
+    so no group is ever onloaded while its host copy is being replaced."""
+
+    def __init__(
+        self,
+        module: Any,
+        groups: list,
+        device: Any,
+        logger: Any = None,
+    ):
+        import threading
+
+        self.module = module
+        self.label = type(module).__name__
+        self.groups = groups
+        self.device = device
+        self.logger = logger
+        self.pinned = 0
+        self.waited_s = 0.0
+        self._done = {id(g): threading.Event() for g in groups}
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        self._started = False
+        for group in groups:
+            setattr(group, _BG_PIN_ATTR, self)
+
+    def start(self) -> None:
+        with self._lock:
+            if not self._started:
+                self._started = True
+                self._thread.start()
+
+    def wait(self, group: Any) -> None:
+        import threading
+
+        event = self._done.get(id(group))
+        if event is None or threading.current_thread() is self._thread:
+            return
+        self.start()
+        if not event.is_set():
+            import time
+
+            began = time.perf_counter()
+            event.wait()
+            self.waited_s += time.perf_counter() - began
+
+    def join(self, timeout: Optional[float] = None) -> bool:
+        """Wait for the worker; True once it has exited (or when called from the worker itself)."""
+        import threading
+
+        if threading.current_thread() is self._thread:
+            return True
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def stop(self, timeout: Optional[float] = None) -> None:
+        self._stop.set()
+        if self._started:
+            self._thread.join(timeout)
+
+    def _unpinned(self, group: Any) -> list:
+        import torch
+        return [
+            (tensor, src)
+            for tensor, src in list(group.cpu_param_dict.items())
+            if type(src) is torch.Tensor
+            and src.device.type == "cpu"
+            and src.numel() > 0
+            and not src.is_pinned()
+        ]
+
+    def _run(self) -> None:
+        import time
+
+        import torch
+
+        start = time.perf_counter()
+        failed = None
+        try:
+            if (
+                getattr(self.device, "type", None) == "cuda"
+                and getattr(self.device, "index", None) is not None
+            ):
+                torch.cuda.set_device(self.device)
+            for group in self.groups:
+                if self._stop.is_set():
+                    break
+                # One pin per tensor, exactly what the eager apply makes: chunk views streamed ~10% slower on LTX-2.3.
+                placed = [(tensor, src, src.pin_memory()) for tensor, src in self._unpinned(group)]
+                cpu = group.cpu_param_dict
+                for tensor, src, pinned in placed:
+                    if cpu.get(tensor) is src:
+                        cpu[tensor] = pinned
+                        if tensor.device.type == "cpu" and tensor.data_ptr() == src.data_ptr():
+                            tensor.data = pinned
+                        self.pinned += src.nbytes
+                self._done[id(group)].set()
+        except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
+            failed = exc
+        finally:
+            for event in self._done.values():
+                event.set()
+        if self.logger is not None:
+            try:
+                if failed is not None:
+                    self.logger.warning(
+                        "diffusion.memory: background pinning of %s stopped (%s); the rest pins on each onload",
+                        self.label,
+                        failed,
+                    )
+                self.logger.info(
+                    "diffusion.memory: pinned %.1f GiB of %s host weights in the background in %.1f s "
+                    "(onloads waited %.1f s)",
+                    self.pinned / 2**30,
+                    self.label,
+                    time.perf_counter() - start,
+                    self.waited_s,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def install_group_pin_wait() -> bool:
+    """Make a diffusers offload group wait for its background pin before it onloads."""
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001
+        return False
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "onload_", None)
+    if original is None or getattr(original, "_unsloth_pin_wait", False):
+        return False
+
+    @functools.wraps(original)
+    def onload_(self, *args: Any, **kwargs: Any) -> Any:
+        pinner = getattr(self, _BG_PIN_ATTR, None)
+        if pinner is not None:
+            pinner.wait(self)
+        return original(self, *args, **kwargs)
+
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    wrapped = disable(onload_) if callable(disable) else onload_
+    wrapped._unsloth_pin_wait = True
+    group_cls.onload_ = wrapped
+    return True
+
+
+def start_background_pins(pipe: Any) -> int:
+    """Start the pinners the load deferred; returns how many."""
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
+        pinner.start()
+    return len(pinners)
+
+
+def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
+    """Block until every deferred pinner on ``pipe`` is done; returns the seconds waited.
+
+    A render that overlaps the pinner ran its warm renders 2.5 to 3 s slower on an A100 (LTX-2.3, n=15 per arm);
+    letting the pinner finish first matched the eager pin. So the pin overlaps the idle time after the load, not
+    the first render."""
+    import time
+
+    start = time.perf_counter()
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        pinner.start()
+        # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
+        while not pinner.join(0.25):
+            if cancel is not None and cancel.is_set():
+                return time.perf_counter() - start
+    return time.perf_counter() - start
+
+
+def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        try:
+            pinner.stop(timeout)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
+
+
+def _drop_deferred_pinning(pipe: Any, module: Any) -> None:
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending:
+        pending[:] = [pinner for pinner in pending if pinner.module is not module]
+
+
+def _defer_pinning(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
+    groups = _offload_groups(module)
+    if not groups:
+        return False
+    pinner = _GroupPinner(module, groups, device, logger)
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending is None:
+        pending = []
+        try:
+            setattr(pipe, _PENDING_PINS_ATTR, pending)
+        except Exception:  # noqa: BLE001 - nowhere to park it: pin now, like the eager path
+            pinner.start()
+            return True
+    pending.append(pinner)
+    return True
+
+
 def install_group_offload_buffer_restore() -> bool:
     """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
     try:
@@ -1889,6 +2255,7 @@ def _apply_group_offload(
     *,
     stream_text_encoders: bool = False,
     stream_transformer: bool = True,
+    background_pin: Optional[bool] = None,
 ) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
     smaller components resident. Returns False (caller falls back to whole-module) on any failure.
@@ -1962,6 +2329,18 @@ def _apply_group_offload(
                 logger,
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
+        # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
+        # starts with start_background_pins once the load has committed.
+        if background_pin is None:
+            background_pin = bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
+        defer = (
+            background_pin
+            and use_stream
+            and "low_cpu_mem_usage" in _params
+            and _background_pin_enabled()
+        )
+        if defer:
+            install_group_pin_wait()
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to()
         # OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group
         # hooks exist.
@@ -1977,9 +2356,18 @@ def _apply_group_offload(
             else 0
         ]
         for module in streamed.values():
-            apply_group_offloading(
-                module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
-            )
+            # torchao weights need their up-front pin (lazy pinning refuses them), so they never defer.
+            if (
+                defer
+                and not gkwargs.get("low_cpu_mem_usage", False)
+                and not _torchao_weight_classes(module)
+            ):
+                apply_group_offloading(module, **{**gkwargs, "low_cpu_mem_usage": True})
+                _defer_pinning(pipe, module, onload, logger)
+            else:
+                apply_group_offloading(
+                    module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
+                )
             installed += 1
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
@@ -1999,7 +2387,11 @@ def _apply_group_offload(
         transformer_demoted = False
         for name, module in streamed_encoders.items():
             try:
-                apply_group_offloading(module, **ekwargs)
+                if defer and not ekwargs.get("low_cpu_mem_usage", False):
+                    apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
+                    _defer_pinning(pipe, module, onload, logger)
+                else:
+                    apply_group_offloading(module, **ekwargs)
                 installed += 1
                 _pin_vision_embedding_device(module)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
@@ -2035,6 +2427,10 @@ def _apply_group_offload(
                         name,
                         exc,
                     )
+                # a leaf-level apply can raise after hooking part of the encoder; resident means no hooks at all, or
+                # the applied VRAM floor reads the whole encoder as streamed while its unhooked layers stay on the card
+                _remove_group_offload_hooks(module)
+                _drop_deferred_pinning(pipe, module)
                 module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
