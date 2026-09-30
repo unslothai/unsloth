@@ -996,3 +996,21 @@ def test_a_zero_vram_primary_keeps_the_chat_claim_a_kept_model_holds(backends, m
     model_slots.drop(extra)
     inf._release_chat_for_zero_vram_primary()
     assert gpu_arbiter.current_owner() is None
+
+
+def test_a_trained_model_still_filling_a_slot_cannot_be_deleted(backends, monkeypatch, tmp_path):
+    import routes.models as models_routes
+
+    run = tmp_path / "run1"
+    run.mkdir()
+    monkeypatch.setattr(models_routes, "outputs_root", lambda: tmp_path)
+    starting = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    model_slots.slots.append(starting)
+    monkeypatch.setattr(model_slots, "loading", (starting, str(run)))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            models_routes.delete_finetuned_model(
+                model_path = str(run), source = "training", current_subject = "s"
+            )
+        )
+    assert excinfo.value.status_code == 409 and run.exists()

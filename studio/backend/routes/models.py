@@ -3314,6 +3314,12 @@ async def delete_finetuned_model(
         from routes.inference import get_llama_cpp_backend
 
         kept = model_slots.backends()
+        filling = model_slots.filling_model()
+        if filling and _loaded_model_matches_deleted_path(filling, target_path):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in kept)):
             if (
                 (llama_backend.is_active or llama_backend.is_loaded)
