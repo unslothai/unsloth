@@ -575,6 +575,18 @@ export function storedSpeculativeAuto<T extends Pick<PerModelConfig, "speculativ
     : config;
 }
 
+/** An edit to draft tokens or the drafter. Made while the mode is unset, it pins the shown mode:
+ *  storage keeps either value only beside a mode that reads it. */
+export function pinSpeculativeMode(
+  config: Pick<PerModelConfig, "speculativeType">,
+  shownMode: string,
+  patch: Partial<PerModelConfig>,
+): Partial<PerModelConfig> {
+  return config.speculativeType == null
+    ? { ...patch, speculativeType: shownMode }
+    : patch;
+}
+
 /** Canonicalize a stored --load-mode, or null to follow the llama.cpp default. "auto" folds
  *  to null: it IS the default, so storing it would pin a value the build may redefine. */
 export function canonicalizeLoadMode(value: unknown): string | null {

@@ -29,6 +29,21 @@ export const MLX_ONLY_SPEC_TYPES = [
   "eagle3+ngram",
 ] as const;
 
+/** What the MLX control offers, in its order. */
+export const MLX_SPECULATIVE_TYPES = [
+  "auto",
+  "mtp",
+  "dflash",
+  "dspark",
+  "eagle3",
+  "ngram",
+  "mtp+ngram",
+  "dflash+ngram",
+  "dspark+ngram",
+  "eagle3+ngram",
+  "off",
+] as const;
+
 /**
  * The modes that consume spec_draft_n_max, i.e. the ones that launch a drafter
  * with a configurable depth. Named for the setting rather than for MTP: DSpark

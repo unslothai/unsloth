@@ -8,8 +8,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { normalizePerModelConfig, storedSpeculativeAuto } = await import(
+const { normalizePerModelConfig, pinSpeculativeMode, storedSpeculativeAuto } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
+);
+const { loadedConfigSignature } = await import(
+  "../src/features/model-picker/model-config/config-signature.ts"
 );
 
 const specOf = (value: string) =>
@@ -61,4 +64,11 @@ test("MLX modes and an explicit Auto survive storage; the drafter only with a dr
   // GGUF's Auto is "follow the standing preference", which storage spells null.
   assert.equal(storedSpeculativeAuto({ speculativeType: "auto" }, false).speculativeType, null);
   assert.equal(storedSpeculativeAuto({ speculativeType: "auto" }, true).speculativeType, "auto");
+  // A drafter typed while the mode is unset pins the shown one, or storage would drop it.
+  const pinned = pinSpeculativeMode({ speculativeType: null }, "auto", { specDraftModel: "o/d" });
+  assert.equal(normalizePerModelConfig(pinned).specDraftModel, "o/d");
+  assert.equal(pinSpeculativeMode({ speculativeType: "mtp" }, "auto", {}).speculativeType, undefined);
+  // A new live drafter re-seeds an open editor.
+  const auto = normalizePerModelConfig({ speculativeType: "auto" });
+  assert.notEqual(loadedConfigSignature(auto), loadedConfigSignature({ ...auto, specDraftModel: "o/d" }));
 });
