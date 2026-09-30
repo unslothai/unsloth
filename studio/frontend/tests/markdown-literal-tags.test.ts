@@ -48,6 +48,17 @@ test("placeholders and generic types in prose stay visible", () => {
     render("Set the key:\n\n<your-api-key>\n\nThen restart."),
     /<p>&lt;your-api-key&gt;<\/p>/,
   );
+  for (const [block, line] of [
+    ["<div>Use <your-api-key> here</div>", "Use <your-api-key> here"],
+    [
+      "<details>\n<summary>Setup</summary>\nReplace <your-api-key> in /home/<user>/.env\n</details>",
+      "Replace <your-api-key> in /home/<user>/.env",
+    ],
+  ]) {
+    const html = render(block);
+    assert.ok(text(html).includes(line), html);
+    assert.doesNotMatch(html, /<your-api-key/);
+  }
 });
 
 test("allowed HTML tags still render as elements", () => {
@@ -67,4 +78,40 @@ test("allowed HTML tags still render as elements", () => {
     /<search-image token="t1"/,
   );
   assert.doesNotMatch(render("a <script>alert(1)</script> b"), /<script>/);
+});
+
+test("literal tags keep their source position so streamed blocks re-render", () => {
+  const [plugin, tagNames] = withDataImageSupport(ALLOWED_TAGS)[0] as [
+    (names: string[]) => (tree: unknown) => void,
+    string[],
+  ];
+  const position = {
+    start: { line: 3, column: 1, offset: 9 },
+    end: { line: 4, column: 20, offset: 43 },
+  };
+  const tree = {
+    type: "root",
+    children: [
+      {
+        type: "raw",
+        value: "<your-api-key>\nwhere the key comes from",
+        position,
+      },
+      {
+        type: "element",
+        tagName: "p",
+        properties: {},
+        children: [{ type: "raw", value: "<T>", position }],
+      },
+    ],
+  };
+  plugin(tagNames)(tree);
+  const [block, paragraph] = tree.children as {
+    position?: unknown;
+    children: { type: string; position?: unknown }[];
+  }[];
+  assert.deepEqual(block.position, position);
+  assert.deepEqual(block.children[0].position, position);
+  assert.equal(paragraph.children[0].type, "text");
+  assert.deepEqual(paragraph.children[0].position, position);
 });
