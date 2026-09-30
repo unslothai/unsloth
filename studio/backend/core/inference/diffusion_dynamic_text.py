@@ -4,11 +4,8 @@
 """Mark a DiT's prompt-length inputs dynamic (``dynamic_sources``, scoped to its forward) so a new prompt length
 never recompiles; blanket ``dynamic=True`` hits torchao CantSplit.
 
-torch 2.13+ answers ``s is None`` on a traced slice through ``as_python_constant()``, which guards every symbolic
-bound to its current value, so an armed ``slice.stop`` (Qwen-Image-2.1's ``cache_write_slice``) is specialised again
-and every new prompt length recompiles the block. ``install`` restores the 2.12 answer (a slice with a symbolic bound
-has no backing object, so it is never ``None`` and never identical to anything else). Probe-gated, not
-version-gated. Kill switch: ``UNSLOTH_DIFFUSION_SLICE_IDENTITY_FIX=0``."""
+torch 2.13+ guards symbolic slice bounds on ``s is None`` (Qwen-Image-2.1 ``cache_write_slice``), recompiling per
+prompt length; ``install`` restores 2.12's answer. Probe-gated; kill switch ``UNSLOTH_DIFFUSION_SLICE_IDENTITY_FIX=0``."""
 
 from __future__ import annotations
 
@@ -127,8 +124,7 @@ def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
 
 
 def _slice_identity_specialises() -> bool:
-    """Whether this torch reads a traced slice's bounds (guarding them) to answer an identity test. torch 2.12 returns
-    no backing object for any slice; 2.13+ falls through to ``as_python_constant``. torch 2.11 has no hook at all."""
+    """Whether this torch reads (and guards) a traced slice's bounds to answer ``is``: 2.13+ yes, 2.11/2.12 no."""
     from torch._dynamo.variables import ConstantVariable, SliceVariable  # noqa: PLC0415
     from torch._dynamo.variables.base import NO_SUCH_SUBOBJ  # noqa: PLC0415
 
@@ -160,8 +156,7 @@ def install_slice_identity_fix(logger: Any = None) -> bool:
         original = SliceVariable.get_real_python_backed_value
 
         def get_real_python_backed_value(self: Any) -> object:
-            # A slice VT is never None, and the stock answer builds a fresh slice, so it was never identical to any
-            # other VT's object either: "no backing object" gives the same identity results without the guard.
+            # Stock builds a fresh slice (identical to nothing): "no backing object" keeps every answer, minus the guard.
             if any(isinstance(item, SymNodeVariable) for item in getattr(self, "items", ())):
                 return NO_SUCH_SUBOBJ
             return original(self)

@@ -640,9 +640,7 @@ def _attention_dits(pipe: Any) -> list:
     return dits
 
 
-# cuDNN fused SDPA serves a head_dim range that depends on the torch + cuDNN build: head_dim 256 (Ideogram 4) has no
-# cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19 / 9.20) yet runs on 2.14 (cuDNN 9.24). Pinning cuDNN leaves SDPA no
-# fallback, so every forward raises "No available kernel". (device, dtype, head_dim) -> ran; only answers are cached.
+# head_dim 256 (Ideogram 4) has no cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19/9.20); a pinned cuDNN then has no fallback.
 _CUDNN_HEAD_DIM_CACHE: dict[tuple[str, str, int], bool] = {}
 
 
@@ -679,11 +677,7 @@ CUDNN_HEAD_DIM_PROBE_ENV = "UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE"
 
 
 def _run_cudnn_head_dim_probe(device: str, dtype: Any, head_dim: int) -> bool:
-    """True when cuDNN attention serves ``head_dim``; raises when unaskable (import, device, OOM).
-
-    Asks torch's own dispatch check (``can_use_cudnn_attention``, the gate SDPA applies before picking cuDNN), which
-    launches no kernel, so a load that pins cuDNN renders exactly as before. Falls back to running a tiny pinned
-    attention on a torch without that API."""
+    """True when cuDNN attention serves ``head_dim`` per SDPA's own gate (launches no kernel); raises when unaskable."""
     import torch
 
     if dtype not in (torch.float16, torch.bfloat16):
@@ -734,9 +728,7 @@ def _cudnn_serves_pipe(
     target: Any,
     logger: Any = None,
 ) -> bool:
-    """False only when cuDNN attention demonstrably has no kernel for one of the DiTs' head dims.
-
-    Kill switch: ``UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE=0`` pins cuDNN without asking, as before."""
+    """False only when cuDNN demonstrably lacks a DiT head_dim. ``UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE=0`` skips it."""
     if (os.environ.get(CUDNN_HEAD_DIM_PROBE_ENV) or "").strip().lower() in (
         "0",
         "off",

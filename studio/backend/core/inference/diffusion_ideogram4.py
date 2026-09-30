@@ -425,14 +425,8 @@ def load_ideogram4_transformer(
 
 
 def _hidden_states_on_mask_device(original: Callable[..., Any]) -> Callable[..., Any]:
-    """``Ideogram4Pipeline._get_text_encoder_hidden_states`` returning its states on ``attention_mask``'s device.
-
-    ``encode_prompt`` moves the encoder inputs to ``text_encoder.device`` and then multiplies the tapped states by
-    that same ``attention_mask``. Under group offload (the memory planner streams the text encoder leaf by leaf when
-    the weights do not all fit) the parameters sit on the CPU between calls, so ``text_encoder.device`` is the CPU
-    while the hooks run every layer, and return every state, on the GPU: the multiply then raises "Expected all
-    tensors to be on the same device". Returning the states where the mask lives keeps the stock arithmetic; the
-    caller moves the product to the execution device right after. A no-op whenever the devices already match."""
+    """Return the tapped states on ``attention_mask``'s device: under group offload ``text_encoder.device`` reads CPU
+    (so the mask lands there) while the states come back on the GPU, and ``encode_prompt``'s multiply raised."""
 
     def get_text_encoder_hidden_states(text_encoder, token_ids, attention_mask, pos_2d):
         states = original(text_encoder, token_ids, attention_mask, pos_2d)
