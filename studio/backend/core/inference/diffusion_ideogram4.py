@@ -424,6 +424,41 @@ def load_ideogram4_transformer(
     return mark_source_precision(model, "fp8")
 
 
+def _hidden_states_on_mask_device(original: Callable[..., Any]) -> Callable[..., Any]:
+    """``Ideogram4Pipeline._get_text_encoder_hidden_states`` returning its states on ``attention_mask``'s device.
+
+    ``encode_prompt`` moves the encoder inputs to ``text_encoder.device`` and then multiplies the tapped states by
+    that same ``attention_mask``. Under group offload (the memory planner streams the text encoder leaf by leaf when
+    the weights do not all fit) the parameters sit on the CPU between calls, so ``text_encoder.device`` is the CPU
+    while the hooks run every layer, and return every state, on the GPU: the multiply then raises "Expected all
+    tensors to be on the same device". Returning the states where the mask lives keeps the stock arithmetic; the
+    caller moves the product to the execution device right after. A no-op whenever the devices already match."""
+
+    def get_text_encoder_hidden_states(text_encoder, token_ids, attention_mask, pos_2d):
+        states = original(text_encoder, token_ids, attention_mask, pos_2d)
+        device = getattr(attention_mask, "device", None)
+        if device is None:
+            return states
+        return [s.to(device) if getattr(s, "device", device) != device else s for s in states]
+
+    get_text_encoder_hidden_states._unsloth_mask_device = True  # type: ignore[attr-defined]
+    return get_text_encoder_hidden_states
+
+
+def install_text_encoder_device_guard(pipe: Any) -> bool:
+    """Shadow the pipeline's static ``_get_text_encoder_hidden_states`` on this instance. Idempotent."""
+    original = getattr(pipe, "_get_text_encoder_hidden_states", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_unsloth_mask_device", False):
+        return True
+    try:
+        pipe._get_text_encoder_hidden_states = _hidden_states_on_mask_device(original)
+    except Exception:  # noqa: BLE001 - a frozen / slotted pipeline keeps the stock path
+        return False
+    return True
+
+
 def load_ideogram4_pipeline(
     repo_id: str,
     dtype,
@@ -467,7 +502,7 @@ def load_ideogram4_pipeline(
     )
     check_cancelled()
     logger.info("diffusion.ideogram4: assembled pipeline from %s per-component", repo_id)
-    return diffusers.Ideogram4Pipeline(
+    pipe = diffusers.Ideogram4Pipeline(
         scheduler = scheduler,
         vae = vae,
         text_encoder = text_encoder,
@@ -475,3 +510,5 @@ def load_ideogram4_pipeline(
         transformer = transformer,
         unconditional_transformer = unconditional_transformer,
     )
+    install_text_encoder_device_guard(pipe)
+    return pipe
