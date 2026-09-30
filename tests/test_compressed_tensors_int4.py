@@ -695,3 +695,33 @@ def test_marlin_gemm_arguments_follow_the_op_schema(schema):
         and by_name.get("g_idx_or_none") is None
         and by_name.get("perm_or_none") is None
     )
+
+
+@needs_gpu
+@needs_ct
+@needs_sm80
+def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
+    # Gradient checkpointing runs its first forward under no_grad in train mode: it must use the same exact
+    # dequantize + matmul as the recompute, and must not build the fused kernel's per-layer scale cache.
+    from unsloth.kernels.int4_packed import int4_dequantize
+
+    lin, _, _ = _repacked_linear()
+    qs = lin.quant_state
+    x = torch.randn(2, 1024, device = "cuda", dtype = torch.bfloat16)
+    want = x @ int4_dequantize(lin._parameters["weight_packed"], qs, torch.bfloat16).t()
+
+    lin.train()
+    with torch.no_grad():
+        y = lin(x)
+        # The fast LoRA kernels call int4_matmul directly (default fast = True) inside their autograd forward.
+        from unsloth.kernels.utils import matmul_lora
+        z = matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is None and torch.equal(y, want) and torch.equal(z, want)
+
+    # Eval keeps the fused kernel (and its cache); going back to training frees it.
+    lin.eval()
+    with torch.no_grad():
+        matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is not None
+    lin.train()
+    assert qs._fast is None
