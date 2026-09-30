@@ -207,7 +207,6 @@ def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
     assert W.shape == checkpoint.shape and not torch.equal(W, checkpoint)
     assert torch.equal(ip.int4_dequantize(W, qs), ref)
     assert torch.equal(ip.int4_unpack(W, qs), checkpoint)
-    # The fused kernel must pass its self-check, not fall back silently.
     assert ip._fast_args(W, qs) is not None
     fast = ip._fast_rows(layout, torch.cuda.current_device())
     for rows in (1, 3, fast, fast + 1):
