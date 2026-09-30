@@ -2931,6 +2931,8 @@ def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
+    from utils.models.checkpoints import parse_adapter_features
+
     lora_list: List[LoRAInfo] = []
 
     trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
@@ -2945,6 +2947,7 @@ def _scan_loras_sync(
                 export_type = model_type,
                 size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -2959,6 +2962,7 @@ def _scan_loras_sync(
                 export_type = export_type,
                 size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -5584,6 +5588,7 @@ async def list_checkpoints(
                 peft_type = metadata.get("peft_type"),
                 lora_rank = metadata.get("lora_rank"),
                 is_quantized = metadata.get("is_quantized", False),
+                adapter_features = metadata.get("adapter_features"),
             )
             for model_name, checkpoints, metadata in raw_models
         ]

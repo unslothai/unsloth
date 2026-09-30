@@ -4505,7 +4505,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Text encoder precision"
-        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default lets the model choose, which on Qwen-Image 2.1 means its hosted FP8 encoder (8.75 GB rather than 16.3); pick Dense (bf16) to pin the released encoder. The loaded build below reports what was applied."
+        hint={`Shrinks the text encoder to save memory, at some cost to image quality. Default lets the model choose, which on Qwen-Image 2.1 means its hosted FP8 encoder (8.75 GB rather than 16.3); pick Dense (bf16) to pin the released encoder. FP8 (storage) is the safe pick and the only one that works with CPU offload. FP8 (compute) needs an RTX 40 series or newer.${nvfp4Diffusion ? " NVFP4 is the smallest." : ""} The loaded build below reports what was applied.`}
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
@@ -4517,7 +4517,7 @@ export function ImagesPage({
             ["fp8", "FP8 (storage)"],
             ["fp8_dynamic", "FP8 (compute)"],
             ["int8", "INT8"],
-            ["nvfp4", "NVFP4 (Blackwell)"],
+            ["nvfp4", "NVFP4"],
           ] as [string, string][],
           nvfp4Diffusion,
         )}
@@ -4604,8 +4604,7 @@ export function ImagesPage({
   );
 
   return (
-    // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
-    // 34px on win/linux, 0 under macOS's native one.
+    // The chat-style layout gives this page no outer top inset, so it applies the content inset itself, as chat does.
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}

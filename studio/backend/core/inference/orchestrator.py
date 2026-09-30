@@ -389,6 +389,9 @@ class InferenceOrchestrator:
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
 
+    # Registry keys of the downloads the in-flight load announced; released when the load ends.
+    _load_download_keys: Sequence[str] = ()
+
     def __init__(self):
         self._proc: Optional[mp.Process] = None
         # Retired when the next worker is spawned; read long after _proc has been cleared.
@@ -1221,6 +1224,11 @@ class InferenceOrchestrator:
 
             if rtype == "status":
                 logger.info("Subprocess status: %s", resp.get("message", ""))
+                deadline = time.monotonic() + timeout
+                continue
+
+            if rtype == "downloads":
+                self._claim_load_downloads(resp)
                 deadline = time.monotonic() + timeout
                 continue
 
@@ -2261,6 +2269,31 @@ class InferenceOrchestrator:
             except Exception as teardown_exc:
                 logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
+        finally:
+            self._release_load_downloads()
+
+    def _claim_load_downloads(self, resp: dict) -> None:
+        from hub.services.load_downloads import claim_load_downloads
+        self._release_load_downloads()
+        try:
+            self._load_download_keys = claim_load_downloads(
+                resp.get("repo_ids") or [],
+                xet_disabled = bool(resp.get("xet_disabled")),
+                hub_cache = resp.get("hub_cache"),
+            )
+        except Exception as exc:
+            logger.warning("Could not register the load's downloads: %s", exc)
+
+    def _release_load_downloads(self) -> None:
+        keys, self._load_download_keys = self._load_download_keys, []
+        if not keys:
+            return
+        from hub.services.load_downloads import release_load_downloads
+
+        try:
+            release_load_downloads(keys)
+        except Exception as exc:
+            logger.warning("Could not release the load's downloads: %s", exc)
 
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess. Returns True if a load for

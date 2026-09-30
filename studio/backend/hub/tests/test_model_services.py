@@ -427,6 +427,12 @@ class TestExtractQuantToken:
     def test_ud_prefix_preserved(self):
         assert gguf.extract_quant_token("Foo-BF16-UD-Q4_K_XL.gguf") == "UD-Q4_K_XL"
 
+    def test_packed_and_grouped_quant_variants_do_not_collapse(self):
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-PQ2_0.gguf") == "PQ2_0"
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0.gguf") == "Q2_0"
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0_g64.gguf") == "Q2_0_g64"
+        assert gguf.extract_quant_token("Ternary-Bonsai-2-27B-PTQ1_0.gguf") == "PTQ1_0"
+
     def test_precision_infix_variants_do_not_collapse(self):
         labels = {
             gguf.extract_quant_label("Foo-BF16-Q4_K_M.gguf"),
@@ -2691,6 +2697,21 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
     )
 
 
+def test_gguf_variant_requirements_keep_packed_q2_files_separate():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Ternary-Bonsai-1.7B-PQ2_0.gguf", 10, "pq"),
+            _sibling("Ternary-Bonsai-1.7B-Q2_0.gguf", 20, "q2"),
+            _sibling("Ternary-Bonsai-1.7B-Q2_0_g64.gguf", 30, "q2g64"),
+        ]
+    )
+
+    assert set(requirements) == {"pq2_0", "q2_0", "q2_0_g64"}
+    assert requirements["pq2_0"].target_filenames == ("Ternary-Bonsai-1.7B-PQ2_0.gguf",)
+    assert requirements["q2_0"].target_filenames == ("Ternary-Bonsai-1.7B-Q2_0.gguf",)
+    assert requirements["q2_0_g64"].target_filenames == ("Ternary-Bonsai-1.7B-Q2_0_g64.gguf",)
+
+
 def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
     requirements = gguf_variants._build_gguf_variant_requirements(
         [
@@ -3024,6 +3045,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
             "token": False,
             "repo_type": "dataset",
             "max_workers": 1,
+            "tqdm_class": None,
         }
     ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
@@ -5314,6 +5336,9 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(monkeypa
     )
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         claim_kwargs = None
 
         def claim(self, _key, _transport, **kwargs):
@@ -5396,6 +5421,9 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
     )
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         claim_kwargs = None
 
         def claim(self, _key, _transport, **kwargs):
@@ -5588,6 +5616,9 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     killed = []
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def claim(self, *_args, **_kwargs):
             return True, "running"
 
@@ -5633,6 +5664,9 @@ def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):
             events.append(("kill",))
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def get_process(self, _key):
             return _Proc()
 
@@ -5671,6 +5705,9 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
     invalidated = []
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def claim(self, *_args, **_kwargs):
             return True, "running"
 
@@ -6490,6 +6527,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
             "token": False,
             "repo_type": "dataset",
             "max_workers": 1,
+            "tqdm_class": None,
             "revision": "dataset-commit",
         }
     ]
