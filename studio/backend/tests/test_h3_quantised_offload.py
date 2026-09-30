@@ -355,6 +355,46 @@ def test_a_streamed_torchao_denoiser_matches_the_resident_one_bit_for_bit(monkey
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_a_hosted_denoiser_left_trainable_by_its_load_still_streams(monkeypatch):
+    """The hosted checkpoint loads through load_state_dict(assign=True), which leaves every weight
+    requiring grad; quantize_ does not, so the test above never saw it. The real H3 load failed its
+    first onload with Int8Tensor's unimplemented aten.view."""
+    pytest.importorskip("diffusers")
+    pytest.importorskip("torchao")
+    monkeypatch.undo()
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_prequant import (
+        stream_prequantized_module,
+        torchao_group_offload_supported,
+    )
+
+    if not torchao_group_offload_supported():
+        pytest.skip("this diffusers cannot group-offload torchao weights")
+    configs = {k: v for k, v in _torchao_configs().items() if k != "int8_v1"}
+    torch.manual_seed(0)
+    base = _Net().to(torch.bfloat16)
+    x = torch.randn(64, 256, dtype = torch.bfloat16, device = "cuda")
+    for name, config in configs.items():
+        resident = copy.deepcopy(base)
+        quantize_(resident, config())
+        resident.to("cuda")
+        with torch.no_grad():
+            expected = resident(x)
+        del resident
+
+        streamed = copy.deepcopy(base)
+        quantize_(streamed, config())
+        streamed.requires_grad_(True)
+        mode, _ = _stream(streamed, stream_prequantized_module)
+        assert mode == "stream", (name, mode)
+        with torch.no_grad():
+            outs = [streamed(x) for _ in range(2)]
+        for out in outs:
+            assert torch.equal(out, expected), name
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_a_v1_int8_denoiser_that_cannot_be_rebuilt_moves_synchronously_and_exactly(monkeypatch):
     """The fallback when the Int8Tensor rebuild declines: synchronous copies, same values as the
     resident v1 module, including under inference_mode (the first thing it used to fail on)."""
