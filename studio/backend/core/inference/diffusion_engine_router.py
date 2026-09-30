@@ -461,14 +461,19 @@ def native_binary_installed(
     older one, "is there a binary at all".
     """
     backend = resolve_diffusion_device_target().backend
-    if off_torch_sd_cpp_device(backend) is not None:
+    off_torch = off_torch_sd_cpp_device(backend)
+    if off_torch is not None:
         gpu_ordinal = None
     selected_card = _selected_card(gpu_ordinal)
     install_accelerator = preferred_accelerator(image_install_accelerator(backend), selected_card)
-    server_binary = usable_or_recorded_failure(
-        ensure_sd_server_binary(allow_install = False, accelerator = install_accelerator),
-        install_accelerator,
-        selected_card,
+
+    def _usable(candidate):
+        if off_torch_build_mismatch(off_torch, candidate):
+            return None
+        return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
+
+    server_binary = _usable(
+        ensure_sd_server_binary(allow_install = False, accelerator = install_accelerator)
     )
     if (
         server_binary
@@ -476,11 +481,7 @@ def native_binary_installed(
         and (fam is None or sd_cpp_binary_runs_family(server_binary, fam))
     ):
         return True
-    binary = usable_or_recorded_failure(
-        ensure_sd_cpp_binary(allow_install = False, accelerator = install_accelerator),
-        install_accelerator,
-        selected_card,
-    )
+    binary = _usable(ensure_sd_cpp_binary(allow_install = False, accelerator = install_accelerator))
     if fam is not None and binary and not sd_cpp_binary_runs_family(binary, fam):
         return False
     return bool(binary and SdCppEngine(binary = binary).version() is not None)

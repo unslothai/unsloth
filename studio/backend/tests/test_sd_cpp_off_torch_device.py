@@ -408,3 +408,19 @@ def test_an_in_flight_off_torch_load_counts_as_off_torch():
     assert backend.runs_off_torch_device is False
     backend._loading = sd_cpp_backend._SdLoading(repo_id = "org/m", base_repo = "org/m")
     assert backend.runs_off_torch_device is False
+
+
+@pytest.mark.parametrize("install_allowed", [False, True])
+def test_prediction_filters_a_leftover_build_like_selection(monkeypatch, install_allowed):
+    """A wrong prediction skips the route's pre-selection training guard and stages the wrong files."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "1" if install_allowed else "0")
+    _record_cli_requests(monkeypatch)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: "/opt/sd/sd-server")
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    predicted = r.predict_engine(detect_family("z-image"), model_kind = "gguf")
+    # Installs allowed: the load replaces the ROCm build with the CUDA one, so native is right.
+    assert predicted == (ENGINE_SD_CPP if install_allowed else ENGINE_DIFFUSERS)
+    if not install_allowed:
+        r.select_and_activate_engine(detect_family("z-image"))
+        assert r.active_engine_name() == predicted
