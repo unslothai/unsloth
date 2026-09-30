@@ -991,6 +991,23 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
+fn confirm_update_during_training(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Training is starting or still running. Updating now stops the \
+             run and loses progress since the last checkpoint.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Training in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
+            "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
 /// renderer-owned downloads, shell updates and unsaved transcripts must also protect native quit.
 #[derive(Default)]
 pub struct RendererActivity {
@@ -2160,6 +2177,7 @@ fn main() {
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
+            commands::confirm_backend_update,
             commands::start_backend_update,
             commands::start_managed_repair,
             commands::native_path_leases_usable,
