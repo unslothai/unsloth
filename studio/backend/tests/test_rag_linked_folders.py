@@ -2550,8 +2550,6 @@ def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home
 
 
 def _spy_on_encode(monkeypatch) -> list[list[str]]:
-    """Wrap the already-stubbed ``embeddings.encode`` to record every batch it sees,
-    so a test can prove content-identical files were embedded once, not once per copy."""
     from core.rag import embeddings
 
     calls: list[list[str]] = []
@@ -2586,9 +2584,6 @@ def _vectors(document_id: str) -> dict[str, bytes]:
 def test_identical_linked_files_copy_one_embedding_instead_of_reembedding(
     rag_home, stub_embeddings, monkeypatch
 ):
-    """Three copies of one file plus one distinct file: the embedder must see each
-    distinct body once, and the two copies must end up with the donor's own chunk
-    texts and vectors, not a re-derived index of their own."""
     calls = _spy_on_encode(monkeypatch)
     source, folder = _folder(rag_home)
     (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")

@@ -418,17 +418,8 @@ def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str |
 def reusable_document_by_hash(
     conn: sqlite3.Connection, scope: str, sha256: str, ext: str, identity: str
 ) -> dict | None:
-    """The newest already-indexed document in ``scope`` whose chunks + vectors a new
-    upload with identical bytes can copy instead of parsing/chunking/embedding again.
-
-    Matches on sha256 within the scope (dedupe's own uniqueness boundary), a completed
-    status with at least one chunk (an empty or in-flight document has nothing to copy),
-    the same file extension (parsers branch on it, so a `.txt` and `.md` sharing bytes
-    are NOT interchangeable), a live (non-retired) scope, and an embedding identity the
-    caller's embedder still recognises as current. Linked-folder and uploaded documents
-    both qualify as donors: a linked-folder file that happens to match something a user
-    uploaded is exactly as reusable as another linked-folder duplicate.
-    """
+    """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
+    copied. Extension must match (parsers branch on it) and so must the embedding identity."""
     rows = conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
@@ -549,9 +540,8 @@ def delete_document(
 def _copy_chunk_rows(
     conn: sqlite3.Connection, source_id: str, target_id: str, scope: str
 ) -> dict[str, str]:
-    """Copy one document's chunk + FTS rows onto ``target_id`` in ``scope``, without
-    committing. Returns the source-chunk-id -> target-chunk-id map, since chunks_vec
-    has no foreign key a caller could join on to remap its rows the same way."""
+    """Copy chunk + FTS rows without committing; returns source -> target chunk ids for
+    remapping chunks_vec, which has no foreign key to join on."""
     chunk_ids: dict[str, str] = {}
     for r in conn.execute(
         "SELECT id, chunk_index FROM chunks WHERE document_id=?", (source_id,)
@@ -575,18 +565,14 @@ def _copy_chunk_rows(
 
 
 def copy_document_index(conn: sqlite3.Connection, source: dict, target_id: str, scope: str) -> int:
-    """Copy one already-indexed document's chunk + FTS + vector rows onto ``target_id``
-    in ``scope``, without committing. Returns the number of vector rows copied (0 when
-    ``chunks_vec`` does not exist), so a caller reusing ``source`` as a donor can tell a
-    short copy from a deployment with no dense index at all before treating the reused
-    document as complete."""
+    """Copy chunk + FTS + vector rows without committing; returns vector rows copied
+    (0 without chunks_vec) so the caller can detect a donor with missing vectors."""
     chunk_ids = _copy_chunk_rows(conn, source["id"], target_id, scope)
     if not rag_db.vec_table_exists(conn):
         return 0
     source_ids = list(chunk_ids)
     copied = 0
-    # Filter in SQL: vec0 still scans the partition, but only the donor's rows come back to
-    # Python instead of every embedding in the scope. Chunked for SQLITE_MAX_VARIABLE_NUMBER.
+    # Filter in SQL so only the donor's rows reach Python; batched for SQLITE_MAX_VARIABLE_NUMBER.
     for start in range(0, len(source_ids), 500):
         batch = source_ids[start : start + 500]
         placeholders = ",".join("?" * len(batch))

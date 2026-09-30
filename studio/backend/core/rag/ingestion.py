@@ -500,12 +500,8 @@ def start_ingestion(
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
     the wrong hash, so it is trusted as given and never reverified here.
 
-    ``reuse_identical`` (only consulted when ``dedupe`` is False, since a dedupe hit
-    already short-circuits everything below) copies an existing completed document's
-    chunks + FTS rows + vectors onto a new document row instead of parsing/chunking/
-    embedding the same bytes again. Linked-folder reconciliation sets it for every file
-    that is not a full rebuild, so N identical copies embed once and the other N-1 pay
-    only a row copy."""
+    ``reuse_identical`` (dedupe=False only) copies a completed same-hash document's index
+    onto a new row instead of re-embedding, keeping per-path ownership for linked folders."""
     account_path(stored_path)
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -604,8 +600,7 @@ def start_ingestion(
                 donor_chunks = donor["num_chunks"] or 0
                 copied = store.copy_document_index(conn, donor, reused_id, scope)
                 if rag_db.vec_table_exists(conn) and copied != donor_chunks:
-                    # The donor lost its vectors (e.g. a prior partial failure); fall through to a
-                    # normal ingest rather than serve a document dense search can never find.
+                    # Donor lost vectors: ingest normally rather than copy a dense-search-invisible doc.
                     conn.execute("ROLLBACK TO reuse_identical")
                     conn.execute("RELEASE reuse_identical")
                     logger.info(
