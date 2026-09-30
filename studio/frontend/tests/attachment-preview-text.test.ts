@@ -355,6 +355,20 @@ test("extractHtmlAttachmentText adds no blank lines for an empty preformatted bl
   assert.equal(last, "X");
 });
 
+test("extractHtmlAttachmentText drops blank lines leading a preformatted block", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("pre", textNode("\n  \n  first\n    second\n")),
+        element("p", textNode("Z")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "  first\n    second\n\nZ");
+});
+
 test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment("clip.m4a", ""), true);
   assert.equal(isAudioAttachment("clip", "audio/webm"), true);

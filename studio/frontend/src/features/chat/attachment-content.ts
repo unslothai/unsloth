@@ -1211,6 +1211,7 @@ function collectHtmlBlockText(
     const code = Array.from(element.childNodes)
       .map((child) => collectHtmlBlockText(child))
       .join("")
+      .replace(/^(?:[^\S\n]*\n)+/, "")
       .trimEnd();
     if (!code.trim()) {
       return "\n";
