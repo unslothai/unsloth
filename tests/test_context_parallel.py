@@ -281,6 +281,23 @@ def test_label_dropping_loss_paths_are_refused(monkeypatch, attrs):
         Trainer()
 
 
+def test_unaveraged_token_counts_are_refused(monkeypatch):
+    import types
+
+    monkeypatch.setattr(cp.dist, "is_available", lambda: True)
+    monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    args = types.SimpleNamespace(
+        context_parallel_size = 2,
+        label_smoothing_factor = 0.0,
+        average_tokens_across_devices = False,
+    )
+    Trainer = _patched_trainer(monkeypatch, args = args)
+    with pytest.raises(NotImplementedError, match = "average_tokens_across_devices"):
+        Trainer()
+
+
 def test_old_accelerate_is_refused(monkeypatch):
     import types, accelerate
 

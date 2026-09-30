@@ -185,6 +185,11 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        # Eval counts tokens per shard; only a cross-rank token count weights shards correctly (empty shard = NaN).
+        if getattr(self.args, "average_tokens_across_devices", True) is False:
+            raise NotImplementedError(
+                "Unsloth: context parallelism needs average_tokens_across_devices = True."
+            )
         import accelerate
         from packaging.version import Version
 
