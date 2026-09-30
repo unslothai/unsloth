@@ -88,6 +88,7 @@ from .diffusion_device import (
 )
 from .diffusion_memory import (
     MEMORY_MODE_FAST,
+    OFFLOAD_NONE,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_safetensors_dense_mib,
@@ -330,6 +331,18 @@ def _ltx23_prequant_pick(
     from .video_ltx2 import ltx23_prequant_eligible
 
     return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
+
+
+def _memory_mode_resolved(memory_mode: Any, plan: Any, offload_policy: str) -> tuple:
+    """The ``memory_mode`` resolved entry. A ``fast`` that had to offload is a fallback whose value is the engaged
+    offload policy, so the badge reads "FAST -> GROUP" rather than "FAST -> FAST"."""
+    if plan.requested_mode == MEMORY_MODE_FAST and offload_policy != OFFLOAD_NONE:
+        return (memory_mode, offload_policy, "; ".join(plan.reasons), RESOLVED_FELL_BACK)
+    return (
+        memory_mode,
+        plan.requested_mode,
+        f"planned '{plan.offload_policy}' offload from the family size table",
+    )
 
 
 def _ltx23_prequant_serves(
@@ -5568,19 +5581,7 @@ class VideoBackend:
 
             resolved = build_resolved_record(
                 {
-                    "memory_mode": (
-                        memory_mode,
-                        plan.requested_mode,
-                        f"planned '{plan.offload_policy}' offload from the family size table",
-                    )
-                    # A resident request that had to offload is a fallback, not an applied fast.
-                    if plan.requested_mode != MEMORY_MODE_FAST or plan.offload_policy == "none"
-                    else (
-                        memory_mode,
-                        plan.requested_mode,
-                        "; ".join(plan.reasons),
-                        RESOLVED_FELL_BACK,
-                    ),
+                    "memory_mode": _memory_mode_resolved(memory_mode, plan, offload_policy),
                     "speed_mode": (
                         speed_mode,
                         effective_speed,

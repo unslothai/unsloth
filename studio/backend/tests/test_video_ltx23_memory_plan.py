@@ -215,3 +215,25 @@ def test_ltx23_plan_does_not_depend_on_the_speed_mode(monkeypatch, tmp_path):
             for speed in (None, "eager")
         }
         assert plans[None] == plans["eager"], free_mib
+
+
+def test_fast_that_offloaded_is_recorded_as_a_fallback_naming_the_policy():
+    from core.inference.diffusion_auto_policy import build_resolved_record
+    from core.inference.video import _memory_mode_resolved
+
+    fell = _plan(60 * 1024, LTX23_DIT_MIB)
+    entry = build_resolved_record(
+        {"memory_mode": _memory_mode_resolved("fast", fell, fell.offload_policy)}
+    )["memory_mode"]
+    assert (entry["status"], entry["requested"], entry["value"]) == (
+        "fell_back",
+        "fast",
+        OFFLOAD_GROUP,
+    )
+    assert "do not fit resident" in entry["reason"]
+
+    kept = _plan(TENANT_FREE_MIB, LTX23_DIT_MIB)
+    entry = build_resolved_record(
+        {"memory_mode": _memory_mode_resolved("fast", kept, kept.offload_policy)}
+    )["memory_mode"]
+    assert (entry["status"], entry["value"]) == ("applied", "fast")
