@@ -176,7 +176,8 @@ export function InterfaceZoom() {
   useEffect(() => {
     if (!isTauri) return;
     const mac = isMacPlatform();
-    // Capture phase, so it also works from text fields.
+    // Capture phase, so it also works from text fields. On document, not window, so the
+    // shortcut recorder's window capture listener takes the chord first and stops it.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isImeComposing(event)) return;
       const direction = zoomDirectionForKey(event, mac);
@@ -188,7 +189,7 @@ export function InterfaceZoom() {
       event.preventDefault();
       zoomInterfaceFromChord(direction);
     };
-    window.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
     // Bubble phase, so canvases with their own Ctrl+wheel zoom keep it.
     const wheelStep = createWheelZoomAccumulator();
     const onWheel = (event: WheelEvent) => {
@@ -199,7 +200,7 @@ export function InterfaceZoom() {
     };
     if (!mac) window.addEventListener("wheel", onWheel, { passive: false });
     return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("wheel", onWheel);
     };
   }, []);

@@ -211,6 +211,12 @@ test("the popup keeps one on-screen size and does not dismiss a modal", () => {
     zoom,
     /if \(!mac\) window\.addEventListener\("wheel", onWheel, \{ passive: false \}\)/,
   );
+  // Below the shortcut recorder's window capture listener, so recording Mod+= does not zoom.
+  assert.match(zoom, /document\.addEventListener\("keydown", onKeyDown, true\)/);
+  assert.match(
+    readSrc("features/settings/tabs/keyboard-shortcuts-tab.tsx"),
+    /event\.stopPropagation\(\);[\s\S]*window\.addEventListener\("keydown", onKeyDown, \{ capture: true \}\)/,
+  );
 });
 
 test("the zoom popup takes the find bar's corner", () => {
