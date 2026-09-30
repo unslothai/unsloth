@@ -109,3 +109,15 @@ def test_upload_preview_shows_csv_cells_as_written(tmp_path):
     preview, _ = _load_local_preview_slice(dataset_path = path, train_split = "train", preview_size = 10)
 
     assert [row["output"] for row in preview] == WRITTEN[:-1] + [None]
+
+
+def test_cpt_csv_still_trains_the_text_column_not_the_id(trainer, tmp_path):
+    path = tmp_path / "docs.csv"
+    path.write_text("id,passage\n1,The first document.\n2,The second document.\n")
+
+    dataset_info, _ = trainer.load_and_format_dataset(None, local_datasets = [str(path)], is_cpt = True)
+
+    assert list(dataset_info["dataset"]["text"]) == [
+        "The first document.</s>",
+        "The second document.</s>",
+    ]

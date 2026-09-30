@@ -31,8 +31,9 @@ def cell_text(value):
     return str(value)
 
 
-def csv_as_text_kwargs(files):
-    if Path(files[0]).suffix.lower() != ".csv":
+def csv_as_text_kwargs(files, raw_text = False):
+    # Raw text trains the first string column, so a numeric id column must keep its type.
+    if raw_text or Path(files[0]).suffix.lower() != ".csv":
         return {}
     import pandas as pd
     from datasets import Features, Value

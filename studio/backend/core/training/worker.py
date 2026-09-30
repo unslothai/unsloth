@@ -2956,7 +2956,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         loader = _mlx_local_dataset_loader_for_files(all_files)
         return load_dataset(
-            loader, data_files = all_files, split = "train", **csv_as_text_kwargs(all_files)
+            loader,
+            data_files = all_files,
+            split = "train",
+            **csv_as_text_kwargs(all_files, mlx_raw_text_mode),
         )
 
     eval_dataset = None
