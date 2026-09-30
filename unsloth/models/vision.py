@@ -2433,6 +2433,10 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
+# Model types (prefix match) that need non-reentrant gradient checkpointing, see post_patch_model.
+_NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -4138,6 +4142,13 @@ class FastBaseModel:
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
+        # Models whose layers publish tensors that LATER layers consume (DeepSeek-V4.1's CSA2 shared
+        # compressed KV / indexer keys) lose those cross-layer gradients under reentrant checkpointing,
+        # whose first pass runs under no_grad; the port refuses use_reentrant=True outright.
+        _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        if _force_non_reentrant:
+            use_reentrant = False
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
@@ -4201,6 +4212,17 @@ class FastBaseModel:
                 return _original_gc_enable(**kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
+
+        if _force_non_reentrant:
+            _original_gc_enable_nr = model.gradient_checkpointing_enable
+
+            def _gc_enable_non_reentrant(**kwargs):
+                gc_kwargs = dict(kwargs.get("gradient_checkpointing_kwargs", None) or {})
+                gc_kwargs["use_reentrant"] = False
+                kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
+                return _original_gc_enable_nr(**kwargs)
+
+            model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 
         from transformers.trainer import Trainer
 
