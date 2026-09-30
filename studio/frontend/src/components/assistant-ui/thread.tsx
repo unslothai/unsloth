@@ -166,13 +166,16 @@ import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
+  type ContinuationRequest,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
+  readContinuationSource,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resumesThought,
   claimAutoContinue,
   forgetAutoContinue,
   recordAutoContinue,
@@ -342,6 +345,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  PlayIcon,
   Scroll01Icon,
   Telescope02Icon,
   VolumeMute02Icon,
@@ -7370,49 +7374,17 @@ const CancelledIndicator: FC = () => {
   );
 };
 
-/** Text of an assistant turn: what a continuation resumes from.
- *
- * Text parts only: a continuation resumes the visible answer, not its private reasoning.
- * Joined with nothing, like the backend's `trailing_assistant_text`: a turn split around
- * a reasoning part never had a newline between its halves, and inventing one moves the
- * boundary. */
-function assistantMessageText(content: readonly unknown[] | undefined): string {
-  if (!content) {
-    return "";
-  }
-  return content
-    .filter(
-      (part): part is { type: "text"; text: string } =>
-        (part as { type?: string })?.type === "text" &&
-        typeof (part as { text?: unknown })?.text === "string",
-    )
-    .map((part) => part.text)
-    .join("");
+/** Read the duration of the leading thought carried by a continuation. */
+function readThoughtDuration(metadata: unknown): number | undefined {
+  const custom = (metadata as { custom?: Record<string, unknown> } | undefined)
+    ?.custom;
+  const durations = custom?.reasoningDurations;
+  const value = Array.isArray(durations) ? durations[0] : custom?.reasoningDuration;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-/**
- * Resume a response that stopped early instead of regenerating it. Shown under the last
- * assistant turn when Max Tokens ran out, Stop was pressed, or the stream dropped.
- * Retry keeps its old meaning: drop the partial and start over.
- */
-const ContinueMessageBar: FC = () => {
-  // One subscription, not ten, on every message that is not the newest.
-  //
-  // The bar mounts under every assistant message and returns null unless it is the last, but the
-  // ten `useAuiState` calls below ran first, each a subscription whose selector re-runs on EVERY
-  // store update -- one per character typed (220 messages, 300K characters: 10,193 subscriptions,
-  // 10,258 selector runs per keystroke).
-  //
-  // `isLast` is the same condition the body below already gates on, asked before the work rather
-  // than after it, so nothing that used to render stops rendering.
-  const isLast = useAuiState(({ message }) => message.isLast);
-  if (!isLast) {
-    return null;
-  }
-  return <ContinueMessageBarForLastMessage />;
-};
-
-const ContinueMessageBarForLastMessage: FC = () => {
+/** Shared eligibility and run setup for Resume and Continue response. */
+function useContinuation() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isLast = useAuiState(({ message }) => message.isLast);
@@ -7421,13 +7393,23 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const researchActive = useThreadResearchActive();
   const status = useAuiState(({ message }) => message.status);
   const metadata = useAuiState(({ message }) => message.metadata);
-  const partial = useAuiState(({ message }) =>
-    assistantMessageText(message.content),
+  // Only local GGUF models support reasoning continuation.
+  const thoughtResumable = useChatRuntimeStore((s) =>
+    resumesThought({
+      isExternal: parseExternalModelId(s.params.checkpoint) !== null,
+      isGguf: s.models.find((m) => m.id === s.params.checkpoint)?.isGguf,
+    }),
+  );
+  const partial = useAuiState(
+    ({ message }) => readContinuationSource(message.content).partial,
+  );
+  const reasoning = useAuiState(
+    ({ message }) => readContinuationSource(message.content).reasoning,
   );
   // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
   // call and its result would be missing from the outbound history.
   const continuable = useAuiState(({ message }) =>
-    isContinuableContent(message.content),
+    isContinuableContent(message.content, { thought: thoughtResumable }),
   );
   // Gemini signs its text parts, and the resumed turn is replayed from this branch,
   // so the signature travels with the partial.
@@ -7454,11 +7436,10 @@ const ContinueMessageBarForLastMessage: FC = () => {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
+  const carriedReasoning = thoughtResumable ? reasoning : "";
 
-  // Every gate the bar itself answers to. Resuming without asking has to clear the same
-  // ones, or it would resume a turn the bar would have refused to offer.
-  const resumable =
-    Boolean(reason) &&
+  // Every gate resuming answers to, whether the user asked or not.
+  const canResume =
     isLast &&
     !isRunning &&
     !researchRunId &&
@@ -7468,7 +7449,59 @@ const ContinueMessageBarForLastMessage: FC = () => {
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(partial.trim());
+    Boolean(partial.trim() || carriedReasoning.trim());
+
+  const reasoningDuration = readThoughtDuration(metadata);
+  // Hands the started run back, untyped: the only handle identified with THIS run.
+  const startContinuation = useCallback((): unknown => {
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return undefined;
+    }
+    // Sibling of the resumed turn, so the branch picker can still reach the original.
+    const parent = index > 0 ? messages[index - 1].id : null;
+    const request: ContinuationRequest = {
+      partial,
+      ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
+      ...(thoughtSignature ? { thoughtSignature } : {}),
+    };
+    return aui.thread().startRun({
+      parentId: parent,
+      runConfig: {
+        custom: { [CONTINUATION_RUN_CONFIG_KEY]: request },
+      },
+    });
+  }, [aui, messageId, partial, carriedReasoning, reasoningDuration, thoughtSignature]);
+
+  return {
+    messageId,
+    reason,
+    completed: status?.type === "complete",
+    canResume,
+    // What resuming replays as the final assistant turn, for the fit estimate below.
+    resumedChars: partial.length + carriedReasoning.length,
+    startContinuation,
+  };
+}
+
+/** Offer Resume on the newest reply when generation stopped early. */
+const ContinueMessageBar: FC = () => {
+  // Mount the full subscriptions only for the newest message to keep typing responsive.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueMessageBarForLastMessage />;
+};
+
+const ContinueMessageBarForLastMessage: FC = () => {
+  const aui = useAui();
+  const { messageId, reason, canResume, resumedChars, startContinuation } =
+    useContinuation();
+
+  // Automatic continuation uses the same eligibility checks as manual Resume.
+  const resumable = Boolean(reason) && canResume;
 
   // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
   const remedy = reason ? incompleteRemedy(reason) : null;
@@ -7479,25 +7512,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     const index = thread.messages.findIndex((m) => m.id === message.id);
     return index > 0 ? thread.messages[index - 1].id : null;
   });
-
-  // Hands the started run back, untyped: the only handle identified with THIS run.
-  const startContinuation = useCallback((): unknown => {
-    const messages = aui.thread().getState().messages;
-    const index = messages.findIndex((message) => message.id === messageId);
-    if (index < 0) {
-      return undefined;
-    }
-    // Sibling of the truncated turn, so the branch picker can still reach the partial.
-    const parent = index > 0 ? messages[index - 1].id : null;
-    return aui.thread().startRun({
-      parentId: parent,
-      runConfig: {
-        custom: {
-          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
-        },
-      },
-    });
-  }, [aui, messageId, partial, thoughtSignature]);
 
   // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
   // which the fit protects, so a partial too big to sit beside the system turn makes the
@@ -7543,7 +7557,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
       fits: truncation?.fits,
       // The same cheap estimator the backend fit uses, which is all that is needed to
       // spot a partial that has already eaten the whole budget.
-      partialTokens: Math.ceil(partial.length / 4),
+      partialTokens: Math.ceil(resumedChars / 4),
       promptTarget: truncation?.prompt_target,
     });
   useEffect(() => {
@@ -7645,24 +7659,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     );
   }
 
-  const handleContinue = () => {
-    const messages = aui.thread().getState().messages;
-    const index = messages.findIndex((message) => message.id === messageId);
-    if (index < 0) {
-      return;
-    }
-    // Sibling of the truncated turn, so the branch picker can still reach the partial.
-    const parentId = index > 0 ? messages[index - 1].id : null;
-    aui.thread().startRun({
-      parentId,
-      runConfig: {
-        custom: {
-          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
-        },
-      },
-    });
-  };
-
   return (
     <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
       <span className="min-w-0 flex-1 text-muted-foreground">
@@ -7674,7 +7670,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
           size="sm"
           variant="secondary"
           className="h-7 shrink-0 gap-1.5 text-xs"
-          onClick={handleContinue}
+          onClick={() => {
+            startContinuation();
+          }}
         >
           <QueueResumeIcon className="size-3.5" />
           Resume
@@ -8356,6 +8354,35 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+/** Continue the newest finished reply; incomplete replies use the Resume bar. */
+const ContinueResponseButton: FC = () => {
+  // Asked first for the same reason as ContinueMessageBar: only the newest reply can continue.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueResponseButtonForLastMessage />;
+};
+
+const ContinueResponseButtonForLastMessage: FC = () => {
+  const { messageId, reason, completed, canResume, startContinuation } =
+    useContinuation();
+  const editing = useChatRuntimeStore((s) => s.editingMessageId === messageId);
+  if (!completed || reason || !canResume || editing) {
+    return null;
+  }
+  return (
+    <TooltipIconButton
+      tooltip="Continue response"
+      onClick={() => {
+        startContinuation();
+      }}
+    >
+      <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
+  );
+};
+
 // The More menu's Edit response, shown when the button is not pinned to the bar.
 const EditAssistantMessageMenuItem: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
@@ -8436,6 +8463,7 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
+        <ContinueResponseButton />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">

@@ -301,6 +301,7 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  continuationSeed,
   createContinuationMerger,
   hasRenderableContent,
   incompleteLabel,
@@ -311,6 +312,7 @@ import {
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
+  resumesThought,
 } from "../utils/continuation";
 import {
   claimLiveGenerationRun,
@@ -5022,11 +5024,30 @@ export function createOpenAIStreamAdapter(
         );
       }
 
+      // Carry reasoning only to backends that can resume it.
+      const resumedThought =
+        continuation &&
+        resumesThought({
+          isExternal: isExternalRequest,
+          isGguf: runtime.models.find(
+            (model) => model.id === runtime.params.checkpoint,
+          )?.isGguf,
+        })
+          ? (continuation.reasoning ?? "")
+          : "";
+      if (continuation && !continuation.partial && !resumedThought) {
+        toast.error("This response cannot be resumed", {
+          description:
+            "It stopped mid-thought, and only GGUF models can resume a thought. Use Retry instead.",
+        });
+        throw new Error("A response that stopped mid-thought cannot be resumed here.");
+      }
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
           content: continuation.partial,
+          ...(resumedThought ? { reasoning_content: resumedThought } : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
         // goes back unsigned.
@@ -5434,9 +5455,13 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      // Seeded with the partial so the bubble reads as one response; the boundary lets the
-      // finalizers repair a repeat or restart.
-      let cumulativeText = continuation ? continuation.partial : "";
+      // Seed the bubble with the original thought and answer before appending streamed deltas.
+      const continuationPartial = continuation
+        ? continuationSeed(continuation.partial, resumedThought)
+        : "";
+      // A seed that ends inside the thought: the next reasoning delta extends it.
+      const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
+      let cumulativeText = continuationPartial;
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
       // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
       // the delta through `appendCumulative` and the buffer is read only where the reply is
@@ -5450,7 +5475,6 @@ export function createOpenAIStreamAdapter(
       // Whether this run appended reply text of its own: a continuation is SEEDED with the previous
       // run's partial, so a run that adds nothing must not have its tail trimmed.
       let producedReplyText = false;
-      const continuationPartial = continuation?.partial ?? "";
       // Local backends resume at the exact token boundary, so trimming could only delete words the
       // model meant; the repair is for providers that repeat or restart.
       const repairContinuation =
@@ -5537,9 +5561,15 @@ export function createOpenAIStreamAdapter(
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
-      // True while wrapping a `delta.reasoning_content` stream in <think> for parseAssistantContent;
-      // outside the SSE loop because the close tag fires when content arrives.
-      let reasoningContentOpen = false;
+      if (resumedThought) {
+        reasoningDurationTracker.seedThought({
+          duration: continuation?.reasoningDuration,
+          open: resumesInsideThought,
+          textLength: resumedThought.length,
+        });
+      }
+      // Keep the <think> block open across reasoning deltas; answer content closes it.
+      let reasoningContentOpen = resumesInsideThought;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -5953,10 +5983,13 @@ export function createOpenAIStreamAdapter(
             : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
         : {};
       // Decided before the continuation yield below, which an abort during load saves as is.
+      // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
         isExternalRequest
           ? requestParsesThinkTags(externalReasoningFields)
-          : reasoningAlwaysOn || requestParsesThinkTags(localReasoningFields),
+          : reasoningAlwaysOn ||
+              Boolean(resumedThought) ||
+              requestParsesThinkTags(localReasoningFields),
       );
       // Yielded before the request starts: an abort during load skips the partial-content yield
       // below, saving an empty message.
@@ -8181,6 +8214,12 @@ export function createOpenAIStreamAdapter(
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
+        // Explain why a continuation produced an unchanged sibling.
+        if (continuation && !producedReplyText && !finalIncompleteReason) {
+          toast("The model had nothing to add", {
+            description: "It ended the reply where it already stopped.",
+          });
+        }
         yield {
           content: finalContent,
           metadata: {
