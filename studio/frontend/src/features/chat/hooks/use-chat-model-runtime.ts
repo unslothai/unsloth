@@ -631,7 +631,6 @@ function publishLoadedModels(
   );
 }
 
-/** Scoped to one model's chats, or every local run and pre-stream reservation. */
 function stopQueuedRuns(decision: StopRunningChatsDecision, scoped: boolean): void {
   if (scoped) {
     requestPromptQueueStop(decision.promptQueueThreadIds);
@@ -646,10 +645,7 @@ function unloadKeptModel(keptId: string): Promise<boolean> {
     async (decision) => {
       if (!decision.proceed) return false;
       stopQueuedRuns(decision, true);
-      await unloadModel({
-        model_path: keptId,
-        force_cancel_active: decision.forceCancelActive,
-      });
+      await unloadModel({ model_path: keptId, force_cancel_active: decision.forceCancelActive });
       return true;
     },
   );

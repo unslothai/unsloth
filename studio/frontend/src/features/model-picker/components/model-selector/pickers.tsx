@@ -2989,12 +2989,11 @@ export function HubModelPicker({
   const isKeptLoaded = (repoId: string) =>
     loadedIdSet.has(repoId.toLowerCase());
   const loadedQuantsFor = (repoId: string): string[] => {
-    const quants =
-      isChatPicker
-        ? loadedModels
-            .filter((m) => m.quant && modelIdsMatchForPicker(m.id, repoId))
-            .map((m) => m.quant as string)
-        : [];
+    const quants = isChatPicker
+      ? loadedModels
+          .filter((m) => m.quant && modelIdsMatchForPicker(m.id, repoId))
+          .map((m) => m.quant as string)
+      : [];
     if (activeGgufVariant && modelIdsMatchForPicker(loadedModelId, repoId)) {
       quants.push(activeGgufVariant);
     }
@@ -5782,7 +5781,9 @@ export function HubModelPicker({
     );
 
   const showConnected = section === "connected";
-  const ejectsAll = Boolean(onEjectAll) && loadedModels.length > 1;
+  const severalLoaded = loadedModels.length > 1;
+  const ejectsAll = Boolean(onEjectAll) && severalLoaded;
+  const ejectsKept = Boolean(onEject) && severalLoaded;
   // The Connected layout uses a wider box, so it drops the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
   // The Other models section and its shortcut only show with non-Unsloth downloads.
@@ -5810,8 +5811,6 @@ export function HubModelPicker({
     );
   };
 
-
-  const ejectsKept = Boolean(onEject) && loadedModels.length > 1;
   const ejectMenuItems = (modelId: string) =>
     ejectsKept && isKeptLoaded(modelId)
       ? [

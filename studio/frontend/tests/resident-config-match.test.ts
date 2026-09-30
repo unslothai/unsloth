@@ -1995,7 +1995,7 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /confirmStopRunningChatsIfNeeded\("Unloading this model", "unload", keptId\)[\s\S]{0,120}?if \(!decision\.proceed\) return false;\s*stopQueuedRuns\(decision, true\);/,
+    /confirmStopRunningChatsIfNeeded\("Unloading this model", "unload", keptId\)[\s\S]{0,80}?if \(!decision\.proceed\) return false;\s*stopQueuedRuns\(decision, true\);/,
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
