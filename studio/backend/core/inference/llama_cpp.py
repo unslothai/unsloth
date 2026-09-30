@@ -39892,13 +39892,9 @@ class LlamaCppBackend:
                     ] + template_messages
 
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
-                    """(token count or None, whether the template refused to render).
-                    Only a 500 is a refusal: llama-server returns it for template exceptions
-                    and 503 while loading or out of slots."""
+                    """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
                     try:
-                        # llama-server's /apply-template renders tool declarations
-                        # into the prompt when ``tools`` is supplied, so pass them
-                        # through, otherwise tool-schema tokens go uncounted.
+                        # /apply-template renders tool schemas; omitting them undercounts.
                         template_body = {"messages": render_messages}
                         if tools:
                             template_body["tools"] = llama_grammar_tools(tools)
@@ -39943,9 +39939,8 @@ class LlamaCppBackend:
                         pass
                     return None, False
 
-                # Qwen3.5+ templates raise on an empty render (#12327). A new chat renders empty,
-                # and so does a lone assistant turn, which llama-server strips as a prefill.
-                # On refusal, retry behind one empty user turn and remember it for this load.
+                # Qwen3.5+ templates raise on an empty render (#12327); a lone assistant turn is
+                # stripped as a prefill, so renders empty too. Retry behind an empty user turn.
                 renders_empty = not template_messages or (
                     len(template_messages) == 1
                     and isinstance(template_messages[0], dict)
