@@ -396,6 +396,8 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
+    from core.inference.context_window import keep_date_note
+
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
@@ -409,8 +411,10 @@ def _fit_with_instruction_pins(
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)
     ):
-        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
-    return fitted, truncation
+        fitted, truncation = _fit_context(
+            messages, protected_message_ids = anchors or None, **kwargs
+        )
+    return keep_date_note(messages, fitted), truncation
 
 
 # Share strip / signal constants with the multi-format parser so BUFFERING also
