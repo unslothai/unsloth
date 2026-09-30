@@ -804,8 +804,7 @@ fn setup_logging() {
 
 static PANIC_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Records panics in tauri.log, since a packaged app's stderr goes nowhere. Writes through its
-/// own handle: the logger formats under its lock, so logging a panic raised there would deadlock.
+/// Own file handle, not `log`: a panic raised inside the logger's lock would deadlock.
 fn log_panics() {
     static PANICS: AtomicU64 = AtomicU64::new(0);
     let default_hook = std::panic::take_hook();

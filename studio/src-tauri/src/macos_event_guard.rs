@@ -1,10 +1,5 @@
-//! Stops an AppKit exception during event dispatch from aborting the app.
-//!
-//! tao overrides `sendEvent:` on both its NSApplication and NSWindow subclasses with `extern "C"`
-//! functions, so an Objective-C exception raised beneath either aborts with "panic in a function
-//! that cannot unwind". macOS 27.0 raises one from the Siri selected-text affordance
-//! (NSCampoLightweightUIController). Catching it at AppKit's own `sendEvent:` on both classes
-//! restores stock AppKit behavior: report and keep running.
+//! tao's `extern "C"` `sendEvent:` overrides abort on any Objective-C exception beneath them
+//! (macOS 27.0 NSCampoLightweightUIController throws one); catch it at AppKit's `sendEvent:`.
 //! Upstream fix: tauri-apps/tao#1354.
 
 use std::ffi::CStr;
@@ -20,14 +15,12 @@ use objc2::{class, msg_send, sel};
 
 type SendEvent = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
 
-/// The AppKit classes beneath tao's overrides: TaoApp's, and TaoWindow's, which also takes
-/// TaoApp's Cmd+key-up path (it calls the key window's `sendEvent:` directly).
+/// NSWindow also covers TaoApp's Cmd+key-up path, which calls the key window's `sendEvent:`.
 const GUARDED_CLASSES: [&CStr; 2] = [c"NSApplication", c"NSWindow"];
 static APPKIT_SEND_EVENT: [OnceLock<SendEvent>; 2] = [OnceLock::new(), OnceLock::new()];
 static CAUGHT_EXCEPTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Wraps `-[NSApplication sendEvent:]` and `-[NSWindow sendEvent:]`. Call on the main thread
-/// before the event loop starts.
+/// Call on the main thread before the event loop starts.
 pub fn install() {
     install_guard::<0>();
     install_guard::<1>();
@@ -79,8 +72,7 @@ unsafe fn dispatch(send_event: SendEvent, this: *mut AnyObject, cmd: Sel, event:
     }
 }
 
-/// Reports like `-[NSApplication run]`, honoring NSApplicationCrashOnExceptions. Only the 1st,
-/// 2nd, 4th, 8th, ... occurrence is reported so a per-event exception cannot flood the logs.
+/// Like `-[NSApplication run]`, honoring NSApplicationCrashOnExceptions. Powers of two only.
 unsafe fn report(to_app: bool, exception: Option<Retained<Exception>>) {
     let count = CAUGHT_EXCEPTIONS.fetch_add(1, Ordering::Relaxed) + 1;
     if !count.is_power_of_two() {
@@ -94,8 +86,7 @@ unsafe fn report(to_app: bool, exception: Option<Retained<Exception>>) {
     if !to_app {
         return;
     }
-    // NSApp, since the receiver may be a window. Skip nil: msg_send! panics on it in debug builds,
-    // and a panic here aborts.
+    // Skip nil: msg_send! panics on it in debug builds, and a panic here aborts.
     let app: Option<Retained<AnyObject>> =
         unsafe { msg_send![class!(NSApplication), sharedApplication] };
     if let Some(app) = app {
