@@ -1792,7 +1792,7 @@ function FavoriteTile({
           <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-13p5 leading-snug text-foreground">
             {title}
           </p>
-          <div className="flex items-center justify-center text-foreground">
+          <div className="flex flex-col items-center text-foreground before:flex-5 after:flex-7">
             {icon}
           </div>
           <p className="truncate pr-6 text-ui-12 text-muted-foreground">
