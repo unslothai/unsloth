@@ -1197,6 +1197,7 @@ def plan_diffusion_memory(
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
         fast_budget = _fast_device_budget_mib(device_memory)
+        estimates["resident_budget_mib"] = fast_budget
         if fast_budget is not None and required is not None and required > fast_budget:
             policy, stream_text_encoders, stream_transformer = _offload_tier()
             reasons.append(

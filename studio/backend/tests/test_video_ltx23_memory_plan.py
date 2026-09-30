@@ -233,3 +233,16 @@ def test_fast_that_offloaded_is_recorded_as_a_fallback_naming_the_policy():
         {"memory_mode": _memory_mode_resolved("fast", kept, kept.offload_policy)}
     )["memory_mode"]
     assert (entry["status"], entry["value"]) == ("applied", "fast")
+
+
+def test_resident_proof_uses_the_budget_fast_was_placed_with():
+    """Auto precision keeps bf16 only on a proven fit; a fast plan placed resident under its own budget is one."""
+    from core.inference.diffusion import _plan_proves_resident
+
+    fast = _plan(TENANT_FREE_MIB, LTX23_DIT_MIB)
+    assert fast.offload_policy == OFFLOAD_NONE
+    assert fast.estimates["resident_required_mib"] > fast.estimates["safe_device_budget_mib"]
+    assert _plan_proves_resident(fast)
+    auto = _plan(B200_TOTAL_MIB, LTX23_DIT_MIB, MEMORY_MODE_AUTO)
+    assert "resident_budget_mib" not in auto.estimates
+    assert _plan_proves_resident(auto)
