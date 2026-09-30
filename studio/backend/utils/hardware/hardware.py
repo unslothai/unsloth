@@ -1407,6 +1407,25 @@ def _xpu_device_name_or_placeholder(torch) -> str:
         return "<unavailable>"
 
 
+def _configure_rocm_miopen(torch) -> None:
+    """Bound cold solver search on measured GPUs without removing fallback solvers."""
+    if "MIOPEN_SEARCH_CUTOFF" in os.environ:
+        return
+    try:
+        count = torch.cuda.device_count()
+        # MIOpen caches this process-wide setting at first use. Do not apply a
+        # single GPU's workaround to an untested GPU in a mixed-architecture host.
+        if not count or any(
+            _props_gfx_arch(torch.cuda.get_device_properties(i)) != "gfx1151" for i in range(count)
+        ):
+            return
+    except Exception as exc:
+        logger.debug("MIOpen search cutoff device probe failed: %s", exc)
+        return
+    os.environ.setdefault("MIOPEN_SEARCH_CUTOFF", "1")
+    logger.info("ROCm gfx1151: enabled MIOpen search cutoff (MIOPEN_SEARCH_CUTOFF=1)")
+
+
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
@@ -1471,6 +1490,7 @@ def _detect_hardware_locked() -> DeviceType:
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
+                _configure_rocm_miopen(torch)
                 _hip_label = _hip_ver or torch.__version__
                 print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
