@@ -6,7 +6,9 @@
 Faked platform throughout, since studio-backend-ci is Linux-only; the native tests cover a real host.
 """
 
+import ntpath
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -156,13 +158,30 @@ def test_default_env_is_unchanged(windows, monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("shell", [None, "cmd_isolated"])
-def test_safe_env_points_the_windows_profile_at_the_workdir(windows, monkeypatch, tmp_path, shell):
+def test_safe_env_homes_windows_python_in_the_workdir(windows, monkeypatch, tmp_path, shell):
     windows()
     _userland(monkeypatch, tmp_path)
     monkeypatch.setenv("USERPROFILE", r"C:\Users\someone")
     env = tools._build_safe_env(str(tmp_path), shell = shell)
-    for var in ("USERPROFILE", "APPDATA", "LOCALAPPDATA"):
-        assert env[var] == str(tmp_path)
+    assert ntpath.join(env["HOMEDRIVE"], env["HOMEPATH"]) == str(tmp_path)
+    # A workdir USERPROFILE would make the shell resolve AppData, and so pip's cache, under the cwd.
+    assert "USERPROFILE" not in env and "APPDATA" not in env and "LOCALAPPDATA" not in env
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows home resolution")
+def test_a_sandboxed_windows_child_finds_its_home_and_an_absolute_pip_cache(tmp_path):
+    probe = (
+        "import pathlib, os\n"
+        "from pip._vendor import platformdirs\n"
+        "print(pathlib.Path.home())\n"
+        "print(os.path.isabs(platformdirs.user_cache_dir('pip', appauthor = False)))\n"
+    )
+    env = tools._build_safe_env(str(tmp_path))
+    out = subprocess.run(
+        [sys.executable, "-c", probe], env = env, cwd = tmp_path, capture_output = True, text = True
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines() == [str(tmp_path), "True"]
 
 
 def test_blocklist_still_catches_blocked_commands_under_cmd(windows):

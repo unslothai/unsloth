@@ -9477,9 +9477,9 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     Whitelist-built from scratch (parent env NOT inherited): only
     PATH/HOME/TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows SystemRoot and a
     minimal PATHEXT) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    (and on Windows USERPROFILE/APPDATA/LOCALAPPDATA) points at the sandbox workdir so SDKs can't
-    read the operator's cached creds, and the temp vars at _sandbox_temp_dir just inside it. PYTHONPATH carries only the sandbox sitecustomize shim
-    directory.
+    (and on Windows HOMEDRIVE/HOMEPATH) points at the sandbox workdir so SDKs can't read the
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside it. PYTHONPATH
+    carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Unsloth interpreter / venv and OS system dirs so ``python``/``pip`` stay
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
@@ -9551,9 +9551,9 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # and writes outside the workdir.
         env["TEMP"] = temp_dir
         env["TMP"] = temp_dir
-        # Python and most SDKs ignore HOME on Windows; without these Path.home() raises.
-        for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
-            env[var] = workdir
+        # Path.home() ignores HOME on Windows and falls back to HOMEDRIVE+HOMEPATH. USERPROFILE is left unset:
+        # the shell resolves AppData under it, so a workdir USERPROFILE sends pip's cache to .\pip in the cwd.
+        env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
