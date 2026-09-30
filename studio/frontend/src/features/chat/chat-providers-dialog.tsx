@@ -139,7 +139,7 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
 const SYSTEM_ONE_EMPTY_CATALOG_HINT = {
   title: "No decision models found on this server.",
   description:
-    "Type the model name in the box below. For another Unsloth Studio, type default.",
+    "Type the model name in the box below. For another Unsloth server, type default.",
 };
 
 function emptyCatalogHint(providerType: string): {
