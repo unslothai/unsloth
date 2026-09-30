@@ -2244,6 +2244,22 @@
       "evidence": "Obfusc: L332:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)\nExec: L332:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)",
       "evidence_hash": "ef22a4fe0d8ec7e2b0e4afc6e6a3d997cd94c981bf59790562217d4f9dd70732",
       "file_sha256": "1d8b60e48ec8f0faf6156f6eac7368e99c2b6d34690957ef7c5e8e505cacc7db"
+    },
+    {
+      "package": "datasets",
+      "file": "datasets/utils/file_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L443:     while True: sha256:483d0708b413e70fec1791cb689364b426ea949b795d717d1ba437d08c0b9d21",
+      "evidence_hash": "fdde4e280accf7805c189b49c656234f6495462314df0b1cb0d8dba3444e84a1"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/testing_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L1940:     while True: sha256:31916bdee49882534b4778987ee509b06745db929a9d567779862a048601ddb8",
+      "evidence_hash": "93e6c8cd4f1e42a3c0aa54b2076dd0bde806f67dfe53ae06cb460ea5a82ca10c"
     }
   ]
 }
