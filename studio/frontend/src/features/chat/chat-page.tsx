@@ -125,6 +125,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -403,6 +404,28 @@ const SingleContent = memo(function SingleContent({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
+  const aui = useAui();
+  // Compare keeps this view mounted but hidden, so the backgrounded copy leaves the prompt to SharedComposer.
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt || !chatActive) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    const composer = aui.composer();
+    const current = composer.getState().text;
+    composer.setText(
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // The overlay returns focus to its opener on unmount, so focus the composer after that.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+        ?.focus();
+    }, 0);
+  }, [pendingFixPrompt, aui, chatActive]);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {
@@ -418,6 +441,18 @@ const SingleContent = memo(function SingleContent({
       : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  // Sampled on drag end, not onResize: that fires through the open/close animations too.
+  const artifactPanelWidthRef = useRef<string | null>(null);
+  const rememberArtifactPanelWidth = useCallback(() => {
+    const size = artifactPanelRef.current?.getSize().asPercentage;
+    if (size == null) return;
+    // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
+    if (size <= 5) {
+      onCloseArtifact();
+      return;
+    }
+    artifactPanelWidthRef.current = `${size}%`;
+  }, [onCloseArtifact]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -446,6 +481,25 @@ const SingleContent = memo(function SingleContent({
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
+  const artifactPanelThread = threadId ?? activeThreadId ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetting is the effect
+  useEffect(() => {
+    artifactPanelWidthRef.current = null;
+  }, [artifactPanelThread]);
+
+  const artifactOpenSequence = useChatArtifactsStore(
+    (state) => state.openSequence,
+  );
+  useEffect(() => {
+    if (!showContextPanel || artifactOpenSequence === 0) return;
+    const panel = artifactPanelRef.current;
+    if (!panel) return;
+    if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
+    // expand() alone restores the pre-collapse width, which is zero after a drag shut.
+    panel.expand();
+    panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
+  }, [artifactOpenSequence, showContextPanel]);
+
   useEffect(() => {
     const panel = artifactPanelRef.current;
     if (!panel) return;
@@ -465,7 +519,11 @@ const SingleContent = memo(function SingleContent({
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
       resizeFrameId = window.requestAnimationFrame(() => {
-        panel.resize(showContextPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+        panel.resize(
+          showContextPanel
+            ? (artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE)
+            : "0%",
+        );
       });
     });
     const surfaceTimerId = showContextPanel
@@ -556,6 +614,14 @@ const SingleContent = memo(function SingleContent({
         </ResizablePanel>
         <ResizableHandle
           withHandle={false}
+          // The library's double-click reset would shut the panel without closing the artifact.
+          disableDoubleClick
+          onPointerDown={() => {
+            window.addEventListener("pointerup", rememberArtifactPanelWidth, {
+              once: true,
+            });
+          }}
+          onKeyUp={rememberArtifactPanelWidth}
           className={cn(
             "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
             !artifactLayoutActive &&
@@ -828,7 +894,11 @@ function ComparePane({
       )}
     >
       {header}
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+        <div
+          aria-hidden={true}
+          className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-[var(--thread-scrollbar-gutter,10px)] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+        />
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
@@ -1068,6 +1138,7 @@ function GeneralCompareHeader({
   onModelsChange,
   deleteDisabled,
   side,
+  label,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -1084,6 +1155,7 @@ function GeneralCompareHeader({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   side: "left" | "right";
+  label?: "Base Model" | "Fine-tuned";
 }): ReactElement {
   // Controlled so the body-portaled popover cannot linger over another tab off-route.
   const active = useChatActive();
@@ -1097,7 +1169,9 @@ function GeneralCompareHeader({
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
-            : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+            : isTauri
+              ? "pl-12 pr-3 md:pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
           : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
@@ -1118,8 +1192,39 @@ function GeneralCompareHeader({
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
+      {label ? (
+        <span
+          className={cn(
+            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 items-center text-ui-10 font-semibold uppercase tracking-wider sm:flex",
+            side === "right" && "ml-auto",
+            label === "Fine-tuned" ? "text-primary" : "text-muted-foreground",
+          )}
+        >
+          {label}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+/** Base Model / Fine-tuned labels when one pane is a LoRA trained on the other pane's model. */
+function generalCompareLabels(
+  loraModels: LoraModelOption[],
+  model1: CompareModelSelection,
+  model2: CompareModelSelection,
+): ["Base Model" | "Fine-tuned" | undefined, "Base Model" | "Fine-tuned" | undefined] {
+  const baseOf = (sel: CompareModelSelection) =>
+    sel.isLora
+      ? loraModels.find((lora) => lora.id === sel.id)?.baseModel
+      : undefined;
+  const isTunedFrom = (tuned: CompareModelSelection, base: CompareModelSelection) => {
+    const loraBase = baseOf(tuned);
+    return Boolean(loraBase && base.id) &&
+      normalizeModelRef(loraBase) === normalizeModelRef(base.id);
+  };
+  if (isTunedFrom(model1, model2)) return ["Fine-tuned", "Base Model"];
+  if (isTunedFrom(model2, model1)) return ["Base Model", "Fine-tuned"];
+  return [undefined, undefined];
 }
 
 /** General path: any two models, sequential load → generate. */
@@ -1160,10 +1265,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  // A compare send is idle between the two sequential runs; a re-list there swaps the pane threads mid-send.
+  const [comparing, setComparing] = useState(false);
   const listedPairRef = useRef<string | null>(null);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
-    isLora: false,
+    isLora: loraModels.some(
+      (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
+    ),
     ggufVariant: globalGgufVariant ?? undefined,
     isDiffusion: globalIsDiffusion,
   });
@@ -1186,7 +1295,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (anyRunning && listedPairRef.current === pairId) return;
+    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
@@ -1208,7 +1317,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, anyRunning]);
+  }, [pairId, anyRunning, comparing]);
 
   useEffect(() => {
     if (!threadsSettled) return;
@@ -1221,6 +1330,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     threadsSettled,
   ]);
 
+  const [model1Label, model2Label] = generalCompareLabels(
+    loraModels,
+    model1,
+    model2,
+  );
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -1231,8 +1346,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
+            onComparingChange={setComparing}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
+            sendUnavailableReason={
+              threadsSettled ? undefined : "Loading comparison history."
+            }
           />
         ) : (
           <></>
@@ -1252,6 +1371,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           header={
             <GeneralCompareHeader
               side="left"
+              label={model1Label}
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
@@ -1287,6 +1407,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           header={
             <GeneralCompareHeader
               side="right"
+              label={model2Label}
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
@@ -4561,12 +4682,12 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(10px*var(--ui-space-scale,1))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[var(--thread-scrollbar-gutter,10px)] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -4575,7 +4696,7 @@ export function ChatPage({
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                   : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[calc(10px*var(--ui-space-scale,1))] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">

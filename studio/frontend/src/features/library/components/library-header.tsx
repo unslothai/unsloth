@@ -208,7 +208,7 @@ export function LibraryHeader({
     <>
       {/* No height of its own: the controls hang from it over the title row, then stick level with
           the tabs, whose row is as tall as they are plus its padding. */}
-      <div className="pointer-events-none sticky top-4 z-30 flex h-0 justify-end">
+      <div className="@container pointer-events-none sticky top-4 z-30 flex h-0 justify-end">
         <div ref={controlsRef} className="pointer-events-auto">
           {controls}
         </div>

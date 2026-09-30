@@ -193,6 +193,8 @@ def GemmaModel_fast_forward_inference(
     for idx, decoder_layer in enumerate(self.model.layers):
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
+        if attention_mask is not None:
+            attention_mask = move_to_device(layer_device, attention_mask)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(

@@ -320,6 +320,8 @@ const PastedTextAttachmentUI: FC<{
   // Read off the header, never measured: the paste can be megabytes and this
   // runs while the thread is trying to paint.
   const bytes = attachment.file?.size ?? attachment.sentBytes;
+  // A sent paste reopened for editing has no File to read back, so it previews instead.
+  const canInline = isComposer && attachment.file !== undefined;
 
   // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
@@ -349,7 +351,7 @@ const PastedTextAttachmentUI: FC<{
   }, [attachment, attachmentId, aui, inlining]);
 
   const sizeLabel = bytes === undefined ? "Pasted text" : formatBytes(bytes);
-  const ariaLabel = isComposer
+  const ariaLabel = canInline
     ? `Pasted text: ${name}. Show in text field`
     : `Pasted text: ${name}. Show contents`;
   const textIcon = (className: string) => (
@@ -371,7 +373,7 @@ const PastedTextAttachmentUI: FC<{
         type="button"
         title={name}
         aria-label={ariaLabel}
-        onClick={isComposer ? showInTextField : undefined}
+        onClick={canInline ? showInTextField : undefined}
       >
         <FileCardBody
           name={name}
@@ -381,10 +383,10 @@ const PastedTextAttachmentUI: FC<{
             <span className="flex flex-col items-center gap-1 text-ui-11">
               {textIcon("size-6")}
               {/* Hover swaps the size for the action. */}
-              <span className={isComposer ? "group-hover:hidden" : undefined}>
+              <span className={canInline ? "group-hover:hidden" : undefined}>
                 {sizeLabel}
               </span>
-              {isComposer ? (
+              {canInline ? (
                 <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
                   Show in text field
                   <ChevronRightIcon className="size-3" />
@@ -438,11 +440,11 @@ const PastedTextAttachmentUI: FC<{
       )}
       type="button"
       aria-label={
-        isComposer
+        canInline
           ? `Pasted text: ${name}. Show in text field`
           : `Pasted text: ${name}. Show contents`
       }
-      onClick={isComposer ? showInTextField : undefined}
+      onClick={canInline ? showInTextField : undefined}
     >
       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
         <HugeiconsIcon
@@ -455,10 +457,10 @@ const PastedTextAttachmentUI: FC<{
         <span className="truncate font-medium text-xs">{name}</span>
         <span className="truncate text-ui-11 text-muted-foreground">
           {/* Hover swaps the size for the action. */}
-          <span className={isComposer ? "group-hover:hidden" : undefined}>
+          <span className={canInline ? "group-hover:hidden" : undefined}>
             {bytes === undefined ? "Pasted text" : formatBytes(bytes)}
           </span>
-          {isComposer ? (
+          {canInline ? (
             <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
               Show in text field
               <ChevronRightIcon className="size-3" />
@@ -476,7 +478,7 @@ const PastedTextAttachmentUI: FC<{
         variant === "card" && cn("group/attachment-card", CARD_SLOT),
       )}
     >
-      {isComposer ? (
+      {canInline ? (
         chip
       ) : (
         <PastedTextPreviewDialog attachment={attachment} name={name}>
@@ -805,7 +807,7 @@ export const UserMessageAttachments: FC = () => {
 };
 
 // The layout decision is a DOM data attribute, never state, so a resize or new card re-renders no card.
-const ComposerAttachmentCards: FC = () => {
+const ComposerAttachmentCards: FC<{ className?: string }> = ({ className }) => {
   const count = useAuiState(({ composer }) => composer.attachments.length);
   const ref = useRef<HTMLDivElement | null>(null);
   const previousCount = useRef(count);
@@ -856,22 +858,30 @@ const ComposerAttachmentCards: FC = () => {
     <div
       ref={ref}
       data-reload-snapshot-sensitive
-      className="aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain"
+      className={cn(
+        "aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
+        className,
+      )}
     >
       <ComposerPrimitive.Attachments components={CARD_COMPONENTS} />
     </div>
   );
 };
 
-export const ComposerAttachments: FC = () => {
+export const ComposerAttachments: FC<{ className?: string }> = ({
+  className,
+}) => {
   const style = useAppearanceCustomStore(
     (s) => s.customization.composerAttachments,
   );
-  if (style === "cards") return <ComposerAttachmentCards />;
+  if (style === "cards") return <ComposerAttachmentCards className={className} />;
   return (
     <div
       data-reload-snapshot-sensitive
-      className="aui-composer-attachments mb-4 flex w-full flex-row items-center gap-2 overflow-x-auto px-1.5 pt-0.5 pb-1 empty:hidden"
+      className={cn(
+        "aui-composer-attachments mb-4 flex w-full flex-row items-center gap-2 overflow-x-auto px-1.5 pt-0.5 pb-1 empty:hidden",
+        className,
+      )}
     >
       <ComposerPrimitive.Attachments components={COMPACT_COMPONENTS} />
     </div>

@@ -95,6 +95,18 @@ class FakeSmi:
     def calls(self, needle: str = "") -> int:
         return sum(1 for line in self.calls_path.read_text().splitlines() if needle in line)
 
+    def wait_for_call(
+        self,
+        needle: str,
+        count: int,
+        timeout: float = 30.0,
+    ) -> None:
+        """Wait for ``count`` matching children; each reads its state before logging, unlike a fixed sleep."""
+        deadline = time.monotonic() + timeout
+        while self.calls(needle) < count:
+            assert time.monotonic() < deadline, f"no {needle!r} child started within {timeout}s"
+            time.sleep(0.01)
+
 
 @pytest.fixture
 def smi(tmp_path, monkeypatch):
@@ -307,8 +319,9 @@ def test_an_answered_empty_inventory_replaces_the_cached_one(smi, monkeypatch):
 def test_a_static_read_after_redetection_does_not_join_an_older_child(smi):
     smi.set(delay = 0.6)
     first = threading.Thread(target = nvidia.get_physical_gpu_count)
+    started = smi.calls("-L")
     first.start()
-    time.sleep(0.2)
+    smi.wait_for_call("-L", started + 1)
     smi.state["gpus"] = smi.state["gpus"][:1]  # a GPU went away; re-detection follows
     smi.save()
     gpu_query.invalidate_static("redetect")
@@ -394,8 +407,9 @@ def test_a_child_started_before_an_invalidation_is_not_joined(smi, llama_probe):
             return llama_probe()
 
     t = threading.Thread(target = lambda: first_result.append(display_probe()))
+    started = smi.calls("memory.free")
     t.start()
-    time.sleep(0.15)
+    smi.wait_for_call("memory.free", started + 1)
     smi.set_free(64, 64)
     gpu_memory_events.invalidate_gpu_memory("load")
     second = display_probe()
@@ -592,8 +606,9 @@ def test_an_older_answer_does_not_overwrite_a_newer_empty_one(smi, monkeypatch):
 
     smi.set(delay = 1.0)
     older = threading.Thread(target = run)  # fit checks never share a child
+    started = smi.calls("--query-gpu")
     older.start()
-    time.sleep(0.3)
+    smi.wait_for_call("--query-gpu", started + 1)
     smi.set(delay = 0, gpus = [])
     assert run().stdout == ""
     older.join(5)
@@ -618,8 +633,9 @@ def test_a_fit_check_does_not_join_an_older_child(smi, monkeypatch):
     argv = ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"]
     kw = dict(timeout = 5, capture_output = True, text = True)
     first = threading.Thread(target = lambda: gpu_query.run_nvidia_smi(argv, **kw))
+    started = smi.calls("--query-gpu=index,memory.free")
     first.start()
-    time.sleep(0.5)
+    smi.wait_for_call("--query-gpu=index,memory.free", started + 1)
     smi.set(delay = 0)
     smi.set_free(1000, 1000)
     out = gpu_query.run_nvidia_smi(argv, **kw)
