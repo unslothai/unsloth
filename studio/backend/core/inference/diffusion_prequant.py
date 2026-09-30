@@ -2015,6 +2015,9 @@ def stream_prequantized_module(
     if not _unhook_from_manager(manager, module, logger = logger, what = "stream:hook"):
         return None
     try:
+        # load_state_dict(assign=True) leaves the weights trainable; group offload's grad-mode .cpu() copy then holds
+        # each weight's AccumulateGrad, and swap_tensors on onload hits Int8Tensor's missing aten.view.
+        module.requires_grad_(False)
         install_group_offload_buffer_restore()
         use_stream = onload.type == "cuda" and _weights_pinnable(module)
         if onload.type == "cuda" and not use_stream:
