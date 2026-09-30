@@ -1274,14 +1274,14 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
 
 
 def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
-    """The installed class of ``binary`` when it is not the off-torch card's build. Any other build
-    ignores CUDA_VISIBLE_DEVICES (Vulkan) or reads it as HIP's mask (ROCm), so it would run on
-    torch's cards past the arbiter and the training guard. None for an unrecorded build."""
+    """Why ``binary`` is not provably the off-torch card's build, else None. Any other build ignores
+    CUDA_VISIBLE_DEVICES (Vulkan) or reads it as HIP's mask (ROCm), so it would run on torch's cards
+    past the arbiter and the training guard; an unrecorded one (SD_CLI_PATH) could be either."""
     if off_torch is None or not binary:
         return None
     klass = _installed_accelerator_of(binary)
-    if klass and klass != _accelerator_class_of(off_torch.accelerator):
-        return klass
+    if klass != _accelerator_class_of(off_torch.accelerator):
+        return klass or "unrecorded"
     return None
 
 

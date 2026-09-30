@@ -48,6 +48,7 @@ def _pinned_host(monkeypatch):
         lambda: SimpleNamespace(backend = "rocm", device = "cuda"),
     )
     monkeypatch.setattr(r, "_physical_inventory", lambda: _MIXED_HOST)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "cuda")
     monkeypatch.setattr(
         r,
         "get_active_diffusion_engine",
@@ -356,7 +357,7 @@ def test_diffusion_training_keeps_an_off_torch_images_model(monkeypatch):
     assert "images" in unloaded
 
 
-@pytest.mark.parametrize("installed", ["rocm", "vulkan", "cpu"])
+@pytest.mark.parametrize("installed", ["rocm", "vulkan", "cpu", None])
 def test_a_leftover_build_of_another_accelerator_is_not_treated_as_off_torch(
     monkeypatch, installed
 ):
@@ -383,10 +384,12 @@ def test_the_load_refuses_to_spawn_another_accelerators_build(monkeypatch):
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     with pytest.raises(RuntimeError, match = "needs the cuda"):
         sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
-    # Torch-placed loads and unrecorded builds are untouched.
-    sd_cpp_backend._refuse_off_torch_build_mismatch(None, "/opt/sd/sd-server")
+    # An unrecorded build (SD_SERVER_PATH) cannot be shown to be CUDA either.
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: None)
-    sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
+    with pytest.raises(RuntimeError, match = "unrecorded"):
+        sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
+    # Torch-placed loads are untouched.
+    sd_cpp_backend._refuse_off_torch_build_mismatch(None, "/opt/sd/sd-server")
 
 
 def test_an_in_flight_off_torch_load_counts_as_off_torch():
