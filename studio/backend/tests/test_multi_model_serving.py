@@ -1014,3 +1014,51 @@ def test_a_trained_model_still_filling_a_slot_cannot_be_deleted(backends, monkey
             )
         )
     assert excinfo.value.status_code == 409 and run.exists()
+
+
+def test_reloading_a_kept_model_leaves_the_primarys_npu_model_loaded(
+    backends, monkeypatch, tmp_path
+):
+    import struct
+
+    primary, extra = backends
+    primary.unload_model()
+    unloaded = []
+    npu = SimpleNamespace(
+        is_loaded = True,
+        loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
+        resident = lambda: None,
+        unload = lambda: unloaded.append(True),
+    )
+    monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
+
+    def _s(x):
+        return struct.pack("<Q", len(x)) + x.encode()
+
+    gguf = tmp_path / "tiny.gguf"
+    gguf.write_bytes(
+        b"GGUF"
+        + struct.pack("<IQQ", 3, 0, 1)
+        + _s("general.architecture")
+        + struct.pack("<I", 8)
+        + _s("llama")
+    )
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    extra.llama = LlamaCppBackend(manages_processes = False)
+    monkeypatch.setattr(inf, "_llama_cpp_backend", LlamaCppBackend(manages_processes = False))
+    monkeypatch.setattr(inf, "LlamaCppBackend", LlamaCppBackend)
+
+    async def reload_kept():
+        inf.routed_slot.set(extra)
+        with pytest.raises(Exception):
+            await inf._load_model_impl(
+                LoadRequest(model_path = str(gguf), force_reload = True),
+                None,
+                "s",
+                on_reload_confirmed = lambda *, cancel: 0,
+            )
+
+    asyncio.run(reload_kept())
+    assert unloaded == []

@@ -16937,9 +16937,11 @@ def _npu_load_response(resident, status: str) -> LoadResponse:
 
 
 async def _unload_npu_before_local_load() -> None:
-    """Unload the NPU model before loading another local model."""
+    """Unload the NPU model before loading another local model into the primary's seat."""
     from core.inference.npu_backend import peek_npu_backend
 
+    if routed_slot.get() is not None:
+        return
     npu = peek_npu_backend()
     if npu is not None and npu.is_loaded:
         logger.info("Unloading the NPU model before loading a local model")
