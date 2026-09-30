@@ -556,6 +556,40 @@ def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
     assert "Name |  | END" in text
 
 
+def test_docx_keeps_footnotes_and_endnotes(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.opc.constants import CONTENT_TYPE as CT, RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    def notes(kind, text):
+        return (
+            f"<w:{kind}s {_DOCX_XMLNS}>"
+            f'<w:{kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{kind}>'
+            f'<w:{kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{kind}>'
+            f'<w:{kind} w:id="1"><w:p><w:r><w:{kind}Ref/></w:r>{_r(" " + text)}</w:p></w:{kind}>'
+            f"</w:{kind}s>"
+        ).encode()
+
+    document.add_paragraph("Claim FNREF.")
+    for kind, content_type, reltype, text in (
+        ("footnote", CT.WML_FOOTNOTES, RT.FOOTNOTES, "Source: FOOTNOTEBODY"),
+        ("endnote", CT.WML_ENDNOTES, RT.ENDNOTES, "Source: ENDNOTEBODY"),
+    ):
+        part = Part(
+            PackURI(f"/word/{kind}s.xml"), content_type, notes(kind, text), document.part.package
+        )
+        document.part.relate_to(part, reltype)
+    path = tmp_path / "notes.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert (
+        text
+        == "Claim FNREF.\nFootnotes\n[1] Source: FOOTNOTEBODY\nEndnotes\n[1] Source: ENDNOTEBODY"
+    )
+
+
 def _parse_html(tmp_path, body):
     from core.rag import parsers
 

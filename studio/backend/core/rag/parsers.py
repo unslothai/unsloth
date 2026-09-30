@@ -591,7 +591,45 @@ def _docx(path: str) -> list[Page]:
                 lines.append(text)
         elif isinstance(block, Table):
             lines.extend(_docx_table_rows(block))
+    lines.extend(_docx_notes(document))
     return [_page("\n".join(lines), None)]
+
+
+def _docx_notes(document) -> list[str]:
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import parse_xml
+    from docx.table import Table
+
+    lines: list[str] = []
+    for kind, reltype in (("footnote", RT.FOOTNOTES), ("endnote", RT.ENDNOTES)):
+        part = next(
+            (
+                r.target_part
+                for r in document.part.rels.values()
+                if r.reltype == reltype and not r.is_external
+            ),
+            None,
+        )
+        if part is None:
+            continue
+        notes: list[str] = []
+        number = 0
+        for note in parse_xml(part.blob).iterchildren(_W + kind):
+            if note.get(_W + "type", "normal") != "normal":
+                continue
+            number += 1
+            texts = []
+            for block in _docx_blocks(note, document):
+                if isinstance(block, Table):
+                    texts.extend(_docx_table_rows(block))
+                else:
+                    texts.append(" ".join(_docx_paragraph_text(block).split()))
+            text = " ".join(t for t in texts if t)
+            if text:
+                notes.append(f"[{number}] {text}")
+        if notes:
+            lines += [kind.capitalize() + "s", *notes]
+    return lines
 
 
 def _declared_charset(data: bytes) -> str | None:
