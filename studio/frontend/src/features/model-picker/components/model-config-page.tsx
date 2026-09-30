@@ -3500,7 +3500,7 @@ export function ModelConfigPage({
               <fieldset
                 disabled={customActive}
                 inert={customActive ? true : undefined}
-                className={customActive ? "opacity-50" : ""}
+                className={customActive ? "min-w-0 opacity-50" : "min-w-0"}
                 aria-label="Managed llama.cpp settings"
               >
                 <GgufAdvancedSettings
