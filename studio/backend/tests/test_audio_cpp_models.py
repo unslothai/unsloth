@@ -91,6 +91,22 @@ def test_windows_refuses_a_model_path_the_server_cannot_open(tmp_path, monkeypat
         audio_cpp_files.materialize(m, hub_cache = root)
 
 
+def test_the_runtime_preflight_refuses_an_overlong_windows_path(tmp_path, monkeypatch):
+    from core.inference import audio_cpp_server as srv
+
+    root, _snap = _snapshot(tmp_path)
+    m = lookup("audiocpp-canary-180m-flash")
+    monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
+    binary = str(tmp_path / srv.BINARY_NAME)
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")
+    assert srv.model_runtime_problem(m, binary) is None
+    # Refused before download or eviction, not first at materialize.
+    monkeypatch.setattr(audio_cpp_files, "_WINDOWS_MAX_MODEL_PATH", 10)
+    assert "shorter" in srv.model_runtime_problem(m, binary)
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "linux")
+    assert srv.model_runtime_problem(m, binary) is None
+
+
 def test_farm_layout_keeps_package_subfolders(tmp_path, monkeypatch):
     root, snap = _snapshot(tmp_path)
     m = lookup("audiocpp-pocket-tts-en")

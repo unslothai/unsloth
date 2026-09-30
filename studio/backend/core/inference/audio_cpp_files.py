@@ -152,13 +152,10 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
         _unlink_link(farm_root)
     farm = farm_root / model.key
     served = farm / _package_relative(model, model.gguf_file)
-    if windows and len(str(served)) > _WINDOWS_MAX_MODEL_PATH:
+    problem = served_path_problem(model, hub_cache = root)
+    if problem:
         from core.inference.audio_cpp_server import AudioCppUnavailableError
-        raise AudioCppUnavailableError(
-            f"The path audio.cpp would load {model.display_name} from is {len(str(served))} characters, "
-            f"over the {_WINDOWS_MAX_MODEL_PATH} Windows allows. Move the Hugging Face cache to a shorter "
-            "path in Settings and download the model again."
-        )
+        raise AudioCppUnavailableError(problem)
     for src in files:
         rel = _package_relative(model, str(src.relative_to(snapshot)).replace("\\", "/"))
         dst = farm / rel
@@ -194,6 +191,22 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
         finally:
             tmp.unlink(missing_ok = True)
     return str(served)
+
+
+def served_path_problem(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> Optional[str]:
+    """Why the Windows server could not open the path ``materialize`` would hand it, or None. Checked
+    before any download or eviction, so a refused model costs nothing."""
+    if sys.platform != "win32":
+        return None
+    root = hub_cache if hub_cache is not None else _hub_cache()
+    served = _link_farm_root(root) / model.key / _package_relative(model, model.gguf_file)
+    if len(str(served)) <= _WINDOWS_MAX_MODEL_PATH:
+        return None
+    return (
+        f"The path audio.cpp would load {model.display_name} from is {len(str(served))} characters, "
+        f"over the {_WINDOWS_MAX_MODEL_PATH} Windows allows. Move the Hugging Face cache to a shorter "
+        "path in Settings and download the model again."
+    )
 
 
 def _package_relative(model: AudioCppModel, repo_path: str) -> Path:

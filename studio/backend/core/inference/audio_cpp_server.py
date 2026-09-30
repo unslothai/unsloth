@@ -191,7 +191,12 @@ def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) ->
             f"{model.display_name} needs an audio.cpp build with eSpeak-ng, and the installed runtime "
             "has none. Run `unsloth studio update` to install the Unsloth audio.cpp bundle."
         )
-    return None
+    from core.inference.audio_cpp_files import served_path_problem
+
+    try:
+        return served_path_problem(model)
+    except Exception:  # noqa: BLE001 - an unreadable cache setting is materialize's to report
+        return None
 
 
 def select_backend(binary: str, force_cpu: bool) -> str:
