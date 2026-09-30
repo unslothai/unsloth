@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
+    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -120,6 +120,25 @@ assert_eq "Python 3.12 keeps the old window" "torch>=2.4,<2.12.0" "$_PRESERVE_TO
 _stub_python 3.13
 assert_eq "legacy layout records its torch before migrating" "yes" \
     "$(grep -q '"\$STUDIO_HOME"/.venv/lib/python\*/site-packages/torch/version.py' "$INSTALL_SH" && echo yes)"
+
+echo "=== a home with any earlier environment is an existing install ==="
+# install.sh's own detection block; the legacy branches that run an interpreter are not reached here.
+_DETECT_BLOCK=$(awk '/^_EXISTING_INSTALL=false$/{p=1} p&&/^if \[ "\$SKIP_TORCH" = true \] && \[ "\$MAC_INTEL" = true \]/{exit} p' "$INSTALL_SH")
+assert_eq "detection block found in install.sh" "yes" "$(printf '%s' "$_DETECT_BLOCK" | grep -q _EXISTING_INSTALL=true && echo yes)"
+_detect() (  # $1 home; prints existing flag and recorded torch
+    STUDIO_HOME="$1"; VENV_DIR="$1/unsloth_studio"; _STUDIO_HOME_REDIRECT=""; SKIP_TORCH=false
+    eval "$_DETECT_BLOCK"
+    echo "$_EXISTING_INSTALL $_PREV_TORCH_VER"
+)
+_H=$(mktemp -d)
+assert_eq "empty home is new" "false " "$(_detect "$_H/empty")"
+mkdir -p "$_H/dangling/.venv/bin" "$_H/dangling/.venv/lib/python3.13/site-packages/torch"
+ln -s /nonexistent/python3 "$_H/dangling/.venv/bin/python"
+echo "__version__ = '2.11.0+cu130'" > "$_H/dangling/.venv/lib/python3.13/site-packages/torch/version.py"
+assert_eq "legacy .venv with a dangling python keeps its torch" "true 2.11.0" "$(_detect "$_H/dangling" | sed 's/+.*//')"
+mkdir -p "$_H/nopython/.venv/lib"
+assert_eq "legacy .venv without python or torch is still existing" "true " "$(_detect "$_H/nopython")"
+rm -rf "${_H:?}"
 
 echo "=== preservation window keeps every existing 2.4-2.14 release ==="
 PRESERVE='torch>=2.4,<2.15.0'
