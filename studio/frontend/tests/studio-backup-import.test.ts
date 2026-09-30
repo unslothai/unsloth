@@ -272,7 +272,7 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
     ],
     messages: [
       { id: "a1", threadId: "a", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
-      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5 },
+      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5, metadata: { note: "kept", createdAtEstimated: false } },
       { id: "b1", threadId: "b", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
       { id: "orphan", threadId: "gone", role: "user", content: [{ type: "text", text: "lost" }], createdAt: 5 },
     ],
@@ -286,6 +286,8 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
   const left = messages.get(threads.find(({ title }) => title === "Left")?.id ?? "") as MessageRecord[];
   assert.deepEqual(left.map(({ role }) => role), ["user", "assistant"]);
   assert.deepEqual(left.map(({ createdAt }) => createdAt), [5, 6]);
+  assert.notEqual(left[0].metadata?.createdAtEstimated, true);
+  assert.deepEqual(left[1].metadata, { note: "kept", createdAtEstimated: true });
   assert.ok(left.every((record) => !("parentId" in record)));
 });
 
@@ -668,4 +670,17 @@ test("a message whose content was stored as a plain string keeps its text", asyn
     // becoming a blank bubble.
     [],
   ]);
+});
+
+test("backup import preserves estimated-time provenance and marks missing dates", async () => {
+  const data = backup();
+  delete (data.messages[0] as Partial<MessageRecord>).createdAt;
+  data.messages[1].metadata = { createdAtEstimated: true };
+  const { module, messages } = harness();
+  await module.importConversationsFromSource(sourceOf("backup.json", data));
+  const restored = [...messages.values()].flat();
+  const byText = (text: string) => restored.find(({ content }) => (content[0] as { text: string }).text === text);
+  assert.equal(byText("Where to?")?.metadata?.createdAtEstimated, true);
+  assert.equal(byText("Lisbon")?.metadata?.createdAtEstimated, true);
+  assert.notEqual(byText("Porto")?.metadata?.createdAtEstimated, true);
 });

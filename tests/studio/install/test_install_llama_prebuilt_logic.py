@@ -4340,7 +4340,7 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: asset_url},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -4375,15 +4375,16 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     assert target.stat().st_mode & 0o777 == 0o755
 
 
-def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):
-    asset_name = "llama-diffusion-gemma-visual-server-attacker-linux"
+def test_diffusion_visual_server_skips_when_the_manifest_names_no_visual_server(
+    monkeypatch, tmp_path: Path
+):
     verified_calls: list[str] = []
     raw_calls: list[str] = []
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: "https://example.test/" + asset_name},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):

@@ -30,7 +30,7 @@ import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
@@ -1176,7 +1176,7 @@ export function GgufDownloadCard({
             className="hub-action-btn ml-1 text-amber-700 dark:text-amber-300"
           >
             <HugeiconsIcon
-              icon={ArrowReloadHorizontalIcon}
+              icon={Refresh01Icon}
               strokeWidth={1.75}
             />
             Update

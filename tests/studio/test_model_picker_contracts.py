@@ -425,9 +425,10 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
     assert "closeButton: true" in model_load
     assert "icon: createLoadingToastIcon()" in model_load
     assert "onDismiss:" in model_load
-    assert "description: undefined" in model_load
+    # A plain success clears the loading description and lasts 2 s; only a layer split says more.
+    assert "description: offloadNotice?.description" in model_load
     assert "icon: undefined" in model_load
-    assert "duration: 2000" in model_load
+    assert "duration: offloadNotice ? 8000 : 2000" in model_load
 
     toast_lib = _read("lib/toast.ts")
     assert "createElement(Spinner" in toast_lib
@@ -1520,6 +1521,71 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         "selectedGpuIndexKind: undefined",
     ):
         assert field in page
+
+
+def _save_button_gate():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
+    return save_button.split("disabled={", 1)[1].split("}", 1)[0]
+
+
+def test_save_settings_waits_for_gguf_classification():
+    """Save without load (#10216) must wait for classification, or it persists (locally and to
+    the API override) settings the diffusion sanitizer would strip."""
+    gate = _save_button_gate()
+    assert "stagedMetadataPending" in gate, gate
+
+
+def test_save_settings_waits_for_the_vram_budget_to_settle():
+    """A Save during a budget PUT would toast "Settings saved." while the in-flight load
+    carries the config captured before the click."""
+    gate = _save_button_gate()
+    assert "budgetSettling" in gate, gate
+
+
+def test_forget_settings_is_not_locked_by_unloadable_extra_args():
+    """Forget only deletes, so invalid saved llama args must not lock it: the args gates
+    apply to a save only."""
+    gate = " ".join(_save_button_gate().split())
+    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
+    assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
+
+
+def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
+    """A footer that wraps on demand moved Load ~30px between mousedown and mouseup when the
+    blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    before = src.split("<Checkbox id={rememberId}", 1)[0]
+    footer = before.rsplit("<div", 2)[1]
+    assert "flex-wrap" not in footer, footer[:200]
+    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
+
+
+def test_save_settings_is_not_rendered_when_it_could_do_nothing():
+    """A never-configured model must not show a dead "Forget settings" (#10216)."""
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    before = src.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[0]
+    guard = "!persistenceOnly && (remember || savedRemember) && ("
+    assert guard in before, before[-160:]
+    assert "</Button>" not in before.rsplit(guard, 1)[1]
+
+
+def test_save_settings_reflects_the_context_it_pinned():
+    """Save stays on the page, so a pinned context must show; a forget must not pin one."""
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    handler = src.split("const handleSave = () => {", 1)[1].split("const handleRun", 1)[0]
+    assert (
+        "if ( remember && effectiveRuntimeConfig.customContextLength !== config.customContextLength"
+        in handler
+    )
+    assert (
+        "setConfig((current) => ({ ...current, customContextLength: "
+        "effectiveRuntimeConfig.customContextLength, }));" in handler
+    )
+    # update() re-marks the draft edited right after persistConfig cleared it, and an edited
+    # draft refuses newer server settings on the next hydration.
+    assert "update(" not in handler
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():
@@ -2862,11 +2928,11 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if ( !saveFailed && (target.apiLoadable ?? target.isGguf) && !nativePathToken ) "
+        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
         "{ syncModelOverride(" in src
     )
     # The local save is not behind the same gate.
-    assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+    assert "const saved = remember ? savePerModelConfig(" in src
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
@@ -2874,7 +2940,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken ) { syncModelOverride(" in page
+    assert "&& !nativePathToken) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
@@ -2939,9 +3005,9 @@ def test_reasoning_resets_reach_the_server_without_making_backfill_destructive()
 
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "baseline.reasoningBudget !== -1" in page
-    assert "normalizedRuntimeConfig.reasoningBudget === -1" in page
+    assert "normalized.reasoningBudget === -1" in page
     assert 'baseline.reasoningBudgetMessage !== ""' in page
-    assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
+    assert 'normalized.reasoningBudgetMessage === ""' in page
 
 
 def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
@@ -3148,14 +3214,14 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
     Speculative Decoding "auto", which canonicalizes to null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );" in src
-    )
-    assert "const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);" in src
+    # Load and Save (#10216) both go through persistConfig.
+    assert "const normalized = normalizePerModelConfig(next);" in src
+    assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
-    assert "target.ggufVariant, normalizedRuntimeConfig, evicted," in src
-    assert "remember ? normalizedRuntimeConfig : null," in src
+    assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src
+    assert "remember ? normalized : null," in src
     assert "isDefaultConfig(effectiveRuntimeConfig)" not in src
+    assert "isDefaultConfig(next)" not in src
 
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function normalizePerModelConfig(" in store
@@ -3271,7 +3337,7 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     assert "!isModelConfigDraftEdited(draftKey) &&" in page
     assert "markModelConfigDraftEdited(draftKey)" in page
     # Only once the write landed, or the next read replaces values still on screen.
-    assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
+    assert re.search(r"if \(saved\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
     # An unticked Remember is a pending Forget the read's own guard would pass and re-tick.
     assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
     # A peer that fixed the text lifts this editor's retained refusal.
