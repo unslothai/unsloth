@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""DeepSeek-V4.1 (community transformers port) must train with non-reentrant gradient checkpointing: its
-CSA2 source layers publish compressed KV that later layers consume, and reentrant checkpointing's no_grad
-first pass drops those cross-layer gradients (the port raises on use_reentrant=True)."""
+"""DeepSeek-V4.1 must use non-reentrant gradient checkpointing (cross-layer KV grads)."""
 
 import json
 import os
@@ -87,7 +85,6 @@ def test_deepseek_v41_forces_non_reentrant(tmp_path):
 
 
 def test_other_models_keep_reentrant(tmp_path):
-    # Single process: the default stays reentrant (the offloaded Unsloth checkpoint) for other models.
     out = _run("llama", tmp_path)
     assert out["use_reentrant"] == ["True"], out
     assert out["layer0_grad"], out

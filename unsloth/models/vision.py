@@ -2433,7 +2433,6 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-# Model types (prefix match) that need non-reentrant gradient checkpointing, see post_patch_model.
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
@@ -4142,9 +4141,7 @@ class FastBaseModel:
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
-        # Models whose layers publish tensors that LATER layers consume (DeepSeek-V4.1's CSA2 shared
-        # compressed KV / indexer keys) lose those cross-layer gradients under reentrant checkpointing,
-        # whose first pass runs under no_grad; the port refuses use_reentrant=True outright.
+        # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
         if _force_non_reentrant:
