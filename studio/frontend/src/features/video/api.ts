@@ -20,6 +20,8 @@ export interface VideoResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 // Per-family generation defaults + shape constraints, from status.defaults when loaded.
@@ -67,8 +69,16 @@ export interface VideoStatus {
   speed_optims: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  transformer_cache_stats?: {
+    mode?: string;
+    every?: number;
+    planned_skips?: number;
+    stats?: { calls?: number; computed?: number; skipped?: number };
+  } | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
+  transformer_quant_backend_reason?: string | null;
   // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
   text_encoder_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
@@ -136,7 +146,7 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16).
   // GGUF / single-file checkpoints carry their own.
@@ -222,6 +232,8 @@ export interface GalleryVideo {
   // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
   pinned?: boolean;
   archived?: boolean;
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
+  order_at?: number | null;
 }
 
 // Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
@@ -332,6 +344,31 @@ export async function getVideoGallery(
 }
 
 /** Pin/unpin or archive/restore one clip; omitted flags are left alone. Returns the new record. */
+/** Move one video to just after `afterId` (null = front). The server also decides the pin. */
+export async function moveGalleryVideo(id: string, afterId: string | null): Promise<GalleryVideo> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    }),
+  );
+}
+
+/** Copy one video into a chat project's folder. */
+export async function addGalleryVideoToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/project`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  );
+}
+
 export async function setGalleryVideoFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

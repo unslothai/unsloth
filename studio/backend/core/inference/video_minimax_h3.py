@@ -1103,6 +1103,8 @@ class MiniMaxH3NativeRuntime:
     # two reads taken after it agree with each other while agreeing with nothing that was ever checked. None means the
     # identity could not be taken, which reads as "cannot vouch" rather than "unchanged".
     binary_identity: Optional[tuple[int, int]] = None
+    # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
+    selected_card: Optional[str] = None
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

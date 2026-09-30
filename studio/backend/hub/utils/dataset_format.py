@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from utils.datasets.format_detection import detect_dataset_format
+
 
 def _first_row(dataset) -> Optional[dict]:
     try:
@@ -24,66 +26,6 @@ def _column_names(dataset, sample: Optional[dict] = None) -> list[str]:
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     return re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE) is not None
-
-
-def _unknown_dataset_format(
-    chat_column: Optional[str] = None, sample_keys: Optional[list[str]] = None
-) -> dict:
-    return {
-        "format": "unknown",
-        "chat_column": chat_column,
-        "needs_standardization": None,
-        "sample_keys": sample_keys or [],
-    }
-
-
-def detect_dataset_format(dataset) -> dict:
-    sample = _first_row(dataset)
-    if sample is None:
-        return _unknown_dataset_format()
-    column_names = set(sample.keys())
-    if {"instruction", "output"}.issubset(column_names):
-        return {
-            "format": "alpaca",
-            "chat_column": None,
-            "needs_standardization": False,
-            "sample_keys": [],
-        }
-
-    chat_column = None
-    if "messages" in column_names:
-        chat_column = "messages"
-    elif "conversations" in column_names:
-        chat_column = "conversations"
-    elif "texts" in column_names:
-        chat_column = "texts"
-
-    if not chat_column:
-        return _unknown_dataset_format()
-
-    chat_data = sample.get(chat_column)
-    if not isinstance(chat_data, (list, tuple)) or not chat_data:
-        return _unknown_dataset_format(chat_column)
-    first_msg = chat_data[0]
-    if not isinstance(first_msg, dict):
-        return _unknown_dataset_format(chat_column)
-    msg_keys = set(first_msg.keys())
-    sample_keys = [str(key) for key in msg_keys]
-    if "from" in msg_keys or "value" in msg_keys:
-        return {
-            "format": "sharegpt",
-            "chat_column": chat_column,
-            "needs_standardization": True,
-            "sample_keys": sample_keys,
-        }
-    if "role" in msg_keys and "content" in msg_keys:
-        return {
-            "format": "chatml",
-            "chat_column": chat_column,
-            "needs_standardization": False,
-            "sample_keys": sample_keys,
-        }
-    return _unknown_dataset_format(chat_column, sample_keys)
 
 
 def detect_custom_format_heuristic(dataset):
@@ -131,6 +73,8 @@ def detect_custom_format_heuristic(dataset):
         "template",
         "task",
     ]
+    # Only pair today: "text" inside "context".
+    role_words = assistant_words + user_words + system_words
     metadata_exact_match = {
         "id",
         "idx",
@@ -162,10 +106,24 @@ def detect_custom_format_heuristic(dataset):
         "completion": 60,
     }
 
-    def has_keyword(col_name, keywords):
+    def has_keyword(
+        col_name,
+        keywords,
+        apply_shadowing = True,
+    ):
         col_lower = col_name.lower()
         col_normalized = col_lower.replace("_", "").replace("-", "").replace(" ", "")
-        return any(keyword in col_lower or keyword in col_normalized for keyword in keywords)
+        for keyword in keywords:
+            if keyword in col_lower or keyword in col_normalized:
+                if not apply_shadowing:
+                    return True
+                shadowed = any(
+                    keyword != other and keyword in other and other in col_normalized
+                    for other in role_words
+                )
+                if not shadowed:
+                    return True
+        return False
 
     def is_metadata(col_name):
         col_lower = col_name.lower()
@@ -189,8 +147,14 @@ def detect_custom_format_heuristic(dataset):
         except Exception:
             return 0
 
-    def score_column(col_name, keywords, role_type, num_candidates):
-        if not has_keyword(col_name, keywords):
+    def score_column(
+        col_name,
+        keywords,
+        role_type,
+        num_candidates,
+        apply_shadowing = True,
+    ):
+        if not has_keyword(col_name, keywords, apply_shadowing = apply_shadowing):
             return 0
         score = 10
         if role_type == "user":
@@ -240,6 +204,23 @@ def detect_custom_format_heuristic(dataset):
         score = score_column(col, user_words, "user", len(user_potential))
         if score > 0:
             user_candidates.append((col, score))
+    if not user_candidates and not any(col != assistant_col for col in user_potential):
+        # has_keyword drops "context" from user_potential because "text" only matches
+        # inside it. When nothing else can hold the user turn, that column is a better
+        # user turn than an assistant-worded leftover.
+        shadowed_potential = [
+            col
+            for col in content_columns
+            if col not in user_potential and has_keyword(col, user_words, apply_shadowing = False)
+        ]
+        for col in shadowed_potential:
+            if col == assistant_col:
+                continue
+            score = score_column(
+                col, user_words, "user", len(shadowed_potential), apply_shadowing = False
+            )
+            if score > 0:
+                user_candidates.append((col, score))
     if user_candidates:
         user_candidates.sort(key = lambda item: item[1], reverse = True)
         user_col = user_candidates[0][0]
@@ -262,7 +243,7 @@ def detect_custom_format_heuristic(dataset):
             mapping[remaining_col] = "system"
         elif user_col is None:
             mapping[remaining_col] = "user"
-        else:
+        elif not has_keyword(remaining_col, assistant_words):
             mapping[remaining_col] = "system"
 
     has_user = any(role == "user" for role in mapping.values())
@@ -703,12 +684,15 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "suggested_mapping": None,
         "detected_image_column": None,
         "detected_text_column": None,
+        "chat_column": detected.get("chat_column"),
         "is_image": multimodal_info["is_image"],
         "multimodal_columns": multimodal_info.get("multimodal_columns"),
         **audio_fields,
     }
 
 
+# The aliases `standardize_data_formats` accepts. Keys are normalised: look them up
+# through `_normalize_role_alias`.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",
@@ -718,6 +702,14 @@ _ROLE_MAP = {
     "output": "assistant",
     "system": "system",
 }
+
+
+def _normalize_role_alias(role: Any) -> str:
+    """Match aliases the way the trainer does: `role.strip().lower()`, as
+    `standardize_data_formats` compares them (unslothai/unsloth-zoo#1225)."""
+    if role is None:
+        return ""
+    return str(role).strip().lower()
 
 
 def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str, Any]:
@@ -730,9 +722,11 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
             continue
         role = message.get("role") or message.get("from")
         content = message.get("content") if "content" in message else message.get("value")
+        normalized = _normalize_role_alias(role)
         messages.append(
             {
-                "role": _ROLE_MAP.get(str(role), str(role or "user")),
+                # Unknown alias shown as written; blank falls back to "user", as before.
+                "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
                 "content": "" if content is None else content,
             }
         )

@@ -8,7 +8,6 @@ import { Document, Page, pdfjs } from "react-pdf";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
-  FileTextIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "lucide-react";
@@ -23,6 +22,7 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { FileGlyph } from "@/lib/file-icon";
 import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
@@ -433,7 +433,7 @@ export function DocumentPreviewSheet() {
         <SheetHeader className="gap-1 border-b p-4">
           <div className="relative">
             <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
-              <FileTextIcon className="size-4 shrink-0" />
+              <FileGlyph className="size-4 shrink-0" />
               <span className="min-w-0 truncate">{headerName}</span>
               {headerPage != null && (
                 <span className="shrink-0 text-muted-foreground">

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The seccomp program bubblewrap installs on a sandboxed tool process.
-
-Four holes a mount namespace cannot close: AF_VSOCK (addresses a hypervisor, not
-a path), io_uring (kernel thread holds credentials captured at setup time),
-keyrings (not namespaced, inherited as a process credential), and nested user
-namespaces (bwrap's ``--disable-userns`` only exists since 0.8.0; Ubuntu 22.04
-ships 0.6.1). AF_UNIX and AF_INET stay allowed on purpose.
-"""
+"""Seccomp filter for bwrap: blocks AF_VSOCK, io_uring, keyrings and nested user namespaces; AF_UNIX/AF_INET allowed on purpose."""
 
 from __future__ import annotations
 
@@ -32,9 +25,8 @@ _USERNS_SYSCALLS = {
     "aarch64": (220, 97, 435),
     "arm64": (220, 97, 435),
 }
-_IO_URING = (425, 426, 427)  # setup, enter, register; same on both ABIs
-# machine -> (add_key, request_key, keyctl). Denied rather than joining an empty
-# session keyring, since joining needs the very syscall being taken away.
+_IO_URING = (425, 426, 427)
+# Denied rather than joining an empty keyring, since joining needs the syscall being removed.
 _KEYRING_SYSCALLS = {
     "x86_64": (248, 249, 250),
     "amd64": (248, 249, 250),
@@ -67,14 +59,10 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
         (_LOAD, 0, 0, 0),
     ]
     if block_userns:
-        # clone3() must report ENOSYS so glibc falls back to clone(), whose flags
-        # word is then checked. Other syscalls rejoin below with nr still in A.
+        # clone3() must report ENOSYS so glibc falls back to clone(), whose flags are checked.
         clone_nr, unshare_nr, clone3_nr = _USERNS_SYSCALLS[key]
         code += [
-            # unshare() is read like clone() below, on its flags: this filter
-            # exists to stop a NESTED USER NAMESPACE, and a blanket refusal also
-            # took unshare(CLONE_FS) and unshare(CLONE_FILES), which have nothing
-            # to do with that and work everywhere outside the jail.
+            # unshare() is filtered on its flags, not refused: only CLONE_NEWUSER is the target.
             (_JEQ, 0, 4, unshare_nr),
             (_LOAD, 0, 0, 16),
             (_JSET, 0, 1, _CLONE_NEWUSER),
@@ -89,15 +77,14 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
             (_LOAD, 0, 0, 0),
         ]
     if key in ("x86_64", "amd64"):
-        # x32 numbers alias the 64-bit table, so an unfiltered x32 call reaches a
-        # syscall this filter believes it inspected.
+        # x32 numbers alias the 64-bit table, so an unfiltered x32 call bypasses this filter.
         code += [(_JSET, 0, 1, _X32_SYSCALL_BIT), (_RET, 0, 0, _KILL)]
     for number in (*_IO_URING, *_KEYRING_SYSCALLS[key]):
         code += [(_JEQ, 0, 1, number), (_RET, 0, 0, _EPERM)]
     code += [
         (_JEQ, 1, 0, socket_nr),
         (_JEQ, 0, 3, socketpair_nr),
-        (_LOAD, 0, 0, 16),  # args[0]: the address family, low word
+        (_LOAD, 0, 0, 16),
         (_JEQ, 0, 1, _AF_VSOCK),
         (_RET, 0, 0, _EPERM),
         (_RET, 0, 0, _ALLOW),
@@ -111,8 +98,7 @@ def program_bytes(*, block_userns: bool = False, machine: str | None = None) -> 
 
 
 def filter_file(*, block_userns: bool = False) -> BinaryIO:
-    """Rewound because bwrap reads ``--seccomp FD`` to EOF; the caller owns it
-    until exec."""
+    """Rewound because bwrap reads ``--seccomp FD`` to EOF."""
     stream = tempfile.TemporaryFile(prefix = "unsloth-sandbox-seccomp-")
     try:
         stream.write(program_bytes(block_userns = block_userns))
