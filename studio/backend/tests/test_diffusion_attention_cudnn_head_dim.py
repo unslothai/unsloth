@@ -153,7 +153,9 @@ def test_other_backends_unknown_head_dims_and_cpu_targets_never_probe(monkeypatc
 def test_real_probe_agrees_with_a_real_pinned_attention():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device")
+        pytest.skip(
+            reason = "the probe asks a real CUDA device; the stubbed tests above cover CPU-only CI"
+        )
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
     for head_dim in (128, 256, 512):
