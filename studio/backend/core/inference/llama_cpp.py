@@ -29722,8 +29722,9 @@ class LlamaCppBackend:
                             "\n".join(self._stdout_lines[-200:])
                         ):
                             _sched_abort_seen = True
+                        # Scan the full buffer: gdb output can bury the assert.
                         _tensor_capability_crash = self._is_tensor_split_assert(
-                            _startup_output
+                            "\n".join(self._stdout_lines)
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         # No fit retry reaches it, and the rung below needs this
@@ -30287,10 +30288,16 @@ class LlamaCppBackend:
                     _ts_out = "\n".join(self._stdout_lines[-50:])
                     _proc_snap2 = self._process  # snapshot: re-reading races the teardown
                     _ts_rc = _proc_snap2.poll() if _proc_snap2 is not None else None
-                    if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
-                        LlamaCppBackend._record_tensor_split_abort(
-                            binary, model_identifier, _planned_cache_pair
-                        )
+                    if self._should_record_tensor_split_abort(
+                        _ts_rc, "\n".join(self._stdout_lines)
+                    ):
+                        # A drafter crash must not disable tensor split for drafterless loads.
+                        if not _extra_args_mtp_draft_path(
+                            _last_spawn_cmd, env = _child_spec_env(extra_args)
+                        ):
+                            LlamaCppBackend._record_tensor_split_abort(
+                                binary, model_identifier, _planned_cache_pair
+                            )
                         self._kill_process()
                         raise RuntimeError(
                             "llama-server aborted on --split-mode tensor "
