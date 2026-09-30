@@ -4168,6 +4168,16 @@ class FastBaseModel:
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
+        else:
+            # Drop the wrapper an earlier deepseek_v41 load in this process installed.
+            for _mod, _name in (
+                (torch_checkpoint, "checkpoint"),
+                (torch_checkpoint, "_old_checkpoint"),
+                (hf_modeling_utils, "checkpoint"),
+            ):
+                _orig = getattr(getattr(_mod, _name, None), "_unsloth_original", None)
+                if _orig is not None:
+                    setattr(_mod, _name, _orig)
 
         from .loader_utils import enable_composite_gradient_checkpointing
         from .remote_moe_shims import prepare_remote_moe_for_training
