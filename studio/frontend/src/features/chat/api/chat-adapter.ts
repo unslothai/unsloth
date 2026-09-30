@@ -216,7 +216,8 @@ import {
   GPU_LAYERS_AUTO,
   managedGpuMemoryFields,
   reconcilePersistedGpuIds,
-  resolveLoadedSpeculativeSettings,
+  managedKvCacheFields,
+  managedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
   resolvePreserveThinkingOnLoad,
@@ -3621,8 +3622,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          kvCacheDtype: loadResp.cache_type_kv ?? null,
-          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...managedKvCacheFields(loadResp),
           ...mlxRuntimeStateFrom(loadResp),
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
@@ -3685,7 +3685,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
-          ...resolveLoadedSpeculativeSettings(loadResp),
+          ...managedSpeculativeSettings(loadResp),
         });
       } else {
         useChatRuntimeStore.setState({
@@ -3698,8 +3698,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          kvCacheDtype: loadResp.cache_type_kv ?? null,
-          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...managedKvCacheFields(loadResp),
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
@@ -3741,7 +3740,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...loadedContextFields(loadResp),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...resolveLoadedSpeculativeSettings(loadResp),
+          ...managedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -4044,8 +4043,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          kvCacheDtype: loadResp.cache_type_kv ?? null,
-          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...managedKvCacheFields(loadResp),
           ...mlxRuntimeStateFrom(loadResp),
           // The request above omits n_parallel: a staged override would read as applied and be re-sent
           // by the next Apply.
@@ -4077,7 +4075,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: loadResp.is_local_model ?? false,
-          ...resolveLoadedSpeculativeSettings(loadResp),
+          ...managedSpeculativeSettings(loadResp),
         });
         recordLastLocalModelLoad({
           id: DEFAULT_CHAT_MODEL_REPO,

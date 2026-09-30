@@ -2123,14 +2123,32 @@ export function requestedGpuIdsFromResponse(resp: {
 
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
-// A custom llama.cpp load reports its INI's placement, which is not what the managed controls
-// asked for; adopting it carries that placement into the next managed load.
-export function managedGpuMemoryFields(
-  resp: Parameters<typeof loadedGpuMemoryFields>[0] & {
-    requested_llama_cpp_config?: { mode: string } | null;
-  },
+type LlamaCppConfigEcho = { requested_llama_cpp_config?: { mode: string } | null };
+
+export function isCustomLlamaLoad(resp: LlamaCppConfigEcho): boolean {
+  return resp.requested_llama_cpp_config?.mode === "custom";
+}
+
+// A custom llama.cpp load reports its INI's tuning, which is not what the managed controls
+// asked for; adopting it carries that tuning into the next managed load.
+export function managedKvCacheFields(
+  resp: { cache_type_kv?: string | null } & LlamaCppConfigEcho,
 ) {
-  if (resp.requested_llama_cpp_config?.mode === "custom") {
+  if (isCustomLlamaLoad(resp)) return {};
+  const kv = resp.cache_type_kv ?? null;
+  return { kvCacheDtype: kv, loadedKvCacheDtype: kv };
+}
+
+export function managedSpeculativeSettings(
+  resp: Parameters<typeof resolveLoadedSpeculativeSettings>[0] & LlamaCppConfigEcho,
+) {
+  return isCustomLlamaLoad(resp) ? {} : resolveLoadedSpeculativeSettings(resp);
+}
+
+export function managedGpuMemoryFields(
+  resp: Parameters<typeof loadedGpuMemoryFields>[0] & LlamaCppConfigEcho,
+) {
+  if (isCustomLlamaLoad(resp)) {
     return {
       ggufLayerCount: resp.n_layers ?? null,
       moeLayerCount: resp.n_moe_layers ?? null,

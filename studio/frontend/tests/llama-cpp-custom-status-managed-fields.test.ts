@@ -89,3 +89,29 @@ test("a custom load's response leaves the managed placement alone", async () => 
   assert.equal(managed.gpuMemoryMode, "manual");
   assert.equal(managed.gpuLayers, 0);
 });
+
+test("a custom load's KV cache and speculative echo leave the managed controls alone", async () => {
+  const { managedKvCacheFields, managedSpeculativeSettings } = await import(
+    "../src/features/chat/stores/chat-runtime-store.ts"
+  );
+  const resp = { cache_type_kv: "f16", speculative_type: "none", spec_draft_n_max: null };
+  assert.deepEqual(managedKvCacheFields({ ...resp, requested_llama_cpp_config: custom }), {});
+  assert.deepEqual(managedSpeculativeSettings({ ...resp, requested_llama_cpp_config: custom }), {});
+  assert.equal(managedKvCacheFields(resp).kvCacheDtype, "f16");
+
+  useChatRuntimeStore.setState({
+    modelLoading: false,
+    kvCacheDtype: null,
+    loadedKvCacheDtype: null,
+    speculativeType: "auto",
+    loadedSpeculativeType: "auto",
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: MODEL },
+  });
+  applyActiveModelStatusToStore(
+    { ...(statusFor(custom) as object), cache_type_kv: "f16", speculative_type: "none" } as never,
+    { previousCheckpoint: MODEL },
+  );
+  const s = useChatRuntimeStore.getState();
+  assert.equal(s.kvCacheDtype, null);
+  assert.equal(s.speculativeType, "auto");
+});

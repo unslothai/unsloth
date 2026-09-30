@@ -100,6 +100,8 @@ import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   managedGpuMemoryFields,
+  managedKvCacheFields,
+  managedSpeculativeSettings,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
   pinHoldsLiveEffort,
@@ -2613,11 +2615,7 @@ export function useChatModelRuntime() {
                 }
               }
             }
-            const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
-            const loadedSpec = normalizeSpeculativeType(
-              loadResponse.speculative_type,
-            );
             const committedSlots =
               ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
               (loadResponse.is_mlx ?? false)
@@ -2703,8 +2701,7 @@ export function useChatModelRuntime() {
                     codeToolsEnabled: stateBeforeUnload.codeToolsEnabled,
                   }
                 : resolveToolsEnabledOnLoad(supportsTools)),
-              kvCacheDtype: loadedKv,
-              loadedKvCacheDtype: loadedKv,
+              ...managedKvCacheFields(loadResponse),
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
@@ -2717,10 +2714,7 @@ export function useChatModelRuntime() {
               loadedVisionDisabledByUser:
                 loadResponse.vision_disabled_by_user ?? false,
               ...managedGpuMemoryFields(loadResponse),
-              speculativeType: loadedSpec,
-              loadedSpeculativeType: loadedSpec,
-              specDraftNMax: loadResponse.spec_draft_n_max ?? null,
-              loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              ...managedSpeculativeSettings(loadResponse),
               // Keep the click-time value: the echo is the resolved count, and adopting it would pin a blank
               // "server default" control.
               nParallel: committedSlots,

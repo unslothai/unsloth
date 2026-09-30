@@ -207,7 +207,8 @@ import {
   managedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
-  resolveLoadedSpeculativeSettings,
+  managedKvCacheFields,
+  managedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
@@ -1900,8 +1901,7 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
-          kvCacheDtype: resp.cache_type_kv ?? null,
-          loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          ...managedKvCacheFields(resp),
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
@@ -1978,7 +1978,7 @@ export function SharedComposer({
           // lease. Clear any prior picked file's token/expiry so the reload path never sends a stale one.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...resolveLoadedSpeculativeSettings(resp),
+          ...managedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.

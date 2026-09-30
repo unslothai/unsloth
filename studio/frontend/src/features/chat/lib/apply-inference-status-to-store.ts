@@ -468,7 +468,9 @@ export function applyActiveModelStatusToStore(
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
+    // A custom load's echo is its INI's tuning, so it moves neither.
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       (status.speculative_type !== undefined ||
         prevState.loadedSpeculativeType === null ||
         hydratingExistingModel) && {
@@ -480,6 +482,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.spec_draft_n_max !== undefined && {
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
         ...((hydratingExistingModel ||
@@ -488,6 +491,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
