@@ -47,6 +47,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   getToastOffsets,
@@ -624,12 +625,19 @@ function DesktopChromeVarsEffect({
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
     );
+    refreshWindowChromeTop();
+    // The macOS titlebar inset is divided by the zoom.
+    const stopZoom = usesNativeMacTitlebar
+      ? subscribeAppliedInterfaceZoom(refreshWindowChromeTop)
+      : null;
     return () => {
+      stopZoom?.();
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
       set("--studio-content-top-inset", null);
       set("--studio-window-chrome-top", null);
+      refreshWindowChromeTop();
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);
   return null;
