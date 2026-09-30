@@ -11207,7 +11207,11 @@ def release_chat_gpu_claim() -> bool:
 
 def _release_chat_for_zero_vram_primary() -> None:
     """A primary that holds no VRAM drops CHAT, unless a model kept alongside still holds it."""
-    from core.inference.gpu_arbiter import CHAT, release_if
+    from core.inference.gpu_arbiter import CHAT, release, release_if
+
+    if not model_slots.slots and model_slots.loading is None:
+        release(CHAT)
+        return
     release_if(CHAT, lambda: not model_slots.busy())
 
 
