@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -21,9 +23,9 @@ from core.inference.llama_cpp import (
     _ends_inside_quote,
     _quote_cut_event,
 )
-from routes.inference import _quote_cut_sse_chunk
+from routes.inference import _quote_cut_sse_chunk, produce_openai_chat_completions
 
-# Reported tails and observed Qwen3.8-27B UD-Q4_K_M reasoning/answer cuts.
+# Reported and observed Qwen3.8 cuts, plus each other opener context.
 _CUT_TAILS = [
     "Actually I need to check whether the actual file contains `",
     "that's actually the canonical Qwen behavior (keeps `",
@@ -37,6 +39,11 @@ _CUT_TAILS = [
     '"',
     "Qwen2's chat template uses `{{- '",
     'The token is:\n\n```python\n"',
+    "The special tokens that open and close each turn are **`",
+    "the tokens (`",
+    "the _`",
+    "tokens: [`",
+    '{"',
 ]
 
 # Ways finished text ends, including ones that end on a quote or backtick.
@@ -54,6 +61,7 @@ _FINISHED_TAILS = [
     "`<|im_start|>`\n`<|im_end|>`",
     "It is called a backtick, and here it is: **`**",
     "Use `x` for inline code ```",
+    'He called it "**bold**"',
     "{}",
     "",
     "   \n",
@@ -114,6 +122,18 @@ def test_the_sse_chunk_is_an_empty_chunk_carrying_the_flag():
     assert data["choices"] == []
     assert data["quote_cut"] is True
     assert data["object"] == "chat.completion.chunk"
+
+
+def test_both_gguf_streams_forward_the_flag_only_to_the_ui():
+    tree = ast.parse(inspect.getsource(produce_openai_chat_completions))
+    forwards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "_ui_events" in ast.dump(node.test)
+        and "_quote_cut_sse_chunk" in ast.dump(ast.Module(node.body, []))
+    ]
+    assert len(forwards) == 2
 
 
 def _sse(delta: dict) -> str:

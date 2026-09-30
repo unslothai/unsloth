@@ -2097,14 +2097,11 @@ def _finalize_reasoning_only_cumulative(
 
 
 def _ends_inside_quote(text: str) -> bool:
-    """Detect a trailing quote opener, unmatched on its line and preceded by whitespace.
-
-    This heuristic can also flag a deliberately displayed lone quote or backtick.
-    """
+    """Heuristic: text ends on a quote opener left unmatched on its line, or a lone quote."""
     stripped = (text or "").rstrip()
     if not stripped or stripped[-1] not in "`\"'":
         return False
-    if len(stripped) > 1 and not stripped[-2].isspace():
+    if len(stripped) > 1 and not (stripped[-2].isspace() or stripped[-2] in "*_([{"):
         return False
     last = stripped[-1]
     line = stripped.rsplit("\n", 1)[-1]
@@ -2126,10 +2123,7 @@ def _quote_cut_event(
     finish_reason: Optional[str],
     promote_reasoning_only: bool,
 ) -> Optional[dict]:
-    """Flag a possible mid-quote stop in the answer or promoted reasoning.
-
-    Excludes length limits and callers that disable reasoning promotion (Anthropic).
-    """
+    """Flag a mid-quote `stop` in the shown answer; off for Anthropic, which cannot relay it."""
     if not promote_reasoning_only or finish_reason != "stop":
         return None
     shown = answer_text if answer_text.strip() else reasoning_text
@@ -37328,7 +37322,6 @@ class LlamaCppBackend:
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
-                        # Check only after any re-prompt has finished.
                         _cut = _quote_cut_event(
                             reasoning_accum,
                             _visible,

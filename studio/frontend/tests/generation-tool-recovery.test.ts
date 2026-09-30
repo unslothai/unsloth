@@ -320,7 +320,11 @@ const executable = ts.transpileModule(scheduler, {
 async function recoverRun(
   content: unknown[],
   payloads: unknown[],
-  options: { cursor?: number; viewContent?: unknown[] } = {},
+  options: {
+    cursor?: number;
+    viewContent?: unknown[];
+    metadata?: Record<string, unknown>;
+  } = {},
 ) {
   let shown = {
     messages: [
@@ -403,6 +407,7 @@ async function recoverRun(
         generationSeq: options.cursor ?? 0,
         generationStatus: "running",
         generationSettled: false,
+        ...options.metadata,
       },
     },
     {
@@ -463,6 +468,21 @@ test("a recovered turn keeps the reasoning cut the backend reported", async () =
       { choices: [], quote_cut: true },
       { choices: [{ delta: {}, finish_reason: "stop" }] },
     ],
+  );
+  assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
+    reason: "quote_cut",
+  });
+});
+
+test("a recovery resumed past the cut keeps the stamp the producer saved", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { content: "The token is `" } }] },
+      { choices: [], quote_cut: true },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ],
+    { cursor: 2, metadata: { incomplete: { reason: "quote_cut" } } },
   );
   assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
     reason: "quote_cut",

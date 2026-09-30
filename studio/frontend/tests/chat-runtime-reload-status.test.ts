@@ -48,10 +48,11 @@ test("first-token recovery ignores role and control chunks", () => {
     [
       { choices: [{ delta: { role: "assistant" } }] },
       { context_truncated: { checkpoint: true } },
+      { choices: [], quote_cut: true },
       { choices: [], usage: { completion_tokens: 1 } },
       { choices: [{ delta: { content: "token" } }] },
     ].map(generationChunkCountsTowardTiming),
-    [true, false, false, true],
+    [true, false, false, false, true],
   );
   assert.equal(
     generationChunkHasSubstantiveDelta({

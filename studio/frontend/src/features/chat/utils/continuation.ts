@@ -135,7 +135,7 @@ const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   empty: "Try again, or pick a different model",
   // Detection is heuristic, and continuation may repeat the cut.
   quote_cut:
-    "The model may have emitted a special token while quoting it. Try again, or ask it to spell special tokens with spaces, like < |im_end|>",
+    "The model may have emitted a special token while quoting it. Write special tokens with a space inside, like < |im_end|> or < end_of_turn>, ask the model to do the same, and try again",
 };
 
 /** What to do about a turn that stopped early, or `null` when resuming is the answer. */
