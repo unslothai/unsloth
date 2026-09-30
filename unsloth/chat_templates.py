@@ -2144,6 +2144,8 @@ def get_chat_template(
     # tokenizer and remapped eos. The loader mirrors these onto the processor
     # (models/vision.py), so refresh them here or that copy goes stale.
     if _processor is not None:
+        # GGUF export unwraps the processor before it builds the Ollama Modelfile.
+        tokenizer._ollama_modelfile = ollama_modelfile
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):
