@@ -1669,7 +1669,8 @@ def _pipeline_quant_uncompilable_reason(
 def _plan_proves_resident(plan: Any) -> bool:
     """Resident AND fits; the planner also stays resident when it cannot read the card."""
     estimates = getattr(plan, "estimates", None) or {}
-    budget = estimates.get("safe_device_budget_mib")
+    # An explicit fast proves its fit against the budget it was placed with.
+    budget = estimates.get("resident_budget_mib", estimates.get("safe_device_budget_mib"))
     required = estimates.get("resident_required_mib")
     # Unified memory plans 'none' whatever the size (offload frees nothing there), so compare the two as well.
     return (
