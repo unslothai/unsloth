@@ -42,7 +42,11 @@ def _b200(free_mib):
     return DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, B200_TOTAL_MIB)
 
 
-def _plan(free_mib, transformer_mib, mode = MEMORY_MODE_FAST):
+def _plan(
+    free_mib,
+    transformer_mib,
+    mode = MEMORY_MODE_FAST,
+):
     return plan_diffusion_memory(
         target = _target(),
         device_memory = _b200(free_mib),
@@ -169,7 +173,12 @@ def _plan_inputs_for_single_file_load(monkeypatch, tmp_path, speed_mode, free_mi
     def capture(**kw):
         plan = real(**kw)
         seen.append(
-            (kw["model_dense_mib"], kw["companion_dense_mib"], kw["requested_mode"], plan.offload_policy)
+            (
+                kw["model_dense_mib"],
+                kw["companion_dense_mib"],
+                kw["requested_mode"],
+                plan.offload_policy,
+            )
         )
         raise _Planned()
 
@@ -187,7 +196,9 @@ def _plan_inputs_for_single_file_load(monkeypatch, tmp_path, speed_mode, free_mi
 
 
 @pytest.mark.parametrize("speed_mode", [None, "eager", "max"])
-def test_ltx23_single_file_prices_the_dit_once_and_stays_resident(monkeypatch, tmp_path, speed_mode):
+def test_ltx23_single_file_prices_the_dit_once_and_stays_resident(
+    monkeypatch, tmp_path, speed_mode
+):
     dense, companions, mode, policy = _plan_inputs_for_single_file_load(
         monkeypatch, tmp_path, speed_mode, TENANT_FREE_MIB
     )
