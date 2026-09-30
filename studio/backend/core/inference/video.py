@@ -4788,8 +4788,7 @@ class VideoBackend:
             else:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
                 if fam.name == "ltx-2" and transformer_mib is not None:
-                    # An LTX single file also carries the VAE, audio VAE, vocoder and connectors (3.8 GiB on 2.3), which
-                    # the family table already budgets as companions below: price the DiT's own tensors only.
+                    # The file also bundles VAE / audio VAE / vocoder / connectors, already priced as companions.
                     dit_mib = safetensors_prefix_mib(str(checkpoint_path), "model.diffusion_model.")
                     if dit_mib is not None:
                         transformer_mib = min(transformer_mib, dit_mib)

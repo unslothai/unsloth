@@ -807,9 +807,7 @@ def file_size_mib(path: Any) -> Optional[int]:
 
 
 def safetensors_prefix_mib(path: Any, prefix: str) -> Optional[int]:
-    """MiB held by the tensors named ``prefix*`` in a safetensors file, read from its header alone.
-
-    None when the header is unreadable or no tensor matches, so a caller keeps its whole-file figure."""
+    """MiB of the ``prefix*`` tensors, from the safetensors header alone; None if unreadable or unmatched."""
     import json
     import struct
 
@@ -910,11 +908,8 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
 
 
 def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
-    """The budget an explicit ``fast`` is held to: free memory minus HALF the standard reserve (never under 2 GiB).
-
-    ``fast`` is the caller choosing resident placement, so it falls back to offload only when resident would not
-    fit, not when it merely leaves less than ``auto``'s headroom for other tenants. On a 183 GB card the full reserve
-    is 18 GB, which sent a 22B LTX-2.3 load (72 GB peak) with 89 GB free to streamed offload at 5-8x the step time."""
+    """Free memory minus half the standard reserve (min 2 GiB): an explicit ``fast`` offloads only when resident
+    would not fit, not to keep ``auto``'s headroom for other tenants."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An explicit ``fast`` LTX-2.3 single-file load stays resident when it fits, whatever the speed mode.
-
-Measured on a B200 (183 GB): the 22B distilled single file peaks at 72 GiB resident at its 121-frame default. With
-89 GB free the planner priced it at 80.3 GB (the file's own VAE / audio VAE / vocoder / connectors counted on top of
-the family table's companions) against free minus an 18 GB reserve, and streamed the DiT at 5-8x the step time."""
+"""An explicit ``fast`` LTX-2.3 single-file load stays resident when it fits, whatever the speed mode."""
 
 import json
 import struct
