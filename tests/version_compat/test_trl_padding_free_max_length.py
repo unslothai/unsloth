@@ -115,11 +115,7 @@ def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
-        # Neither dtype kwarg is safe across the declared transformers window: `dtype=` is
-        # rejected at the 4.52.4 floor (from_pretrained forwards it into the model __init__,
-        # which raises TypeError), and `torch_dtype=` spans the window but is deprecated from
-        # 4.57.6 on. Load with neither and cast after, which needs no probe and no branch. The
-        # model is tiny and CPU-only, so the intermediate costs nothing.
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6. Cast after.
         tok = AutoTokenizer.from_pretrained(_MODEL)
         model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:
@@ -709,11 +705,7 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
     from datasets import Dataset
 
     config_cls = _pristine_sft_config_cls()
-    # A precondition, not a result: the regression only exists on a TRL that DROPPED
-    # max_seq_length, and trl 0.18.2 (the declared floor) still declares it. Asserting it
-    # made the floor lane red for the absence of a scenario rather than for a defect, which
-    # is the same mistake as asserting the hub is reachable. Skip states that plainly, and
-    # the negative control below still fails if the copy itself regresses.
+    # Precondition: only a TRL that dropped max_seq_length has the regression.
     if hasattr(config_cls(output_dir = str(tmp_path)), "max_seq_length"):
         pytest.skip(
             "this TRL still declares max_seq_length, so the regression it guards cannot "

@@ -30,10 +30,7 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Newest transformers the matrix was run against; moving it means re-running the sweep first.
 TESTED_CEILING = Version("5.17.0")
 
-# NOT 4.51.3, which never worked: peft declares no transformers floor of its own, and peft
-# 0.18.0 imports `GradientCheckpointingLayer` from `transformers.modeling_layers` (first present
-# in 4.52.0), so this bound is all that stops a clean resolve raising ModuleNotFoundError at
-# `import unsloth`. 4.52.4 rather than 4.52.0 because 4.52.0-4.52.3 are rejected below.
+# Not 4.51.3: peft 0.18.0 imports GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 are rejected below.
 TESTED_FLOOR = Version("4.52.4")
 
 # Tested and rejected; a specifier rewrite that drops one silently re-admits a broken release.
@@ -53,19 +50,14 @@ REJECTED = (
     "5.1.0",
 )
 
-# Named rather than generated, so the test still means something after the ceiling moves.
 NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
 
-# Lanes deliberately NOT on the published cap, or "lower" reads as "forgotten". Keyed on
-# (workflow, exact requirement), never the workflow alone: a filename-level exemption blinds the
-# scan to every OTHER requirement in that file. Empty on purpose; a placeholder pre-authorises.
+# Keyed on (workflow, exact requirement), never the workflow alone. Empty on purpose.
 PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 
 # pip intersects our window with the zoo's, so the zoo's ceiling decides what resolves.
 ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
 
-# No longer deferred: 2026.9.7 is published and declares `transformers<=5.17.0` off Apple
-# Silicon, so the gate below runs and the lift is delivered rather than advertised.
 ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = Version("2026.9.7")
 
 # CPU lanes must admit what the zoo's torch bound admits, or they test a torch nobody gets.
@@ -341,7 +333,6 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
     offenders = {}
     for path in sorted(WORKFLOWS.glob("*.yml")):
         for raw, req in _workflow_transformers_specs(path):
-            # An exact pin is a deliberate point in the range, not a cap that drifted.
             if any(spec.operator == "==" for spec in req.specifier):
                 continue
             if ceiling in req.specifier:
@@ -483,7 +474,6 @@ def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
     assert set(module._ALWAYS).issubset(
         module.TRANSFORMERS_TAGS
     ), "a PyPI outage dropped a load-bearing tag from the matrix"
-    # The frozen list is still the body of it, so the outage does not shrink coverage.
     assert set(module._TAGS_FALLBACK).issubset(module.TRANSFORMERS_TAGS)
     assert module.TRANSFORMERS_TAGS[-1] == "main"
 
@@ -506,7 +496,6 @@ def test_the_outage_fallback_reaches_the_declared_floor() -> None:
         f"under a PyPI outage the oldest tag checked is {lowest}, above the declared "
         f"floor {declared}, so every release between them goes unchecked while CI is green"
     )
-    # Every supported minor below the old 4.57.6 start, not just the floor itself.
     minors = {module._sort_key(tag)[:2] for tag in concrete}
     missing = [m for m in ((4, 52), (4, 53), (4, 54), (4, 55), (4, 56)) if m not in minors]
     assert not missing, f"the outage fallback covers no tag for supported minors {missing}"
@@ -552,7 +541,6 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
 
     published = {
         "5.17.0": [{"yanked": False}],
-        # The patch that has not shipped yet, which is what evicts the ceiling.
         "5.17.1": [{"yanked": False}],
     }
 
@@ -598,7 +586,6 @@ def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> No
     first = _matrix_module(succeeds)
     assert cache.is_file(), "the resolved matrix was not published for the other workers"
 
-    # A worker whose own read fails must still collect what the first published.
     second = _matrix_module(refuses)
     assert (
         second.TRANSFORMERS_TAGS == first.TRANSFORMERS_TAGS
@@ -646,7 +633,6 @@ def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
     assert "v5.10.1" in module.TRANSFORMERS_TAGS, "a later patch evicted the pinned 5.10.1"
     assert "v5.15.1" in module.TRANSFORMERS_TAGS
 
-    # The pins this repo names as newly admitted are the ones that must survive eviction.
     for version in ("5.10.1", "5.15.1"):
         assert (
             "v" + version in module._ALWAYS
@@ -671,7 +657,6 @@ def test_an_import_lane_pins_the_declared_ceiling() -> None:
         f"'transformers=={TESTED_CEILING}'" in pins
     ), f"the ceiling lane does not pin transformers=={TESTED_CEILING}; it reads {pins}"
 
-    # The canary is the lane allowed to resolve outside the window, and it is the only one.
     assert lanes["latest"].get("continue_on_error") is True
     for slug in ("floor", "ceiling"):
         assert (
@@ -719,7 +704,6 @@ def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> 
     import urllib.error
 
     cache = tmp_path / "published.json"
-    # What a stale or foreign writer can leave behind: a list with none of the anchors.
     cache.write_text(_json.dumps(["v5.17.0"]), encoding = "utf-8")
     monkeypatch.setenv("PYTEST_TRANSFORMERS_MATRIX_FILE", str(cache))
 
@@ -732,7 +716,6 @@ def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> 
         module.TRANSFORMERS_TAGS
     ), "the published matrix was returned without its anchors"
     assert module._declared_ceiling_tag()[0] in module.TRANSFORMERS_TAGS
-    # What the file did carry is still honoured, so sharing still does its job.
     assert "v5.17.0" in module.TRANSFORMERS_TAGS
 
 
@@ -751,7 +734,6 @@ def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
 
     for release, tag in module._TAG_OVERRIDES.items():
         assert module._TAG_OVERRIDES.get(release) == tag
-        # The derivation has to consult the same table the matrix does.
         assert "_TAG_OVERRIDES" in inspect.getsource(
             module._declared_ceiling_tag
         ), "the ceiling anchor is built as 'v' + version and ignores the override table"
@@ -778,8 +760,7 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
     if not released:
         return None
 
-    # Whole SpecifierSets, not a bare ceiling Version: `<5.17.0` and `<=5.17.0` name the same
-    # number and differ, and collapsing them expired the deferral on a zoo that cannot resolve us.
+    # Whole SpecifierSets: `<5.17.0` and `<=5.17.0` name the same number but differ.
     windows = []
     for raw in info.get("requires_dist") or []:
         try:
@@ -810,7 +791,6 @@ def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
 
     zoo_version, zoo_windows = published
     declared = _ceiling(_declared_window())
-    # Membership, not a number comparison: `<5.17.0` cannot resolve our ceiling, `<=5.17.0` can.
     covering = [str(window) for window in zoo_windows if window.contains(declared)]
     assert not covering, (
         f"unsloth_zoo {zoo_version} is published and admits transformers {declared} "

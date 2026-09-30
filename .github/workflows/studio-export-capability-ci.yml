@@ -90,16 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows only. Every test in this file goes through `_patch()`, which
-        # monkeypatches `_has_torch`, `get_device` and `is_apple_silicon`, so nothing in it
-        # touches Metal, MLX or any Apple binary and a real Mac proved nothing Linux did
-        # not. The ubuntu leg went for the same reason: studio-backend-ci.yml already runs
-        # this file on ubuntu-latest (it is not in that job's --ignore list), and the
-        # import-safety test installs its own `builtins.__import__` blocker and drops
-        # preloaded torch/unsloth from sys.modules, so it is honest inside a fully
-        # installed environment too. Windows stays because nothing else in CI runs this
-        # file there and `_has_torch`'s import probe is the per-OS behaviour this job
-        # exists for.
+        # Windows only: tests are fully monkeypatched, and studio-backend-ci.yml already runs them on Linux.
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20

@@ -16,10 +16,7 @@ import re
 
 import pytest
 
-# Guarded for the reason its sibling gives: `import unsloth` raises its own ImportError when
-# torch is absent, and a bare module-scope import makes that a COLLECTION ERROR that reds the
-# Windows and macOS legs. `pytest.importorskip` does not help, since it re-raises an ImportError
-# the module body raised itself.
+# Guarded import, as in the sibling floor test.
 try:
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
 except ImportError as exc:
@@ -28,8 +25,7 @@ except ImportError as exc:
 
 ANCHOR = 'batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size'
 
-# The three binding shapes, each trimmed to the lines the rewrite anchors on. `_kind` is echoed
-# back by the compiled function so a test cannot pass by silently running the wrong arm.
+# `_kind` is echoed so a test cannot pass on the wrong arm.
 _FLOOR = f"""
     def _generate_and_score_completions(self, inputs):
         mode = "train"
@@ -91,8 +87,6 @@ def _run(source: str, inputs: dict):
         "_generate_and_score_completions",
         source,
     )
-    # The rewriter also injects calls to helpers rl.py supplies at module scope. Only the
-    # left-pad probe is under test here, so the rest are no-ops that pass their input through.
     namespace = {
         "torch": pytest.importorskip("torch"),
         "calculate_pad_tokens_in_prompt": lambda ids, keep, pad: _sentinel_tensor(),

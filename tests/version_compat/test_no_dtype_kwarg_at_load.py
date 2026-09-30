@@ -62,8 +62,6 @@ def test_no_version_compat_test_names_a_dtype_kwarg_at_load() -> None:
         ("M.from_pretrained(name, torch_dtype = torch.float32)", [(1, "torch_dtype")]),
         ("M.from_pretrained(name).to(torch.float32)", []),
         ("M.from_pretrained(name)", []),
-        # Not a load: the ban is about what from_pretrained is asked to do, and a dtype
-        # kwarg elsewhere is ordinary.
         ("torch.zeros(4, dtype = torch.float32)", []),
     ],
 )

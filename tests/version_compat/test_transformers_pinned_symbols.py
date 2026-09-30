@@ -23,8 +23,7 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# READ from pyproject, not repeated: a hardcoded 4.57.6 stayed put when the floor moved to
-# 4.52.4, so every 4.52-4.56 release was discarded and the matrix went green regardless.
+# Read from pyproject: a hardcoded floor went stale and silently dropped 4.52-4.56.
 _FLOOR_RE = re.compile(r"^\s*\"transformers[^\"]*?>=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 _FLOOR_FALLBACK = (4, 52, 4)
 
@@ -39,22 +38,17 @@ def _declared_floor() -> tuple[int, ...]:
         return _FLOOR_FALLBACK
     if not found:
         return _FLOOR_FALLBACK
-    # The lowest, so a marker-gated half cannot raise it and hide releases the other admits.
     return min(tuple(int(part) for part in v.split(".")) for v in found)
 
 
 _FLOOR = _declared_floor()
 
-# Always present whatever PyPI says: 4.57.6 is the floor, 5.5.0 the Apple Silicon cap, and
-# 5.16.0 first required tokenizers>=0.23.1, which broke that install (test_transformers_tokenizers_pair).
+# 4.57.6 old floor, 5.5.0 the Apple Silicon cap, 5.16.0 the tokenizers>=0.23.1 break.
 _ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
 
-# Exact pins real users run: notebooks pin 5.10.1 and 5.15.x. One tag per minor would replace
-# 5.10.1 with 5.10.4, so a symbol arriving in a later 5.10 patch would break those notebooks
-# while the matrix stayed green. 5.15.1 is anchored because the next patch would evict it too.
+# Exact pins notebooks use; one-tag-per-minor would evict them.
 
-# pyproject's cap, read not repeated: one tag per minor means a published 5.17.1 would evict
-# 5.17.0, the exact maximum the window admits, and check a version no user can resolve instead.
+# pyproject's cap, so a later patch cannot evict the declared maximum.
 _CAP = re.compile(r"^\s*\"transformers[^\"]*?<=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 
 
@@ -67,21 +61,15 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
         return ()
     if not found:
         return ()
-    # The highest, so a lower marker-gated half of a split cap cannot lower the anchor.
     ceiling = max(found, key = lambda v: tuple(int(p) for p in v.split(".")))
-    # Through the override table: "v" + version can name a tag upstream never pushed, and every
-    # check against it would then fail on the fetch rather than on the symbol.
+    # Through the override table: some PyPI versions have no matching tag.
     return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
 
 
-# PyPI version -> the tag that carries it, where upstream disagrees with itself. PyPI 5.10.4 is
-# tagged v5.10.3 (its __init__ says 5.10.4, and no v5.10.4 exists); PyPI 4.54.1 is tagged
-# v4.54-release (v4.54.0's __init__ says 4.54.0, so it is a different release).
+# PyPI version -> tag where upstream disagrees (5.10.4 is tagged v5.10.3; 4.54.1 is v4.54-release).
 _TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
 
-# Used when PyPI is unreachable; frozen so an outage cannot shrink the matrix and report green.
-# It must START at the declared floor: beginning at 4.57.6 dropped every 4.52-4.56 check, and
-# _ALWAYS does not restore them. test_the_outage_fallback_reaches_the_declared_floor pins this.
+# Outage fallback; must start at the declared floor (test_the_outage_fallback_reaches_the_declared_floor).
 _TAGS_FALLBACK = (
     "v4.52.4",
     "v4.53.3",
@@ -111,11 +99,8 @@ _TAGS_FALLBACK = (
 )
 
 
-# Where the resolved matrix is shared between processes. xdist requires every worker to collect
-# the SAME parameters, but each resolves the matrix during collection, so one worker timing out
-# takes the fallback list, the parameter sets diverge and xdist aborts the run
-# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html). PYTEST_ and not UNSLOTH_
-# because it is a harness knob, inert at runtime and read by nothing under unsloth/ or studio/.
+# Shared across xdist workers so all collect identical parameters
+# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html).
 _MATRIX_CACHE_ENV = "PYTEST_TRANSFORMERS_MATRIX_FILE"
 
 
@@ -159,7 +144,6 @@ def _resolved_tags() -> list[str]:
     if cached is not None:
         return _with_always(cached)
     tags = _release_tags()
-    # Re-read before publishing: another worker may have resolved it, and its answer is in use.
     cached = _cached_matrix()
     if cached is not None:
         return _with_always(cached)
@@ -216,7 +200,6 @@ def _with_always(tags) -> list[str]:
     return sorted(set(tuple(tags) + _ALWAYS + _declared_ceiling_tag()), key = _sort_key)
 
 
-# Inverted so a tag whose NAME is not its version still sorts by the release it carries.
 _TAG_TO_RELEASE = {tag: release for release, tag in _TAG_OVERRIDES.items()}
 
 
@@ -225,7 +208,6 @@ def _sort_key(tag: str) -> tuple[int, ...]:
     return tuple(int(g) for g in name.split("."))
 
 
-# `main` catches drift before it ships to PyPI.
 TRANSFORMERS_TAGS = _resolved_tags() + ["main"]
 
 # Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.

@@ -25,7 +25,6 @@ TESTED_CEILING = Version("1.13.0")
 
 REJECTED = ("0.19.0",)
 
-# Releases the sweep ran: 0.29.1 last 0.x, 1.7.0 the chunked_nll default flip (trl#5846).
 NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0")
 
 ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
@@ -35,10 +34,8 @@ ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 # Every unsloth_zoo up to 2026.9.7 caps datasets here; pip intersects, so users stay under it.
 ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")
 
-# First published zoo carrying the widened datasets window (a floor no release satisfies breaks installs).
 ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP = Version("2026.9.8")
 
-# Keyed on (workflow, exact requirement), never filename: that would exempt the whole file.
 PINNED_BY_DESIGN = {
     ("consolidated-tests-ci.yml", "trl>=0.18.2,<1.0.0"): (
         "the TRL<1 half of a deliberate two-lane split; the sibling lane is "
@@ -259,7 +256,6 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
     offenders: dict[str, list[str]] = {}
     for path in sorted(WORKFLOWS.glob("*.yml")):
         for raw, req in _workflow_trl_specs(path):
-            # An exact pin is a deliberate point in the range, not a cap that drifted.
             if any(spec.operator == "==" for spec in req.specifier):
                 continue
             if ceiling in req.specifier:
@@ -285,7 +281,6 @@ def _blocking_trl_lanes(path: Path) -> list[tuple[str, str, str]]:
     for job_name, job in (workflow.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
-        # An expression we cannot evaluate counts as not-blocking.
         if job.get("continue-on-error") not in (None, False):
             continue
         includes = (((job.get("strategy") or {}).get("matrix") or {}).get("include")) or []
@@ -349,7 +344,6 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
-    # PyYAML resolves a bare `on:` key to the boolean True (YAML 1.1), so read both.
     triggers = workflow.get("on", workflow.get(True)) or {}
     paths = (triggers.get("pull_request") or {}).get("paths") or []
 
@@ -402,7 +396,6 @@ def test_an_unreachable_guard_is_caught(tmp_path, monkeypatch) -> None:
     assert "99.0.0" in str(raised.value)
 
 
-# `linux` too: legs are often keyed on an artifact name like `linux-...`, not the image.
 _NON_WINDOWS_TOKENS = ("ubuntu", "linux", "macos", "darwin", "mac-", "'mac'")
 
 
@@ -506,7 +499,6 @@ def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> No
         test_no_windows_step_uses_a_bash_line_continuation()
     assert "example-ci.yml" in str(raised.value)
 
-    # ... and does NOT fire once the step declares a shell that understands `\`.
     (workflows / "example-ci.yml").write_text(
         "jobs:\n"
         "  gate:\n"
@@ -537,7 +529,6 @@ def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
         for job_name, job in (document.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
-            # `strategy:` and `matrix:` can each be a bare `${{ }}` string, not a mapping.
             strategy = job.get("strategy")
             matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
             includes = matrix.get("include") if isinstance(matrix, dict) else None
@@ -599,15 +590,12 @@ def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
         test_a_ceiling_lane_pins_the_declared_ceiling()
     assert "0.24.0" in str(raised.value)
 
-    # The floor lane's own exact pin must NOT be mistaken for a stale ceiling.
     write(f"trl=={TESTED_CEILING}")
     test_a_ceiling_lane_pins_the_declared_ceiling()
 
 
-# The ceiling must be RESOLVABLE: trl 1.x needs datasets>=4.7.0, so `datasets<4.4.0` made pip
-# silently backtrack to trl 0.29.1. Recorded so this runs offline; PyPI re-check below.
+# Must be resolvable: trl 1.x needs datasets>=4.7.0, else pip backtracks to trl 0.29.1.
 TRL_DATASETS_FLOORS = (
-    # (first trl release with this floor, the datasets floor it declares)
     (Version("0.18.2"), Version("3.0.0")),
     (Version("1.0.0"), Version("4.7.0")),
 )
@@ -765,7 +753,6 @@ def test_the_workflow_datasets_check_can_fail(tmp_path, monkeypatch) -> None:
         test_no_workflow_lane_installs_a_datasets_the_runtime_guard_refuses()
     assert "example-ci.yml" in str(raised.value)
 
-    # ... and the declared window is accepted.
     (workflows / "example-ci.yml").write_text(
         "jobs:\n  gate:\n    steps:\n      - run: pip install "
         "'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0'\n",
@@ -891,7 +878,6 @@ def test_the_zoo_datasets_deferral_expires_when_the_zoo_release_ships() -> None:
         pytest.skip("PyPI could not be asked for unsloth_zoo, so the deferral stands")
 
     zoo_version, zoo_windows = published
-    # Membership, not number comparison: `<4.4.0` and `<=4.4.0` differ.
     declared = _pyproject_requirement("datasets")
     probe = [v for v in _datasets_releases() if str(v) in declared]
     assert probe, "the declared datasets window admits no recorded release at all"

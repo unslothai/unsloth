@@ -16,11 +16,7 @@ import re
 
 import pytest
 
-# Unlike the cap-site suites this one has to read the real rewriter, and `import unsloth` raises
-# its own ImportError("Unsloth: torch not found") on a runner with no torch. A bare module-scope
-# import makes that a COLLECTION ERROR, which reds the Windows and macOS legs instead of skipping
-# them. `pytest.importorskip` does NOT cover it: that skips a module which is ABSENT, and
-# re-raises an ImportError the module body raised itself, which is exactly this case.
+# Guarded import: `import unsloth` raises its own ImportError without torch, which importorskip re-raises.
 try:
     from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_trainer_compute_loss
 except ImportError as exc:
@@ -67,7 +63,6 @@ def _trainer(
     trainer.epsilon_high = 0.2
     if on_trainer is not None:
         trainer.importance_sampling_level = on_trainer
-    # `with_logps` picks the branch: a tensor takes the no-grad slow path, None the gradient one.
     trainer._get_per_token_logps = lambda *a, **k: (torch.zeros((1, 2)) if with_logps else None)
     return trainer
 
@@ -87,12 +82,7 @@ def _captured_level(
         captured["level"] = kwargs.get("importance_sampling_level", "<not passed>")
         raise _Stop
 
-    # Seed from rl_replacements' own globals, then exec the REAL pre-item sources the rewriter
-    # emits, as rl.py does when it writes the compiled trainer. Naming the helpers one at a time
-    # was whack-a-mole: torch_compile_options and then DEVICE_TYPE_TORCH each arrived upstream
-    # and broke this with a NameError about something other than the knob under test. Taking the
-    # module's namespace means a helper added there is already in scope. Only the two loss entry
-    # points are stubbed, because intercepting them is the whole measurement.
+    # Exec the real pre-item sources in rl_replacements globals; only the two loss entry points are stubbed.
     import unsloth.models.rl_replacements as _rl_replacements
 
     namespace = dict(vars(_rl_replacements))

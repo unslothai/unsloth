@@ -3071,11 +3071,7 @@ def grpo_trainer_compute_loss(function_name, function):
             logit_scale_multiply, logit_scale_divide = _unsloth_resolve_logit_scales(model_config)
 
         max_left_pad = inputs.get("max_left_pad", 0)
-        # GSPO's importance_sampling_level landed in TRL 0.20.0, as a GRPOConfig field the
-        # trainer copies onto itself in __init__. 0.18.2 and 0.19.1 have neither the field nor
-        # the attribute and are token level by construction, so reading self.importance_sampling_level
-        # unconditionally raised AttributeError at the bottom of the declared window and took
-        # GRPO training down. Resolve through both bindings, then fall back to the floor's level.
+        # importance_sampling_level is absent before TRL 0.20.0 (token level).
         importance_sampling_level = getattr(
             self,
             "importance_sampling_level",
