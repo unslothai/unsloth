@@ -317,14 +317,59 @@ def test_managed_accounts_lose_the_decisions_mcp_bypass_for_a_connection():
         run_as(alice, validate_mcp_address, url)
 
 
-def _provider_test(payload):
+def _providers_post(path, payload):
     from routes import providers
 
     app = FastAPI()
     app.include_router(providers.router, prefix = "/providers")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    return TestClient(app).post("/providers/test", json = payload).json()
+    return TestClient(app).post(path, json = payload).json()
+
+
+def _provider_test(payload):
+    return _providers_post("/providers/test", payload)
+
+
+def test_a_system_one_connection_lists_only_decision_models(upstream):
+    upstream.replies[0] = httpx.Response(200, json = OPENROUTER_MODELS)
+    listed = _providers_post(
+        "/providers/models",
+        {"provider_type": "custom", "api_type": "systemone", "base_url": "http://localhost:8888/v1"},
+    )
+    assert [model["id"] for model in listed] == ["upstage/solar-decide", "typesafe/jev-1.13"]
+    assert upstream.calls[0].url.params["output_modalities"] == "decisions"
+
+    upstream.replies[0] = httpx.Response(200, json = {"data": [{"id": "HuggingFaceTB/SmolLM2-135M"}]})
+    chat = _providers_post(
+        "/providers/models", {"provider_type": "custom", "base_url": "http://localhost:8888/v1"}
+    )
+    assert [model["id"] for model in chat] == ["HuggingFaceTB/SmolLM2-135M"]
+    assert "output_modalities" not in upstream.calls[-1].url.params
+
+
+def test_studio_lists_its_decision_models_only_when_asked(monkeypatch, studio):
+    from routes import inference
+
+    async def chat_catalog():
+        return [{"id": "unsloth/Qwen3-0.6B", "object": "model"}]
+
+    monkeypatch.setattr(inference, "_openai_catalog_objects", chat_catalog)
+
+    def ids(output_modalities = None):
+        listed = asyncio.run(
+            inference.openai_list_models(output_modalities = output_modalities, current_subject = "t")
+        )
+        return [model["id"] for model in listed["data"]]
+
+    laya = ["default", *catalog.CHECKPOINTS]
+    assert ids() == ["unsloth/Qwen3-0.6B"]
+    assert ids("text") == ids("image") == ["unsloth/Qwen3-0.6B"]
+    assert ids("decisions") == laya
+    assert ids("text,decisions") == ids("all") == ["unsloth/Qwen3-0.6B", *laya]
+    studio[systemone_settings.ENABLED_KEY] = False
+    assert ids("decisions") == []
+    assert ids() == ["unsloth/Qwen3-0.6B"]
 
 
 @pytest.mark.parametrize(

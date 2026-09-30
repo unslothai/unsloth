@@ -32179,7 +32179,10 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
 # compatibility alias for the canonical OpenAI path.
 @router.get("/models/", include_in_schema = False)
 @router.get("/models")
-async def openai_list_models(current_subject: str = Depends(get_current_subject)):
+async def openai_list_models(
+    output_modalities: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
     """
     OpenAI-compatible model listing endpoint (``GET /v1/models``).
 
@@ -32187,7 +32190,14 @@ async def openai_list_models(current_subject: str = Depends(get_current_subject)
     locally available (downloaded/cached) models -- not only what is resident in
     memory. Each entry carries a clean public id and a ``loaded`` flag.
     """
-    return {"object": "list", "data": await _openai_catalog_objects()}
+    wanted = {m.strip() for m in (output_modalities or "").split(",")}
+    if not wanted & {"all", "decisions"}:
+        return {"object": "list", "data": await _openai_catalog_objects()}
+    from routes.systemone import decision_model_objects
+
+    data = [] if wanted == {"decisions"} else await _openai_catalog_objects()
+    data += await asyncio.to_thread(decision_model_objects)
+    return {"object": "list", "data": data}
 
 
 @router.get("/models/{model_id:path}")

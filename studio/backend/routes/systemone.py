@@ -280,6 +280,20 @@ async def refresh_listed_decision_models() -> None:
         catalog.LISTED_DECISION_MODELS[key] = (time.monotonic(), models)
 
 
+def decision_model_objects() -> list[dict[str, Any]]:
+    if not systemone_settings.get_enabled():
+        return []
+    return [
+        {
+            "id": name,
+            "object": "model",
+            "owned_by": "unsloth",
+            "architecture": {"input_modalities": ["text"], "output_modalities": ["decisions"]},
+        }
+        for name in ("default", *catalog.CHECKPOINTS)
+    ]
+
+
 def _upstream_error(name: str, response: httpx.Response) -> HTTPException:
     try:
         body = response.json()

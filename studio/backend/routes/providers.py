@@ -1053,6 +1053,16 @@ async def list_provider_models(
         timeout = 15.0,
     )
 
+    if answers_decisions_only(payload.provider_type, payload.api_type):
+        try:
+            ids = await client.list_decision_models()
+        except Exception:
+            ids = []
+        return [
+            ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None)
+            for m in ids
+        ]
+
     try:
         models = await client.list_models()
         # Registry model-id filters describe one vendor's own catalog, so they only apply on that vendor's host. A
