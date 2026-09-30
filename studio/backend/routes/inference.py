@@ -35366,7 +35366,12 @@ def _llama_image_data_url(raw: bytes) -> str:
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
         upright = exif_upright(img)
-        see_through = img.has_transparency_data and img.convert("RGBA").getextrema()[3][0] < 255
+        see_through = False
+        if img.has_transparency_data:
+            # The alpha band alone: an opaque RGBA screenshot must not pay for an RGBA copy.
+            bands = img.getbands()
+            alpha = img.getchannel("A") if "A" in bands else img.convert("RGBA").getchannel("A")
+            see_through = alpha.getextrema()[0] < 255
     if upright is not img:
         buf = io.BytesIO()
         if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
