@@ -8395,6 +8395,18 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
             assert connection.closed
 
 
+def test_out_of_range_scan_folder_ids_remove_nothing(monkeypatch):
+    import sqlite3
+
+    from hub.storage import scan_folders
+    for storage in (studio_db, scan_folders):
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE scan_folders (id INTEGER PRIMARY KEY, path TEXT)")
+        monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+        for folder_id in (2**63, -(2**63) - 1):
+            assert storage.remove_scan_folder(folder_id) is False
+
+
 def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
     from hub.services.models import local_inventory
 
@@ -10808,11 +10820,11 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
         audio.setframerate(16000)
         audio.writeframes(b"\x00\x00" * 16)
     preflight = {
-        "b64": f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}",
+        "clips": [f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}"],
         "continue_final": True,
     }
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
-    assert preflight["prepared"][1] == "wav"
+    assert preflight["prepared"][0][1] == "wav"
     assert "decoded" not in preflight
 
     # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
@@ -10865,7 +10877,7 @@ def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
             require_image = True,
             require_audio_input = True,
             audio_preflight = {
-                "b64": "valid",
+                "clips": ["valid"],
                 "continue_final": False,
                 "has_image": False,
             },
@@ -11033,39 +11045,130 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     return backend, recorder
 
 
-@pytest.mark.parametrize(
-    ("url", "detail"),
-    [
-        ("data:image/png;base64,", "Failed to decode image"),
-        (
-            "https://example.com/image.png",
-            "Remote image URLs are not supported. Use a base64 data URL.",
-        ),
-    ],
-    ids = ["empty data url", "remote url"],
-)
-def test_chat_rejects_unsupported_openai_images_before_non_gguf_switch(monkeypatch, url, detail):
-    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
-    payload = _chat_request(
+def _chat_image_request(*urls):
+    return _chat_request(
         model = "org/B-GGUF",
         messages = [
             ChatMessage(
                 role = "user",
                 content = [
-                    ImageContentPart(
-                        type = "image_url",
-                        image_url = ImageUrl(url = url),
-                    )
+                    ImageContentPart(type = "image_url", image_url = ImageUrl(url = url)) for url in urls
                 ],
             )
         ],
     )
 
+
+def test_chat_rejects_an_empty_data_url_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    payload = _chat_image_request("data:image/png;base64,")
+
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
     assert exc.value.status_code == 400
-    assert exc.value.detail == detail
+    assert exc.value.detail == "Failed to decode image"
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_chat_loads_a_non_gguf_target_for_remote_images(monkeypatch, count):
+    # The loaded model fetches the URLs as a resident one does, so the switch is not refused.
+    _, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    recorder.fail = True
+    urls = [f"https://example.com/{index}.png" for index in range(count)]
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_image_request(*urls), object(), "tester")
+        )
+
+    assert exc.value.detail == "load failed"
+    assert len(recorder.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("turns", "detail"),
+    [
+        ([["http://example.com/0.png"]], "Unsupported image URL scheme ('http:')"),
+        (
+            [["https://example.com/0.png", "http://example.com/1.png"]],
+            "one image per message",
+        ),
+        (
+            [["http://example.com/0.png"], ["https://example.com/1.png"]],
+            "Unsupported image URL scheme ('http:')",
+        ),
+    ],
+    ids = ["alone", "beside https", "earlier turn"],
+)
+def test_chat_refuses_an_unfetchable_scheme_before_non_gguf_switch(monkeypatch, turns, detail):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [_chat_image_request(*urls).messages[0] for urls in turns],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert detail in exc.value.detail
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_chat_leaves_an_unread_older_image_to_the_loaded_model(monkeypatch):
+    # The newer remote image is the one the model reads, so the older one is not validated.
+    _, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    recorder.fail = True
+    turns = ["data:image/png;base64,Zm9v", "https://example.com/0.png"]
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [_chat_image_request(url).messages[0] for url in turns],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.detail == "load failed"
+    assert len(recorder.calls) == 1
+
+
+def test_chat_validates_a_legacy_image_beside_a_remote_one_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    payload = _chat_image_request("https://example.com/0.png")
+    payload.image_base64 = "Zm9v"
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.detail == "Failed to decode image"
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_chat_refuses_a_remote_image_beside_a_legacy_one_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    reply = _chat_image_request("https://example.com/0.png").messages[0]
+    reply.role = "assistant"
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            reply,
+            ChatMessage(role = "user", content = "and?"),
+        ],
+        image_base64 = "aGVsbG8=",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert "one image per message" in exc.value.detail
     assert recorder.calls == []
     assert backend.model_identifier == "org/A-GGUF"
 
@@ -11234,7 +11337,7 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
                 require_image = True,
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": False,
                     "has_image": True,
                 },
@@ -11279,7 +11382,7 @@ def test_audio_beside_a_clip_is_rejected_before_a_non_gguf_switch(monkeypatch):
                 require_audio_input = True,
                 require_video = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": True,
                     "has_image": True,
                     "has_video": True,
@@ -11319,7 +11422,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         try:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": encoded, "continue_final": False}, True
+                    {"clips": [encoded], "continue_final": False}, True
                 )
             )
         except HTTPException:
@@ -11329,7 +11432,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": bad, "continue_final": False}, True
+                    {"clips": [bad], "continue_final": False}, True
                 )
             )
         assert exc.value.status_code == 400, bad
@@ -11354,7 +11457,7 @@ def test_non_audio_bytes_are_rejected_before_a_gguf_switch(monkeypatch):
                 "tester",
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": _b64.b64encode(b"not audio").decode(),
+                    "clips": [_b64.b64encode(b"not audio").decode()],
                     "continue_final": False,
                 },
             )
@@ -11373,7 +11476,7 @@ def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
@@ -11394,14 +11497,14 @@ def test_non_audio_bytes_are_rejected_before_a_non_gguf_switch(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
 
-    preflight = {"b64": "GOOD", "continue_final": False}
+    preflight = {"clips": ["GOOD"], "continue_final": False}
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, False))
-    assert preflight["decoded"] == "pcm"
+    assert preflight["decoded"] == ["pcm"]
 
 
 def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):

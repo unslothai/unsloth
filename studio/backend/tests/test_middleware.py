@@ -1447,6 +1447,26 @@ class TestRemoteAccessCORS:
     any page the user had open could read the local API's unauthenticated responses.
     """
 
+    def test_configured_cors_exposes_typesafe_request_id(self, main_module):
+        cors = next(
+            middleware
+            for middleware in main_module.app.user_middleware
+            if middleware.cls is main_module.RemoteAccessCORSMiddleware
+        )
+        app = FastAPI()
+        app.add_middleware(cors.cls, **{**cors.kwargs, "remote_access_state": app.state})
+
+        @app.get("/decision")
+        async def decision():
+            return Response(headers = {"x-typesafe-request-id": "decision-request"})
+
+        response = TestClient(app).get("/decision", headers = {"Origin": "tauri://localhost"})
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] in ("*", "tauri://localhost")
+        assert response.headers["x-typesafe-request-id"] == "decision-request"
+        exposed = response.headers["access-control-expose-headers"].lower().split(",")
+        assert "x-typesafe-request-id" in {header.strip() for header in exposed}
+
     TUNNEL = "https://demo-abc.trycloudflare.com"
 
     @staticmethod

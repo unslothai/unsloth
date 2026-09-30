@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
+export { LIBRARY_CHATS_PREFS_STORAGE_KEY } from "./chats/prefs-store";
 export { useLibraryFavorites } from "./favorites-store";
 export { chatAboutMedia, startLibraryChat } from "./start-chat";
 export { revealInFolder, useRevealLabel } from "./reveal";

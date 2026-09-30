@@ -81,7 +81,13 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { resolveEstimateContext } from "../model-config/estimate-context";
+import { type MemoryEstimate } from "../api/memory-estimate";
+import {
+  resolveEstimateContext,
+  resolveMlxEstimateContext,
+  resolveMlxServedWindow,
+  shouldRequestMemoryEstimate,
+} from "../model-config/estimate-context";
 import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
@@ -427,6 +433,7 @@ function MaxSeqLengthSetting({
   inputRef,
   isMlx,
   pinned,
+  fittedToMemory,
   windowUnknown,
 }: {
   value: number;
@@ -436,6 +443,7 @@ function MaxSeqLengthSetting({
   inputRef?: Ref<NumericValueInputHandle>;
   isMlx?: boolean;
   pinned?: boolean;
+  fittedToMemory?: boolean;
   windowUnknown?: boolean;
 }) {
   // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
@@ -448,7 +456,11 @@ function MaxSeqLengthSetting({
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
             {isMlx
-              ? "Tokens of context the model is sized for."
+              ? "Tokens of context the model is sized for." +
+                (fittedToMemory
+                  ? " Fitted to this machine's memory, which is less than the model's own " +
+                    "window. Set a length to ask for a different one."
+                  : "")
               : "Maximum context window in tokens. Applies on load."}
           </InfoHint>
         </div>
@@ -2015,6 +2027,7 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
   );
@@ -2741,18 +2754,6 @@ export function ModelConfigPage({
     mlxNativeWindow == null
       ? null
       : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
-  const mlxServedWindow =
-    (targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??
-    mlxProspectiveWindow;
-  const maxSeqLengthValue =
-    servedWindow(savedContextPin(config)) ??
-    mlxServedWindow ??
-    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  // The slider picks a request, so it stops at the widest a load may make.
-  const maxSeqLengthMax = Math.min(
-    MAX_SEQ_LENGTH_MAX,
-    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
-  );
   // An auto-fit-below-native GGUF shows activeLoadedContext while
   // customContextLength stays null. If the user fixes GPU Layers (Manual) and
   // remembers, pin that shown context so a later fresh load keeps the fitted
@@ -2790,7 +2791,11 @@ export function ModelConfigPage({
   // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
   // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
   const memoryEstimateRequest =
-    target.isGguf && classifiedIsDiffusion === false
+    shouldRequestMemoryEstimate({
+      isGguf: Boolean(target.isGguf),
+      isAppleUnifiedMemory,
+      classifiedIsDiffusion,
+    })
       ? {
           modelPath: target.id,
           ggufVariant: target.ggufVariant ?? null,
@@ -2809,6 +2814,10 @@ export function ModelConfigPage({
               (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
+          maxSeqLength: target.isGguf
+            ? null
+            : resolveMlxEstimateContext(savedContextPin(config)),
+          mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -2834,12 +2843,34 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  const mlxFittedWindow = targetIsMlx
+    ? servedWindow(memoryEstimate.estimate?.contextFitted)
+    : null;
+  const mlxServedWindow = resolveMlxServedWindow(
+    targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,
+    mlxFittedWindow,
+    mlxProspectiveWindow,
+  );
+  const maxSeqLengthValue =
+    servedWindow(savedContextPin(config)) ??
+    mlxServedWindow ??
+    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
+  const maxSeqLengthMax = Math.min(
+    MAX_SEQ_LENGTH_MAX,
+    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
+  );
   // No resident credit without a reported context; pending settings cannot price it.
-  const residentContext = servedWindow(activeLoadedContext);
+  // activeLoadedContext is GGUF-only; an MLX resident reports its served window here.
+  const residentContext = servedWindow(
+    targetIsMlx && isActiveModel ? loadedContextLength : activeLoadedContext,
+  );
   const residentEstimateRequest = resolveResidentEstimateRequest(
     isActiveModel ? memoryEstimateRequest : null,
     residentEstimateSettings,
     residentContext,
+    targetIsMlx && !residentModelLoading
+      ? { kvQuant: loadedMlxKvQuantRequested ?? null }
+      : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
     refreshMemory: true,
@@ -3011,10 +3042,7 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
-  const handleRun = () => {
-    if (budgetSettling) {
-      return;
-    }
+  const commitDraft = () => {
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value, so commit
     // every numeric input imperatively.
@@ -3089,56 +3117,41 @@ export function ModelConfigPage({
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
-    // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
-    const effectivePersistenceOnly =
-      isActiveModel && effectiveAtBaseline && rememberChanged;
+    return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
+  };
+
+  const persistConfig = (next: PerModelConfig) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalizedRuntimeConfig = normalizePerModelConfig(
-      effectiveRuntimeConfig,
-    );
-    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
-    let saveFailed = false;
+    const normalized = normalizePerModelConfig(next);
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    if (remember) {
-      saveFailed = !savePerModelConfig(
-        configId,
-        target.ggufVariant,
-        normalizedRuntimeConfig,
-        evicted,
-      );
-    } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
-    }
+    const saved = remember
+      ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
+      : deletePerModelConfig(configId, target.ggufVariant);
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    if (
-      !saveFailed &&
-      (target.apiLoadable ?? target.isGguf) &&
-      !nativePathToken
-    ) {
+    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? normalizedRuntimeConfig : null,
+        remember ? normalized : null,
         remember
           ? {
               resetReasoningBudget:
                 baseline.reasoningBudget !== -1 &&
-                normalizedRuntimeConfig.reasoningBudget === -1,
+                normalized.reasoningBudget === -1,
               resetReasoningBudgetMessage:
                 baseline.reasoningBudgetMessage !== "" &&
-                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+                normalized.reasoningBudgetMessage === "",
             }
           : undefined,
       );
     }
     // Only once the write landed: a blocked or full localStorage leaves the values on screen,
     // and clearing anyway let the next read replace them with the older stored row.
-    if (!saveFailed) {
+    if (saved) {
       clearModelConfigDraftEdited(draftKey);
     }
     // Saving can push the local map over budget and drop other models, whose server entries would
@@ -3148,24 +3161,65 @@ export function ModelConfigPage({
         keepLaunchFlags: true,
       });
     }
+    return { saved, defaultConfig: isDefaultConfig(normalized) };
+  };
+
+  const finishPersist = (defaultConfig: boolean) => {
+    const nextRemember = remember && !defaultConfig;
+    setSavedRemember(nextRemember);
+    setRemember(nextRemember);
+    toast.success(
+      nextRemember
+        ? "Settings saved."
+        : remember
+          ? "Default settings kept."
+          : "Settings forgotten.",
+    );
+  };
+
+  const handleSave = () => {
+    const { effectiveRuntimeConfig } = commitDraft();
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
+    if (!saved) {
+      toast.error("Couldn't save settings for this model.");
+      return;
+    }
+    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // Not on a forget: that stored nothing, and pinning here would change the next load.
+    // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
+    if (
+      remember &&
+      effectiveRuntimeConfig.customContextLength !== config.customContextLength
+    ) {
+      setConfig((current) => ({
+        ...current,
+        customContextLength: effectiveRuntimeConfig.customContextLength,
+      }));
+    }
+    finishPersist(defaultConfig);
+  };
+
+  const handleRun = () => {
+    if (budgetSettling) {
+      return;
+    }
+    const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
+      commitDraft();
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectivePersistenceOnly =
+      isActiveModel &&
+      perModelConfigsEqual(effectiveConfig, baseline) &&
+      rememberChanged;
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (effectivePersistenceOnly) {
-      if (saveFailed) {
+      if (!saved) {
         toast.error("Couldn't save settings for this model.");
         return;
       }
-      const nextRemember = remember && !defaultConfig;
-      setSavedRemember(nextRemember);
-      setRemember(nextRemember);
-      toast.success(
-        nextRemember
-          ? "Settings saved."
-          : remember
-            ? "Default settings kept."
-            : "Settings forgotten.",
-      );
+      finishPersist(defaultConfig);
       return;
     }
-    if (saveFailed) {
+    if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
     // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
@@ -3242,30 +3296,30 @@ export function ModelConfigPage({
       )}
 
       <div className="space-y-5">
+        {memoryEstimateRequest != null && (
+          <MemoryEstimateRow
+            estimate={memoryEstimate.estimate}
+            loading={memoryEstimate.loading}
+            stale={memoryEstimate.stale}
+            gpuCapacityGb={memoryGpuCapacityGb}
+            totalCapacityGb={memoryTotalCapacityGb}
+            systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
+            freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+            freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
+            freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
+            usableSystemRamGb={memoryUsableSystemRamGb}
+            usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
+            systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
+            isUnifiedMemory={isAppleUnifiedMemory}
+            singleMemoryPool={singleMemoryPool}
+            reclaimableTotalBytes={reclaimableCredit.totalBytes}
+            reclaimableGpuBytes={reclaimableCredit.gpuBytes}
+            expanded={memoryBreakdownOpen}
+            onExpandedChange={setMemoryBreakdownOpen}
+          />
+        )}
         {target.isGguf && (
           <>
-            {/* Above Context Length on purpose: that is the control moving this number most, and a readout
-                below it is one you go looking for. */}
-            <MemoryEstimateRow
-              estimate={memoryEstimate.estimate}
-              loading={memoryEstimate.loading}
-              stale={memoryEstimate.stale}
-              gpuCapacityGb={memoryGpuCapacityGb}
-              totalCapacityGb={memoryTotalCapacityGb}
-              systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
-              freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
-              freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
-              usableSystemRamGb={memoryUsableSystemRamGb}
-              usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
-              systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
-              isUnifiedMemory={isAppleUnifiedMemory}
-              singleMemoryPool={singleMemoryPool}
-              reclaimableTotalBytes={reclaimableCredit.totalBytes}
-              reclaimableGpuBytes={reclaimableCredit.gpuBytes}
-              expanded={memoryBreakdownOpen}
-              onExpandedChange={setMemoryBreakdownOpen}
-            />
             <div className="space-y-2">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -3383,6 +3437,9 @@ export function ModelConfigPage({
               inputRef={maxSeqLengthInputRef}
               isMlx={targetIsMlx}
               pinned={savedContextPin(config) != null}
+              fittedToMemory={
+                savedContextPin(config) == null && mlxFittedWindow != null
+              }
               windowUnknown={
                 savedContextPin(config) == null && mlxServedWindow == null
               }
@@ -3406,13 +3463,9 @@ export function ModelConfigPage({
         )}
       </div>
 
-      <div
-        className={
-          variant === "sidebar"
-            ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
-            : "mt-5 flex items-center justify-between gap-3 border-t border-border pt-5"
-        }
-      >
+      {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
+          commits a draft mounts Save settings, moving Load out from under the cursor. */}
+      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -3431,13 +3484,7 @@ export function ModelConfigPage({
             Remember for this model
           </label>
         </div>
-        <div
-          className={
-            variant === "sidebar"
-              ? "flex flex-wrap items-center gap-2"
-              : "flex shrink-0 items-center gap-2"
-          }
-        >
+        <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
             type="button"
@@ -3458,6 +3505,29 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
+          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
+          {!persistenceOnly && (remember || savedRemember) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={FOOTER_BUTTON_CLASS}
+              // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
+              // settings the load path strips or has already captured. Forget stores nothing, so
+              // broken saved arguments must not lock it.
+              disabled={
+                stagedMetadataPending ||
+                budgetSettling ||
+                (remember &&
+                  ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                    sharedExtraArgsRefused ||
+                    extraArgsHydrating))
+              }
+              onClick={handleSave}
+            >
+              {remember ? "Save settings" : "Forget settings"}
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"

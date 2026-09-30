@@ -254,14 +254,54 @@ def _safe_is_dir(path: Path) -> bool:
 
 def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     blobs_dir = repo_dir / "blobs"
-    if not blobs_dir.is_dir():
-        return False
     try:
-        for entry in blobs_dir.iterdir():
-            if entry.is_file() or entry.is_symlink():
-                return True
+        if blobs_dir.is_dir():
+            for entry in blobs_dir.iterdir():
+                if entry.is_file() or entry.is_symlink():
+                    return True
     except OSError:
+        pass
+    return _hf_snapshots_hold_files(repo_dir)
+
+
+def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
+    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
+    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
+    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
+    before yielding); unreadable entries are skipped."""
+    snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+    if snapshot is None:
         return False
+    walked = 0
+    pending = [snapshot]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:
+            continue
+        with entries:
+            listing = iter(entries)
+            while True:
+                try:
+                    entry = next(listing)
+                except StopIteration:
+                    break
+                except OSError:
+                    break
+                walked += 1
+                if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
+                    return False
+                try:
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(Path(entry.path))
+                    elif (
+                        entry.is_file()
+                        and entry.name not in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE
+                        and not is_appledouble_metadata(Path(entry.path))
+                    ):
+                        return True
+                except OSError:
+                    continue
     return False
 
 

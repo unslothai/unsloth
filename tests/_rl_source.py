@@ -32,6 +32,8 @@ WRAPPER_NAMES = (
     "_minimise_logits_kwarg",
     "_drop_spare_hidden_states",
     "_install_grpo_hidden_states_forward_wrapper",
+    "_grpo_pre_head_hidden_divisor",
+    "_grpo_hidden_states_reproduce_logits",
 )
 
 # present only once the per-call degradation fix has landed
@@ -42,6 +44,8 @@ CONSTANT_NAMES = (
     "_UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR",
+    "_UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR",
+    "_UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR",
 )
 
 
@@ -67,11 +71,27 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
     if missing:
         raise AssertionError(f"missing module-level defs in {SOURCE_PATH}: {sorted(missing)}")
 
+    import torch
+
     namespace: dict = {
         "os": os,
         "collections": collections,
         "inspect": inspect,
         "logger": logging.getLogger("unsloth-repro"),
+        "torch": torch,
+        # rl.py imports these at module level; None skips the one-time head check, which needs zoo.
+        "detect_logit_transforms": None,
     }
+    replacements = SOURCE_PATH.with_name("rl_replacements.py")
+    config_helpers = [
+        node
+        for node in ast.parse(replacements.read_text(encoding = "utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("_unsloth_get_model_config", "_unsloth_text_configs")
+    ]
+    exec(
+        compile(ast.Module(body = config_helpers, type_ignores = []), str(replacements), "exec"),
+        namespace,
+    )
     exec(compile(ast.Module(body = wanted, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
     return {name: namespace[name] for name in names}
