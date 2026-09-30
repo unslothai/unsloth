@@ -345,7 +345,6 @@ export function SandboxTab() {
                     <SettingsRow
                       label={t("settings.sandbox.hostPrepLabel")}
                       description={t(prepKey)}
-                      alignTop={outputLines.length > 0}
                     >
                       <div className="flex flex-col items-end gap-1">
                         {view.showPrepareButton ? (

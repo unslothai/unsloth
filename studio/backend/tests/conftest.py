@@ -365,6 +365,26 @@ def _isolate_generation_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_the_managed_provider_url_setting():
+    """Drop the managed-account private provider URL setting's cached answer around each test.
+
+    ``managed_provider_url_settings`` holds the owner's switch for a second so every managed
+    outbound request does not open SQLite. Each test points ``UNSLOTH_STUDIO_HOME`` at a fresh
+    store, but the held answer outlives it: a test that turned the switch on left ``True`` cached,
+    and the next test in the same xdist worker to run inside that second read it instead of its own
+    store's default, so test_managed_account_cannot_list_models_from_a_loopback_provider got a 200
+    with the loopback provider's models where it expected a 400.
+    """
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+    yield
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+
+
+@pytest.fixture(autouse = True)
 def _forget_the_cached_owner_identity():
     """Drop ``process_lifetime``'s cached owner identity after each test.
 
@@ -1332,3 +1352,22 @@ def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
     else:
         monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     yield
+
+
+@pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(monkeypatch):
+    """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    for module in list(sys.modules.values()):
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
+
+
+@pytest.fixture(autouse = True)
+def _clear_github_rate_limit_lockout():
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    yield
+    freshness_flow._api_rate_limited_until = 0.0

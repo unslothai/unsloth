@@ -44,6 +44,7 @@ export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
   focusFallback?: HTMLElement | null;
+  opener?: HTMLElement | null;
 }
 
 interface SettingsDialogState {
@@ -91,12 +92,17 @@ function captureOpener(): HTMLElement | null {
 function focusForOpen(
   state: SettingsDialogState,
   requestedFallback: HTMLElement | null = null,
+  requestedOpener?: HTMLElement | null,
 ) {
   if (state.open) {
     return {
       opener: state.opener,
       openerFallback: state.openerFallback,
     };
+  }
+  // Handoff from a dialog that closed first (the command palette).
+  if (requestedOpener !== undefined) {
+    return { opener: requestedOpener, openerFallback: requestedFallback };
   }
   const opener = captureOpener();
   if (opener?.closest("[data-slot=dialog-content]")) {
@@ -195,7 +201,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         logFamilyRequested: pending.logFamilyRequested,
         logSourcePathRequested: pending.logSourcePathRequested,
         connectionRequested: pending.connectionRequested,
-        ...focusForOpen(state, options?.focusFallback),
+        ...focusForOpen(state, options?.focusFallback, options?.opener),
       };
     }),
   openArchivedChats: () =>
