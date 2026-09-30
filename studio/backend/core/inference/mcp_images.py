@@ -320,7 +320,7 @@ def png_payloads_per_result(
 
 
 def flattened_rgb(image):
-    """RGB with any transparency composited onto white, not simply dropped.
+    """RGB with any transparency composited onto white (black for light ink), not dropped.
 
     ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
     never painted a background leaves that black -- so a transparent screenshot's
@@ -341,8 +341,13 @@ def flattened_rgb(image):
     if not has_alpha:
         return image.convert("RGB")
     rgba = image.convert("RGBA")
-    canvas = Image.new("RGB", rgba.size, (255, 255, 255))
-    canvas.paste(rgba, mask = rgba.getchannel("A"))
+    alpha = rgba.getchannel("A")
+    # White hides light ink (a dark-mode logo, white text) as surely as black hides
+    # dark ink, so mostly-light visible pixels go onto black instead.
+    hist = rgba.convert("L").histogram(alpha)
+    light = sum(i * n for i, n in enumerate(hist)) > 128 * sum(hist) > 0
+    canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
+    canvas.paste(rgba, mask = alpha)
     return canvas
 
 
