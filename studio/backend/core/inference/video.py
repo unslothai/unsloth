@@ -1742,8 +1742,10 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
 
 
 @functools.cache
-def _video_family_capabilities(device: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    available = pipeline_available_video_families(device = device)
+def _video_family_capabilities() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # Device resolved here, once: on Metal it runs a bf16 probe (an allocation plus a host sync) that a
+    # status poll must not repeat mid-render.
+    available = pipeline_available_video_families(device = resolve_diffusion_device_target().device)
     return (
         tuple(fam.name for fam in available),
         tuple(fam.name for fam in available if fam.modular_workflow),
@@ -8116,7 +8118,7 @@ class VideoBackend:
 
     def status(self) -> dict[str, Any]:
         state = self._state
-        supported, modular = _video_family_capabilities(resolve_diffusion_device_target().device)
+        supported, modular = _video_family_capabilities()
         if state is None:
             return {
                 "loaded": False,

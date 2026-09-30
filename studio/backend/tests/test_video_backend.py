@@ -2177,16 +2177,18 @@ def test_video_status_family_capabilities_are_probed_once(monkeypatch):
         "pipeline_available_video_families",
         lambda *, device: calls.append(device) or available,
     )
+    resolves = []
     monkeypatch.setattr(
         video_module,
         "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(device = "cpu"),
+        lambda: resolves.append(1) or types.SimpleNamespace(device = "cpu"),
     )
     backend = VideoBackend()
 
     assert backend.status()["supported_families"] == ["ltx-2", "minimax-h3"]
     assert backend.status()["modular_families"] == ["minimax-h3"]
     assert calls == ["cpu"]
+    assert resolves == [1]
 
 
 def test_video_status_response_carries_gguf_variant():
