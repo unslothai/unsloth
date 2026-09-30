@@ -960,9 +960,14 @@ fn backend_update_confirmed(training_active: bool, confirm: impl FnOnce() -> boo
 
 #[tauri::command]
 pub async fn confirm_backend_update(app: AppHandle) -> bool {
-    backend_update_confirmed(crate::training_is_active(&app), || {
-        crate::confirm_update_during_training(&app)
+    // blocking_show parks its thread until the user answers: keep it off the async workers.
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_update_confirmed(crate::training_is_active(&app), || {
+            crate::confirm_update_during_training(&app)
+        })
     })
+    .await
+    .unwrap_or(false)
 }
 
 /// Run backend update: stop server, run `unsloth studio update`, emit progress.
