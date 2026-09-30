@@ -3190,10 +3190,9 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch {
-              // Chat-wide, not per file (no audio model, too large, already
-              // attached), and every adapter path toasted: stop quietly.
+              // The adapter toasted. Keep going: a later, smaller clip may still fit.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
-              return;
+              continue;
             }
           }
         }
@@ -3242,8 +3241,8 @@ const Composer: FC<{
     };
   }, [nativeAttachmentTargetKey, aui]);
 
-  // Same drain as audio, one queue over: one clip per message, and the send
-  // gate has to hold across the read either way.
+  // Same drain as audio, one queue over: video is one clip per message, and the
+  // send gate has to hold across the read either way.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;
