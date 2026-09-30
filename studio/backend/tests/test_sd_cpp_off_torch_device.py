@@ -78,9 +78,6 @@ def _record_cli_requests(monkeypatch, path = "/opt/sd/sd-cli"):
     return asked
 
 
-# ── the setting ───────────────────────────────────────────────────────────────
-
-
 def test_unset_is_today():
     assert r.off_torch_sd_cpp_device() is None
 
@@ -126,9 +123,6 @@ def test_only_the_image_path_changes_build(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")
     assert r.image_install_accelerator("rocm") == "cuda"
     assert r._install_accelerator_for("rocm") == "rocm"
-
-
-# ── selection: the matched pair ───────────────────────────────────────────────
 
 
 def test_mixed_host_with_the_setting_runs_cuda_sd_cpp(monkeypatch):
@@ -196,9 +190,6 @@ def test_prediction_agrees_with_selection(monkeypatch):
     assert r.predict_engine(fam, model_kind = "gguf", gpu_ordinal = 1) == ENGINE_SD_CPP
 
 
-# ── the backend: every spawn opens the named card ─────────────────────────────
-
-
 def _state(**overrides):
     fields = dict(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
@@ -239,9 +230,6 @@ def test_the_resident_flag_the_trainer_reads():
     assert backend.runs_off_torch_device is False
     backend._state = _state(off_torch_device = "nvidia:0")
     assert backend.runs_off_torch_device is True
-
-
-# ── routes: nothing on torch's card is taken ──────────────────────────────────
 
 
 def test_the_load_route_skips_the_arbiter_only_once_native_is_active():

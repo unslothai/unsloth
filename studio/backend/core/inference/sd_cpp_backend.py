@@ -1969,8 +1969,7 @@ class _SdState:
     physical_gpu_id: Optional[int] = None
     # This load's card, as the failure record names cards.
     selected_card: Optional[str] = None
-    # Set when this load runs on a card torch cannot see (UNSLOTH_DIFFUSION_SD_CPP_DEVICE): its label, and the env
-    # every spawn of this checkpoint gets so the build opens that card and no other.
+    # UNSLOTH_DIFFUSION_SD_CPP_DEVICE placement: its label, and the env every spawn gets to open only that card.
     off_torch_device: Optional[str] = None
     child_env: tuple[tuple[str, str], ...] = ()
 
@@ -2476,10 +2475,8 @@ class SdCppDiffusionBackend:
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
         from core.inference.diffusion_engine_router import off_torch_sd_cpp_device
 
-        # Decided once per load, so the spawns cannot disagree with the placement.
         off_torch = off_torch_sd_cpp_device()
         if off_torch is not None:
-            # gpu_ids are torch's cards; this load runs on one torch cannot see.
             gpu_ids, gpu_ordinal = None, None
         # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
         # but a direct caller (an MCP client, a test, a plugin) hands over gpu_ids alone, and without this the native

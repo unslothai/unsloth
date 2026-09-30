@@ -69,15 +69,13 @@ def _install_accelerator_for(backend: str) -> str:
     return _INSTALL_ACCELERATOR.get(backend, "auto")
 
 
-# Vendor named in UNSLOTH_DIFFUSION_SD_CPP_DEVICE -> the sd.cpp build that drives it.
 _OFF_TORCH_VENDOR_ACCELERATOR = {"nvidia": "cuda"}
 _off_torch_warned: set[str] = set()
 
 
 @dataclass(frozen = True)
 class OffTorchDevice:
-    """A card the native engine runs on that this process's torch cannot see. ``index`` is the
-    vendor's own physical number (nvidia-smi's row), never a torch ordinal."""
+    """A card torch cannot see. ``index`` is nvidia-smi's row, never a torch ordinal."""
 
     vendor: str
     index: int
@@ -128,7 +126,6 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
     if backend is None:
         backend = resolve_diffusion_device_target().backend
     if _INSTALL_ACCELERATOR.get(backend) == accelerator:
-        # torch already drives this vendor, so gpu_ids is how a card is picked.
         return None
     inventory = _physical_inventory()
     if not inventory.get("unknown") and vendor not in (inventory.get("unanswered") or ()):
@@ -357,7 +354,6 @@ def select_and_activate_engine(
                 return candidate
             wrong_build = off_torch_build_mismatch(off_torch, candidate)
             if wrong_build:
-                # The ensure hands back whatever the tree holds (offline, installs off, asset missing).
                 logger.warning(
                     "%s is the %s sd.cpp build; %s needs %s",
                     candidate,
