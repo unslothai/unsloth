@@ -28,6 +28,8 @@ export const ja = {
     cannotShowFile: "このファイルはここでは表示できません。ダウンロードして開いてください。",
     fileGone: "このファイルは利用できなくなりました。チャットからもう一度開いてください。",
     settingsTitle: "ブラウザ",
+    linksTitle: "リンクとファイル",
+    addressBarTitle: "アドレスバー",
     openLinksSetting: "リンクを開く場所",
     openLinksSettingDescription: "チャット内のリンクを開く場所です。既定のブラウザ、または会話の横のブラウザタブから選べます。",
     linkDestinationDefault: "既定のブラウザ",

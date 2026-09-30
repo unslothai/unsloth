@@ -544,7 +544,7 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
           <DropdownMenuItem onSelect={() => store.openInternal("history")}>{t("browser.pages.history")}</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setClearOpen(true)}>{t("browser.menu.clearData")}</DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => useSettingsDialogStore.getState().openDialog("chat")}>
+          <DropdownMenuItem onSelect={() => useSettingsDialogStore.getState().openDialog("browser")}>
             {t("browser.settings")}
           </DropdownMenuItem>
         </DropdownMenuContent>

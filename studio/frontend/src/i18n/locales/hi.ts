@@ -27,6 +27,8 @@ export const hi = {
     cannotShowFile: "यह फ़ाइल यहाँ नहीं दिखाई जा सकती। इसे खोलने के लिए डाउनलोड करें।",
     fileGone: "यह फ़ाइल अब उपलब्ध नहीं है। इसे चैट से फिर खोलें।",
     settingsTitle: "ब्राउज़र",
+    linksTitle: "लिंक और फ़ाइलें",
+    addressBarTitle: "पता बार",
     openLinksSetting: "लिंक खोलें",
     openLinksSettingDescription: "चैट के लिंक कहाँ खुलें: आपके डिफ़ॉल्ट ब्राउज़र में, या बातचीत के बगल में ब्राउज़र टैब में।",
     linkDestinationDefault: "डिफ़ॉल्ट ब्राउज़र",

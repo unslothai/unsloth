@@ -27,6 +27,8 @@ export const ko = {
     cannotShowFile: "이 파일은 여기에서 표시할 수 없습니다. 다운로드해서 여세요.",
     fileGone: "이 파일을 더 이상 사용할 수 없습니다. 채팅에서 다시 여세요.",
     settingsTitle: "브라우저",
+    linksTitle: "링크 및 파일",
+    addressBarTitle: "주소 표시줄",
     openLinksSetting: "링크 열기 위치",
     openLinksSettingDescription: "채팅의 링크를 여는 위치입니다. 기본 브라우저 또는 대화 옆의 브라우저 탭 중에서 선택합니다.",
     linkDestinationDefault: "기본 브라우저",

@@ -24,14 +24,6 @@ import {
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
-import {
-  ClearBrowsingDataDialog,
-  SEARCH_ENGINES,
-  type SearchEngineId,
-  browserPanelAvailable,
-  useBrowserPrefsStore,
-  useBrowserStore,
-} from "@/features/browser";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
@@ -708,7 +700,6 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <BrowserSettings />
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
         <div ref={networkAccessRowRef}>
@@ -755,112 +746,5 @@ export function ChatTab() {
         ))}
       </SettingsSection>
     </div>
-  );
-}
-
-function BrowserSettings() {
-  const t = useT();
-  const openLinksInBrowser = useBrowserPrefsStore((state) => state.openLinksInBrowser);
-  const openFilesInBrowser = useBrowserPrefsStore((state) => state.openFilesInBrowser);
-  const searchEngine = useBrowserPrefsStore((state) => state.searchEngine);
-  const showFullUrl = useBrowserPrefsStore((state) => state.showFullUrl);
-  const { setOpenLinksInBrowser, setOpenFilesInBrowser, setSearchEngine, setShowFullUrl } =
-    useBrowserPrefsStore.getState();
-  const [clearOpen, setClearOpen] = useState(false);
-  // History and downloads open as browser tabs, so only beside a chat.
-  const canOpenPages = browserPanelAvailable();
-  const openPage = (page: "history" | "downloads") => {
-    useSettingsDialogStore.getState().closeDialog();
-    useBrowserStore.getState().openInternal(page);
-  };
-  return (
-    <>
-    <SettingsSection title={t("browser.settingsTitle")}>
-      <SettingsRow
-        label={t("browser.openLinksSetting")}
-        description={t("browser.openLinksSettingDescription")}
-      >
-        <Select
-          value={openLinksInBrowser ? "panel" : "default"}
-          onValueChange={(value) => setOpenLinksInBrowser(value === "panel")}
-        >
-          <SelectTrigger className="w-40" aria-label={t("browser.openLinksSetting")}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="default">{t("browser.linkDestinationDefault")}</SelectItem>
-            <SelectItem value="panel">{t("browser.linkDestinationPanel")}</SelectItem>
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      <SettingsRow
-        label={t("browser.openFilesSetting")}
-        description={t("browser.openFilesSettingDescription")}
-      >
-        <Switch
-          aria-label={t("browser.openFilesSetting")}
-          checked={openFilesInBrowser}
-          onCheckedChange={setOpenFilesInBrowser}
-        />
-      </SettingsRow>
-      <SettingsRow
-        label={t("browser.searchEngineSetting")}
-        description={t("browser.searchEngineSettingDescription")}
-      >
-        <Select
-          value={searchEngine}
-          onValueChange={(value) => setSearchEngine(value as SearchEngineId)}
-        >
-          <SelectTrigger className="w-40" aria-label={t("browser.searchEngineSetting")}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {(Object.keys(SEARCH_ENGINES) as SearchEngineId[]).map((id) => (
-              <SelectItem key={id} value={id}>
-                {SEARCH_ENGINES[id].label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      <SettingsRow
-        label={t("browser.showFullUrlSetting")}
-        description={t("browser.showFullUrlSettingDescription")}
-      >
-        <Switch
-          aria-label={t("browser.showFullUrlSetting")}
-          checked={showFullUrl}
-          onCheckedChange={setShowFullUrl}
-        />
-      </SettingsRow>
-    </SettingsSection>
-    <SettingsSection title={t("browser.browsingDataTitle")}>
-      <SettingsRow
-        label={t("browser.historySetting")}
-        description={t(canOpenPages ? "browser.historySettingDescription" : "browser.pagesFromChat")}
-      >
-        <Button variant="outline" size="sm" disabled={!canOpenPages} onClick={() => openPage("history")}>
-          {t("browser.manage")}
-        </Button>
-      </SettingsRow>
-      <SettingsRow
-        label={t("browser.downloadsSetting")}
-        description={t(canOpenPages ? "browser.downloadsSettingDescription" : "browser.pagesFromChat")}
-      >
-        <Button variant="outline" size="sm" disabled={!canOpenPages} onClick={() => openPage("downloads")}>
-          {t("browser.manage")}
-        </Button>
-      </SettingsRow>
-      <SettingsRow
-        label={t("browser.clearDataSetting")}
-        description={t("browser.clearDataSettingDescription")}
-      >
-        <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>
-          {t("browser.menu.clearData")}
-        </Button>
-      </SettingsRow>
-    </SettingsSection>
-    <ClearBrowsingDataDialog open={clearOpen} onOpenChange={setClearOpen} />
-    </>
   );
 }

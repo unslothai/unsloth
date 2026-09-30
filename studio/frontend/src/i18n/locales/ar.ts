@@ -27,6 +27,8 @@ export const ar = {
     cannotShowFile: "لا يمكن عرض هذا الملف هنا. نزّله لفتحه.",
     fileGone: "لم يعد هذا الملف متاحًا. افتحه مرة أخرى من المحادثة.",
     settingsTitle: "المتصفح",
+    linksTitle: "الروابط والملفات",
+    addressBarTitle: "شريط العناوين",
     openLinksSetting: "فتح الروابط في",
     openLinksSettingDescription: "مكان فتح الروابط في المحادثة: متصفحك الافتراضي أو علامة تبويب في المتصفح بجانب المحادثة.",
     linkDestinationDefault: "المتصفح الافتراضي",

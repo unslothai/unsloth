@@ -27,6 +27,8 @@ export const ru = {
     cannotShowFile: "Этот файл нельзя показать здесь. Скачайте его, чтобы открыть.",
     fileGone: "Этот файл больше недоступен. Откройте его снова из чата.",
     settingsTitle: "Браузер",
+    linksTitle: "Ссылки и файлы",
+    addressBarTitle: "Адресная строка",
     openLinksSetting: "Открывать ссылки в",
     openLinksSettingDescription: "Где открываются ссылки из чата: в браузере по умолчанию или во вкладке браузера рядом с беседой.",
     linkDestinationDefault: "Браузер по умолчанию",

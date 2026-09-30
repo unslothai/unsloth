@@ -27,6 +27,8 @@ export const de = {
     cannotShowFile: "Diese Datei kann hier nicht angezeigt werden. Lade sie herunter, um sie zu öffnen.",
     fileGone: "Diese Datei ist nicht mehr verfügbar. Öffne sie erneut aus dem Chat.",
     settingsTitle: "Browser",
+    linksTitle: "Links und Dateien",
+    addressBarTitle: "Adressleiste",
     openLinksSetting: "Links öffnen in",
     openLinksSettingDescription: "Wo sich Links im Chat öffnen: im Standardbrowser oder in einem Tab im Browser neben der Unterhaltung.",
     linkDestinationDefault: "Standardbrowser",

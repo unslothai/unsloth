@@ -19,6 +19,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
+  BrowserIcon,
   Cancel01Icon,
   CloudIcon,
   ComputerTerminal01Icon,
@@ -76,6 +77,8 @@ const TAB_LOADERS = {
   resources: () =>
     import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
   chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  browser: () =>
+    import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
   voice: () =>
     import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
@@ -253,6 +256,11 @@ const TABS: TabDef[] = [
     icon: EnergyRectangleIcon,
   },
   {
+    id: "browser",
+    labelKey: "browser.settingsTitle",
+    icon: BrowserIcon,
+  },
+  {
     id: "debugging",
     labelKey: "settings.tabs.debugging",
     icon: ComputerTerminal01Icon,
@@ -423,6 +431,7 @@ export function SettingsDialog() {
     appearance: null,
     resources: null,
     chat: null,
+    browser: null,
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,

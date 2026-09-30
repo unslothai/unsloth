@@ -27,6 +27,8 @@ export const zhCN = {
     cannotShowFile: "此文件无法在此显示。请下载后打开。",
     fileGone: "此文件已不可用。请从聊天中重新打开。",
     settingsTitle: "浏览器",
+    linksTitle: "链接和文件",
+    addressBarTitle: "地址栏",
     openLinksSetting: "链接打开方式",
     openLinksSettingDescription: "聊天中的链接在何处打开：默认浏览器，或对话旁的浏览器标签页。",
     linkDestinationDefault: "默认浏览器",
