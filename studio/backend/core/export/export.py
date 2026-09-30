@@ -1808,6 +1808,8 @@ class ExportBackend:
                     check = True,
                     capture_output = True,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                 )
                 if not os.path.exists(source_dir):
                     os.replace(clone, source_dir)
@@ -1866,7 +1868,14 @@ class ExportBackend:
         env = os.environ.copy()
         apply_token_to_child_env(env, normalize_token(hf_token))
         logger.info(f"Converting adapter at '{save_directory}' to GGUF -> '{out_gguf}'")
-        result = subprocess.run(cmd, env = env, capture_output = True, text = True)
+        result = subprocess.run(
+            cmd,
+            env = env,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+        )
         if result.returncode != 0:
             raise RuntimeError(
                 f"LoRA -> GGUF conversion failed (exit {result.returncode}): "

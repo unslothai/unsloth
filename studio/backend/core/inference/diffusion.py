@@ -1669,7 +1669,8 @@ def _pipeline_quant_uncompilable_reason(
 def _plan_proves_resident(plan: Any) -> bool:
     """Resident AND fits; the planner also stays resident when it cannot read the card."""
     estimates = getattr(plan, "estimates", None) or {}
-    budget = estimates.get("safe_device_budget_mib")
+    # An explicit fast proves its fit against the budget it was placed with.
+    budget = estimates.get("resident_budget_mib", estimates.get("safe_device_budget_mib"))
     required = estimates.get("resident_required_mib")
     # Unified memory plans 'none' whatever the size (offload frees nothing there), so compare the two as well.
     return (
@@ -7739,7 +7740,10 @@ class DiffusionBackend:
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
             # undershoot the bf16 footprint ~2x. Plan against the size table's bf16 total when it knows this repo.
-            is_narrow_base = bool(repo_id) and repo_id.strip().lower() == fam.base_repo.lower()
+            # A known mirror is a byte copy of its upstream, so it reads the upstream's table.
+            is_narrow_base = (
+                bool(repo_id) and canonical_base(repo_id).lower() == fam.base_repo.strip().lower()
+            )
             if (
                 not is_narrow_base
                 and fam.name == IDEOGRAM4_FAMILY_NAME
@@ -8353,6 +8357,19 @@ class DiffusionBackend:
             att["value"] = attention_engaged or "native"
             att["reason"] = (
                 "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
+            )
+        # The load recorded "speed tier does not capture" for the deferred tier; the profile that just engaged may
+        # have armed graphs, so re-derive the entry the same way the load does or the badge keeps saying "off".
+        graph = (state.resolved or {}).get("cuda_graph")
+        if isinstance(graph, dict):
+            graph["value"] = "on" if speed_applied.get("cuda_graph") else "off"
+            graph["reason"] = (
+                "denoiser step captured per input shape, replayed bit-identically"
+                if speed_applied.get("cuda_graph")
+                else str(
+                    getattr(state.pipe, "_unsloth_cuda_graph_reason", None)
+                    or "speed tier does not capture"
+                )
             )
         logger.info(
             "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s)",

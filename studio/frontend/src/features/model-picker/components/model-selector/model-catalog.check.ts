@@ -946,6 +946,53 @@ assert.equal(
     .format,
   "bf16",
 );
+// The 30 GiB tier streams an int8 denoiser, which needs group offload that swaps torchao weights
+// (diffusers >= 0.40). Unknown or unsupported keeps the host on the runnable GGUF row.
+for (const quantisedStreaming of [undefined, false]) {
+  assert.equal(
+    pickDefaultArtifact(h3, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+      isDownloaded: notDownloaded,
+    }).format,
+    "gguf",
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+    }),
+    false,
+  );
+}
+assert.equal(
+  pickDefaultArtifact(h3, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+    isDownloaded: notDownloaded,
+  }).format,
+  "bf16",
+);
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+  }),
+  true,
+);
+// The resident tiers need no streaming.
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 74,
+    systemRamGb: 140,
+    quantisedStreaming: false,
+  }),
+  true,
+);
 
 // Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget but fits an 80 GB GPU (budget 56)
 // and wins there.

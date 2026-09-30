@@ -207,6 +207,7 @@ def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
     assert W.shape == checkpoint.shape and not torch.equal(W, checkpoint)
     assert torch.equal(ip.int4_dequantize(W, qs), ref)
     assert torch.equal(ip.int4_unpack(W, qs), checkpoint)
+    assert ip._fast_args(W, qs) is not None
     fast = ip._fast_rows(layout, torch.cuda.current_device())
     for rows in (1, 3, fast, fast + 1):
         x = torch.randn(rows, 1024, device = "cuda", dtype = torch.bfloat16)
@@ -643,3 +644,84 @@ def test_training_single_row_forward_uses_the_backward_weights():
     x = torch.randn(1, 512, device = "cuda", dtype = torch.bfloat16)
     want = x @ int4_dequantize(W, qs, torch.bfloat16).t()
     assert torch.equal(int4_matmul(x, W, qs, fast = False), want)
+
+
+_MARLIN_SCHEMAS = {
+    # vLLM 0.29 schema
+    "g_idx_perm": "(Tensor a, Tensor? c_or_none, Tensor b_q_weight, Tensor? b_bias_or_none, Tensor b_scales, "
+    "Tensor? a_scales, Tensor? global_scale, Tensor? b_zeros_or_none, Tensor? g_idx_or_none, Tensor? perm_or_none, "
+    "Tensor workspace, int b_type_id, SymInt size_m, SymInt size_n, SymInt size_k, bool is_k_full, "
+    "bool use_atomic_add, bool use_fp32_reduce, bool is_zp_float) -> Tensor",
+    "no_g_idx": "(Tensor a, Tensor? c_or_none, Tensor b_q_weight, Tensor? b_bias_or_none, Tensor b_scales, "
+    "Tensor? a_scales, Tensor? global_scale, Tensor? b_zeros_or_none, Tensor workspace, int b_type_id, "
+    "SymInt size_m, SymInt size_n, SymInt size_k, bool use_atomic_add, bool use_fp32_reduce, "
+    "bool is_zp_float) -> Tensor",
+    "unknown_required": "(Tensor a, Tensor b_q_weight, Tensor b_scales, Tensor workspace, int b_type_id, "
+    "Tensor new_required, SymInt size_m, SymInt size_n, SymInt size_k) -> Tensor",
+}
+
+
+@pytest.mark.parametrize("schema", sorted(_MARLIN_SCHEMAS))
+def test_marlin_gemm_arguments_follow_the_op_schema(schema):
+    import unsloth.kernels.int4_packed as ip
+
+    lib = torch.library.Library("unsloth_marlin_schema_test", "FRAGMENT")
+    name = f"marlin_gemm_{schema}"
+    lib.define(name + _MARLIN_SCHEMAS[schema])
+    op = getattr(torch.ops.unsloth_marlin_schema_test, name).default
+    mq, ms, mz, ws = (torch.zeros(i + 1) for i in range(4))
+    args = ip._marlin_gemm_args(
+        op, c_or_none = None, b_q_weight = mq, b_bias_or_none = None, b_scales = ms, b_zeros_or_none = mz,
+        workspace = ws, b_type_id = 7, size_n = 64, size_k = 128, is_k_full = True, use_atomic_add = False,
+        use_fp32_reduce = True, is_zp_float = False,
+    )  # fmt: skip
+    if schema == "unknown_required":
+        assert args is None
+        return
+    pre, post = args
+    names = [a.name for a in op._schema.arguments]
+    m = names.index("size_m")
+    by_name = dict(zip(names[1:m], pre)) | dict(zip(names[m + 1 :], post))
+    assert len(pre) == m - 1 and len(post) == len(names) - m - 1
+    assert (
+        by_name["b_q_weight"] is mq
+        and by_name["b_scales"] is ms
+        and by_name["b_zeros_or_none"] is mz
+    )
+    assert by_name["workspace"] is ws and by_name["b_type_id"] == 7
+    assert (by_name["size_n"], by_name["size_k"], by_name["use_fp32_reduce"]) == (64, 128, True)
+    assert (
+        by_name["a_scales"] is None
+        and by_name.get("g_idx_or_none") is None
+        and by_name.get("perm_or_none") is None
+    )
+
+
+@needs_gpu
+@needs_ct
+@needs_sm80
+def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
+    # Gradient checkpointing runs its first forward under no_grad in train mode: it must use the same exact
+    # dequantize + matmul as the recompute, and must not build the fused kernel's per-layer scale cache.
+    from unsloth.kernels.int4_packed import int4_dequantize
+
+    lin, _, _ = _repacked_linear()
+    qs = lin.quant_state
+    x = torch.randn(2, 1024, device = "cuda", dtype = torch.bfloat16)
+    want = x @ int4_dequantize(lin._parameters["weight_packed"], qs, torch.bfloat16).t()
+
+    lin.train()
+    with torch.no_grad():
+        y = lin(x)
+        # The fast LoRA kernels call int4_matmul directly (default fast = True) inside their autograd forward.
+        from unsloth.kernels.utils import matmul_lora
+        z = matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is None and torch.equal(y, want) and torch.equal(z, want)
+
+    # Eval keeps the fused kernel (and its cache); going back to training frees it.
+    lin.eval()
+    with torch.no_grad():
+        matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is not None
+    lin.train()
+    assert qs._fast is None
