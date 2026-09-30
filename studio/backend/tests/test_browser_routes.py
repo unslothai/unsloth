@@ -50,7 +50,10 @@ def test_the_shell_only_obeys_its_parent():
     shell = browser_mod._FRAME_HTML
     assert "if (event.source !== parent) return;" in shell
     # After the page loads, the parent can only send commands, relayed to the page.
-    assert 'if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");' in shell
+    assert (
+        'if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");'
+        in shell
+    )
     # The navigation script and <base> go ahead of the page's own markup.
     assert "inject(data.html, base + script)" in shell
 
