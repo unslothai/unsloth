@@ -104,7 +104,9 @@ def test_gate_is_off_below_blackwell(monkeypatch):
 def _plain_sdpa(monkeypatch):
     # The SM100 cuDNN head_dim 256 detour wraps SDPA at import on a B200; these gate tests are about plain SDPA.
     sdpa = u.torch.nn.functional.scaled_dot_product_attention
-    monkeypatch.setattr(u.torch.nn.functional, "scaled_dot_product_attention", getattr(sdpa, "__wrapped__", sdpa))
+    monkeypatch.setattr(
+        u.torch.nn.functional, "scaled_dot_product_attention", getattr(sdpa, "__wrapped__", sdpa)
+    )
 
 
 def _blackwell_torch_2_14(monkeypatch):
