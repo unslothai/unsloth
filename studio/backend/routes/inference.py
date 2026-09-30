@@ -8576,7 +8576,7 @@ def _raise_or_cancel_slot_generations(
         return 0
     if not force:
         raise _active_generations_conflict(
-            action, len(events), active_generations.thread_ids_for(events)
+            action, len(events), active_generations.active_thread_ids(None, (), events)
         )
     if not cancel:
         return 0
@@ -8597,37 +8597,38 @@ def _drop_extra_slot(slot: _ExtraSlot) -> None:
         slot.orchestrator._cleanup()
 
 
-def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
-    """Drop every extra slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
-    dropped = 0
+def _drop_slots(predicate) -> int:
     filling = _loading_slot[0] if _loading_slot else None
-    for slot in list(_extra_slots):
-        loaded = slot.llama.is_loaded or slot.orchestrator.active_model_name
-        if spare_filling and slot is filling:
-            continue
-        if keep is None or (loaded and not keep(slot.llama)):
-            dropped += 1
-            try:
-                _drop_extra_slot(slot)
-            except Exception as exc:
-                logger.warning("Could not unload an extra model: %s", exc)
-    return dropped
-
-
-def unload_llama_slots() -> int:
-    """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
-    filling = _loading_slot[0] if _loading_slot else None
-    dropped = 0
-    for slot in list(_extra_slots):
-        starting = slot is filling and not getattr(slot.orchestrator, "loading_models", None)
-        if not (slot.llama.is_active or slot.llama.is_loaded or starting):
-            continue
-        dropped += 1
+    slots = [slot for slot in list(_extra_slots) if predicate(slot, slot is filling)]
+    for slot in slots:
         try:
             _drop_extra_slot(slot)
         except Exception as exc:
             logger.warning("Could not unload an extra model: %s", exc)
-    return dropped
+    return len(slots)
+
+
+def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
+    """Drop every extra slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
+    return _drop_slots(
+        lambda slot, filling: not (spare_filling and filling)
+        and (
+            keep is None
+            or (
+                bool(slot.llama.is_loaded or slot.orchestrator.active_model_name)
+                and not keep(slot.llama)
+            )
+        )
+    )
+
+
+def unload_llama_slots() -> int:
+    """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
+    return _drop_slots(
+        lambda slot, filling: slot.llama.is_active
+        or slot.llama.is_loaded
+        or (filling and not getattr(slot.orchestrator, "loading_models", None))
+    )
 
 
 # Serializes opt-in auto-switch loads so two requests can't race a swap. One
@@ -11294,6 +11295,8 @@ _preview_resident_ident: Optional[str] = None
 
 def _set_preview_resident(ident: Optional[str]) -> None:
     global _preview_resident_ident
+    if routed_slot.get() is not None:
+        return  # a model kept alongside never takes the preview seat
     with _preview_slot_lock:
         _preview_resident_ident = ident
 
@@ -16938,22 +16941,18 @@ async def load_model_gated(
                 if new_slot:
                     reload_gate = None
                 elif extra is not None:
-
-                    def reload_gate(*, cancel):
-                        return _raise_or_cancel_slot_generations(
-                            extra,
-                            force = request.force_cancel_active,
-                            cancel = cancel,
-                            action = "Reloading this model",
-                        )
+                    reload_gate = functools.partial(
+                        _raise_or_cancel_slot_generations,
+                        extra,
+                        force = request.force_cancel_active,
+                        action = "Reloading this model",
+                    )
                 else:
-
-                    def reload_gate(*, cancel):
-                        return _raise_or_cancel_active_generations(
-                            force = request.force_cancel_active,
-                            action = "Loading a model",
-                            cancel = cancel,
-                        )
+                    reload_gate = functools.partial(
+                        _raise_or_cancel_active_generations,
+                        force = request.force_cancel_active,
+                        action = "Loading a model",
+                    )
 
                 while True:
                     try:
@@ -17478,8 +17477,7 @@ async def _load_model_impl(
             api_monitor.discard(_load_event)
             logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
             # A no-op Unsloth load of a preview-owned checkpoint still claims it.
-            if replacing:
-                _set_preview_resident(None)
+            _set_preview_resident(None)
             if ollama_advertised_id:
                 llama_backend._openai_advertised_id = ollama_advertised_id
             if replacing:
@@ -17531,8 +17529,7 @@ async def _load_model_impl(
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 backend.set_parallel_slots(_n_parallel)
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
-                if replacing:
-                    _set_preview_resident(None)
+                _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
                 _chat_template = None
@@ -18032,8 +18029,7 @@ async def _load_model_impl(
                 )
 
             # every rejection and drain has completed. the load now owns the slot for studio.
-            if replacing:
-                _set_preview_resident(None)
+            _set_preview_resident(None)
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
@@ -18205,8 +18201,7 @@ async def _load_model_impl(
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
         # every rejection and drain has completed. the load now owns the slot for studio.
-        if replacing:
-            _set_preview_resident(None)
+        _set_preview_resident(None)
         # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
         # 160s and on-loop would block _tunnel_safe_json's own padding.
         try:
