@@ -1270,3 +1270,24 @@ test("a manual toggle on the previous model does not decide the next model's CPT
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
+
+test("a config imported while defaults load survives entering and leaving CPT", async () => {
+  useTrainingConfigStore.getState().reset();
+  let resolveDefaults!: (response: Response) => void;
+  setAuthFetchHandler(
+    () =>
+      new Promise<Response>((resolve) => {
+        resolveDefaults = resolve;
+      }),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("org/model", "text");
+  useTrainingConfigStore
+    .getState()
+    .applyConfigPatch({ training: { train_on_completions: false } });
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  resolveDefaults(completionModel("org/model", false));
+  await settleStore();
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});

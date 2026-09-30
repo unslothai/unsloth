@@ -78,8 +78,9 @@ let _modelConfigController: AbortController | null = null;
 
 // Has the user manually toggled trainOnCompletions since the last auto-set?
 let _trainOnCompletionsManuallySet = false;
-// The flag outlives a model switch; CPT provenance only trusts it for this model.
-let _trainOnCompletionsManualModel: string | null = null;
+// Model whose completions value came from the user (toggle or config import), not
+// its defaults; CPT entry captures that value even while the defaults are pending.
+let _trainOnCompletionsExplicitModel: string | null = null;
 
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
@@ -230,6 +231,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 requestedTargetModulesEditGeneration;
             if (shouldApplyTrainingDefaults) {
               _trainOnCompletionsManuallySet = false;
+              _trainOnCompletionsExplicitModel = null;
             }
 
             if (modelDetails.is_lora) {
@@ -406,7 +408,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...(requestedSelectionOwnsLoraSnapshot &&
               !(
                 _trainOnCompletionsManuallySet &&
-                _trainOnCompletionsManualModel === modelName
+                _trainOnCompletionsExplicitModel === modelName
               ) &&
               get().trainingMethodProvenance.trainOnCompletionsBeforeCpt ===
                 null
@@ -1055,8 +1057,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (
             state.trainingMethod !== "cpt" &&
             trainingMethod === "cpt" &&
-            _trainOnCompletionsManuallySet &&
-            _trainOnCompletionsManualModel === state.selectedModel &&
+            state.selectedModel !== null &&
+            _trainOnCompletionsExplicitModel === state.selectedModel &&
             patch.trainingMethodProvenance
           ) {
             patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
@@ -1384,7 +1386,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
-          _trainOnCompletionsManualModel = get().selectedModel;
+          _trainOnCompletionsExplicitModel = get().selectedModel;
           setUserEdit({
             trainOnCompletions,
             trainOnCompletionsDefaultPendingFor: null,
@@ -1417,6 +1419,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
+          _trainOnCompletionsExplicitModel = null;
           _targetModulesEditGeneration += 1;
           for (const key of LORA_PARAM_KEYS) {
             _loraParamEditGenerations[key] += 1;
@@ -1441,6 +1444,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
           for (const key of LORA_PARAM_KEYS) {
             if (patch[key] !== undefined) _loraParamEditGenerations[key] += 1;
+          }
+          if (patch.trainOnCompletions !== undefined) {
+            _trainOnCompletionsExplicitModel = get().selectedModel;
           }
           setUserEdit((state) => {
             const importsCompletionsInCpt =
