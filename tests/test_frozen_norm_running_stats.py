@@ -17,7 +17,6 @@ peft = pytest.importorskip("peft")
 U = pytest.importorskip("unsloth.models._utils")
 vision = pytest.importorskip("unsloth.models.vision")
 FastBaseModel = vision.FastBaseModel
-# Trainer.training_step calls this on every micro-step.
 TRAIN = U._unsloth_train_if_needed
 
 

@@ -4678,10 +4678,7 @@ def _unsloth_norm_train(module, mode = True):
 
 
 def _unsloth_freeze_norm_running_stats(model):
-    """Keep frozen running-stat norms in eval so train() cannot overwrite buffers LoRA never saves.
-
-    Checked on every train() call, so trainable norms (full finetuning, modules_to_save) still train.
-    """
+    """Keep frozen running-stat norms in eval (LoRA never saves their buffers); rechecked per train() call."""
     if not isinstance(model, torch.nn.Module):
         return model
     for module in model.modules():
