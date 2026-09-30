@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_widen_pin_ids_for_companion_devices (issue #11810).
-
-A single-GPU pin sets CUDA_VISIBLE_DEVICES to the main model's cards, so user extra
-args like --mmproj-device CUDA1 name a GPU the child cannot see and llama.cpp rejects
-the flag at argument parsing as "invalid device" -- then Studio's fit/retry chain
-burns four attempts on the same masked environment blaming fit and the drafter.
-The pin is a MAIN-model placement constraint only, so the mask grows to cover the
-companion GPUs, the companion flags are renumbered to the child's positions, and a
---device keeps the main model on its original cards.
-"""
+"""_widen_pin_ids_for_companion_devices (#11810): --mmproj-device / --spec-draft-device
+naming a card the pin hides was "invalid device"; the mask now widens to cover it."""
 
 import pytest
 
@@ -46,8 +38,7 @@ def test_a_hidden_companion_device_widens_the_mask():
 
 
 def test_a_companion_on_a_lower_card_is_renumbered_not_left_on_the_main_card():
-    # Main pinned to GPU 1, projector on GPU 0: the child mask is "1,0", where CUDA0 is
-    # the MAIN card, so leaving the user's token alone would stack both on GPU 1.
+    # child mask "1,0": an untouched CUDA0 would stack the projector on the main card
     cmd, pin, _ = _widen([1], ["--mmproj-device", "CUDA0"])
     assert pin == [1, 0]
     assert _value(cmd, "--mmproj-device") == "CUDA1"
@@ -163,9 +154,7 @@ def test_an_explicit_pin_still_renumbers_a_companion_on_one_of_its_cards():
 
 
 def test_an_arch_crash_retry_refits_the_companion_to_the_new_mask():
-    # [0] widened to [0, 1] for the projector on CUDA1; GPU 0 then crashes and the
-    # respawn is masked to physical 2. Read through the crashed launch's mask, the
-    # projector still names physical 1, and the main model moves to physical 2.
+    # [0] widened to [0, 1]; GPU 0 crashes, respawn on 2: projector stays on physical 1
     cmd, first, _ = _widen([0], ["--mmproj-device", "CUDA1"])
     assert first == [0, 1] and cmd[-2:] == ["--device", "CUDA0"]
     del cmd[-2:]  # the generated main --device, as the retry drops it

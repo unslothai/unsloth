@@ -6071,27 +6071,14 @@ def _widen_pin_ids_for_companion_devices(
     *,
     may_widen: bool = True,
 ) -> tuple[list[int], str]:
-    """Fit a pinned GPU mask to the companion devices the launch argv names (#11810).
+    """Fit a pinned GPU mask to the companion devices the argv names (#11810).
 
-    ``--mmproj-device`` / ``--spec-draft-device`` name GPUs the way llama.cpp numbers
-    them without Studio's pin: position in the inherited visible set (``inherited_ids``,
-    physical ids in mask order), or the physical index when nothing is masked. The pin
-    re-numbers the child's devices from 0, so a companion on a hidden card, or on a pinned
-    card that is not the child's first, is "invalid device" to llama.cpp, and Studio's
-    retry chain then misreads that as a fit or drafter failure.
-
-    The pin constrains the MAIN model only, so any card a companion names that the pin
-    hides is appended to the mask, and the ``CUDA<n>`` / ``ROCm<n>`` tokens of the flag
-    that wins for each companion are rewritten to that card's position in the child's mask
-    (an earlier, overridden flag is left as it is). When cards were
-    added and the argv has no main ``--device``, one is appended so the main model keeps
-    the pinned cards instead of spreading over the wider mask under ``-ngl -1``. A token
-    that maps to no card the parent can see is left alone, so the mask never reaches past
-    the parent's. Reads the argv, not the request's extra args, so flags that were
-    stripped (explicit gpu_ids own placement) change nothing. With ``may_widen`` False
-    (an explicit gpu_ids pin, the pool the training guard budgeted) a companion is only
-    renumbered within the pinned cards; one naming another card is left for llama.cpp to
-    refuse, as before. Returns the mask and a log note, empty when nothing changed.
+    Companion ``CUDA<n>`` / ``ROCm<n>`` tokens use the unpinned numbering (position in
+    ``inherited_ids``, else the physical index). Cards they name are appended after the
+    pinned ones, the winning flag is renumbered to the child's mask, and a main
+    ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
+    the parent cannot see are left alone. ``may_widen`` False (explicit gpu_ids) only
+    renumbers within the pin. Returns the mask and a log note, empty when unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
@@ -28762,8 +28749,7 @@ class LlamaCppBackend:
                 # own devices, the child aborting on a pin it cannot see. The
                 # draft-device forms count too: parsed with no drafter loaded.
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
-                # Set when companion flags were fitted to the child's mask, so a respawn on
-                # other cards can fit them again (see the arch-crash retry).
+                # companion flags fitted to the child's mask, refitted by the arch-crash retry
                 _companion_fit_mask: Optional[list[int]] = None
                 _companion_added_device: Optional[list[str]] = None
                 if not is_vulkan_backend and _gpu_mem:
@@ -28873,14 +28859,9 @@ class LlamaCppBackend:
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
-                    # Companion-device flags number GPUs as the unpinned child would see
-                    # them, so the pin can make them "invalid device" (#11810). Fit the
-                    # mask and the flags here, after the inherited order resolved and
-                    # rewrote the split, before the mask becomes the child's environment.
-                    # A uuid/MIG mask cannot say which card CUDA<n> meant: leave it be.
-                    # An inherited LLAMA_ARG_DEVICE is the user's main-device choice in the
-                    # unpinned numbering; widening would have to append a --device that
-                    # overrides it, so that launch is left as it was.
+                    # Companion flags use the unpinned numbering (#11810). Skipped for a
+                    # uuid/MIG mask (CUDA<n> is ambiguous) and an inherited LLAMA_ARG_DEVICE
+                    # (the appended --device would override it).
                     _companion_widen = ""
                     if not self._visibility_mask_is_unmappable() and not (
                         _extra_args_main_device(cmd) is None
@@ -30124,9 +30105,7 @@ class LlamaCppBackend:
                             )
                         _retry_mask = list(_remaining)
                         if _companion_fit_mask is not None:
-                            # The companion flags and the generated main --device were
-                            # numbered for the crashed launch's mask: fit them to this one,
-                            # reading each token as a position in that previous mask.
+                            # tokens are positions in the crashed launch's mask
                             if _companion_added_device is not None:
                                 for _k in range(len(cmd) - 1, 0, -1):
                                     if cmd[_k - 1 : _k + 1] == _companion_added_device:
