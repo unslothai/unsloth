@@ -826,7 +826,11 @@ function ComparePane({
       )}
     >
       {header}
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [&_.aui-thread-viewport]:px-6 lg:[&_.aui-thread-viewport]:px-10">
+        <div
+          aria-hidden={true}
+          className="compare-pane-fade pointer-events-none absolute top-0 left-0 right-[var(--thread-scrollbar-gutter,10px)] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+        />
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
@@ -1066,6 +1070,7 @@ function GeneralCompareHeader({
   onModelsChange,
   deleteDisabled,
   side,
+  label,
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -1082,6 +1087,7 @@ function GeneralCompareHeader({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   side: "left" | "right";
+  label?: "Base Model" | "Fine-tuned";
 }): ReactElement {
   // Controlled so the body-portaled popover cannot linger over another tab off-route.
   const active = useChatActive();
@@ -1095,7 +1101,9 @@ function GeneralCompareHeader({
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
-            : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+            : isTauri
+              ? "pl-12 pr-3 md:pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
           : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
@@ -1116,8 +1124,39 @@ function GeneralCompareHeader({
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
+      {label ? (
+        <span
+          className={cn(
+            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 items-center text-ui-10 font-semibold uppercase tracking-wider sm:flex",
+            side === "right" && "ml-auto",
+            label === "Fine-tuned" ? "text-primary" : "text-muted-foreground",
+          )}
+        >
+          {label}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+/** Base Model / Fine-tuned labels when one pane is a LoRA trained on the other pane's model. */
+function generalCompareLabels(
+  loraModels: LoraModelOption[],
+  model1: CompareModelSelection,
+  model2: CompareModelSelection,
+): ["Base Model" | "Fine-tuned" | undefined, "Base Model" | "Fine-tuned" | undefined] {
+  const baseOf = (sel: CompareModelSelection) =>
+    sel.isLora
+      ? loraModels.find((lora) => lora.id === sel.id)?.baseModel
+      : undefined;
+  const isTunedFrom = (tuned: CompareModelSelection, base: CompareModelSelection) => {
+    const loraBase = baseOf(tuned);
+    return Boolean(loraBase && base.id) &&
+      normalizeModelRef(loraBase) === normalizeModelRef(base.id);
+  };
+  if (isTunedFrom(model1, model2)) return ["Fine-tuned", "Base Model"];
+  if (isTunedFrom(model2, model1)) return ["Base Model", "Fine-tuned"];
+  return [undefined, undefined];
 }
 
 /** General path: any two models, sequential load → generate. */
@@ -1158,10 +1197,14 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  // A compare send is idle between the two sequential runs; a re-list there swaps the pane threads mid-send.
+  const [comparing, setComparing] = useState(false);
   const listedPairRef = useRef<string | null>(null);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
-    isLora: false,
+    isLora: loraModels.some(
+      (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
+    ),
     ggufVariant: globalGgufVariant ?? undefined,
     isDiffusion: globalIsDiffusion,
   });
@@ -1184,7 +1227,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (anyRunning && listedPairRef.current === pairId) return;
+    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
     setThreadsSettled(false);
@@ -1206,7 +1249,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, anyRunning]);
+  }, [pairId, anyRunning, comparing]);
 
   useEffect(() => {
     if (!threadsSettled) return;
@@ -1219,6 +1262,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     threadsSettled,
   ]);
 
+  const [model1Label, model2Label] = generalCompareLabels(
+    loraModels,
+    model1,
+    model2,
+  );
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -1229,8 +1278,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
+            onComparingChange={setComparing}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
+            sendUnavailableReason={
+              threadsSettled ? undefined : "Loading comparison history."
+            }
           />
         ) : (
           <></>
@@ -1250,6 +1303,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           header={
             <GeneralCompareHeader
               side="left"
+              label={model1Label}
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
@@ -1285,6 +1339,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           header={
             <GeneralCompareHeader
               side="right"
+              label={model2Label}
               models={models}
               loraModels={loraModels}
               externalModels={externalModels}
@@ -4150,12 +4205,12 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(10px*var(--ui-space-scale,1))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[var(--thread-scrollbar-gutter,10px)] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -4164,7 +4219,7 @@ export function ChatPage({
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                   : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[calc(10px*var(--ui-space-scale,1))] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">

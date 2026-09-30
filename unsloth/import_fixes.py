@@ -8290,7 +8290,8 @@ def _patch_peft_moe_target_conversion(twc):
 
         target_modules = getattr(peft_config, "target_modules", None)
         if isinstance(target_modules, str):
-            if "." in target_modules:
+            # peft 0.19 turns the string into a set of characters and then fails to find any target.
+            if "." in target_modules or not hasattr(twc, "_resolve_string_target_modules"):
                 return
             return original_convert_moe(peft_config, model_type)
 
@@ -8312,7 +8313,119 @@ def _patch_peft_moe_target_conversion(twc):
         peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
 
     twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    # transformers <= 5.5 mapped qwen2_moe onto itself, later releases dropped it and peft adds only
+    # "mixtral", so a qwen2_moe v4 adapter loaded with its experts silently unconverted.
+    pattern_map = getattr(twc, "_MODEL_TO_CONVERSION_PATTERN", None)
+    if isinstance(pattern_map, dict):
+        for base_model_type in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}):
+            if not dict.__contains__(pattern_map, base_model_type):
+                pattern_map[base_model_type] = base_model_type
+    _patch_peft_moe_keep_linear_targets(twc)
     twc._unsloth_moe_target_conversion_patch = True
+
+
+def _is_lora_linear_target(module):
+    from torch import nn
+
+    # Quantized linears PEFT wraps that are not nn.Linear: GPTQ / AWQ / HQQ / Megatron shapes, EETQ / AQLM names.
+    if isinstance(module, nn.Linear):
+        return True
+    if isinstance(module, (nn.Embedding, nn.modules.conv._ConvNd)):
+        return False
+    if "Linear" in type(module).__name__:
+        return True
+    return any(
+        hasattr(module, a) and hasattr(module, b)
+        for a, b in (
+            ("in_features", "out_features"),
+            ("infeatures", "outfeatures"),
+            ("input_size", "output_size"),
+        )
+    )
+
+
+def _moe_linear_targets_to_restore(twc, model, before, peft_config):
+    """Converted-away targets that name linear layers (shared experts, first_k_dense layers), which PEFT
+    otherwise leaves without LoRA and whose v4 adapter weights it drops."""
+    after = peft_config.target_modules
+    if after is None or isinstance(after, str):
+        return set()
+    after = set(after)
+    modules = list(model.named_modules())
+
+    if isinstance(before, str):
+        if not hasattr(twc, "_resolve_string_target_modules"):
+            return set()
+        old_names = set()
+        for mapping in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}).values():
+            old_names.update(mapping)
+        output = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+        candidates = set()
+        for name, module in modules:
+            leaf = name.rpartition(".")[-1]
+            if leaf not in old_names or leaf in after or not _is_lora_linear_target(module):
+                continue
+            if module is output:
+                continue
+            if before.lower() == "all-linear":
+                candidates.add(leaf)  # peft resolves all-linear to leaf names too
+            elif re.fullmatch(before, name):
+                candidates.add(name)  # a regex may select one layer: keep exactly what it matched
+    else:
+        candidates = set(before) - after
+
+    target_parameters = set(peft_config.target_parameters or ())
+    restore = set()
+    for target in candidates:
+        matched = [
+            (name, module)
+            for name, module in modules
+            if name == target or name.endswith("." + target)
+        ]
+        # Not the router or experts, and never a Linear whose weight is now a parameter target.
+        linear = [
+            name
+            for name, module in matched
+            if _is_lora_linear_target(module)
+            and not any(
+                f"{name}.weight" == parameter or f"{name}.weight".endswith("." + parameter)
+                for parameter in target_parameters
+            )
+        ]
+        if not linear:
+            continue
+        if len(linear) == len(matched):
+            restore.add(target)
+        else:
+            restore.update(linear)  # a non-Linear namesake must not take the Linears down with it
+    return restore
+
+
+def _patch_peft_moe_keep_linear_targets(twc):
+    original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
+    if original_convert is None or getattr(
+        original_convert, "_unsloth_keeps_linear_targets", False
+    ):
+        return
+
+    @functools.wraps(original_convert)
+    def convert_peft_config_for_transformers(peft_config, model, *args, **kwargs):
+        before = getattr(peft_config, "target_modules", None)
+        before = before if isinstance(before, str) or before is None else list(before)
+        result = original_convert(peft_config, model, *args, **kwargs)
+        if before is None or not hasattr(model, "named_modules"):
+            return result
+        try:
+            restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
+        except Exception as exc:
+            logger.warning("Unsloth: could not restore MoE Linear LoRA targets: %s", exc)
+            return result
+        if restore:
+            peft_config.target_modules = set(peft_config.target_modules) | restore
+        return result
+
+    convert_peft_config_for_transformers._unsloth_keeps_linear_targets = True
+    twc.convert_peft_config_for_transformers = convert_peft_config_for_transformers
 
 
 CAUSAL_CONV1D_BROKEN = False

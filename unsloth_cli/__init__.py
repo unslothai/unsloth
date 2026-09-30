@@ -83,6 +83,7 @@ else:
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
     from unsloth_cli.commands.export import export, list_checkpoints
+    from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.studio import (
         run as studio_run,
         studio_app,
@@ -216,6 +217,7 @@ if not _windows_studio_mutation_entry:
     app.command()(inference)
     app.command()(chat)
     app.command()(export)
+    app.command("eval")(eval_command)
     app.command("list-checkpoints")(list_checkpoints)
     app.add_typer(
         start_app,
