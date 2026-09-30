@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -9809,3 +9810,152 @@ def test_direct_gguf_labels_keep_packed_and_grouped_quants():
         ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
     ):
         assert start._direct_gguf_variant_labels(name)[1] == label
+
+
+GiB = 1024**3
+
+
+class _LoadServer:
+    """Fake Studio: `listing` answers active-downloads, `repos` maps repo -> iterator of progress readings."""
+
+    def __init__(self, listing, repos):
+        self.listing = listing
+        self.repos = {repo: iter(readings) for repo, readings in repos.items()}
+        self.urls = []
+
+    def __call__(
+        self,
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        self.urls.append(url)
+        if url.endswith("/active-downloads"):
+            if isinstance(self.listing, Exception):
+                raise self.listing
+            return {"downloads": self.listing}
+        repo = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["repo_id"][0]
+        reading = next(self.repos[repo])
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    def count(self, fragment):
+        return sum(fragment in url for url in self.urls)
+
+
+def _reading(
+    downloaded,
+    expected = 4 * GiB,
+    completed = 0,
+):
+    return {
+        "downloaded_bytes": downloaded,
+        "completed_bytes": completed,
+        "expected_bytes": expected,
+    }
+
+
+def _load_job(repo, **extra):
+    return {"repo_id": repo, "owner": "load", "state": "running", **extra}
+
+
+def _progress(monkeypatch, server, clock):
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    return start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+
+def test_model_download_progress_counts_the_base_a_load_reports(monkeypatch, capsys):
+    adapter_done = _reading(8 * 1024**2, 8 * 1024**2, 8 * 1024**2)
+    server = _LoadServer(
+        [
+            _load_job("owner/base"),
+            {"repo_id": "someone/else", "state": "running"},
+            {"repo_id": "owner/attached", "state": "running", "load_attached": True},
+        ],
+        {
+            "owner/adapter": [adapter_done] * 3,
+            "owner/base": [_reading(0), _reading(1 * GiB), _reading(2 * GiB)],
+            "owner/attached": [_reading(3 * GiB)] + [TimeoutError("slow")] * 2,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(3):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert progress.downloaded_bytes == 8 * 1024**2 + 2 * GiB + 3 * GiB
+    assert server.count("someone%2Felse") == 0
+    # The line follows the base as it grows, not the attached job first seen at 3 GiB.
+    out = capsys.readouterr().out
+    assert "1.0 GiB / 4.0 GiB" in out and "3.0 GiB" not in out
+
+
+def test_model_download_progress_lists_load_jobs_at_most_every_interval(monkeypatch):
+    done = _reading(4 * GiB, completed = 4 * GiB)
+    server = _LoadServer(
+        [_load_job("owner/base")],
+        {
+            "owner/adapter": [_reading(1024)] * 20,
+            "owner/base": [_reading(GiB), done] + [AssertionError] * 20,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 3
+    # A finished base is not scanned again, but its bytes still count.
+    assert server.count("owner%2Fbase") == 2
+    assert progress.downloaded_bytes == 1024 + 4 * GiB
+
+
+def test_model_download_progress_stops_listing_on_a_server_without_the_route(monkeypatch):
+    missing = urllib.error.HTTPError(BASE, 404, "Not Found", None, None)
+    server = _LoadServer(missing, {"owner/adapter": [_reading(1024)] * 20})
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 1
+    assert progress.downloaded_bytes == 1024
+
+
+def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    display.update(_reading(19 * 1024**2, 20 * 1024**2), "owner/adapter")
+    display.update(_reading(GiB), "owner/base")
+
+    out = capsys.readouterr().out
+    assert "19.0 MiB / 20.0 MiB" in out
+    assert "1.0 GiB / 4.0 GiB" in out
+
+
+def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monkeypatch):
+    server = _LoadServer(
+        [_load_job("owner/base")], {"owner/base": [_reading(GiB), _reading(2 * GiB)]}
+    )
+    clock = [0.0]
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "/models/my-lora", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 2 * GiB
+    assert server.count("my-lora") == 0

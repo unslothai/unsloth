@@ -134,15 +134,18 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  // Only the Windows auto reset may set a width; hiding the rail is what a
+  // Only the Windows-wide auto reset may set a width; hiding the rail is what a
   // width override caused before.
   const railWidthDecls = (
     INDEX.match(
       /\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g,
     ) ?? []
   ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());
-  assert.deepEqual(railWidthDecls, ["auto"]);
-  assert.match(INDEX, /:root\.client-windows \.sidebar-scroll-fade,/);
+  assert.deepEqual(railWidthDecls, []);
+  assert.match(
+    INDEX,
+    /:root\.client-windows \*,\s*:root\.client-windows \*:hover \{\s*scrollbar-width: auto;/,
+  );
   assert.equal(
     /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),
     false,
