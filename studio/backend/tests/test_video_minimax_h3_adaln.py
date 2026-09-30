@@ -330,7 +330,6 @@ def _to_copy_inputs(proj, temb):
 
 
 def test_modulation_casts_with_the_modality_axis_still_split():
-    # torch 2.12-2.14 Inductor mis-indexes the bias when the cast follows the flat view (unbacked rows).
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
     proj = model.transformer_blocks[0].adaln_proj
