@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
+import { proxiedFavicon } from "./favicon";
 import { FileView } from "./file-view";
 import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
@@ -66,9 +67,17 @@ function useFrameMessages(tabId: string, origin: string | null) {
           openExternalLink(message.url);
           break;
         case "loaded": {
-          store.updateTab(tabId, { title: message.title, favicon: safeFavicon(message.favicon), loading: false });
+          store.updateTab(tabId, { title: message.title, favicon: null, loading: false });
           const tab = store.tabs.find((candidate) => candidate.id === tabId);
           const entry = tab ? currentEntry(tab) : null;
+          const favicon = safeFavicon(message.favicon);
+          if (favicon && entry) {
+            void proxiedFavicon(favicon).then((icon) => {
+              const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+              // Skip if the tab has moved on to another page.
+              if (icon && now && currentEntry(now) === entry) useBrowserStore.getState().updateTab(tabId, { favicon: icon });
+            });
+          }
           // POST results can't be revisited, so they stay out of history.
           if (tab && entry?.kind === "web" && entry.method !== "POST") {
             useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title);
