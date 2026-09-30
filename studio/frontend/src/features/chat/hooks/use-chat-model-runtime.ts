@@ -1106,7 +1106,7 @@ export function useChatModelRuntime() {
             await run.settledPromise;
             if (run.loadAttemptPath && run.forceCancelActive && !run.residentModelUnloaded) {
               try {
-                const status = await getInferenceStatus();
+                const status = await getInferenceStatus(undefined, run.rollbackCheckpoint ?? undefined);
                 if ((status.loading?.length ?? 0) === 0) {
                   run.residentModelUnloaded = !residentModelMatchesPick(status, {
                     id: run.rollbackCheckpoint ?? "",
@@ -1323,7 +1323,10 @@ export function useChatModelRuntime() {
                 }
                 if (activeRunBeforeCredentials.residentModelUnloaded) {
                   try {
-                    const status = await getInferenceStatus();
+                    const status = await getInferenceStatus(
+                      undefined,
+                      activeRunBeforeCredentials.rollbackCheckpoint ?? undefined,
+                    );
                     if (modelSelectionIntentEpoch !== loadIntentId) return;
                     if (
                       (status.loading?.length ?? 0) === 0 &&
@@ -1388,7 +1391,10 @@ export function useChatModelRuntime() {
             // rollback checkpoint. Confirm that resident before snapshotting its effective config;
             // a failed compensation leaves the same checkpoint in the store but no resident.
             try {
-              const status = await getInferenceStatus();
+              const status = await getInferenceStatus(
+                undefined,
+                activeRunBeforeCredentials.rollbackCheckpoint ?? undefined,
+              );
               if (
                 (status.loading?.length ?? 0) === 0 &&
                 residentModelMatchesPick(status, {
