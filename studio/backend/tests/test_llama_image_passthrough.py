@@ -142,6 +142,15 @@ def test_light_strokes_on_a_transparent_background_stay_visible():
     assert min(stb_view.getpixel((32, 24))) > 192
 
 
+def test_a_faint_light_halo_does_not_black_out_dark_content():
+    img = Image.new("RGBA", (64, 48), (255, 255, 255, 3))
+    img.paste((0, 0, 0, 255), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img, "PNG")))
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert min(stb_view.getpixel((2, 2))) > 192
+    assert max(stb_view.getpixel((32, 24))) < 64
+
+
 @pytest.mark.parametrize("mode, key", [("RGB", (0, 0, 0)), ("L", 0)], ids = ["rgb", "grey"])
 def test_colour_keyed_png_background_is_composited(mode, key):
     img = Image.new(mode, (64, 48), key)

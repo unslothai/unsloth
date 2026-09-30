@@ -327,7 +327,7 @@ def flattened_rgb(image):
     dark text or line art converts to black on black and the model is handed a
     blank rectangle. Only images that actually carry alpha take the composite.
     """
-    from PIL import Image
+    from PIL import Image, ImageChops, ImageStat
 
     # Match routes/inference.py's _image_bytes_to_png_b64: scale declared I;16
     # values to 8-bit before RGB conversion clips them. I;16B/I;16L must pass
@@ -343,8 +343,9 @@ def flattened_rgb(image):
     rgba = image.convert("RGBA")
     alpha = rgba.getchannel("A")
     # Light ink (dark-mode logos, white text) would vanish on white: it goes onto black.
-    hist = rgba.convert("L").histogram(alpha)
-    light = sum(i * n for i, n in enumerate(hist)) > 128 * sum(hist) > 0
+    # Alpha-weighted, so a faint light halo cannot outvote opaque dark content.
+    ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
+    light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
     canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
     canvas.paste(rgba, mask = alpha)
     return canvas
