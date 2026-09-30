@@ -466,7 +466,17 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     assert "aui.composer().addAttachment(file)" in thread
     assert "onPaste={handleFilePaste}" in shared_composer
     assert "pasteClipboardFiles" in shared_composer
-    assert "addFiles(files)" in shared_composer
+    # The paste handler has to hand the pasted files to the same add path a drop or the file picker
+    # uses. #9788 moved it from addFiles(files) to trackAttaching(... addFilesUntracked(files)) so
+    # the in-flight counter is bumped once rather than twice; either spelling is the contract, but
+    # an untracked add must sit inside trackAttaching or a send can race the paste.
+    paste = shared_composer[shared_composer.index("const handleFilePaste") :]
+    paste = paste[: paste.index("\n  );\n")]
+    assert "pasteClipboardFiles(" in paste
+    added = re.findall(r"\b(addFiles|addFilesUntracked)\(files\)", paste)
+    assert added, "the compare composer's paste handler no longer adds the pasted files"
+    if "addFilesUntracked" in added:
+        assert "trackAttaching(" in paste
     assert capabilities.count('"clipboard-manager:allow-read-image"') == 1
     assert '"clipboard-manager:allow-read-text"' not in capabilities
 
@@ -632,25 +642,23 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
-    assert "const contentBorderLeft = pinned" in source
-    assert ': "0px";' in source
+    # The card's corner starts on the sidebar's last column, so its left edge meets the sidebar's.
+    assert "const cornerLeft = `calc(${sidebarWidth} - 1px)`;" in source
 
     # Keep the decoration below z-50 modals and outside the z-[70] header.
     assert 'data-slot="window-titlebar-decoration"' in source
     decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
         'className="pointer-events-none absolute inset-x-0 '
-        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
-    # The border is always visible.
-    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
-    # The backing and corner only appear when pinned.
-    assert decoration.count("{pinned && (") == 2
-    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
-    assert (
-        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in decoration
-    )
+    # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
+    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border",' in decoration
+    assert 'pinned && "rounded-tl-[12px] border-l",' in decoration
+    assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
+    # The sidebar-coloured mask outside the corner only appears when pinned.
+    assert decoration.count("{pinned && (") == 1
+    assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():

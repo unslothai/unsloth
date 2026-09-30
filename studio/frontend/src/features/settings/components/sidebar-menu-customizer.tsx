@@ -6,8 +6,8 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DragDropVerticalIcon,
-  Globe02Icon,
   HelpCircleIcon,
+  InternetIcon,
   Logout05Icon,
   Moon02Icon,
   PaintBrush02Icon,
@@ -29,7 +29,7 @@ const ITEM_META: Record<
   SidebarMenuItemPref["id"],
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
-  api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
+  api: { icon: InternetIcon, labelKey: "shell.navigation.api" },
   darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },

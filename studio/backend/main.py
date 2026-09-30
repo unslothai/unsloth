@@ -365,6 +365,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.library import router as library_router
@@ -999,10 +1000,15 @@ app = FastAPI(
 )
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
+from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
+
+# Mounted ahead of /mcp, which would otherwise swallow this path.
+_decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
+app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
+
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
-    from fastmcp.utilities.lifespan import combine_lifespans
-
     from mcp_server import BearerTokenMiddleware, create_studio_mcp
 
     _studio_mcp_app = create_studio_mcp().http_app(path = "/")
@@ -1011,7 +1017,9 @@ if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
     if not _mcp_token:
         raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
     _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
-    app.router.lifespan_context = combine_lifespans(lifespan, _studio_mcp_lifespan)
+    app.router.lifespan_context = combine_lifespans(
+        app.router.lifespan_context, _studio_mcp_lifespan
+    )
     app.mount("/mcp", _studio_mcp_app)
 
 from loggers.config import LogConfig
@@ -1626,6 +1634,7 @@ app.add_middleware(
         "X-Unsloth-Conflict-Kind",
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
+        "X-Unsloth-Monitor-ID",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
@@ -2168,6 +2177,7 @@ def _get_cached_system_gpu_info(
     import time
     from utils.hardware import (
         get_backend_visible_gpu_info,
+        get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
     )
@@ -2290,15 +2300,20 @@ def _get_cached_system_gpu_info(
             inference_gpu_info = gpu_info
         else:
             vulkan_info = get_vulkan_inference_gpu_info()
-            inference_gpu_info = (
-                {
+            cross_vendor_info = (
+                get_cross_vendor_inference_gpu_info() if vulkan_info is None else None
+            )
+            if vulkan_info is not None:
+                inference_gpu_info = {
                     **vulkan_info,
                     # Pinnable only once the probe enumerated devices: without ordinals there is nothing to offer.
                     "gguf_gpu_ids_supported": bool(vulkan_info.get("devices")),
                 }
-                if vulkan_info is not None
-                else gpu_info
-            )
+            elif cross_vendor_info is not None:
+                # SMI row numbers, not the ordinals a pin is applied in.
+                inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
+            else:
+                inference_gpu_info = gpu_info
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)

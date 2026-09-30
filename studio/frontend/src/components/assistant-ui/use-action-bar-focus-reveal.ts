@@ -35,6 +35,7 @@ export function useActionBarFocusReveal() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const focusWithinRef = useRef(false);
   const clearFrameRef = useRef<number | null>(null);
+  const popupObserverRef = useRef<MutationObserver | null>(null);
 
   // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
   // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
@@ -66,23 +67,16 @@ export function useActionBarFocusReveal() {
       cancelAnimationFrame(clearFrameRef.current);
       clearFrameRef.current = null;
     }
+    popupObserverRef.current?.disconnect();
+    popupObserverRef.current = null;
   }, []);
 
-  /**
-   * Decide, a frame from now, whether focus has really left, and keep asking until it has.
-   *
-   * Deferred rather than read off `relatedTarget`: that is null both for focus going to the
-   * browser chrome and for focus entering a portal, and it says nothing at all when the
-   * focused element is REMOVED, which is how a menu closes and which Chrome reports with no
-   * focusout event whatsoever. Reading `document.activeElement` a frame later answers all of
-   * them. Clearing late costs a frame of a mounted bar; clearing early destroys the element
-   * the user is on, so late is the safe direction.
-   */
+  /** Defer clearing until focus settles; observe popup closure instead of polling. */
   const scheduleClear = useCallback(
     (restart: boolean) => {
-      if (clearFrameRef.current !== null) {
+      if (clearFrameRef.current !== null || popupObserverRef.current !== null) {
         if (!restart) return;
-        cancelAnimationFrame(clearFrameRef.current);
+        cancelPendingClear();
       }
       const decide = () => {
         clearFrameRef.current = null;
@@ -90,12 +84,32 @@ export function useActionBarFocusReveal() {
         if (!el || !focusWithinRef.current) return;
         const active = document.activeElement;
         if (active && el.contains(active)) return;
-        if (openPopupTrigger()) {
-          // Focus is in this message's own portaled menu, whose interaction lock is holding
-          // the bar open anyway. Deciding now would be wrong and deciding never would pin the
-          // bar open for good, so ask again next frame; the loop lasts only as long as the
-          // menu is open on this one message.
-          clearFrameRef.current = requestAnimationFrame(decide);
+        const trigger = openPopupTrigger();
+        if (trigger) {
+          // Watch closure or removal without waking for streamed content.
+          const observer = new MutationObserver(() => {
+            if (
+              el.contains(trigger) &&
+              trigger.getAttribute("aria-expanded") === "true"
+            )
+              return;
+            observer.disconnect();
+            popupObserverRef.current = null;
+            clearFrameRef.current = requestAnimationFrame(decide);
+          });
+          popupObserverRef.current = observer;
+          observer.observe(trigger, {
+            attributes: true,
+            attributeFilter: ["aria-expanded"],
+          });
+          for (
+            let parent = trigger.parentElement;
+            parent;
+            parent = parent.parentElement
+          ) {
+            observer.observe(parent, { childList: true });
+            if (parent === el) break;
+          }
           return;
         }
         focusWithinRef.current = false;
@@ -105,7 +119,7 @@ export function useActionBarFocusReveal() {
       };
       clearFrameRef.current = requestAnimationFrame(decide);
     },
-    [aui, openPopupTrigger],
+    [aui, openPopupTrigger, cancelPendingClear],
   );
 
   // onFocus/onBlur on a container are focusin/focusout in React, so they give focus-within.
@@ -114,10 +128,7 @@ export function useActionBarFocusReveal() {
       const el = rootRef.current;
       const target = event.target as Node | null;
       if (el && target && !el.contains(target)) {
-        // React bubbles focus events out of PORTALS along the React tree, so this is this
-        // message's own menu, rendered into document.body. Focus is not in the subtree, so do
-        // not cancel the watchdog -- the menu will take focus with it when it unmounts, and
-        // that removal fires no focusout to wake us up again.
+        // Portaled focus must keep the pending popup-close check.
         scheduleClear(false);
         return;
       }
