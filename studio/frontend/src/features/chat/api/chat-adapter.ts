@@ -5487,6 +5487,7 @@ export function createOpenAIStreamAdapter(
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Declared above the live metadata that reads it, or it is in its temporal dead zone.
       let contextWindowExceeded = false;
+      let quoteCut = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
@@ -6784,6 +6785,11 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.quote_cut) {
+                quoteCut = true;
                 continue;
               }
 
@@ -8155,6 +8161,7 @@ export function createOpenAIStreamAdapter(
         ];
         const finalIncompleteReason =
           resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          (quoteCut ? "quote_cut" : null) ??
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");

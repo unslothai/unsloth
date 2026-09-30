@@ -1634,6 +1634,7 @@ app.add_middleware(
         "X-Unsloth-Conflict-Kind",
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
+        "X-Unsloth-Monitor-ID",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser

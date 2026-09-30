@@ -32,7 +32,11 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
     ["Rain 2.6-1.mp3", "audio/mpeg", "audio"],
     ["Book.m4a", "", "audio"],
     ["clip.mov", "", "video"],
-    ["Untitled document.docx", "", "document"],
+    ["Untitled document.docx", "", "word"],
+    ["notes.odt", "", "word"],
+    ["Draft", "application/vnd.google-apps.document", "word"],
+    ["Template", "application/vnd.oasis.opendocument.text-template", "word"],
+    ["book.epub", "", "document"],
     ["results.csv", "text/csv", "spreadsheet"],
     ["deck.pptx", "", "presentation"],
     ["flappy-bird(1)(1).html", "", "web"],
@@ -55,7 +59,7 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
 test("the common kinds carry the colors people recognize", () => {
   assert.match(ATTACHMENT_KIND_ICON_CLASS.pdf, /red/);
   assert.match(ATTACHMENT_KIND_ICON_CLASS.audio, /violet/);
-  assert.match(ATTACHMENT_KIND_ICON_CLASS.document, /blue/);
+  assert.match(ATTACHMENT_KIND_ICON_CLASS.word, /#4285F4/);
   assert.match(ATTACHMENT_KIND_ICON_CLASS.spreadsheet, /emerald/);
   assert.match(ATTACHMENT_KIND_ICON_CLASS.presentation, /orange/);
 });

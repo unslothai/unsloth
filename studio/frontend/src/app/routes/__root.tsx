@@ -31,6 +31,7 @@ import {
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
@@ -39,9 +40,7 @@ import {
   SETTINGS_TABS,
   SettingsDialogMount,
   settingsTabVisible,
-  stepInterfaceScale,
   triggerShortcut,
-  useInterfaceScaleStore,
   useHubSourceNotice,
   useSettingsDialogStore,
   useShortcut,
@@ -438,7 +437,7 @@ function RootLayout() {
   // leave --studio-titlebar-height at 0 for the pages sized off it.
   const nonChatTopInset = useIsMobileShell()
     ? "pt-14"
-    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
+    : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -546,10 +545,6 @@ function RootLayout() {
   const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
   const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
     mounted ? () => void triggerShortcut(id) : null;
-  const zoomBy = (direction: 1 | -1) => () => {
-    const scale = useInterfaceScaleStore.getState();
-    scale.setScale(stepInterfaceScale(scale.scale, direction));
-  };
   // Help opens settings or a web page, so it works anywhere past sign-in.
   // Pages this account cannot open stay disabled, as in Go > Settings.
   const isOwner = useIsAccountOwner();
@@ -589,9 +584,9 @@ function RootLayout() {
     "next-chat": viaShortcut("nextChat", nextChatMounted),
     "back": routeShortcutEnabled ? () => window.history.back() : null,
     "forward": routeShortcutEnabled ? () => window.history.forward() : null,
-    "zoom-in": zoomBy(1),
-    "zoom-out": zoomBy(-1),
-    "actual-size": () => useInterfaceScaleStore.getState().reset(),
+    "zoom-in": () => zoomInterfaceFromMenu(1),
+    "zoom-out": () => zoomInterfaceFromMenu(-1),
+    "actual-size": () => zoomInterfaceFromMenu(0),
     "help-documentation": helpAction("help-documentation"),
     "help-keyboard-shortcuts": helpAction("help-keyboard-shortcuts"),
     "help-whats-new": helpAction("help-whats-new"),
@@ -671,6 +666,8 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      {/* Every route, sign-in included. */}
+      <InterfaceZoom />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -703,8 +700,8 @@ function RootLayout() {
                 ? "overflow-hidden"
                 : // Reserve the scrollbar so the Library does not shift when it appears.
                   isLibraryRoute
-                  ? "overflow-y-auto [scrollbar-gutter:stable]"
-                  : "overflow-y-auto"
+                  ? "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto [scrollbar-gutter:stable]"
+                  : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"
             }
           >
             <Navbar />
