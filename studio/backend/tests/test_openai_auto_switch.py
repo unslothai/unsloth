@@ -5970,6 +5970,7 @@ class _RefusingEmptyRenderClient:
 
     sent = []
     down = False
+    empty_status = 500
 
     def __init__(self, **_kwargs):
         pass
@@ -5995,9 +5996,10 @@ class _RefusingEmptyRenderClient:
             if rendered and rendered[-1].get("role") == "assistant":
                 rendered = rendered[:-1]
             if not rendered:
+                status = type(self).empty_status
                 return _CountResponse(
-                    {"error": {"code": 500, "message": "No messages provided."}},
-                    status_code = 500,
+                    {"error": {"code": status, "message": "No messages provided."}},
+                    status_code = status,
                 )
             if url.endswith("/input_tokens"):
                 return _CountResponse({"input_tokens": 7})
@@ -6024,6 +6026,7 @@ class _CountResponse:
 def refusing_client(monkeypatch):
     _RefusingEmptyRenderClient.sent = []
     _RefusingEmptyRenderClient.down = False
+    _RefusingEmptyRenderClient.empty_status = 500
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _RefusingEmptyRenderClient)
     return _RefusingEmptyRenderClient
 
@@ -6077,6 +6080,16 @@ def test_an_unreachable_server_is_not_retried_or_taken_for_a_refusal(refusing_cl
     with pytest.raises(RuntimeError):
         backend.count_chat_tokens([], None, None, strict = True)
     assert len(refusing_client.sent) == 1
+    assert backend._empty_chat_render_refused is False
+
+
+def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
+    """llama-server answers 503 while loading or out of slots; only a 500 is a template refusal."""
+    refusing_client.empty_status = 503
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert [m for _, m in refusing_client.sent] == [[]], "a busy server is not retried"
     assert backend._empty_chat_render_refused is False
 
 

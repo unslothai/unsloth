@@ -39893,7 +39893,8 @@ class LlamaCppBackend:
 
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
                     """(token count or None, whether the template refused to render).
-                    A timeout or dropped connection is not a refusal."""
+                    Only a 500 is a refusal: llama-server returns it for template exceptions
+                    and 503 while loading or out of slots."""
                     try:
                         # llama-server's /apply-template renders tool declarations
                         # into the prompt when ``tools`` is supplied, so pass them
@@ -39928,7 +39929,7 @@ class LlamaCppBackend:
                             json = template_body,
                         )
                         if resp.status_code != 200:
-                            return None, True
+                            return None, resp.status_code == 500
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
