@@ -820,7 +820,9 @@ def test_a_render_starts_only_after_the_background_pins_finish(fake_runtime, mon
             pass
 
     setattr(pipe, mem._PENDING_PINS_ATTR, [_Pinner()])
-    monkeypatch.setattr(pipe, "scheduler", types.SimpleNamespace(step = lambda *a, **k: None), raising = False)
+    monkeypatch.setattr(
+        pipe, "scheduler", types.SimpleNamespace(step = lambda *a, **k: None), raising = False
+    )
     original_call = type(pipe).__call__
 
     def _call(self, *args, **kwargs):

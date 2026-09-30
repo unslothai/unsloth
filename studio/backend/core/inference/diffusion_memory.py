@@ -1664,14 +1664,18 @@ def request_background_pins(pipe: Any) -> None:
 
 
 def _background_pin_enabled() -> bool:
-    return (os.environ.get(BACKGROUND_PIN_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+    return (os.environ.get(BACKGROUND_PIN_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _offload_groups(module: Any) -> list:
     """The diffusers offload groups hooked under ``module``, in registration (block) order."""
     try:
         from diffusers.hooks import group_offloading as go
-
         name = getattr(go, "_GROUP_OFFLOADING", "group_offloading")
     except Exception:  # noqa: BLE001
         return []
@@ -1695,7 +1699,13 @@ class _GroupPinner:
     first compile. A group's ``onload_`` waits for that group only, and the swap happens before the wait releases,
     so no group is ever onloaded while its host copy is being replaced."""
 
-    def __init__(self, module: Any, groups: list, device: Any, logger: Any = None):
+    def __init__(
+        self,
+        module: Any,
+        groups: list,
+        device: Any,
+        logger: Any = None,
+    ):
         import threading
 
         self.module = module
@@ -1735,7 +1745,6 @@ class _GroupPinner:
 
     def join(self) -> None:
         import threading
-
         if threading.current_thread() is not self._thread:
             self._thread.join()
 
@@ -1746,7 +1755,6 @@ class _GroupPinner:
 
     def _unpinned(self, group: Any) -> list:
         import torch
-
         return [
             (tensor, src)
             for tensor, src in list(group.cpu_param_dict.items())
@@ -1764,7 +1772,10 @@ class _GroupPinner:
         start = time.perf_counter()
         failed = None
         try:
-            if getattr(self.device, "type", None) == "cuda" and getattr(self.device, "index", None) is not None:
+            if (
+                getattr(self.device, "type", None) == "cuda"
+                and getattr(self.device, "index", None) is not None
+            ):
                 torch.cuda.set_device(self.device)
             for group in self.groups:
                 if self._stop.is_set():

@@ -22,7 +22,9 @@ def _net():
         def __init__(self):
             super().__init__()
             self.blocks = torch.nn.ModuleList(
-                torch.nn.Sequential(torch.nn.Linear(256, 384), torch.nn.GELU(), torch.nn.Linear(384, 256))
+                torch.nn.Sequential(
+                    torch.nn.Linear(256, 384), torch.nn.GELU(), torch.nn.Linear(384, 256)
+                )
                 for _ in range(6)
             )
             self.register_buffer("gain", torch.full((256,), 0.5))
@@ -37,10 +39,13 @@ def _net():
 
 def _offload(net, pinned: bool):
     from diffusers.hooks import apply_group_offloading
-
     apply_group_offloading(
-        net, onload_device = torch.device("cuda"), offload_device = torch.device("cpu"),
-        offload_type = "block_level", num_blocks_per_group = 1, use_stream = True,
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
         low_cpu_mem_usage = not pinned,
     )
     return net
@@ -53,7 +58,6 @@ def _reference(x):
 
 def _groups_pinned(net):
     import core.inference.diffusion_memory as mem
-
     groups = mem._offload_groups(net)
     return groups, all(t.is_pinned() for g in groups for t in g.cpu_param_dict.values())
 

@@ -2348,9 +2348,18 @@ def _background_pin_calls(monkeypatch, sizes, budget, **call_kw):
     deferred: list = []
     pipe, *_ = _stream_te_pipe(monkeypatch)
 
-    def _apply(module, onload_device = None, offload_device = None, offload_type = None,
-               num_blocks_per_group = None, non_blocking = False, use_stream = False,
-               record_stream = False, low_cpu_mem_usage = False, **_):
+    def _apply(
+        module,
+        onload_device = None,
+        offload_device = None,
+        offload_type = None,
+        num_blocks_per_group = None,
+        non_blocking = False,
+        use_stream = False,
+        record_stream = False,
+        low_cpu_mem_usage = False,
+        **_,
+    ):
         usage[module.name] = low_cpu_mem_usage
 
     _swap_group_offloading(monkeypatch, _apply)
@@ -2359,7 +2368,9 @@ def _background_pin_calls(monkeypatch, sizes, budget, **call_kw):
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False, raising = False)
     monkeypatch.setattr(mem, "_module_host_mib", lambda m: sizes.get(getattr(m, "name", ""), 0))
     monkeypatch.setattr(
-        mem, "_defer_pinning", lambda pipe, module, device, logger: deferred.append(module.name) or True
+        mem,
+        "_defer_pinning",
+        lambda pipe, module, device, logger: deferred.append(module.name) or True,
     )
     assert mem._apply_group_offload(pipe, "cuda", logger = None, **call_kw) is True
     return usage, deferred
@@ -2388,7 +2399,11 @@ def test_a_module_the_ram_gate_left_unpinned_gets_no_pinner(monkeypatch):
 
 def test_a_resident_dit_tier_defers_only_its_encoders(monkeypatch):
     usage, deferred = _background_pin_calls(
-        monkeypatch, _BG_SIZES, 10_000, stream_text_encoders = True, stream_transformer = False,
+        monkeypatch,
+        _BG_SIZES,
+        10_000,
+        stream_text_encoders = True,
+        stream_transformer = False,
         background_pin = True,
     )
     assert "transformer" not in usage
@@ -2396,7 +2411,9 @@ def test_a_resident_dit_tier_defers_only_its_encoders(monkeypatch):
 
 
 def test_without_background_pin_the_apply_still_pins_eagerly(monkeypatch):
-    usage, deferred = _background_pin_calls(monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True)
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True
+    )
     assert all(v is False for v in usage.values()), usage
     assert deferred == []
 
@@ -2416,18 +2433,29 @@ def test_a_pipe_request_turns_background_pinning_on(monkeypatch):
     # video asks through the pipe, so apply_memory_plan (and every stub of it) keeps its signature
     import core.inference.diffusion_memory as mem
 
-    usage, deferred = _background_pin_calls(monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True)
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True
+    )
     assert deferred == []
     import sys
 
     pipe, *_ = _stream_te_pipe(monkeypatch)
     seen: dict = {}
 
-    def _apply(module, low_cpu_mem_usage = False, use_stream = False, **_):
+    def _apply(
+        module,
+        low_cpu_mem_usage = False,
+        use_stream = False,
+        **_,
+    ):
         seen[module.name] = low_cpu_mem_usage
 
     _swap_group_offloading(monkeypatch, _apply)
-    monkeypatch.setattr(mem, "_defer_pinning", lambda pipe, module, device, logger: deferred.append(module.name) or True)
+    monkeypatch.setattr(
+        mem,
+        "_defer_pinning",
+        lambda pipe, module, device, logger: deferred.append(module.name) or True,
+    )
     mem.request_background_pins(pipe)
     assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
     assert "transformer" in deferred, deferred

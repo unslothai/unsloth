@@ -7681,7 +7681,10 @@ class VideoBackend:
                 # A render racing the post-load pinner ran every later render slower; the wait is usually over.
                 waited = finish_background_pins(getattr(state, "pipe", None))
                 if waited >= 1.0:
-                    logger.info("video.generate: waited %.1f s for the host weights to finish pinning", waited)
+                    logger.info(
+                        "video.generate: waited %.1f s for the host weights to finish pinning",
+                        waited,
+                    )
                 fam = state.family
                 if _resolved_inputs is None:
                     first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
