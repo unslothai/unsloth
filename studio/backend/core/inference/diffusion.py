@@ -7739,7 +7739,10 @@ class DiffusionBackend:
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
             # undershoot the bf16 footprint ~2x. Plan against the size table's bf16 total when it knows this repo.
-            is_narrow_base = bool(repo_id) and repo_id.strip().lower() == fam.base_repo.lower()
+            # A known mirror is a byte copy of its upstream, so it reads the upstream's table.
+            is_narrow_base = (
+                bool(repo_id) and canonical_base(repo_id).lower() == fam.base_repo.strip().lower()
+            )
             if (
                 not is_narrow_base
                 and fam.name == IDEOGRAM4_FAMILY_NAME
