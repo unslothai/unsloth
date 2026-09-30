@@ -1683,8 +1683,7 @@ class LoadResponse(_InferenceRuntimeFields):
     )
     evicted: list[str] = Field(
         default_factory = list,
-        description = "Models loaded alongside that were unloaded to make room for this one. "
-        "Each reloads when a request names it.",
+        description = "Models loaded alongside that were unloaded to make room for this one.",
     )
 
 

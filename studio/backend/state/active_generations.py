@@ -197,13 +197,6 @@ def cancel_all(account_id: Optional[str] = None, exclude: Collection[threading.E
     return len(events)
 
 
-def thread_ids_for(events: Collection[threading.Event]) -> list[str]:
-    """Distinct conversation ids of the runs holding these cancel events."""
-    with _LOCK:
-        ids = [e["thread_id"] for e in _ACTIVE.values() if e["event"] in events and e["thread_id"]]
-    return list(dict.fromkeys(ids))
-
-
 def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:
     """Signal ``thread_id``'s generations; thread ids are client-chosen, so scope by account."""
     if not thread_id:

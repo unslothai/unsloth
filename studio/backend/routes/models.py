@@ -2012,12 +2012,8 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 if await asyncio.to_thread(account_access.model_visible, m)
             ]
 
-        from routes.inference import (
-            _in_slot,
-            _llama_status_model_ids,
-            _visible_extra_slots,
-            get_llama_cpp_backend,
-        )
+        from core.inference import model_slots
+        from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         def _orchestrator_models(orchestrator) -> list[ModelDetails]:
             entries = []
@@ -2068,9 +2064,9 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         if not hide_resident:
             loaded_models += _gguf_model(llama_backend)
 
-        for slot in _visible_extra_slots():
+        for slot in model_slots.visible():
             loaded_models += _orchestrator_models(slot.orchestrator)
-            loaded_models += _in_slot(slot, lambda: _gguf_model(slot.llama))
+            loaded_models += model_slots.in_slot(slot, lambda: _gguf_model(slot.llama))
 
         all_models = []
         seen_ids = set()
@@ -2766,8 +2762,10 @@ async def discard_remote_code_download(
 
     try:
         from hub.services.models.deletion import _loaded_id_matches_repo
-        from routes.inference import extra_slot_backends, get_llama_cpp_backend
-        for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in extra_slot_backends())):
+        from core.inference import model_slots
+        from routes.inference import get_llama_cpp_backend
+
+        for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in model_slots.backends())):
             if llama_backend.is_loaded and llama_backend.model_identifier:
                 if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
                     return {"deleted": False, "reason": "loaded"}
@@ -2776,8 +2774,11 @@ async def discard_remote_code_download(
     try:
         # Peek, not construct: no orchestrator means no active model, and building one hits get_device().
         from core.inference.orchestrator import peek_inference_backend
-        from routes.inference import extra_slot_backends
-        for inference_backend in (peek_inference_backend(), *(o for _, o in extra_slot_backends())):
+        from core.inference import model_slots
+        for inference_backend in (
+            peek_inference_backend(),
+            *(o for _, o in model_slots.backends()),
+        ):
             if inference_backend is not None and inference_backend.active_model_name:
                 if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
                     return {"deleted": False, "reason": "loaded"}
@@ -3309,9 +3310,16 @@ async def delete_finetuned_model(
             ) from e
 
     try:
-        from routes.inference import extra_slot_backends, get_llama_cpp_backend
+        from core.inference import model_slots
+        from routes.inference import get_llama_cpp_backend
 
-        kept = extra_slot_backends()
+        kept = model_slots.backends()
+        filling = model_slots.filling_model()
+        if filling and _loaded_model_matches_deleted_path(filling, target_path):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Cannot delete a model while it is loading",
+            )
         for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in kept)):
             if (
                 (llama_backend.is_active or llama_backend.is_loaded)

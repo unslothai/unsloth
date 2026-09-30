@@ -845,11 +845,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
-            from routes.inference import (
-                get_llama_cpp_backend,
-                release_chat_gpu_claim,
-                unload_extra_models,
-            )
+            from core.inference.model_slots import unload_extra_models
+            from routes.inference import get_llama_cpp_backend, release_chat_gpu_claim
 
             backend = get_llama_cpp_backend()
             # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first

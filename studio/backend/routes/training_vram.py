@@ -67,10 +67,11 @@ def summarize_resident_chat() -> Dict[str, Any]:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
     try:
-        import routes.inference as _inference
-        for slot in list(_inference._extra_slots):
+        from core.inference import model_slots
+        filling_slot = model_slots.loading
+        for slot in list(model_slots.slots):
             pending = next(iter(getattr(slot.orchestrator, "loading_models", ()) or ()), None)
-            filling = _inference._loading_slot is not None and _inference._loading_slot[0] is slot
+            filling = filling_slot is not None and filling_slot[0] is slot
             name = (
                 slot.orchestrator.active_model_name
                 or pending
@@ -79,7 +80,7 @@ def summarize_resident_chat() -> Dict[str, Any]:
                     and getattr(slot.llama, "_gpu_offload_active", None) is not False
                     and (slot.llama.model_identifier or "gguf")
                 )
-                or (filling and _inference._loading_slot[1])
+                or (filling and filling_slot[1])
             )
             if name:
                 gguf_name = gguf_name or name
@@ -466,14 +467,14 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
     try:
-        from routes.inference import _extra_slots, unload_extra_models
+        from core.inference import model_slots
         kept = [
             slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
-            for slot in list(_extra_slots)
+            for slot in list(model_slots.slots)
         ]
         if kept:
             logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
-            unload_extra_models()
+            model_slots.unload_extra_models()
             freed.extend(f"kept:{name}" for name in kept)
     except Exception as e:
         logger.warning("Could not unload models kept alongside: %s", e)

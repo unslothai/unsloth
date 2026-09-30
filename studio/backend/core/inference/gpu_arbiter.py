@@ -38,7 +38,8 @@ def _evict_chat() -> None:
     import time
 
     from core.inference import get_inference_backend
-    from routes.inference import get_llama_cpp_backend, unload_extra_models
+    from core.inference.model_slots import unload_extra_models
+    from routes.inference import get_llama_cpp_backend
 
     from core.inference.llama_cpp import chat_load_active
 

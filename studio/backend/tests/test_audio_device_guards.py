@@ -272,9 +272,12 @@ def test_a_zero_gpu_standard_load_drops_the_stale_chat_claim():
     during-load release is the third, handed to load_model as a callback so it
     fires once the previous worker is gone rather than before it."""
     src = _inference_source()
-    assert src.count("await asyncio.to_thread(release, CHAT)") == 2
+    assert src.count("await asyncio.to_thread(_release_chat_for_zero_vram_primary)") == 2
     assert (
-        src.count("(lambda: release(CHAT)) if replacing and not chat_load_needs_gpu else None") == 1
+        src.count(
+            "_release_chat_for_zero_vram_primary if replacing and not chat_load_needs_gpu else None"
+        )
+        == 1
     )
 
 
@@ -367,7 +370,7 @@ def test_the_stale_chat_claim_is_dropped_before_the_load_not_only_after():
 
     src = inspect.getsource(ri._load_model_impl)
     before_load = src[: src.index("backend.load_model,")]
-    assert before_load.count("release, CHAT") >= 1
+    assert before_load.count("_release_chat_for_zero_vram_primary") >= 1
 
 
 def test_the_gguf_audio_codec_follows_the_servers_own_placement():
