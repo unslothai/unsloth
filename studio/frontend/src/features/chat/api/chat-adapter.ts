@@ -422,8 +422,7 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  // External prompt-cache fields (external_provider.py); cache_creation is Anthropic-only,
-  // cache_write_tokens is OpenRouter's.
+  // cache_creation is Anthropic's cache-write count, cache_write_tokens OpenRouter's.
   prompt_tokens_details?: {
     cached_tokens?: number;
     cache_write_tokens?: number;
