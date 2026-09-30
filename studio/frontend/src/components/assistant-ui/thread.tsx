@@ -2409,9 +2409,7 @@ const ThreadComposerDock: FC<{
         overlay ? "z-40" : "z-20",
       )}
     >
-      {/* Fade scrolling content within the composer column. Painting this
-          translucent gradient across empty gutters can produce a full-width
-          seam from color rounding in the browser compositor. */}
+      {/* Column width only: across empty gutters the gradient rounds to a visible seam. */}
       <div
         aria-hidden={true}
         className={cn(
