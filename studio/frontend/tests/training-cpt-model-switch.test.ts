@@ -963,3 +963,106 @@ test("an image dataset picked inside CPT keeps train on completions off for a vi
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
+
+const completionDefaults = (id: string, isAudio: boolean) =>
+  Response.json({
+    id,
+    config: { training: { train_on_completions: true } },
+    is_vision: false,
+    is_embedding: false,
+    is_audio: isAudio,
+    audio_type_known: true,
+    is_lora: false,
+    model_type: isAudio ? "audio" : "text",
+    model_size_bytes: null,
+    max_position_embeddings: 32768,
+  });
+
+function deferModelDefaults(): (response: Response) => void {
+  let resolveDefaults!: (response: Response) => void;
+  setAuthFetchHandler(
+    () =>
+      new Promise<Response>((resolve) => {
+        resolveDefaults = resolve;
+      }),
+  );
+  return (response) => resolveDefaults(response);
+}
+
+test("entering CPT before the new model's defaults load restores that model's train on completions", async () => {
+  for (const isAudio of [true, false]) {
+    useTrainingConfigStore.getState().reset();
+    setAuthFetchHandler(() => completionDefaults("old/llama", false));
+    useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+    await waitForModelDefaults("old/llama");
+    assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+
+    const resolveDefaults = deferModelDefaults();
+    useTrainingConfigStore
+      .getState()
+      .selectTrainingModel("new/model", isAudio ? "audio" : "text");
+    useTrainingConfigStore.getState().setTrainingMethod("cpt");
+    resolveDefaults(completionDefaults("new/model", isAudio));
+    await waitForModelDefaults("new/model");
+
+    useTrainingConfigStore.getState().setTrainingMethod("qlora");
+    assert.equal(
+      useTrainingConfigStore.getState().trainOnCompletions,
+      !isAudio,
+    );
+  }
+});
+
+test("an edit while the new model's defaults load inside CPT still restores its train on completions", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  const resolveDefaults = deferModelDefaults();
+  useTrainingConfigStore.getState().selectTrainingModel("new/model", "text");
+  useTrainingConfigStore.getState().setBatchSize(8);
+  resolveDefaults(completionDefaults("new/model", false));
+  await waitForModelDefaults("new/model");
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+});
+
+test("restored train on completions is not counted as a modified setting", async () => {
+  const defaults = () =>
+    Response.json({
+      id: "org/chat",
+      config: {
+        lora: { target_modules: [...LLAMA_TARGETS] },
+        training: { train_on_completions: true },
+      },
+      is_vision: false,
+      is_embedding: false,
+      is_audio: false,
+      audio_type_known: true,
+      is_lora: false,
+      model_type: "text",
+      model_size_bytes: null,
+      max_position_embeddings: 32768,
+    });
+  const count = () => {
+    const state = useTrainingConfigStore.getState();
+    return countNonDefaultAdvancedSettings(
+      state,
+      state.advancedSettingsBaseline,
+    );
+  };
+  for (const chooseInsideCpt of [false, true]) {
+    useTrainingConfigStore.getState().reset();
+    setAuthFetchHandler(defaults);
+    if (chooseInsideCpt) {
+      useTrainingConfigStore.getState().setTrainingMethod("cpt");
+    }
+    useTrainingConfigStore.getState().selectTrainingModel("org/chat", "text");
+    await waitForModelDefaults("org/chat");
+    useTrainingConfigStore.getState().setTrainingMethod("cpt");
+    assert.equal(count(), 0);
+
+    useTrainingConfigStore.getState().setTrainingMethod("qlora");
+    assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+    assert.equal(count(), 0);
+  }
+});

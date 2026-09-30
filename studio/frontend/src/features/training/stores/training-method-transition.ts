@@ -105,6 +105,8 @@ export function buildTrainingMethodPatch(
     | "loraVariant"
     | "trainOnCompletions"
     | "datasetStreaming"
+    | "selectedModel"
+    | "modelDefaultsAppliedFor"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -122,7 +124,10 @@ export function buildTrainingMethodPatch(
     provenance.loraRankBeforeCpt = state.loraRank;
     provenance.loraAlphaBeforeCpt = state.loraAlpha;
     provenance.loraVariantBeforeCpt = state.loraVariant;
-    provenance.trainOnCompletionsBeforeCpt = state.trainOnCompletions;
+    provenance.trainOnCompletionsBeforeCpt =
+      state.modelDefaultsAppliedFor === state.selectedModel
+        ? state.trainOnCompletions
+        : null;
     Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
