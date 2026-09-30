@@ -77,14 +77,22 @@ export function familyOverrideArtifactKind(
     : "diffusers_pipeline";
 }
 
-/** Family selection plus what the selector shows: a pinned snapshot is labelled by its logical id. */
+/** Family selection, its Advanced select props, and what the selector shows: a pinned snapshot is labelled by its logical id. */
 export function useFamilyOverride(
   status: { loaded: boolean; repo_id: string | null; display_repo_id?: string | null; modular_families?: string[] } | null,
+  supportedFamilies?: readonly string[],
 ) {
   const [familyOverride, setFamilyOverride] = useState("auto");
   return {
     familyOverride,
     setFamilyOverride,
+    familySelect: {
+      label: "Family",
+      hint: FAMILY_OVERRIDE_HINT,
+      value: familyOverride,
+      onValueChange: setFamilyOverride,
+      options: familyOverrideOptions(supportedFamilies),
+    },
     opaqueKind: familyOverrideArtifactKind(familyOverride, status?.modular_families),
     selectorModelId: status?.loaded && status.repo_id ? (status.display_repo_id ?? status.repo_id) : undefined,
   };

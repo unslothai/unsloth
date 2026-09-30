@@ -111,8 +111,6 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
   explicitFamily,
-  FAMILY_OVERRIDE_HINT,
-  familyOverrideOptions,
   resolvedFamilyOverrideSelection,
   useFamilyOverride,
 } from "@/features/model-picker/components/model-selector/family-override";
@@ -266,8 +264,7 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
 }
 
 function defaultsKeyFor(repoId: string, familyOverride: string): string {
-  const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.some((d) => id.includes(d.match)) ? repoId : (explicitFamily(familyOverride) ?? repoId);
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
 }
 
 // Resolution presets offered before a model is loaded; status.defaults.resolution_presets replaces these once loaded.
@@ -1073,7 +1070,7 @@ function VideoGenerator({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
-  const { familyOverride, setFamilyOverride, opaqueKind, selectorModelId } = useFamilyOverride(status);
+  const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
@@ -3522,14 +3519,7 @@ function VideoGenerator({
 
   const advancedControls = (
     <>
-      <AdvancedSelect
-        label="Family"
-        hint={FAMILY_OVERRIDE_HINT}
-        badge={<ResolvedBadge status={status} controlKey="family_override" />}
-        value={familyOverride}
-        onValueChange={setFamilyOverride}
-        options={familyOverrideOptions(status?.supported_families)}
-      />
+      <AdvancedSelect {...familySelect} badge={<ResolvedBadge status={status} controlKey="family_override" />} />
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
