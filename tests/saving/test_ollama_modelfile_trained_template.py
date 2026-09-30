@@ -3,7 +3,7 @@
 
 from datasets import Dataset
 from tokenizers import Tokenizer, models
-from transformers import PreTrainedTokenizerFast
+from transformers import CLIPImageProcessor, LlavaProcessor, PreTrainedTokenizerFast
 
 from unsloth.chat_templates import apply_chat_template, get_chat_template
 from unsloth.save import create_ollama_modelfile
@@ -78,3 +78,15 @@ def test_instruct_model_without_a_custom_template_uses_its_own():
 
 def test_unmapped_model_without_a_template_has_no_modelfile():
     assert create_ollama_modelfile(_tokenizer("some/model"), "some/model", "x.gguf") is None
+
+
+def test_processor_template_survives_the_gguf_unwrap():
+    processor = LlavaProcessor(
+        image_processor = CLIPImageProcessor(), tokenizer = _tokenizer("some/vlm"), patch_size = 14
+    )
+    processor = get_chat_template(processor, chat_template = "alpaca")
+
+    modelfile = create_ollama_modelfile(processor.tokenizer, "some/vlm", "x.gguf")
+
+    assert modelfile is not None
+    assert "### Instruction:" in modelfile

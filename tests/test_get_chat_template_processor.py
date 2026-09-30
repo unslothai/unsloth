@@ -140,6 +140,7 @@ def _reattach(processor, tokenizer):
         _processor = processor,
         tokenizer = tokenizer,
         chat_template = "TEMPLATE",
+        ollama_modelfile = "MODELFILE",
     )
 
 
