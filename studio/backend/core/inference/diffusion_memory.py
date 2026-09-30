@@ -886,6 +886,34 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
 
 
+def plan_keeps_transformer_resident(plan: Any) -> bool:
+    """Whether ``plan`` never moves the denoiser after placement: torchao survives placement, not per-forward hooks."""
+    policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
+    if policy == OFFLOAD_NONE:
+        return True
+    return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
+
+
+def _holds_torchao_weights(module: Any) -> bool:
+    """Whether any parameter of ``module`` is a torchao tensor subclass (GGUF and native int8 are not)."""
+    try:
+        for param in module.parameters():
+            for tensor in (param, getattr(param, "data", None)):
+                if tensor is not None and type(tensor).__module__.startswith("torchao"):
+                    return True
+    except Exception:  # noqa: BLE001 - an unreadable module is treated as movable, today's behaviour
+        return False
+    return False
+
+
+def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
+    return any(
+        _holds_torchao_weights(getattr(pipe, name, None))
+        for name in ("transformer", "transformer_2", "unconditional_transformer")
+        if getattr(pipe, name, None) is not None
+    )
+
+
 def plan_fits_total_capacity(plan: Any) -> bool:
     """Whether ``plan``'s resident requirement fits TOTAL device capacity under the standard
     reserve + the 0.85 resident margin -- i.e. an offload decision can only stem from the
@@ -1229,6 +1257,31 @@ def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
     return streamed
 
 
+def _module_storage_bytes(module: Any, seen: set[int]) -> int:
+    storage_bytes = 0
+    for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
+        if id(tensor) in seen:
+            continue
+        seen.add(id(tensor))
+        storage_bytes += int(tensor.numel()) * int(tensor.element_size())
+    return storage_bytes
+
+
+def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
+    """MiB of the largest text encoder refinement could stream, as loaded, or None."""
+    try:
+        import torch
+        mib = 1024 * 1024
+        sizes = [
+            (_module_storage_bytes(module, set()) + mib - 1) // mib
+            for name, (module, offload_type) in _streamable_components(pipe, torch).items()
+            if offload_type == "leaf_level"
+        ]
+    except Exception:  # noqa: BLE001 - a sizing aid; the caller treats unknown as unmeasured
+        return None
+    return max(sizes) if sizes else None
+
+
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Replace whole-module offload when a loaded component cannot fit on the device.
 
@@ -1254,6 +1307,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         transformer = getattr(pipe, "transformer", None)
         if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
             return plan
+        # Streaming cannot move torchao weights; the loader already checked fit (torchao numel reads bf16-sized here).
+        if _pipe_denoisers_hold_torchao(pipe):
+            return plan
         streamable = _streamable_components(pipe, torch)
 
         sizes: dict[str, int] = {}
@@ -1261,18 +1317,7 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         for name, component in components.items():
             if not isinstance(component, torch.nn.Module):
                 continue
-            seen: set[int] = set()
-            storage_bytes = 0
-            tensors = list(component.parameters(recurse = True)) + list(
-                component.buffers(recurse = True)
-            )
-            for tensor in tensors:
-                marker = id(tensor)
-                if marker in seen:
-                    continue
-                seen.add(marker)
-                storage_bytes += int(tensor.numel()) * int(tensor.element_size())
-            sizes[str(name)] = (storage_bytes + mib - 1) // mib
+            sizes[str(name)] = (_module_storage_bytes(component, set()) + mib - 1) // mib
     except Exception:  # noqa: BLE001 - runtime measurement is an optional refinement
         return plan
 
@@ -1351,6 +1396,11 @@ def apply_memory_plan(
         if not bool(getattr(plan, "stream_transformer", True)):
             group_kwargs["stream_transformer"] = False
         if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
+            if "stream_transformer" in group_kwargs and _pipe_denoisers_hold_torchao(pipe):
+                raise RuntimeError(
+                    "the text encoder could not be streamed beside the resident quantised "
+                    "transformer, and whole-module offload cannot move torchao weights"
+                )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
@@ -1675,6 +1725,8 @@ def _apply_group_offload(
                     _remove_group_offload_hooks(module)
                     raise
                 if not stream_transformer and not transformer_demoted:
+                    if _pipe_denoisers_hold_torchao(pipe):
+                        raise
                     # Model offload is gone once hooks exist: stream the transformer before this encoder goes resident.
                     for dit_name in ("transformer", "transformer_2", "unconditional_transformer"):
                         dit = getattr(pipe, dit_name, None)

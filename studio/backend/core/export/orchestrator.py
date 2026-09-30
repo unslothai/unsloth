@@ -506,6 +506,11 @@ class ExportOrchestrator:
             "hf_token": hf_token,
             "allow_ambient": allow_ambient,
         }
+        from utils.hardware import get_device, gpu_ids_with_torch_kernels
+
+        # Prevent export from sharding onto GPUs with missing kernels (#11870).
+        sub_config["resolved_gpu_ids"] = gpu_ids_with_torch_kernels()
+        sub_config["device_backend"] = get_device().value
 
         with self._lock:
             # Fresh log buffer so the UI sees only this run's output.
@@ -657,6 +662,7 @@ class ExportOrchestrator:
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
+        adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -669,6 +675,7 @@ class ExportOrchestrator:
                 "private": private,
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
+                "adapter_format": adapter_format,
             },
         )
 

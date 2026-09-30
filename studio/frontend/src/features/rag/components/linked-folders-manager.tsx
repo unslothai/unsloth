@@ -22,12 +22,19 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon, RotateCwIcon } from "lucide-react";
+import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
 import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
+
+/** Grouped folder card, shared with the create project dialog. */
+export const FOLDER_CARD_CLASS =
+  "overflow-hidden rounded-[16px] border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
+export const FOLDER_ROW_CLASS =
+  "flex min-w-0 items-center gap-3 px-3.5 py-2.5 border-t border-border/60 first:border-t-0 dark:border-[rgb(255_255_255_/_calc(0.08*var(--contrast-edge-gain,1)))]";
 
 function percent(progress?: number | null): number | null {
   if (progress == null || !Number.isFinite(progress)) return null;
@@ -107,7 +114,7 @@ export function LinkedFoldersManager({
             disabled={running}
             onSelect={() => void manager.rebuild(folder.id)}
           >
-            <RotateCwIcon className="size-3.5" /> Rebuild index
+            <RefreshGlyph className="size-3.5" /> Rebuild index
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -168,11 +175,10 @@ export function LinkedFoldersManager({
   // One grouped card: the folders, then the row that adds another. A dialog has a name field
   // above it in the same shape, so the two read as one stack rather than a panel inside a panel.
   if (variant === "card") {
-    const rowClass =
-      "flex min-w-0 items-center gap-3 px-3.5 py-2.5 border-t border-border/60 first:border-t-0 dark:border-[rgb(255_255_255_/_calc(0.08*var(--contrast-edge-gain,1)))]";
+    const rowClass = FOLDER_ROW_CLASS;
     return (
       <section className="flex min-w-0 flex-col gap-2">
-        <div className="overflow-hidden rounded-[16px] border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+        <div className={FOLDER_CARD_CLASS}>
           {manager.loading && manager.folders.length === 0 ? (
             <div className={cn(rowClass, "text-ui-13 text-muted-foreground")}>
               <Spinner className="size-4 shrink-0" />

@@ -26,6 +26,27 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+STUDIO_ALPACA_CHAT_TEMPLATE = (
+    "{{ bos_token }}"
+    "{% if messages[0]['role'] == 'system' %}"
+    "{{ messages[0]['content'] + '\\n\\n' }}{% set loop_messages = messages[1:] %}"
+    "{% else %}"
+    "{{ '" + DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)[0] + "\\n\\n' }}{% set loop_messages = messages %}"
+    "{% endif %}"
+    "{% for message in loop_messages %}"
+    "{% if message['role'] == 'user' %}"
+    "{{ '### Instruction:\\n' + message['content'] + '\\n\\n### Input:\\n\\n\\n' }}"
+    "{% elif message['role'] == 'assistant' %}"
+    "{{ '### Response:\\n' + message['content'] + eos_token }}"
+    "{% if not loop.last %}{{ '\\n\\n' }}{% endif %}"
+    "{% else %}"
+    "{{ raise_exception('Only user and assistant roles are supported!') }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '### Response:\\n' }}{% endif %}"
+)
+
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
 # Rows per batch when scanning or filtering the error column, so neither pass
@@ -109,6 +130,28 @@ def get_tokenizer_chat_template(tokenizer, model_name):
                 logger.info(f"⚠️ Failed to apply default ChatML template: {e}")
                 logger.info(f"   Falling back to tokenizer as-is")
 
+    return tokenizer
+
+
+def get_training_chat_template(tokenizer, model_name, final_format):
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer
+    if final_format in ("chatml_messages", "chatml_conversations"):
+        return get_tokenizer_chat_template(tokenizer, model_name)
+    if final_format != "alpaca":
+        return tokenizer
+    try:
+        from unsloth.chat_templates import get_chat_template
+        tokenizer = get_chat_template(
+            tokenizer,
+            chat_template = "alpaca",
+            **_chat_template_kwargs(),
+        )
+        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
+        _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
+        logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
+    except Exception as e:
+        logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
     return tokenizer
 
 
@@ -326,11 +369,12 @@ def apply_chat_template_to_dataset(
 
                                 if is_user_provided:
                                     # User-mapped: include even if empty.
-                                    convo.append({"role": role, "content": str(content) if content else ""})
+                                    convo.append({"role": role, "content": cell_text(content)})
                                 else:
                                     # Auto-detected: skip empty.
-                                    if content and str(content).strip():
-                                        convo.append({"role": role, "content": str(content)})
+                                    text = cell_text(content)
+                                    if text.strip():
+                                        convo.append({"role": role, "content": text})
 
                     conversations.append(convo)
 
@@ -361,18 +405,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        # Set the alpaca chat template if unset, so it is saved for inference.
-        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
-            try:
-                from unsloth.chat_templates import get_chat_template
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = "alpaca",
-                    **_chat_template_kwargs(),
-                )
-                logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
-            except Exception as e:
-                logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+        tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
         def _format_alpaca(examples):
             texts = []

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -40,8 +41,12 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    goto_with_socket_backoff,
     install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
     wait_for_health,
+    wait_for_settled,
 )
 
 # The wall this suite did not have, matching playwright_chat_ui.py and playwright_extra_ui.py. It has six raw
@@ -61,8 +66,9 @@ PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 # The web check fires 5s after mount and the llama.cpp one after 1s; this is the ceiling on waiting for them, not the
 # wait itself.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
-# What the cards need after they mount, to animate in and lay out.
-SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
+# The ceiling on the cards animating in and laying out after they mount. Waited for as a condition (every card holds
+# one box with nothing animating for a few frames), so this is how long a card may take, not how long each one does.
+SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "10000"))
 
 # Must match the name use-web-update-check.ts reads. Kept short rather than zero so the card still arrives after
 # first paint, which is the situation the layout checks exist for.
@@ -232,9 +238,15 @@ RESIZE_SWEEP = [
     (320, 568),
 ]
 
-# What a resize needs before it has settled: the ResizeObserver, the placement it feeds, and the reflow after that.
-# Nothing is fetched, so this is short.
-RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
+# The ceiling on a resize settling: the ResizeObserver, the placement it feeds, and the reflow after that. Waited for
+# as a condition, like SETTLED_MS.
+RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "10000"))
+
+# Per-phase ceilings. A phase that overruns its own stops the run there, named, instead of every later phase waiting out
+# its own timeouts until the 720s wall. A viewport pass boots three routes at up to SETTLE_MS each; the resize sweep
+# walks 23 sizes. Stretched by STUDIO_PW_STEP_BUDGET_SCALE for slower lanes.
+PHASE_BUDGET_S = step_budget_s(180)
+SWEEP_BUDGET_S = step_budget_s(420)
 
 # The four runtime status endpoints the loaded models card reads, shaped as
 # tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds anything: one loaded model is all it
@@ -372,10 +384,18 @@ APPEARANCE_STORE_VERSION = 5
 
 failures: list[str] = []
 checks = [0]
+_watchdog = [None]
 
 
 def info(s: str) -> None:
     print(f"[banner] {s}", flush = True)
+
+
+def phase(name: str, budget_s: float = PHASE_BUDGET_S) -> None:
+    """Start phase `name`; it may run `budget_s` before the run stops, naming it."""
+    info(f"STEP {name}")
+    if _watchdog[0] is not None:
+        _watchdog[0].begin_step(name, budget_s)
 
 
 def check(
@@ -867,11 +887,44 @@ def settle_stack(
         seen = now
         if stable >= 2:
             return
+        # Kept: the poll interval of this stability loop, which already ends as soon as the rail holds still.
         page.wait_for_timeout(gap_ms)
 
 
+def settle_cards(page, timeout_ms: int = SETTLED_MS) -> None:
+    """Wait for the rail and each card in it to hold one box with nothing animating.
+
+    Replaces a fixed pause after mount or resize: it ends as soon as the stack is still, and on a runner slow enough
+    that the pause was not enough it keeps waiting instead of measuring mid-transition. A stack that never settles is
+    reported and measured anyway, so the checks, not this wait, say what is wrong with it.
+    """
+    for selector in (
+        '[data-testid="overlay-rail"]',
+        '[data-testid="web-update-banner"]',
+        '[data-testid="llama-update-banner"]',
+    ):
+        target = page.locator(selector)
+        if target.count() == 0:
+            continue
+        # In short slices, each on a freshly resolved element: wait_for_settled holds one element handle, and a card
+        # React remounts mid-wait leaves that handle detached, which would read as "never settled" until the timeout.
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                info(f"WARN {selector} did not settle within {timeout_ms}ms; measuring anyway")
+                break
+            if target.count() == 0:
+                break
+            try:
+                wait_for_settled(target, timeout_ms = min(2_000, remaining_ms))
+                break
+            except PlaywrightTimeoutError:
+                continue
+
+
 def boot(page, path: str) -> None:
-    page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
+    goto_with_socket_backoff(page, f"{BASE}{path}", wait_until = "domcontentloaded")
     # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
     # shares has minutes, not tens of minutes, to spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed
     # script, llama.cpp keeps its 1s, and both still mount after first paint.
@@ -883,7 +936,7 @@ def boot(page, path: str) -> None:
             # or where.
             pass
     # The banners animate in, and a box measured mid-transition is not the box.
-    page.wait_for_timeout(SETTLED_MS)
+    settle_cards(page)
     settle_stack(page)
     landed = page.evaluate("location.pathname")
     if landed.startswith(("/login", "/change-password")):
@@ -914,6 +967,43 @@ LLAMA_CHANGELOG_GEOMETRY = """
 """
 
 
+# How many change rows sit wholly inside the list's scrollport, the part of it that is on screen.
+LLAMA_CHANGELOG_ROWS_IN_VIEW = """
+() => {
+  const list = document.querySelector('[data-testid="llama-update-changelog-list"]');
+  if (!list) return null;
+  const box = list.getBoundingClientRect();
+  const style = getComputedStyle(list);
+  const top = box.top + list.clientTop + parseFloat(style.paddingTop);
+  const bottom = box.top + list.clientTop + list.clientHeight - parseFloat(style.paddingBottom);
+  const items = [...list.children];
+  const whole = items.filter((item) => {
+    const r = item.getBoundingClientRect();
+    return r.height > 0 && r.top >= top - 0.5 && r.bottom <= bottom + 0.5;
+  }).length;
+  return {whole, items: items.length, viewport: Math.round(bottom - top), list: Math.round(box.height)};
+}
+"""
+
+
+def settle_llama_changelog(page, timeout_s: float = 3.0) -> None:
+    """Return once the open changelog's height has held for three frames in a row."""
+    deadline = time.monotonic() + timeout_s
+    last, steady = None, 0
+    while time.monotonic() < deadline:
+        height = page.evaluate(
+            """() => new Promise((resolve) => requestAnimationFrame(() => {
+              const list = document.querySelector('[data-testid="llama-update-changelog-list"]');
+              resolve(list ? list.getBoundingClientRect().height : null);
+            }))"""
+        )
+        steady = steady + 1 if height == last else 0
+        if steady >= 3:
+            return
+        last = height
+    info(f"WARN the open llama.cpp changelog never held one height for 3 frames (last={last})")
+
+
 def exercise_llama_changelog(page, label: str) -> None:
     toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
     check(
@@ -926,7 +1016,15 @@ def exercise_llama_changelog(page, label: str) -> None:
         toggle.click()
     listing = page.locator('[data-testid="llama-update-changelog-list"]')
     listing.wait_for(state = "visible", timeout = 10_000)
-    text = listing.inner_text()
+    # The open card first lays out at its full height, then shrinks to its floor in the capped stack
+    # a frame or two later. Read the settled card: straight after "visible" most runs caught the
+    # first layout, which is why WebKit failed this only some of the time.
+    settle_llama_changelog(page)
+    # textContent, not innerText: this check is about WHICH changes are listed, and WebKit's
+    # innerText drops text clipped out of its scroller while Chromium's and Firefox's keep it, so
+    # the same settled list read "" on WebKit and in full elsewhere (Chat UI Tests (chat), WebKit
+    # pass, 768x500, twice on 09-28/29). How much of it is in view is reported just below.
+    text = listing.text_content() or ""
     check(
         f"{label}: expansion shows only the new carried changes",
         "GLM-5-Next" in text
@@ -934,6 +1032,12 @@ def exercise_llama_changelog(page, label: str) -> None:
         and "Add TML Inkling" not in text,
         f"list={text!r}",
     )
+    # Reported, not gated: at 768x500 with both update cards up the settled list shows no whole
+    # change on any engine (its floor, 117px + 93px of type, leaves the list its padding alone).
+    # Room for a row has to come from the other card's preview or from the stack scrolling the
+    # actions off screen, which is a layout decision rather than something this read can settle.
+    rows = page.evaluate(LLAMA_CHANGELOG_ROWS_IN_VIEW)
+    info(f"{label}: open llama.cpp changelog shows {rows}")
     check(
         f"{label}: expansion exposes its state to assistive technology",
         toggle.get_attribute("aria-expanded") == "true",
@@ -1013,11 +1117,15 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
-        install_wall_clock_watchdog(
+        # begin_step() restarts the inactivity budget, so the same number is also passed as the total no phase can
+        # move: the wall stays the whole-run cap it always was.
+        _watchdog[0] = install_wall_clock_watchdog(
             WALL_TIMEOUT_S,
             label = "ui-update-banner",
             info = info,
+            total_deadline_s = WALL_TIMEOUT_S,
         )
+        report_failing_step(_watchdog[0], label = "ui-update-banner")
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
             launch_kwargs["args"] = chromium_launch_args()
@@ -1030,6 +1138,7 @@ def main() -> int:
 
         llama_payload = [LLAMA_STATUS]
         for width, height in VIEWPORTS[2:5] if SPOT else VIEWPORTS:
+            phase(f"update cards at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1079,7 +1188,18 @@ def main() -> int:
                 toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
                 if toggle.count() == 1:
                     toggle.click()
-                    page.wait_for_timeout(1500)
+                    # Expanded, then still, instead of a fixed 1.5 s.
+                    try:
+                        page.wait_for_selector(
+                            '[data-testid="web-update-release-notes-toggle"][aria-expanded="true"]',
+                            state = "attached",
+                            timeout = 10_000,
+                        )
+                    except PlaywrightTimeoutError:
+                        info(
+                            f"WARN {size} {name}: the notes toggle never reported aria-expanded=true"
+                        )
+                    settle_cards(page)
                     measure(page, f"{size} {name} expanded")
                     toggle.click()
                 if path == "/":
@@ -1100,6 +1220,7 @@ def main() -> int:
 
         # Exercise the compact app card omitted by the notes-bearing fixtures.
         for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
+            phase(f"app card with no notes preview at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1127,7 +1248,7 @@ def main() -> int:
             if toggle.count() == 1:
                 toggle.click()
                 panel.wait_for(state = "visible", timeout = 10_000)
-                page.wait_for_timeout(SETTLED_MS)
+                settle_cards(page)
                 measure(page, f"{width}x{height} with no preview, expanded")
             context.close()
 
@@ -1136,6 +1257,7 @@ def main() -> int:
         # the rail and move the whole stack. That is the case to check.
         # #8346 ships it off by default, so nothing above this point sees it.
         for width, height in INDICATOR_VIEWPORTS:
+            phase(f"loaded models indicator in the rail at {width}x{height}")
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -1195,6 +1317,7 @@ def main() -> int:
             browser.close()
             return 1 if failures else 0
 
+        phase("resize sweep and restore cycles", SWEEP_BUDGET_S)
         # One page, many window sizes.
         # Every check the core matrix runs, at every resolution in RESIZE_SWEEP, for the price of one boot: the cards
         # are already mounted and a resize is all a maximise or a restore ever is. It also exercises the path a fresh
@@ -1215,13 +1338,12 @@ def main() -> int:
         boot(page, "/")
         for width, height in RESIZE_SWEEP:
             page.set_viewport_size({"width": width, "height": height})
-            # Long enough for the ResizeObserver, the placement it feeds and the reflow that follows. Short because
-            # nothing is being fetched.
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # The ResizeObserver, the placement it feeds and the reflow that follows, waited for rather than slept.
+            settle_cards(page, RESIZE_SETTLE_MS)
             settle_stack(page)
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
-        page.wait_for_timeout(RESIZE_SETTLE_MS)
+        settle_cards(page, RESIZE_SETTLE_MS)
         page.screenshot(path = str(ART / "resize-sweep-end.png"))
 
         # Parked small and brought back. A minimised window cannot be photographed, but the restore is where a cached
@@ -1229,9 +1351,10 @@ def main() -> int:
         # merely looking tidy.
         for (small_w, small_h), (back_w, back_h) in RESTORE_CYCLES:
             page.set_viewport_size({"width": small_w, "height": small_h})
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            # Parked long enough to have laid out small, or the restore restores nothing.
+            settle_cards(page, RESIZE_SETTLE_MS)
             page.set_viewport_size({"width": back_w, "height": back_h})
-            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            settle_cards(page, RESIZE_SETTLE_MS)
             restored = measure(page, f"{back_w}x{back_h} restored from {small_w}x{small_h}")
             fresh_context = browser.new_context(
                 viewport = {"width": back_w, "height": back_h},
@@ -1273,6 +1396,7 @@ def main() -> int:
         set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)
         try:
             for width, height in FONT_SCALE_VIEWPORTS:
+                phase(f"{UI_FONT_SIZE_MAX}px type at {width}x{height}")
                 context = browser.new_context(
                     viewport = {"width": width, "height": height},
                     reduced_motion = "reduce",

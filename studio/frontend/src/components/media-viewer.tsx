@@ -74,8 +74,6 @@ export function ScaleMenu({
 }) {
   const t = useT();
   const locale = useLocale();
-  const options = scales.map((scale) => ({ value: String(scale), label: percent(scale, locale) }));
-  if (fitScale !== undefined) options.unshift({ value: "fit", label: t("library.viewer.fit") });
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
@@ -93,11 +91,18 @@ export function ScaleMenu({
           value={String(value)}
           onValueChange={(next) => onChange(next === "fit" ? "fit" : Number(next))}
         >
-          {options.map((option) => (
-            <DropdownMenuRadioItem key={option.value} value={option.value}>
-              {option.label}
+          {scales.map((scale) => (
+            <DropdownMenuRadioItem key={scale} value={String(scale)}>
+              {percent(scale, locale)}
             </DropdownMenuRadioItem>
           ))}
+          {/* Fit, the one a preview opens at, sits apart below the fixed sizes, as ChatGPT has it. */}
+          {fitScale !== undefined && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioItem value="fit">{t("library.viewer.fit")}</DropdownMenuRadioItem>
+            </>
+          )}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -114,6 +119,8 @@ export function MediaViewer({
   actions,
   extra,
   onKeyDown,
+  flush = false,
+  redactFromReload = false,
   children,
 }: {
   open: boolean;
@@ -125,6 +132,8 @@ export function MediaViewer({
   actions: MediaViewerActions;
   extra?: ReactNode;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
+  flush?: boolean;
+  redactFromReload?: boolean;
   children: ReactNode;
 }) {
   const t = useT();
@@ -152,6 +161,7 @@ export function MediaViewer({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
+        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
         onKeyDown={onKeyDown}
         onOpenAutoFocus={() => {
           const active = document.activeElement;
@@ -163,7 +173,7 @@ export function MediaViewer({
           returnFocus.current = null;
           if (target?.isConnected) target.focus({ preventScroll: true });
         }}
-        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden rounded-[1.5rem] p-0 sm:max-w-none"
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">
           <div className="min-w-0 flex-1">
@@ -252,7 +262,7 @@ export function MediaViewer({
             </button>
           </DialogClose>
         </div>
-        <div className={cn("flex min-h-0 flex-1", media ? "px-4 pb-4" : "px-6 pb-6")}>
+        <div className={cn("flex min-h-0 flex-1", !flush && (media ? "px-4 pb-4" : "px-6 pb-6"))}>
           {media ? (
             <MediaZoomStage zoom={zoom} onFitScale={setFitScale}>
               {children}

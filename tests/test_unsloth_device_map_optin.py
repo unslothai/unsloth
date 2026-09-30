@@ -28,6 +28,23 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
+# _load plants stand-ins for these, and the rest of the suite shares the interpreter: a later
+# `import unsloth_zoo.compiler` in the same xdist worker would pick up a peft_utils with no
+# get_lora_layer_modules and fail with "cannot import name ... (unknown location)".
+_STUBBED_ZOO_MODULES = ("unsloth_zoo.peft_utils", "unsloth_zoo.device_map_planner")
+
+
+@pytest.fixture(autouse = True)
+def _restore_stubbed_zoo_modules():
+    saved = {name: sys.modules.get(name) for name in _STUBBED_ZOO_MODULES}
+    yield
+    for name, module in saved.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+
 class _FakeCuda:
     def __init__(
         self,

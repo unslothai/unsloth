@@ -131,7 +131,7 @@ chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
 # $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 visible-device mask.
 # Prints "gfx|name". The probe log is left in $WORK/probes for the call-count asserts.
 summary() {
-    _path="$WORK/base"
+    _path="${PREPATH:+$PREPATH:}$WORK/base"
     [ "$1" != "-" ] && _path="$WORK/roc:$_path"
     [ "$2" != "-" ] && _path="$WORK/smi:$_path"
     : > "$WORK/probes"
@@ -141,6 +141,9 @@ summary() {
         ${STUB_AMDSMI_MUTE_STATIC:+STUB_AMDSMI_MUTE_STATIC=1} \
         ${STUB_AMDSMI_E:+STUB_AMDSMI_E="$STUB_AMDSMI_E"} \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
+        ${STUB_ROCR:+ROCR_VISIBLE_DEVICES="$STUB_ROCR"} \
+        ${STUB_CUDA:+CUDA_VISIBLE_DEVICES="$STUB_CUDA"} \
+        ${STUB_HIP_EMPTY:+HIP_VISIBLE_DEVICES=} \
         /bin/bash -c 'set -euo pipefail; . "$1"; printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
         _ "$WORK/block.sh"
 }
@@ -450,17 +453,104 @@ assert_eq "one adapter resolves without a map" \
 assert_eq "the rocminfo path is not reordered by a HIP map" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
 
+# Post-ROCR_VISIBLE_DEVICES rocminfo lists: ROCr already filtered and renumbered them.
+cat > "$WORK/roc_rocr_1_0" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 7950X 16-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon AI PRO R9700
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx1036
+  Marketing Name:          AMD Radeon Graphics
+  Device Type:             GPU
+EOF
+cat > "$WORK/roc_rocr_1_2" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 7950X 16-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon AI PRO R9700
+  Device Type:             GPU
+EOF
+echo "=== ROCR_VISIBLE_DEVICES over rocminfo ==="
+assert_eq "ROCR=1,0 selects the first rocminfo survivor, not the iGPU at ordinal 1" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(STUB_ROCR=1,0 summary "$WORK/roc_rocr_1_0" "$WORK/empty")"
+assert_eq "ROCR=1,2 on three cards selects survivor 0 (physical 1)" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(STUB_ROCR=1,2 summary "$WORK/roc_rocr_1_2" "$WORK/empty")"
+assert_eq "HIP still indexes the ROCr survivors" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(STUB_ROCR=1,2 summary "$WORK/roc_rocr_1_2" "$WORK/empty" 1)"
+assert_eq "CUDA_VISIBLE_DEVICES, HIP's alias, also indexes the ROCr survivors" \
+    "gfx1036|AMD Radeon Graphics" "$(STUB_ROCR=1,0 STUB_CUDA=1 summary "$WORK/roc_rocr_1_0" "$WORK/empty")"
+assert_eq "a set-but-empty HIP mask shadows CUDA, as install.sh" \
+    "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_ROCR=1,0 STUB_CUDA=1 STUB_HIP_EMPTY=1 summary "$WORK/roc_rocr_1_0" "$WORK/empty")"
+assert_eq "amd-smi is not ROCr-filtered, so its list is still indexed by the ROCr ordinal" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_ROCR=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+assert_eq "amd-smi: HIP=1 under ROCR=2,0 selects survivor 1 (card 0)" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_ROCR=2,0 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "amd-smi: CUDA_VISIBLE_DEVICES, HIP's alias, indexes the list" \
+    "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_CUDA=2 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+assert_eq "amd-smi: an empty HIP mask still leaves ROCR=1's survivor" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_ROCR=1 STUB_HIP_EMPTY=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+assert_eq "amd-smi: a repeated ROCr ordinal ends the survivors (ROCR=0,0,1 leaves card 0 only)" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_ROCR=0,0,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 2)"
+assert_eq "amd-smi: an out-of-range ROCr ordinal ends the survivors (ROCR=0,99,1)" \
+    "gfx90a|AMD Instinct MI210" \
+    "$(STUB_ROCR=0,99,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "amd-smi: a UUID in ROCR over unlike adapters declines instead of guessing" \
+    "|" \
+    "$(STUB_ROCR=GPU-4b2c1a9f8d3e6f7a,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
+
 echo "=== detected, but no arm produced a record ==="
 # Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal
 # error: `unsloth studio update` dies here instead of falling through to a source build.
 assert_eq "the KFD-shaped path reaches the end instead of aborting on set -u" \
     "|" "$(kfd_shape_summary)"
 assert_eq "every variable the selection block reads is initialised up front" \
-    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|nvidia_usable)\b' \
+    "" "$(grep -oE '\$\{?_setup_(gfx|gfx_all|mkt|amd_records|amd_detected|amd_probe|rocr_uuid_declined|nvidia_usable)\b' \
               "$WORK/select.sh" | tr -d '${' | sort -u \
           | while read -r _v; do grep -q "^$_v=" "$WORK/init.sh" || echo "$_v"; done | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "amd-smi answers list but not static --asic" \
     "|" "$(STUB_AMDSMI_MUTE_STATIC=1 summary "$WORK/empty" "$WORK/smi_three")"
+
+echo "=== the index-space line is read without SIGPIPE ==="
+mkdir -p "$WORK/head1"
+cat > "$WORK/head1/head" <<'STUB'
+#!/bin/sh
+IFS= read -r _l && printf '%s\n' "$_l"
+STUB
+chmod +x "$WORK/head1/head"
+# Doubling, not sprintf("%200000s"): mawk 1.3.4 caps sprintf at 8192 bytes.
+awk '/MARKET_NAME: AMD Radeon RX 7900 XTX/ { s = "X"; while (length(s) < 200000) s = s s; sub(/AMD Radeon RX 7900 XTX/, substr(s, 1, 200000)) } { print }' \
+    "$WORK/smi_three" > "$WORK/smi_three_long"
+assert_eq "an amd-smi answer larger than a pipe does not abort the block" \
+    "gfx1100|200000" \
+    "$(PREPATH="$WORK/head1" STUB_AMDSMI_E="$WORK/smi_e_reversed" \
+        summary "$WORK/empty" "$WORK/smi_three_long" 1 2>/dev/null \
+        | awk -F'|' '{ print $1 "|" length($2) }')"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

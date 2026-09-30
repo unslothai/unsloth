@@ -51,6 +51,7 @@ import {
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
   clampChatSettingsWidth,
@@ -60,6 +61,7 @@ import { useIsCompact } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
+import { watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
 import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -508,11 +510,21 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   // Overlay as a sheet below lg so the thread keeps its width.
   const isCompact = useIsCompact();
+  const uiSpaceScale = useUiSpaceScale();
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
+  useEffect(() => {
+    if (!open || isCompact) return;
+    return watchChatSettingsInset(
+      document.documentElement,
+      asideRef.current,
+      settingsWidth * settingsScale,
+      uiSpaceScale,
+    );
+  }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -551,7 +563,7 @@ export function ChatSettingsPanel({
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -747,7 +759,7 @@ export function ChatSettingsPanel({
     customContextLength,
     loadedContextLength,
     kvCacheDtype,
-    mlxKvBits,
+    mlxKvQuant,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
@@ -772,7 +784,7 @@ export function ChatSettingsPanel({
       customContextLength,
       loadedContextLength,
       kvCacheDtype,
-      mlxKvBits,
+      mlxKvQuant,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,
@@ -1156,11 +1168,11 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length exceeds what fits in unified memory (
-                      {maxContextLength?.toLocaleString()} tokens). The GPU
-                      and the rest of the system share one pool here, so there
-                      is nothing to offload to. Lower the context, leave it on
-                      Auto, or set the KV cache to q8_0.
+                      Context length is above Studio&apos;s free-memory estimate
+                      ({maxContextLength?.toLocaleString()} tokens). It may
+                      still load, but macOS may have to compress or swap other
+                      apps and generation may slow down. Lower the context,
+                      leave it on Auto, or set the KV cache to q8_0.
                     </>
                   ) : (
                     <>

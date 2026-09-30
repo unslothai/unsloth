@@ -76,6 +76,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
+from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
@@ -306,6 +307,16 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     except Exception:  # noqa: BLE001 - unreadable row, empty dataset, odd row type
         return None
     return False if saw_a_usable_value else None
+
+
+def _raise_if_empty_train_split(dataset, stage: str) -> None:
+    # Format detection and SFTTrainer die with a bare StopIteration on an empty split.
+    if hasattr(dataset, "__len__") and len(dataset) == 0:
+        where = f" {stage}" if stage else ""
+        raise ValueError(
+            f"The training dataset has no rows{where}. "
+            "Add at least one example before starting training."
+        )
 
 
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
@@ -1019,7 +1030,9 @@ class UnslothTrainer:
                         RepositoryNotFoundError,
                     )
                     if isinstance(gate_err, (GatedRepoError, RepositoryNotFoundError)):
-                        friendly = (
+                        from hub.utils.hf_errors import modelscope_missing
+
+                        friendly = modelscope_missing(gate_err) or (
                             f"Access denied for '{model_name}'. This model is gated or private. "
                             f"Please add a Hugging Face token with access and try again."
                         )
@@ -3294,6 +3307,8 @@ class UnslothTrainer:
                     self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),
                 )
 
+            _raise_if_empty_train_split(dataset, "")
+
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
@@ -3360,6 +3375,8 @@ class UnslothTrainer:
                 if split_result is not None:
                     train_portion, eval_dataset = split_result
                     dataset_info["dataset"] = train_portion
+
+            _raise_if_empty_train_split(dataset_info["dataset"], "after formatting")
 
             return (dataset_info, eval_dataset)
 
@@ -4016,6 +4033,9 @@ class UnslothTrainer:
                 str(dataset.get("final_format", "")).lower() if isinstance(dataset, dict) else ""
             )
             raw_text_mode = dataset_final_format == "raw_text"
+            self.tokenizer = get_training_chat_template(
+                self.tokenizer, self.model_name, dataset_final_format
+            )
 
             data_collator = None
             if is_deepseek_ocr:

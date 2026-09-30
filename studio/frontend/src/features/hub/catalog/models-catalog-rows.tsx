@@ -621,16 +621,17 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
-  const partialRepoId = row.partial
-    ? row.kind === "cache"
-      ? row.repoId
-      : (row.repoId ?? row.loadId)
-    : undefined;
+  const partialRepoId =
+    row.partial && !row.companionPrefetch
+      ? row.kind === "cache"
+        ? row.repoId
+        : (row.repoId ?? row.loadId)
+      : undefined;
   const downloading = Boolean(partialRepoId && row.downloading);
   const tooltip = buildRowStatusTooltip({
     isGguf: showFormatDot && row.isGguf,
     isAdapter: showFormatDot && row.modelFormat === "adapter",
-    isAvailableOnDevice: !partialRepoId,
+    isAvailableOnDevice: !row.partial,
     partialRepoId,
     downloading,
     unsupported,
@@ -686,7 +687,7 @@ export const InventoryRow = memo(function InventoryRow({
       )}
       {partialRepoId ? (
         <PartialStatusDot downloading={downloading} />
-      ) : (
+      ) : row.companionPrefetch ? null : (
         <StatusDot tone="success" label="On device" />
       )}
       {unsupported && (

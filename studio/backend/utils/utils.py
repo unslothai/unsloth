@@ -15,6 +15,7 @@ from typing import Optional, Union
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
+from hub.utils.hf_errors import modelscope_missing
 from . import auth_safe
 
 AuthSafeRedirectHandler = auth_safe.AuthSafeRedirectHandler
@@ -772,8 +773,14 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     # A mid-stream llama-server failure carries a message that was written to be shown; without this the non-streaming paths reduced it to the fallback while streaming clients got the cause. Imported lazily: utils is low level and must not depend on core.inference at import time.
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
+
         if isinstance(error, LlamaStreamError) and error.friendly:
             return error.friendly
+        # Same reason: a context refusal is built for the user and names what to change.
+        from core.inference.context_refusal import ContextBudgetExceeded  # noqa: PLC0415
+
+        if isinstance(error, ContextBudgetExceeded):
+            return str(error)
     except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
         pass
     text = str(error).lower()
@@ -881,6 +888,23 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
+def _is_repo_level_401(error: BaseException, response) -> bool:
+    """A 401 the Hub gave for the repo, not the credential: anonymous reads of a private or
+    missing repo get one too. Refusals of the token itself name it in X-Error-Message."""
+    if type(error).__name__ != "RepositoryNotFoundError":
+        return False
+    from hub.utils.hf_tokens import hub_token_rejections
+
+    rejections = hub_token_rejections()
+    if rejections is not None and rejections.refused:
+        return False
+    try:
+        reason = str(response.headers.get("X-Error-Message") or "").lower()
+    except Exception:
+        reason = ""
+    return not any(marker in reason for marker in ("token", "credential"))
+
+
 def is_hf_authentication_error(error: Exception) -> bool:
     """Return whether an exception chain contains a definitive HF auth failure."""
     seen: set[int] = set()
@@ -890,7 +914,11 @@ def is_hf_authentication_error(error: Exception) -> bool:
         response = getattr(current, "response", None)
         status = getattr(response, "status_code", None)
         try:
-            if status is not None and int(status) == 401:
+            if (
+                status is not None
+                and int(status) == 401
+                and not _is_repo_level_401(current, response)
+            ):
                 return True
         except (TypeError, ValueError):
             pass
@@ -909,6 +937,10 @@ def format_error_message(error: Exception, model_name: str) -> str:
         error: The exception that occurred
         model_name: Name of the model being loaded
     """
+    missing = modelscope_missing(error)
+    if missing:
+        return missing
+
     error_str = str(error).lower()
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 
