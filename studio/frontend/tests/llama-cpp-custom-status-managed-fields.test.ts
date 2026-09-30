@@ -45,7 +45,7 @@ function managedAuto() {
     modelLoading: false,
     gpuMemoryMode: "auto",
     loadedGpuMemoryMode: "auto",
-    gpuLayers: null,
+    gpuLayers: -1,
     loadedGpuLayers: null,
     customContextLength: null,
     loadedCustomContextLength: null,
@@ -59,7 +59,7 @@ test("a custom load's INI placement does not overwrite the managed controls", ()
   const s = useChatRuntimeStore.getState();
   assert.equal(s.llamaCppConfig?.mode, "custom");
   assert.equal(s.gpuMemoryMode, "auto", "Use Studio settings would reload with Manual");
-  assert.equal(s.gpuLayers, null, "Use Studio settings would reload with --gpu-layers 0");
+  assert.equal(s.gpuLayers, -1, "Use Studio settings would reload with --gpu-layers 0");
   assert.equal(s.customContextLength, null, "Use Studio settings would reload with ctx 3072");
 });
 
@@ -84,7 +84,7 @@ test("a custom load's response leaves the managed placement alone", async () => 
   );
   const managed = managedGpuMemoryFields({
     ...resp,
-    requested_llama_cpp_config: { version: 1, mode: "managed" },
+    requested_llama_cpp_config: { mode: "managed" },
   }) as { gpuMemoryMode?: string; gpuLayers?: number };
   assert.equal(managed.gpuMemoryMode, "manual");
   assert.equal(managed.gpuLayers, 0);
