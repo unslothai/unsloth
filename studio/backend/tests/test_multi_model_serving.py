@@ -4,19 +4,33 @@
 """Models loaded alongside the primary one are routed to by request model name."""
 
 import asyncio
+import inspect
+import threading
+from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-import inspect
-
+import core.inference.llama_cpp as llama_cpp
+import core.inference.llama_keepwarm as keepwarm
+import core.inference.npu_backend as npu_backend
 import core.inference.orchestrator as orchestrator
 import routes.inference as inf
 from auth import policy
 from auth.authentication import get_current_subject
 from core.inference import gpu_arbiter
-from models.inference import InferenceStatusResponse, LoadRequest, UnloadRequest
+from core.inference.llama_cpp import GpuMemoryShortError
+from hub.services.models import deletion
+from models.inference import (
+    ChatCountTokensRequest,
+    InferenceStatusResponse,
+    LoadRequest,
+    LoadResponse,
+    UnloadRequest,
+)
+from routes import training_vram
+from state import active_generations
 from utils.account_context import AccountContext, run_as
 
 ALICE = AccountContext("a" * 32, "alice")
@@ -117,26 +131,18 @@ def _selected(monkeypatch, request):
     return asyncio.run(run())
 
 
-def test_alongside_load_gets_a_new_slot(backends, monkeypatch):
-    _, extra = backends
-    fresh = _selected(monkeypatch, LoadRequest(model_path = "org/C-GGUF", alongside = True))
-    assert fresh not in (None, extra)
-
-
-def test_plain_load_replaces_the_primary(backends, monkeypatch):
+def test_a_load_picks_its_slot(backends, monkeypatch):
+    primary, extra = backends
+    alongside = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert _selected(monkeypatch, alongside) not in (None, extra)
     assert _selected(monkeypatch, LoadRequest(model_path = "org/C-GGUF")) is None
-
-
-def test_alongside_load_uses_an_empty_primary(backends, monkeypatch):
-    primary, _ = backends
+    served = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    assert _selected(monkeypatch, served) is extra
+    # The NPU backend is one per process: it takes the primary's seat even alongside.
+    npu = LoadRequest(model_path = "lemonade:qwen3-0.6b-FLM", alongside = True)
+    assert _selected(monkeypatch, npu) is None
     primary.unload_model()
-    assert _selected(monkeypatch, LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
-
-
-def test_loading_a_model_an_extra_slot_serves_reuses_it(backends, monkeypatch):
-    _, extra = backends
-    request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
-    assert _selected(monkeypatch, request) is extra
+    assert _selected(monkeypatch, alongside) is None
 
 
 def test_unload_drops_only_the_named_extra_slot(backends, monkeypatch):
@@ -164,15 +170,21 @@ def test_a_managed_account_sees_only_its_own_slots(backends, monkeypatch):
     monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
     monkeypatch.setattr(inf, "current_account_id", lambda: "someone-else")
     assert _routed("org/B-GGUF") == (None, primary)
+    filling = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    monkeypatch.setattr(inf, "_loading_slot", (filling, "org/D-GGUF"))
+    inf._extra_slots.append(filling)
+    assert inf._visible_loading_slot() is None
     monkeypatch.setattr(inf, "current_account_id", lambda: "owner")
     assert _routed("org/B-GGUF") == (extra, extra.llama)
 
 
-def test_idle_unload_spares_pinned_slots(backends):
+def test_idle_unload_spares_pinned_and_filling_slots(backends, monkeypatch):
     _, extra = backends
-    inf.unload_extra_models(keep = lambda llama: True)
-    assert inf._extra_slots == [extra]
-    inf.unload_extra_models(keep = lambda llama: False)
+    assert inf.unload_extra_models(keep = lambda llama: True) == 0
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
+    assert inf.unload_extra_models(keep = lambda llama: False, spare_filling = True) == 0
+    assert inf._extra_slots == [extra] and extra.llama.is_active
+    assert inf.unload_extra_models(keep = lambda llama: False) == 1
     assert inf._extra_slots == []
 
 
@@ -206,16 +218,6 @@ def test_the_primary_wins_a_bare_name_both_serve(backends):
     )
     assert _routed("org/A-GGUF") == (None, primary)
     assert _routed("org/A-GGUF:Q8_0")[0] is inf._extra_slots[-1]
-
-
-def test_another_account_cannot_stop_a_slot_load(backends, monkeypatch):
-    primary, _ = backends
-    filling = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
-    inf._extra_slots.append(filling)
-    monkeypatch.setattr(inf, "_loading_slot", (filling, "org/D-GGUF"))
-    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
-    monkeypatch.setattr(inf, "current_account_id", lambda: "someone-else")
-    assert inf._visible_loading_slot() is None
 
 
 def test_a_slot_evicted_while_it_loads_is_torn_down(backends, monkeypatch):
@@ -287,29 +289,6 @@ def test_an_account_lists_its_own_slot_but_not_a_foreign_primary(backends, monke
     assert run_as(ALICE, listed) == ["org/A-GGUF"]
 
 
-def test_a_slot_load_never_drops_the_chat_claim_the_primary_holds():
-    source = inspect.getsource(inf._load_model_impl)
-    assert source.count("if replacing and not chat_load_needs_gpu:") == 2
-    assert "if not chat_load_needs_gpu:" not in source
-
-
-def test_a_failed_slot_load_drops_the_slot_and_releases_the_claim(backends, monkeypatch):
-    monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
-    monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
-    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
-    released = []
-    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: released.append(True))
-
-    async def failing_load(*args, **kwargs):
-        raise RuntimeError("no such repo")
-
-    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", failing_load)
-    request = LoadRequest(model_path = "org/missing-GGUF", alongside = True)
-    with pytest.raises(RuntimeError):
-        asyncio.run(inf.load_model_gated(request, None, "s"))
-    assert len(inf._extra_slots) == 1 and inf._loading_slot is None and released == [True]
-
-
 def _slot(
     model,
     variant = None,
@@ -324,9 +303,11 @@ def _slot(
     )
 
 
-def _gated_load_fakes(monkeypatch, short_fits):
-    from core.inference.llama_cpp import GpuMemoryShortError
-
+def _gated_load_fakes(
+    monkeypatch,
+    short_fits,
+    response = "loaded",
+):
     monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
     monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
@@ -341,19 +322,20 @@ def _gated_load_fakes(monkeypatch, short_fits):
         llama = inf.get_llama_cpp_backend()
         llama.model_identifier, llama.hf_variant = request.model_path, request.gguf_variant
         llama.is_loaded = llama.is_active = True
-        return "loaded"
+        return response
 
     monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
 
 
-def test_a_short_fit_evicts_the_least_recently_used_slot(backends, monkeypatch):
+def test_a_short_fit_evicts_the_least_recently_used_slot_and_names_it(backends, monkeypatch):
     _, extra = backends
     extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 5.0
-    older = _slot("org/D-GGUF", last_used = 1.0)
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
     inf._extra_slots.append(older)
-    _gated_load_fakes(monkeypatch, short_fits = [1])
+    loaded = LoadResponse.model_construct(status = "loaded", model = "org/C-GGUF", display_name = "C")
+    _gated_load_fakes(monkeypatch, short_fits = [1], response = loaded)
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
+    assert asyncio.run(inf.load_model_gated(request, None, "s")).evicted == ["org/D-GGUF:Q4_K_M"]
     assert [s.llama.model_identifier for s in inf._extra_slots] == ["org/B-GGUF", "org/C-GGUF"]
     assert not older.llama.is_active
     assert inf._extra_slots[-1].request.model_path == "org/C-GGUF"
@@ -376,8 +358,6 @@ def test_eviction_takes_as_many_lru_slots_as_the_shortfall_needs(backends, monke
 
 
 def test_a_short_fit_with_nothing_left_to_evict_is_a_409(backends, monkeypatch):
-    from fastapi import HTTPException
-
     _, extra = backends
     _gated_load_fakes(monkeypatch, short_fits = [1, 1])
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
@@ -397,8 +377,10 @@ def test_a_capped_context_is_taken_only_once_nothing_is_left_to_evict(backends, 
     assert [s.llama.model_identifier for s in inf._extra_slots] == ["org/C-GGUF"]
 
 
-def test_a_load_that_tears_nothing_down_stops_no_chat():
+def test_a_slot_load_drops_no_claim_and_a_load_that_tears_nothing_down_stops_no_chat():
     source = inspect.getsource(inf._load_model_impl)
+    assert source.count("if replacing and not chat_load_needs_gpu:") == 2
+    assert "if not chat_load_needs_gpu:" not in source
     assert source.count("if serving and on_reload_confirmed is not None:") == 3
     assert source.count("if replacing and serving:") == 2
     assert "if on_reload_confirmed is not None:" not in source
@@ -412,7 +394,6 @@ def test_routing_marks_a_slot_as_used(backends):
 
 
 def test_a_load_prices_the_vram_the_other_servers_hold():
-    from core.inference import llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
 
     a, b, c, stray = (LlamaCppBackend(manages_processes = False) for _ in range(4))
@@ -436,7 +417,6 @@ def test_a_load_prices_the_vram_the_other_servers_hold():
 
 
 def _hold_chat_claim(monkeypatch):
-    import core.inference.llama_cpp as llama_cpp
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
     monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
 
@@ -449,30 +429,28 @@ def test_unloading_the_last_slot_keeps_the_claim_the_primary_holds(backends, mon
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
-def test_a_failed_slot_load_keeps_the_claim_the_primary_holds(backends, monkeypatch):
-    primary, _ = backends
-    monkeypatch.setattr(inf, "_extra_slots", [])
+def test_a_failed_slot_load_drops_the_slot_but_keeps_the_primarys_claim(backends, monkeypatch):
+    primary, extra = backends
     _hold_chat_claim(monkeypatch)
     monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
     monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    released = []
+    release = inf.release_chat_gpu_claim
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: released.append(release()))
 
     async def failing_load(*args, **kwargs):
         raise RuntimeError("no such repo")
 
     monkeypatch.setattr(inf, "_run_tracked_load_model_impl", failing_load)
+    request = LoadRequest(model_path = "org/missing-GGUF", alongside = True)
     with pytest.raises(RuntimeError):
-        asyncio.run(
-            inf.load_model_gated(
-                LoadRequest(model_path = "org/missing-GGUF", alongside = True), None, "s"
-            )
-        )
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert inf._extra_slots == [extra] and inf._loading_slot is None and released == [False]
     assert primary.is_active and gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_a_generation_is_tracked_on_the_slot_serving_it(backends):
-    import threading
-
     _, extra = backends
     event = threading.Event()
 
@@ -486,8 +464,6 @@ def test_a_generation_is_tracked_on_the_slot_serving_it(backends):
 
 
 def test_a_slot_still_generating_is_never_evicted(backends):
-    import threading
-
     _, extra = backends
     older = _slot("org/D-GGUF", last_used = 1.0)
     inf._extra_slots.append(older)
@@ -498,10 +474,6 @@ def test_a_slot_still_generating_is_never_evicted(backends):
 
 
 def test_unloading_a_generating_slot_is_refused_unless_forced(backends, monkeypatch):
-    import threading
-
-    from fastapi import HTTPException
-
     _, extra = backends
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: True)
     event = threading.Event()
@@ -518,30 +490,6 @@ def test_unloading_a_generating_slot_is_refused_unless_forced(backends, monkeypa
     forced = UnloadRequest(model_path = "org/B-GGUF", force_cancel_active = True)
     asyncio.run(inf._unload_model_impl(forced, "s"))
     assert event.is_set() and not extra.llama.is_loaded and inf._extra_slots == []
-
-
-def test_the_load_response_names_the_models_evicted_for_it(backends, monkeypatch):
-    from models.inference import LoadResponse
-
-    _, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
-    _gated_load_fakes(monkeypatch, short_fits = [1])
-    loaded = LoadResponse.model_construct(status = "loaded", model = "org/C-GGUF", display_name = "C")
-
-    async def load(request, *args, **kwargs):
-        if not request.force_alongside and not getattr(load, "raised", False):
-            from core.inference.llama_cpp import GpuMemoryShortError
-            load.raised = True
-            raise GpuMemoryShortError("short", short_mib = 5000)
-        llama = inf.get_llama_cpp_backend()
-        llama.model_identifier, llama.is_loaded, llama.is_active = request.model_path, True, True
-        return loaded
-
-    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
-    response = asyncio.run(
-        inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
-    )
-    assert response.evicted == ["org/B-GGUF:Q8_0"]
 
 
 def test_a_slot_server_leaves_the_primary_pidfile_alone(monkeypatch):
@@ -568,11 +516,6 @@ def test_a_slot_server_leaves_the_primary_pidfile_alone(monkeypatch):
 
 
 def test_a_primary_swap_neither_refuses_on_nor_stops_another_models_chats(backends):
-    import threading
-
-    from fastapi import HTTPException
-    from state import active_generations
-
     _, extra = backends
     on_slot, on_primary = threading.Event(), threading.Event()
     extra.generations.add(on_slot)
@@ -590,11 +533,6 @@ def test_a_primary_swap_neither_refuses_on_nor_stops_another_models_chats(backen
 
 
 def test_a_slot_refusal_names_its_own_chats(backends):
-    import threading
-
-    from fastapi import HTTPException
-    from state import active_generations
-
     _, extra = backends
     event = threading.Event()
     extra.generations.add(event)
@@ -605,10 +543,6 @@ def test_a_slot_refusal_names_its_own_chats(backends):
 
 
 def test_reloading_a_kept_model_stops_only_its_own_chats(backends, monkeypatch):
-    import threading
-
-    from state import active_generations
-
     _, extra = backends
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
@@ -631,13 +565,15 @@ def test_reloading_a_kept_model_stops_only_its_own_chats(backends, monkeypatch):
     assert on_slot.is_set() and not on_primary.is_set()
 
 
-def test_training_frees_the_models_kept_alongside(backends, monkeypatch):
-    from routes import training_vram
-
+def test_training_sizes_and_frees_the_models_kept_alongside(backends, monkeypatch):
     primary, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
     primary.unload_model()
-    assert training_vram.summarize_resident_chat()["any"] is True
+    # A loaded one is in the free VRAM training reads; only a still-loading one is unsizable.
+    summary = training_vram.summarize_resident_chat()
+    assert summary["any"] and not summary["loading"]
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/D-GGUF"))
+    assert training_vram.summarize_resident_chat()["loading"]
+    monkeypatch.setattr(inf, "_loading_slot", None)
     assert training_vram.free_chat_models_for_training("test") == ["kept:org/B-GGUF"]
     assert inf._extra_slots == [] and not extra.llama.is_active
 
@@ -651,16 +587,7 @@ def test_another_quant_of_a_loaded_model_replaces_it_in_place(backends, monkeypa
     assert _selected(monkeypatch, slot_quant.model_copy(update = {"alongside": False})) is extra
 
 
-def test_a_slot_built_during_a_llama_update_refuses_its_load(backends, monkeypatch):
-    primary, _ = backends
-    primary._llama_update_in_progress = True
-    fresh = _selected(monkeypatch, LoadRequest(model_path = "org/C-GGUF", alongside = True))
-    assert fresh.llama._llama_update_in_progress is True
-
-
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
-    import core.inference.llama_keepwarm as keepwarm
-
     stamped = []
     monkeypatch.setattr(keepwarm, "_note_activity", lambda: stamped.append(True))
     _gated_load_fakes(monkeypatch, short_fits = [])
@@ -670,8 +597,6 @@ def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
 
 
 def test_a_chat_starting_on_a_victim_during_eviction_spares_it(backends, monkeypatch):
-    import threading
-
     _, extra = backends
     extra.last_used = 9.0
     older = _slot("org/D-GGUF", last_used = 1.0)
@@ -725,7 +650,6 @@ def test_a_routed_request_holds_its_slot_until_it_ends(backends):
 def test_a_chat_run_holds_its_slot_after_its_post_has_answered(backends):
     # A durable chat run's task starts inside POST /chat-runs, which answers 202 before the run routes
     # and preprocesses; the slot must stay held through that window, not end with the POST.
-    import core.inference.llama_keepwarm as keepwarm
 
     _, extra = backends
     seen = {}
@@ -772,10 +696,6 @@ def test_a_slot_on_another_gpu_is_no_victim(backends):
 
 
 def test_a_token_count_waits_only_on_its_own_models_chats(backends):
-    import threading
-
-    from state import active_generations
-
     _, extra = backends
 
     async def count_on(model):
@@ -794,13 +714,6 @@ def test_a_token_count_waits_only_on_its_own_models_chats(backends):
 
 
 def test_counting_for_an_idle_kept_model_ignores_the_primarys_chat(backends):
-    import threading
-
-    from fastapi import HTTPException
-    from models.inference import ChatCountTokensRequest
-
-    from state import active_generations
-
     payload = ChatCountTokensRequest(
         model = "org/B-GGUF",
         messages = [{"role": "user", "content": "hi"}],
@@ -831,13 +744,6 @@ def test_a_model_still_loading_alongside_keeps_the_chat_claim(backends, monkeypa
     assert gpu_arbiter.current_owner() != gpu_arbiter.CHAT
 
 
-def test_an_idle_sweep_spares_the_slot_a_load_is_filling(backends, monkeypatch):
-    _, extra = backends
-    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
-    assert inf.unload_extra_models(keep = lambda llama: False, spare_filling = True) == 0
-    assert inf._extra_slots == [extra] and extra.llama.is_active
-
-
 def test_a_llama_update_stops_every_llama_slot_and_only_those(backends, monkeypatch):
     _, extra = backends
     safetensors = inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner")
@@ -853,17 +759,7 @@ def test_a_llama_update_stops_every_llama_slot_and_only_those(backends, monkeypa
     assert inf.unload_llama_slots() == 0
 
 
-def test_a_selective_sweep_stops_a_filling_slot_unless_it_spares_it(backends, monkeypatch):
-    _, extra = backends
-    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
-    assert inf.unload_extra_models(lambda llama: False, spare_filling = True) == 0
-    assert inf.unload_extra_models(lambda llama: not llama.is_active) == 1
-    assert inf._extra_slots == []
-
-
 def test_training_sees_a_model_still_loading_alongside(backends, monkeypatch):
-    from routes import training_vram
-
     primary, extra = backends
     primary.unload_model()
     extra.llama.unload_model()
@@ -876,9 +772,7 @@ def test_training_sees_a_model_still_loading_alongside(backends, monkeypatch):
     assert summary["any"] and summary["loading"]
 
 
-def test_deleting_a_model_another_slot_serves_is_refused(backends):
-    from hub.services.models import deletion
-
+def test_deleting_a_model_another_slot_serves_or_fills_is_refused(backends, monkeypatch):
     _, extra = backends
     assert deletion._llama_cpp_blocks_delete("org/B-GGUF", None)
     assert deletion._llama_cpp_blocks_delete("org/B-GGUF", "Q8_0")
@@ -887,12 +781,17 @@ def test_deleting_a_model_another_slot_serves_is_refused(backends):
     inf._extra_slots.append(inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner"))
     assert deletion._inference_backend_blocks_delete("org/C")
     assert not deletion._inference_backend_blocks_delete("org/Z")
+    starting = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    inf._extra_slots.append(starting)
+    monkeypatch.setattr(inf, "_loading_slot", (starting, "org/D-GGUF"))
+    assert deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
+    monkeypatch.setattr(inf, "_loading_slot", None)
+    assert not deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
+    starting.orchestrator.loading_models = {"org/E"}
+    assert deletion._inference_backend_blocks_delete("org/E")
 
 
 def test_clearing_the_cache_waits_for_models_kept_alongside(backends, monkeypatch):
-    import core.inference.llama_cpp as llama_cpp
-    from hub.services.models import deletion
-
     primary, extra = backends
     monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
     primary.unload_model()
@@ -930,9 +829,11 @@ def test_a_model_that_does_not_fit_says_so_without_api_flags():
     assert "force_alongside" not in spill + capped
 
 
-def test_a_reused_slot_refuses_a_load_during_a_llama_update(backends, monkeypatch):
+def test_a_slot_load_during_a_llama_update_is_refused(backends, monkeypatch):
     primary, extra = backends
     primary._llama_update_in_progress = True
+    fresh = _selected(monkeypatch, LoadRequest(model_path = "org/C-GGUF", alongside = True))
+    assert fresh.llama._llama_update_in_progress is True
     request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
     assert _selected(monkeypatch, request) is extra
     assert extra.llama._llama_update_in_progress is True
@@ -941,25 +842,7 @@ def test_a_reused_slot_refuses_a_load_during_a_llama_update(backends, monkeypatc
     assert extra.llama._llama_update_in_progress is False
 
 
-def test_a_repo_still_filling_a_slot_cannot_be_deleted(backends, monkeypatch):
-    from hub.services.models import deletion
-
-    _, extra = backends
-    starting = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
-    inf._extra_slots.append(starting)
-    monkeypatch.setattr(inf, "_loading_slot", (starting, "org/D-GGUF"))
-    assert deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
-    monkeypatch.setattr(inf, "_loading_slot", None)
-    assert not deletion._llama_cpp_blocks_delete("org/D-GGUF", "Q4_K_M")
-    starting.orchestrator.loading_models = {"org/E"}
-    assert deletion._inference_backend_blocks_delete("org/E")
-
-
 def test_a_resident_npu_model_keeps_to_the_primarys_seat(backends, monkeypatch):
-    from types import SimpleNamespace
-
-    import core.inference.npu_backend as npu_backend
-
     primary, extra = backends
     primary.unload_model()
     npu_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM")
@@ -974,16 +857,7 @@ def test_a_resident_npu_model_keeps_to_the_primarys_seat(backends, monkeypatch):
     assert asyncio.run(route("qwen3-0.6b-FLM")) == (None, npu_model, npu_model.model_path)
 
 
-def test_an_npu_load_takes_the_primarys_seat_even_alongside(backends, monkeypatch):
-    request = LoadRequest(model_path = "lemonade:qwen3-0.6b-FLM", alongside = True)
-    assert _selected(monkeypatch, request) is None
-
-
 def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
-    from types import SimpleNamespace
-
-    import core.inference.npu_backend as npu_backend
-
     primary, _ = backends
     primary.unload_model()
     inf._extra_slots.append(inf._ExtraSlot(FakeLlama("org/D-GGUF"), FakeOrchestrator(), "owner"))
@@ -1007,14 +881,7 @@ def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
 
 
 def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, tmp_path):
-    import asyncio
     import struct
-    import threading
-    from types import SimpleNamespace
-
-    import core.inference.npu_backend as npu_backend
-    import core.inference.orchestrator as orchestrator
-    from state import active_generations
 
     class _Orch:
         active_model_name = None
@@ -1077,17 +944,7 @@ def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, 
     assert asked == [False] and not torn_down, exc.value
 
 
-def test_a_loaded_model_kept_alongside_lets_training_size_the_fit(backends):
-    from routes import training_vram
-    summary = training_vram.summarize_resident_chat()
-    assert summary["any"] and not summary["loading"]
-
-
 def test_active_generations_for_a_model_lists_only_its_chats(backends):
-    import threading
-
-    from state import active_generations
-
     _, extra = backends
     app = FastAPI()
     app.include_router(inf.studio_router, prefix = "/api/inference")
