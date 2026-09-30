@@ -34,6 +34,9 @@ export interface SidebarItem {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Last rename, move or (un)archive. */
+  modifiedAt?: number;
+  modelIds?: string[];
   isFork?: boolean;
   projectId?: string | null;
 }
@@ -61,6 +64,10 @@ export function groupThreads(
       if (existing) {
         existing.createdAt = Math.max(existing.createdAt, t.createdAt);
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
+        if (t.modifiedAt) existing.modifiedAt = Math.max(existing.modifiedAt ?? 0, t.modifiedAt);
+        if (t.modelId && !existing.modelIds?.includes(t.modelId)) {
+          existing.modelIds = [...(existing.modelIds ?? []), t.modelId];
+        }
         existing.threadIds?.push(t.id);
         continue;
       }
@@ -71,6 +78,8 @@ export function groupThreads(
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
+        ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
+        ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         projectId: t.projectId ?? null,
       };
       pairItems.set(t.pairId, item);
@@ -83,6 +92,8 @@ export function groupThreads(
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
+        ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
+        ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
       });

@@ -31,6 +31,7 @@ from hub.utils.paths import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
+from hub.services import load_downloads
 from hub.services.models import account_access, cache_inventory, gguf_variants
 
 logger = get_logger(__name__)
@@ -82,7 +83,12 @@ def _job_status(
         repo_id = repo_id,
         variant = variant,
     )
-    return DownloadJobStatus(state = state, error = error, generation = generation)
+    return DownloadJobStatus(
+        state = state,
+        error = error,
+        generation = generation,
+        attempt = _registry.current_attempt(key),
+    )
 
 
 def _diffusion_load_in_flight(repo_id: str) -> bool:
@@ -143,6 +149,17 @@ def _load_in_flight_error(repo_id: str) -> HTTPException:
 def _reject_if_load_in_flight(repo_id: str) -> None:
     if _load_in_flight(repo_id):
         raise _load_in_flight_error(repo_id)
+
+
+def _reject_if_load_owned(key: str) -> None:
+    if load_downloads.is_load_owned(_registry, key):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "A model load is fetching this repo. Wait for the load to finish "
+                "(or cancel it), then start the download."
+            ),
+        )
 
 
 def _spawn_download_worker(
@@ -221,6 +238,7 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
+    _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
     largest_file_bytes = await asyncio.to_thread(
         download_lifecycle.largest_download_file_bytes,
@@ -323,6 +341,7 @@ async def download_model_response(
                     ),
                 )
             # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined nothing.
+            _reject_if_load_owned(key)
             adoptable = _registry.adoptable(key)
             return {
                 "job_key": key,
@@ -424,6 +443,11 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+    if load_downloads.is_load_owned(_registry, key):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This repo is being fetched by a model load; cancel the load instead.",
+        )
 
     state = download_lifecycle.cancel_worker(
         _registry,

@@ -1418,14 +1418,24 @@ test("carries live form state, except what sensitive fields hide", () => {
     "AttachmentTextDialog",
     "AttachmentAudioDialog",
   ]) {
+    const body = attachmentPreviewSource.slice(
+      attachmentPreviewSource.indexOf(`const ${dialog}: FC`),
+    );
     assert.match(
-      attachmentPreviewSource,
-      new RegExp(
-        `${dialog}[\\s\\S]*?data-reload-snapshot-sensitive=\\{redactFromReload \\? "" : undefined\\}`,
-      ),
+      body,
+      /^[\s\S]*?<AttachmentViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
       `${dialog} must redact its portaled content`,
     );
   }
+  const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(
+    viewer,
+    /export const AttachmentViewer[\s\S]*?<MediaViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
+  );
+  assert.match(
+    readSrc("components/media-viewer.tsx"),
+    /data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
+  );
 });
 
 test("keeps native select options that paint the closed control label", () => {

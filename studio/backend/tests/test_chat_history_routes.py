@@ -49,6 +49,39 @@ def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
         assert "run_in_threadpool" in inspect.getsource(handler)
 
 
+def test_message_removal_paths_sweep_chat_originals(monkeypatch):
+    """A removed or rewritten message can drop the last reference to a kept original, so every
+    path sweeps."""
+    for handler in (
+        chat_history.clear_history,
+        chat_history.delete_project,
+        chat_history.delete_threads,
+    ):
+        assert "chat_originals.sweep" in inspect.getsource(handler)
+
+    sweeps = []
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda thread_id: {"id": thread_id})
+    monkeypatch.setattr(chat_history, "sync_chat_messages", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        chat_history.chat_originals, "sweep", lambda force = False: sweeps.append(force)
+    )
+    for prune, deleted in ((False, []), (True, []), (False, ["msg-2"])):
+        chat_history.replace_thread_messages(
+            "thread-1",
+            chat_history.ChatMessageSyncRequest(
+                messages = [_message("msg-1", "thread-1")],
+                pruneMissing = prune,
+                deletedMessageIds = deleted,
+            ),
+            current_subject = "test-user",
+        )
+    monkeypatch.setattr(chat_history, "upsert_chat_message", lambda message, **kwargs: message)
+    chat_history.save_thread_message(
+        "thread-1", "msg-1", _message("msg-1", "thread-1"), current_subject = "test-user"
+    )
+    assert sweeps == [False] * 4
+
+
 def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     called = False
 
@@ -575,12 +608,13 @@ def test_chat_preset_load_config_covers_frontend_persisted_fields():
     assert persisted, "no PresetLoadConfig keys parsed"
 
     backend = set(chat_history.ChatPresetLoadConfig.model_fields)
+    backend -= {"mlxKvBits"}
     assert (
         persisted == backend
     ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
-def test_chat_settings_payload_accepts_mlx_kv_bits():
+def test_chat_settings_payload_accepts_mlx_kv_quant():
     from pydantic import ValidationError
 
     # extra="forbid" rejects the whole settings write on an undeclared key.
@@ -590,14 +624,15 @@ def test_chat_settings_payload_accepts_mlx_kv_bits():
                 {
                     "name": "MLX preset",
                     "params": {"temperature": 0.7},
-                    "loadConfig": {"mlxKvBits": 8},
+                    "loadConfig": {"mlxKvQuant": "tq-3.5"},
                 },
             ],
         }
     )
     dumped = payload.model_dump(exclude_unset = True)
-    assert dumped["customPresets"][0]["loadConfig"]["mlxKvBits"] == 8
+    assert dumped["customPresets"][0]["loadConfig"]["mlxKvQuant"] == "tq-3.5"
 
+    chat_history.ChatPresetLoadConfig.model_validate({"mlxKvQuant": "auto"})
     for width in (4, None):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
     # Only the widths MLX supports.

@@ -37,7 +37,7 @@ def test_known_or_missing_palette_is_untouched():
 
 
 def test_routes_read_and_answer_through_the_filter():
-    src = (Path(BACKEND) / "routes" / "settings.py").read_text()
+    src = (Path(BACKEND) / "routes" / "settings.py").read_text(encoding = "utf-8")
     assert "drop_unknown_palette(get_personalization(), _PALETTE_IDS)" in src
     assert (
         "PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))" in src
