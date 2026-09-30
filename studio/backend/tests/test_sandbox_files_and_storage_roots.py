@@ -6535,7 +6535,9 @@ def test_revealing_a_sandbox_file_selects_that_file(tmp_path, monkeypatch):
     target = sandbox / "outputs" / "report.csv"
     target.write_text("a,b", encoding = "utf-8")
     revealed = []
-    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path))
+    monkeypatch.setattr(
+        path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path)
+    )
 
     result = asyncio.new_event_loop().run_until_complete(
         inference.reveal_sandbox_dir(
