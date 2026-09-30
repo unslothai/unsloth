@@ -507,10 +507,47 @@ def test_default_ladder_is_the_pinned_fork_tag_then_its_upstream_release(monkeyp
 
 def test_latest_is_tried_only_when_the_user_asks_for_it(monkeypatch):
     monkeypatch.setenv("UNSLOTH_AUDIO_CPP_TAG", "")
-    assert M._release_ladder() == [(M.DEFAULT_REPO, None), (M.UPSTREAM_FALLBACK_REPO, None)]
+    assert M._release_ladder() == [(M.DEFAULT_REPO, None)]
     monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", "someone/audio.cpp")
     monkeypatch.setenv("UNSLOTH_AUDIO_CPP_TAG", "v1")
     assert M._release_ladder() == [("someone/audio.cpp", "v1")]
+
+
+def test_a_user_chosen_tag_never_reaches_the_upstream_repo(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_TAG", "v9")
+    assert M._release_ladder() == [(M.DEFAULT_REPO, "v9")]
+
+
+@pytest.mark.parametrize(
+    "libc, refused",
+    [
+        (("glibc", "2.31"), True),
+        (("glibc", "2.34"), True),
+        (("glibc", "2.35"), False),
+        (("glibc", "2.39"), False),
+        (("", ""), False),
+        (("glibc", "weird"), False),
+    ],
+)
+def test_old_glibc_is_refused_before_any_download(monkeypatch, tmp_path, libc, refused):
+    monkeypatch.setattr(M.sys, "platform", "linux")
+    monkeypatch.setattr(M.platform, "libc_ver", lambda: libc)
+    lookups = []
+    monkeypatch.setattr(
+        M, "resolve_for_request", lambda *a: lookups.append(a) or ("cpu", FORK, None, None)
+    )
+    with pytest.raises(RuntimeError) as exc:
+        M._install_locked(tmp_path / "audio.cpp", "cpu", None, False)
+    assert ("need glibc 2.35+" in str(exc.value)) is refused
+    assert (lookups == []) is refused
+
+
+def test_old_glibc_is_not_refused_for_a_user_chosen_release(monkeypatch):
+    monkeypatch.setattr(M.sys, "platform", "linux")
+    monkeypatch.setattr(M.platform, "libc_ver", lambda: ("glibc", "2.31"))
+    assert M._glibc_below_pinned_floor() == "2.31"
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", "someone/audio.cpp")
+    assert M._glibc_below_pinned_floor() is None
 
 
 def test_an_unpinned_asset_is_refused_by_default(monkeypatch, tmp_path, pins):

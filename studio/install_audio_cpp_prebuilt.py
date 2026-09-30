@@ -141,20 +141,34 @@ def _user_picked_release() -> bool:
     )
 
 
+# Every pinned Linux bundle (CPU and CUDA) is built on Ubuntu 22.04.
+_PINNED_LINUX_GLIBC_FLOOR = (2, 35)
+
+
+def _glibc_below_pinned_floor() -> Optional[str]:
+    """The host glibc when it is older than the pinned Linux bundles need, else ``None``. Without
+    this the start check fails after a full download (~1 GB for CUDA) on every setup run."""
+    if not sys.platform.startswith("linux") or _user_picked_release():
+        return None
+    name, version = platform.libc_ver()
+    try:
+        parsed = tuple(int(x) for x in version.split(".")[:2])
+    except ValueError:
+        return None
+    if name != "glibc" or len(parsed) != 2 or parsed >= _PINNED_LINUX_GLIBC_FLOOR:
+        return None
+    return version
+
+
 def _release_ladder() -> list[tuple[str, Optional[str]]]:
-    """``(repo, tag)`` lookups in order: the pinned tag on the primary repo, then, when no repo was
-    pinned by the user, the matching upstream release. ``None`` (latest) only when the user set
-    ``UNSLOTH_AUDIO_CPP_TAG=''``; a pinned install never drifts to an untested latest."""
-    tag = _pinned_tag()
+    """``(repo, tag)`` lookups in order: the pinned tag on the primary repo, then, when the user
+    pinned neither repo nor tag, the upstream release the fork tag was cut from. ``None`` (latest)
+    only when the user set ``UNSLOTH_AUDIO_CPP_TAG=''``; a pinned install never drifts to an
+    untested latest. A user-chosen tag never reaches a repo the user did not choose."""
     primary = _repo()
-    repo_pinned = bool((os.environ.get("UNSLOTH_AUDIO_CPP_REPO") or "").strip())
-    # A tag pinned by the user is tried as written everywhere; the built-in fork tag maps to the
-    # upstream release it was cut from.
-    tag_pinned = "UNSLOTH_AUDIO_CPP_TAG" in os.environ
-    upstream_tag = tag if tag_pinned or tag != DEFAULT_TAG else UPSTREAM_FALLBACK_TAG
-    ladder = [(primary, tag)]
-    if not repo_pinned and primary != UPSTREAM_FALLBACK_REPO:
-        ladder.append((UPSTREAM_FALLBACK_REPO, upstream_tag))
+    ladder = [(primary, _pinned_tag())]
+    if not _user_picked_release() and primary != UPSTREAM_FALLBACK_REPO:
+        ladder.append((UPSTREAM_FALLBACK_REPO, UPSTREAM_FALLBACK_TAG))
     return ladder
 
 
@@ -816,6 +830,12 @@ def _install_locked(target: Path, requested: str, token: Optional[str], force: b
         if server is not None:
             print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
             return server
+    old_glibc = _glibc_below_pinned_floor()
+    if old_glibc:
+        raise RuntimeError(
+            f"audio.cpp prebuilt bundles need glibc {'.'.join(map(str, _PINNED_LINUX_GLIBC_FLOOR))}+; "
+            f"this host has {old_glibc}. Set UNSLOTH_AUDIO_CPP_PATH to a local build instead."
+        )
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
         accel, repo, release, chosen = resolve_for_request(requested, detected, token)
