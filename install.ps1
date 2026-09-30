@@ -9993,8 +9993,15 @@ main()
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
-    # RDNA 1: AMD multi-arch index (unslothai#11614). Keep in sync with _ROCM_MULTIARCH_* in studio/install_python_stack.py.
-    $multiArchGfx = @("gfx1010", "gfx1011", "gfx1012")
+    # RDNA arches route to AMD's multi-arch index, one pinned tag (unslothai#11815, #11614, #11814).
+    # gfx1033 (miscomputes) and CDNA stay on the family map. In sync with _WINDOWS_MULTIARCH_GFX in studio/install_python_stack.py.
+    $multiArchGfx = @(
+        "gfx1010", "gfx1011", "gfx1012",                                        # RDNA 1
+        "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",       # RDNA 2, gfx1033 stays per-family
+        "gfx1100", "gfx1101", "gfx1102", "gfx1103",                             # RDNA 3
+        "gfx1150", "gfx1151", "gfx1152", "gfx1153",                             # RDNA 3.5
+        "gfx1200", "gfx1201"                                                    # RDNA 4
+    )
     $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
     $MultiArchTag = "rocm7.14.1"
     $MultiArchTorchVersion = "2.11.0"
@@ -10647,13 +10654,15 @@ main()
             "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
-        $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch)
+        # A family-layout mirror (and no multi-arch mirror) keeps the family route for arches that have one.
+        $_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)
+        $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch -and -not ($archFamily -and $_familyMirrorPinned))
         if ($ROCmMultiArch) {
             $ROCmIndexUrl = "$MultiArchIndexBase/"
             $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
-            $PinnedRocmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
+            $PinnedRocmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
             $PinnedRocmAudioSpec = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
-            substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
+            substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
         } elseif ($archFamily) {
             $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
             $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }

@@ -3720,7 +3720,7 @@ class AnthropicThinkingConfig(BaseModel):
     # (adaptive tiers) and Claude Code sends them, and a strict Literal turns an unrecognized value
     # into a hard 400. Only "disabled" means off; treat anything else as a request to think.
     type: str = "enabled"
-    # Accepted for wire compatibility; llama-server has no thinking budget.
+    # Forwarded to llama-server as thinking_budget_tokens when thinking is on.
     budget_tokens: Optional[int] = None
     model_config = {"extra": "allow"}
 
@@ -3759,8 +3759,6 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
-    # Anthropic's native extended-thinking control. Only `type` is honored: llama-server has no
-    # thinking-token budget, so `budget_tokens` is accepted and ignored rather than 400'd.
     thinking: Optional[AnthropicThinkingConfig] = None
     # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
     # over `thinking` when both are present, matching enable_tools precedence.
@@ -3892,6 +3890,19 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
+class AnthropicResponseServerToolUseBlock(BaseModel):
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicResponseWebSearchToolResultBlock(BaseModel):
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str
+    content: Union[list[dict], dict]
+
+
 class AnthropicResponseThinkingBlock(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
@@ -3903,6 +3914,8 @@ class AnthropicResponseThinkingBlock(BaseModel):
 AnthropicResponseBlock = Union[
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
+    AnthropicResponseServerToolUseBlock,
+    AnthropicResponseWebSearchToolResultBlock,
     AnthropicResponseThinkingBlock,
 ]
 

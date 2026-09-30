@@ -123,6 +123,19 @@ function Write-StudioLine {
     }
 }
 
+function Show-DownloadProgress {
+    param([Parameter(ValueFromPipeline = $true)][object]$InputObject)
+    process {
+        $line = [string]$InputObject
+        if ((@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE) -and
+            ($line -like 'Downloading *: *% (*) at */s' -or
+             $line -like 'Downloading *: * downloaded at */s')) {
+            Write-StudioLine $line
+        }
+        $InputObject
+    }
+}
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -4175,8 +4188,15 @@ $archFamilyMap = @{
     "gfx1030" = "gfx103X-all"
     "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
 }
-# RDNA 1: AMD multi-arch index (unslothai#11614). Keep in sync with _ROCM_MULTIARCH_* in studio/install_python_stack.py.
-$multiArchGfx = @("gfx1010", "gfx1011", "gfx1012")
+# RDNA arches route to AMD's multi-arch index, one pinned tag (unslothai#11815, #11614, #11814).
+# gfx1033 (miscomputes) and CDNA stay on the family map. In sync with _WINDOWS_MULTIARCH_GFX in studio/install_python_stack.py.
+$multiArchGfx = @(
+    "gfx1010", "gfx1011", "gfx1012",                                        # RDNA 1
+    "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",       # RDNA 2, gfx1033 stays per-family
+    "gfx1100", "gfx1101", "gfx1102", "gfx1103",                             # RDNA 3
+    "gfx1150", "gfx1151", "gfx1152", "gfx1153",                             # RDNA 3.5
+    "gfx1200", "gfx1201"                                                    # RDNA 4
+)
 $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
 $MultiArchTag = "rocm7.14.1"
 $MultiArchTorchVersion = "2.11.0"
@@ -4702,7 +4722,7 @@ if (-not $HasNvidiaSmi) {
 # usable Arc card. test_rocm_arch_table_parity.py keeps it in sync with $archFamilyMap below.
 $_rocmWheelArches = @(
     "gfx1201", "gfx1200",           # RDNA 4
-    "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
+    "gfx1151", "gfx1150", "gfx1152", "gfx1153",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
     "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
     "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
     "gfx1012", "gfx1011", "gfx1010",  # RDNA 1 (RX 5000): AMD's multi-arch index (unslothai#11755)
@@ -5668,11 +5688,11 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Prefer the validated handed-off/venv Python: bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
         $nodeExit = $LASTEXITCODE
         # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
         if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
-            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
             $nodeExit = $LASTEXITCODE
         }
         if ($nodeExit -eq 3) {
@@ -8453,18 +8473,20 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
     $ROCmVisionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch))  { $torchvisionFloorMap[$ROCmGfxArch]  } else { "torchvision" }
     $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
-    $script:ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch)
+    # A family-layout mirror (and no multi-arch mirror) keeps the family route for arches that have one.
+    $_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)
+    $script:ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch -and -not ($archFamily -and $_familyMirrorPinned))
     if ($script:ROCmMultiArch) {
         $ROCmIndexUrl   = "$MultiArchIndexBase/"
         $ROCmTorchSpec  = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
-        $ROCmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
+        $ROCmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
         $ROCmAudioSpec  = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
-        substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
+        substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
     } elseif ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
-        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx1010-1012 (RDNA 1, AMD multi-arch index), gfx90a, gfx908" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx1010-1012 (RDNA 1), gfx90a, gfx908 (RDNA parts: AMD multi-arch index)" "Yellow"
     } else {
         substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
         substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
@@ -9888,7 +9910,7 @@ if ($LocalLlamaCppLinked) {
                 $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
                 Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
             } else {
-                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Show-DownloadProgress | Out-String
                 $prebuiltExit = $LASTEXITCODE
             }
         } finally {
@@ -10027,7 +10049,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         $restoreNativeErrorPreferenceW = $true
     }
     try {
-        $whisperOutput = & python @whisperArgs 2>&1 | Out-String
+        $whisperOutput = & python @whisperArgs 2>&1 | Show-DownloadProgress | Out-String
         $whisperExit = $LASTEXITCODE
     } finally {
         if ($restoreNativeErrorPreferenceW) {

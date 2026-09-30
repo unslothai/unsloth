@@ -1019,8 +1019,8 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 ]
 
 
-# RDNA 1 gets ROCm wheels on Windows only (multi-arch index, #11755).
-_ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012"})
+# Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
+_ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
 
 def _rocm_supported_gfx_here() -> "frozenset[str]":
@@ -5945,6 +5945,112 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
 
     result["available"] = bool(result["devices"])
     return result
+
+
+def _installed_llama_backend() -> Optional[str]:
+    """The backend the installed llama.cpp prebuilt records, as Settings shows it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.llama_cpp_freshness import read_install_marker
+    from utils.prebuilt.llama_backend import marker_backend
+
+    return marker_backend(read_install_marker(LlamaCppBackend._find_llama_server_binary()))
+
+
+def _smi_inference_device(
+    index: int,
+    ordinal: int,
+    name: Optional[str],
+    total_gb: Optional[float],
+    used_gb: Optional[float],
+) -> Dict[str, Any]:
+    known = total_gb is not None and used_gb is not None
+    return {
+        "index": index,
+        "index_kind": "physical",
+        "visible_ordinal": ordinal,
+        "name": name,
+        "memory_total_gb": total_gb,
+        "vram_used_gb": used_gb,
+        "vram_free_gb": round(max(0.0, total_gb - used_gb), 2) if known else None,
+        "vram_utilization_pct": round((used_gb / total_gb) * 100, 1)
+        if known and total_gb > 0
+        else None,
+        "shared_memory": False,
+    }
+
+
+def _nvidia_inference_devices() -> list[Dict[str, Any]]:
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    from . import nvidia
+
+    # The mask llama.cpp's own nvidia-smi probe applies: hidden cards are not llama-server's.
+    allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+    if allowed is None and os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        return []  # a UUID / MIG mask names cards nvidia-smi rows cannot be matched to
+    physical = [
+        row
+        for row in (nvidia.get_physical_gpu_inventory().get("devices") or [])
+        if isinstance(row.get("index"), int)
+    ]
+    # nvidia-smi rows are PCI order; CUDA ordinals (and numeric masks) only match them under PCI_BUS_ID.
+    if os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID" and (
+        allowed is not None or len(physical) > 1
+    ):
+        return []
+    rows = [row for row in physical if allowed is None or row["index"] in allowed]
+    if not rows:
+        return []
+    if allowed is not None:
+        # visible_ordinal is the child's numbering, which follows the mask's order.
+        order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        rows.sort(key = lambda row: order.index(row["index"]))
+    usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
+    usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
+    devices = []
+    for ordinal, row in enumerate(rows):
+        util = usage_by_index.get(row["index"], {})
+        devices.append(
+            _smi_inference_device(
+                row["index"],
+                ordinal,
+                row.get("name"),
+                row.get("memory_total_gb") or util.get("vram_total_gb"),
+                util.get("vram_used_gb"),
+            )
+        )
+    return devices
+
+
+def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """The NVIDIA cards a CUDA llama.cpp runs on when torch is another backend, else None.
+
+    nvidia-smi only: a CUDA context here would pin VRAM. No ROCm counterpart: amd-smi cannot
+    prove the memory scope HIP sees (an APU reports only its carve-out).
+    """
+    try:
+        llama_backend = _installed_llama_backend()
+    except Exception as e:
+        logger.debug("Could not read the installed llama.cpp backend: %s", e)
+        return None
+    if llama_backend != "cuda" or _backend_label(get_device()) == "cuda":
+        return None
+    try:
+        devices = _nvidia_inference_devices()
+    except Exception as e:
+        logger.debug("CUDA inference GPU query failed: %s", e)
+        return None
+    # Not []: the load estimate reads that as "no GPU". Capacity-less procfs rows read as 0 GB.
+    if not devices or not all((d["memory_total_gb"] or 0) > 0 for d in devices):
+        return None
+    return {
+        "available": True,
+        "backend": llama_backend,
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": devices,
+        "index_kind": "physical",
+    }
 
 
 def _repair_smi_visible_devices(

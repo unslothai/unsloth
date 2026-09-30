@@ -385,9 +385,10 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
     # The strip is matched on the call, not on what is passed to it. What this
     # test is about is that the abort raises BEFORE the projector is thrown
     # away; which command the strip reads from is that code's own business.
+    # `cmd = ` skips the extra-args strip, whose --mmproj the managed flag re-emits.
     for label, needle in (
         ("the flash-attn-off retry", "_with_flash_attn_off"),
-        ("the text-only mmproj strip", "_strip_mmproj_args("),
+        ("the text-only mmproj strip", "cmd = self._strip_mmproj_args("),
     ):
         idx = src.find(needle)
         assert idx != -1, (

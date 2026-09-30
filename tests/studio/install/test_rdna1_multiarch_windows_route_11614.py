@@ -47,34 +47,46 @@ class TestPackageSpecs:
         assert (
             torch_spec == f"torch[device-{bare}]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{tag}"
         )
-        assert vision_spec == f"torchvision=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}"
+        assert (
+            vision_spec
+            == f"torchvision[device-{bare}]=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}"
+        )
         assert audio_spec == f"torchaudio=={stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION}+{tag}"
 
     def test_the_pin_is_a_release_tag_not_a_nightly(self):
-        """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users; the stable index is dated
-        by release only."""
+        """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users."""
         assert re.fullmatch(r"rocm\d+\.\d+\.\d+", stack_mod._ROCM_MULTIARCH_TAG)
 
     def test_the_pin_sits_inside_the_windows_torch_window(self):
-        """install.ps1 applies torch<2.12.0 everywhere else on Windows; the multi-arch index
-        also serves 2.12.0, so the pin must stay the newest release under that ceiling."""
+        """install.ps1 applies torch<2.12.0 everywhere else on Windows."""
         major, minor, _ = (int(x) for x in stack_mod._ROCM_MULTIARCH_TORCH_VERSION.split("."))
         assert (major, minor) < (2, 12)
         assert (
             stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION == stack_mod._ROCM_MULTIARCH_TORCH_VERSION
         )
 
-    def test_other_arches_keep_their_specs(self):
+    def test_other_arches_keep_their_specs(self, monkeypatch):
+        """Since #11815 every RDNA arch takes the multi-arch pin by default."""
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
+        assert stack_mod._windows_rocm_torch_pkg_specs(
+            "gfx1201"
+        ) == stack_mod._windows_multiarch_torch_pkg_specs("gfx1201")
+        assert stack_mod._windows_rocm_torch_pkg_specs(
+            "gfx1034"
+        ) == stack_mod._windows_multiarch_torch_pkg_specs("gfx1034")
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
         assert (
             stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
             == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
         )
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
-            stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                "gfx1034", ("torch", "torchvision", "torchaudio")
-            )
+        assert (
+            stack_mod._windows_rocm_torch_pkg_specs("gfx1034")
+            == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1034"]
         )
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx9999") == (
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx908") == (
             "torch",
             "torchvision",
             "torchaudio",
@@ -91,7 +103,8 @@ class TestIndexResolution:
     def test_rdna1_resolves_to_the_multiarch_index(self, arch, monkeypatch):
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         assert (
-            stack_mod._windows_rocm_index_url(arch) == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+            stack_mod._windows_rocm_index_url(arch)
+            == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
         )
 
     def test_the_default_base_is_amds_stable_multiarch_index(self):
@@ -100,12 +113,24 @@ class TestIndexResolution:
             == "https://repo.amd.com/rocm/whl-multi-arch"
         )
 
-    def test_rdna2_still_resolves_to_its_family(self, monkeypatch):
+    def test_rdna2_resolves_to_its_family_only_under_a_family_mirror(self, monkeypatch):
+        """#11815 moved RDNA 2 onto the multi-arch index."""
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
         assert (
             stack_mod._windows_rocm_index_url("gfx1034")
-            == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+            == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
+        )
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1034")
+            == "https://mirror.example/whl/gfx103X-all/"
+        )
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1010")
+            == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
         )
 
     def test_polaris_still_resolves_to_nothing(self):
@@ -282,18 +307,22 @@ class TestTheWindowsRepairSiteRunsForRdna1:
         if installs:
             assert "torch[device-gfx1010]" in " ".join(str(a) for a in pip_try.call_args.args)
 
-    def test_the_device_pack_check_reads_the_distribution(self, monkeypatch):
+    def test_the_device_pack_check_needs_torch_and_torchvision_packs(self, monkeypatch):
         from importlib import metadata
 
-        def absent(name):
-            raise metadata.PackageNotFoundError(name)
+        def dists(*names):
+            return lambda: [type("D", (), {"metadata": {"Name": n}})() for n in names]
 
-        monkeypatch.setattr(metadata, "distribution", absent)
+        monkeypatch.setattr(metadata, "distributions", dists("torch"))
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
-        seen = []
-        monkeypatch.setattr(metadata, "distribution", lambda name: seen.append(name) or object())
+        monkeypatch.setattr(metadata, "distributions", dists("amd_torch_device_gfx1010"))
+        assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
+        monkeypatch.setattr(
+            metadata,
+            "distributions",
+            dists("amd-torch-device-gfx1010", "amd-torchvision-device-gfx1010"),
+        )
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is True
-        assert seen == ["amd-torch-device-gfx1010"]
 
 
 class TestRdna1CountsAsCoveredEverywhereItIsRouted:

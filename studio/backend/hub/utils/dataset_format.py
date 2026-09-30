@@ -243,7 +243,7 @@ def detect_custom_format_heuristic(dataset):
             mapping[remaining_col] = "system"
         elif user_col is None:
             mapping[remaining_col] = "user"
-        else:
+        elif not has_keyword(remaining_col, assistant_words):
             mapping[remaining_col] = "system"
 
     has_user = any(role == "user" for role in mapping.values())
