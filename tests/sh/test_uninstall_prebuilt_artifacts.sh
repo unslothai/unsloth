@@ -147,6 +147,16 @@ assert_kept "~/.unsloth kept for user content" "$FIXTURE_HOME/.unsloth"
 assert_gone "artifacts still cleared"          "$FIXTURE_HOME/.unsloth/whisper.cpp"
 assert_gone "locks still cleared"              "$FIXTURE_HOME/.unsloth/.node.install.lock"
 
+echo "=== an unmarked ~/.unsloth/audio.cpp is the user's own build ==="
+
+make_home
+rm -f "$FIXTURE_HOME/.unsloth/audio.cpp/.unsloth-studio-owned"
+HOME="$FIXTURE_HOME" sh "$UNINSTALL_SH" > "$_TMP_ROOT/out4.log" 2>&1 || {
+    echo "  FAIL: uninstall exited $?"; FAIL=$((FAIL + 1)); cat "$_TMP_ROOT/out4.log"; }
+
+assert_kept "an unmarked audio.cpp build survives" "$FIXTURE_HOME/.unsloth/audio.cpp/audiocpp_server"
+assert_gone "marked siblings still go"             "$FIXTURE_HOME/.unsloth/whisper.cpp"
+
 echo "=== a missing ~/.unsloth is a clean no-op ==="
 
 FIXTURE_HOME=$(mktemp -d "$_TMP_ROOT/empty.XXXXXX")

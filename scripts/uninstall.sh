@@ -882,8 +882,15 @@ _unsloth_uninstall_main() {
     # Managed whisper.cpp dictation engine (install_whisper_prebuilt.py), a default-mode sibling.
     # Only present when a prebuilt matching the pinned llama.cpp build existed at install time.
     _remove_path "$HOME/.unsloth/whisper.cpp"
-    # Managed audio.cpp engine (install_audio_cpp_prebuilt.py), a default-mode sibling.
-    _remove_path "$HOME/.unsloth/audio.cpp"
+    # Managed audio.cpp engine (install_audio_cpp_prebuilt.py), a default-mode sibling. The installer
+    # always marks its tree and refuses an unmarked one, so an unmarked one is the user's own build.
+    _default_audio_cpp="$HOME/.unsloth/audio.cpp"
+    if { [ -e "$_default_audio_cpp" ] || [ -L "$_default_audio_cpp" ]; } \
+        && [ ! -f "$_default_audio_cpp/.unsloth-studio-owned" ]; then
+        echo "  keeping audio.cpp without Unsloth owner marker: $_default_audio_cpp" >&2
+    else
+        _remove_path "$_default_audio_cpp"
+    fi
     # Prebuilt install locks: every prebuilt serializes on <parent>/.<name>.install.lock
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
     _remove_lock_file "$HOME/.unsloth/.llama.cpp.install.lock"

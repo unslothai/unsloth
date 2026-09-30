@@ -1224,7 +1224,12 @@ Environment:
     # Managed whisper.cpp prebuilt, a sibling of studio under ~/.unsloth. Only present when one
     # matching the pinned llama.cpp build existed at install time, so many installs lack it.
     if ($defaultWhisperCpp) { _RemovePath $defaultWhisperCpp }
-    if ($defaultAudioCpp) { _RemovePath $defaultAudioCpp }
+    # The installer always marks its tree and refuses an unmarked one, so an unmarked one is the user's.
+    if ($defaultAudioCpp -and (Test-Path -LiteralPath $defaultAudioCpp) -and -not (Test-Path -LiteralPath (Join-Path $defaultAudioCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        _Substep "keeping audio.cpp without Unsloth owner marker: $defaultAudioCpp" "Yellow"
+    } elseif ($defaultAudioCpp) {
+        _RemovePath $defaultAudioCpp
+    }
     # audio.cpp lays its models out as links (copies across volumes) in unsloth-audiocpp-links beside
     # the Hugging Face hub cache (audio_cpp_files.py). The cache itself stays, as the note below says.
     $hfHub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE }
