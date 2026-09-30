@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Models kept loaded alongside the primary one ("Keep other models loaded").
+
+Each kept model is a slot: its own llama-server backend and orchestrator. A request is routed to
+the slot serving the model it names by setting ``routed_slot`` for the rest of its task, so the
+existing ``get_llama_cpp_backend`` / ``get_inference_backend`` lookups answer with that slot.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import atexit
+import contextvars
+import threading
+import time
+from contextlib import suppress
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+from core.inference.orchestrator import routed_slot
+from hub.services.models import account_access
+from loggers import get_logger
+from state import active_generations
+from utils.account_context import current_account_id
+
+logger = get_logger(__name__)
+
+
+@dataclass(eq = False)
+class ExtraSlot:
+    llama: Any
+    orchestrator: Any
+    account: str
+    request: Any = None
+    last_used: float = 0.0
+    generations: set = field(default_factory = set)
+    refs: int = 0
+
+
+slots: list[ExtraSlot] = []
+lock = threading.Lock()
+# (slot, model_path) while a load fills a slot of its own.
+loading: Optional[tuple[ExtraSlot, str]] = None
+
+
+def in_slot(slot: Optional[ExtraSlot], fn: Callable):
+    context = contextvars.copy_context()
+    context.run(routed_slot.set, slot)
+    return context.run(fn)
+
+
+def backends() -> list[tuple[Any, Any]]:
+    """The (llama, orchestrator) of every kept model, whichever account loaded it."""
+    return [(slot.llama, slot.orchestrator) for slot in list(slots)]
+
+
+def filling_model() -> Optional[str]:
+    current = loading
+    return current[1] if current else None
+
+
+def any_loading() -> bool:
+    return loading is not None or any(
+        getattr(slot.orchestrator, "loading_models", None) for slot in list(slots)
+    )
+
+
+def in_use(slot: ExtraSlot) -> bool:
+    return bool(slot.llama.is_active or slot.orchestrator.active_model_name)
+
+
+def busy() -> bool:
+    return any_loading() or any(in_use(slot) for slot in list(slots))
+
+
+def visible() -> list[ExtraSlot]:
+    if not account_access.managed_account():
+        return list(slots)
+    return [slot for slot in slots if slot.account == current_account_id()]
+
+
+def visible_loading() -> Optional[tuple[ExtraSlot, str]]:
+    current = loading
+    return current if current and current[0] in visible() else None
+
+
+def serving_slot(requested: str, candidates: list[ExtraSlot], satisfies) -> Optional[ExtraSlot]:
+    """The slot among ``candidates`` serving ``requested``; None when the primary does (it wins a tie)."""
+    for slot in (None, *candidates):
+        if in_slot(slot, lambda: satisfies(requested)):
+            return slot
+    return None
+
+
+async def route(requested: Optional[str], satisfies) -> Optional[ExtraSlot]:
+    """Route this task to the slot serving ``requested``, if any, and hold it until the task ends."""
+    routed_slot.set(None)
+    if not (slots and isinstance(requested, str) and requested):
+        return None
+    candidates = visible()
+    if not candidates:
+        return None
+    slot = await asyncio.to_thread(serving_slot, requested, candidates, satisfies)
+    if slot is None or not reserve(slot):
+        return None
+    routed_slot.set(slot)
+    slot.last_used = time.monotonic()
+    return slot
+
+
+def reserve(slot: ExtraSlot) -> bool:
+    """Hold ``slot`` against eviction until the current task ends; False once it is gone.
+    The task, not the request: a durable chat run inherits the POST that queued it, which has
+    already answered 202 by the time the run routes."""
+    with lock:
+        if slot not in slots:
+            return False
+        slot.refs += 1
+    task = asyncio.current_task()
+    if task is None:
+        release(slot)
+    else:
+        task.add_done_callback(lambda _task: release(slot))
+    return True
+
+
+def release(slot: ExtraSlot) -> None:
+    with lock:
+        slot.refs -= 1
+
+
+def eviction_victims(
+    exclude: Optional[ExtraSlot],
+    short_mib: int,
+    gpu_indices = None,
+) -> list[ExtraSlot]:
+    """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
+    one at a time when a footprint is unknown, since the retry prices the rest. A slot still
+    answering is never a victim."""
+    candidates = sorted(
+        (
+            s
+            for s in visible()
+            if s is not exclude and in_use(s) and not s.generations and not s.refs
+        ),
+        key = lambda s: s.last_used,
+    )
+    victims, freed = [], 0
+    for slot in candidates:
+        planned = getattr(slot.llama, "_planned_vram_mib", {})
+        held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
+        if planned and not held:
+            continue
+        victims.append(slot)
+        freed += held
+        if not held or freed >= short_mib:
+            return victims
+    return []
+
+
+def claim_victim(slot: ExtraSlot) -> bool:
+    """Take ``slot`` out of routing unless a request reached it since it was picked."""
+    with lock:
+        if slot.generations or slot.refs or slot not in slots:
+            return False
+        slots.remove(slot)
+        return True
+
+
+def all_generations() -> set:
+    return {event for slot in list(slots) for event in list(slot.generations)}
+
+
+def routed_generation_count() -> int:
+    """Generations on the model this task is routed to; each model decodes on its own server."""
+    slot = routed_slot.get()
+    if slot is not None:
+        return len(slot.generations)
+    elsewhere = all_generations()
+    return active_generations.count(None, elsewhere) if elsewhere else active_generations.count()
+
+
+def drop(slot: ExtraSlot) -> None:
+    from core.inference.llama_cpp import unregister_serving_backend
+    with suppress(ValueError):
+        slots.remove(slot)
+    try:
+        slot.llama.unload_model()
+    finally:
+        unregister_serving_backend(slot.llama)
+        atexit.unregister(slot.llama._cleanup)
+        atexit.unregister(slot.orchestrator._cleanup)
+        slot.orchestrator._cleanup()
+
+
+def _drop_where(predicate) -> int:
+    filling = loading[0] if loading else None
+    doomed = [slot for slot in list(slots) if predicate(slot, slot is filling)]
+    for slot in doomed:
+        try:
+            drop(slot)
+        except Exception as exc:
+            logger.warning("Could not unload an extra model: %s", exc)
+    return len(doomed)
+
+
+def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
+    """Drop every slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
+    return _drop_where(
+        lambda slot, filling: not (spare_filling and filling)
+        and (
+            keep is None
+            or (
+                bool(slot.llama.is_loaded or slot.orchestrator.active_model_name)
+                and not keep(slot.llama)
+            )
+        )
+    )
+
+
+def unload_llama_slots() -> int:
+    """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
+    return _drop_where(
+        lambda slot, filling: slot.llama.is_active
+        or slot.llama.is_loaded
+        or (filling and not getattr(slot.orchestrator, "loading_models", None))
+    )

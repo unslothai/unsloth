@@ -663,7 +663,7 @@ def _run_llama_phase(
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
         try:
-            from routes.inference import unload_llama_slots
+            from core.inference.model_slots import unload_llama_slots
             if unload_llama_slots():
                 model_was_active = True
         except Exception as exc:

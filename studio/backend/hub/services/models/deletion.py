@@ -622,9 +622,11 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
-        from routes.inference import extra_slot_backends, filling_slot_model, get_llama_cpp_backend
-        backends = [get_llama_cpp_backend(), *(llama for llama, _ in extra_slot_backends())]
-        filling = filling_slot_model()
+        from core.inference import model_slots
+        from routes.inference import get_llama_cpp_backend
+
+        backends = [get_llama_cpp_backend(), *(llama for llama, _ in model_slots.backends())]
+        filling = model_slots.filling_model()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
@@ -647,10 +649,10 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference.orchestrator import peek_inference_backend
-        from routes.inference import extra_slot_backends
+        from core.inference import model_slots
 
         primary = peek_inference_backend()
-        kept = [orch for _, orch in extra_slot_backends()]
+        kept = [orch for _, orch in model_slots.backends()]
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
@@ -706,11 +708,12 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
     different matter, and the caller fails closed on it rather than unlink weights blindly.
     """
     try:
-        from routes.inference import extra_slot_backends, extra_slot_loading, get_llama_cpp_backend
+        from core.inference import model_slots
+        from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        kept = extra_slot_backends()
-        kept_loading = extra_slot_loading()
+        kept = model_slots.backends()
+        kept_loading = model_slots.any_loading()
     except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
         logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
     else:

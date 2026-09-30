@@ -1491,11 +1491,8 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     try:
-        from routes.inference import (
-            _llama_cpp_backend,
-            cancel_pending_loads,
-            unload_extra_models,
-        )
+        from core.inference.model_slots import unload_extra_models
+        from routes.inference import _llama_cpp_backend, cancel_pending_loads
 
         # Before the kill: a load still in the lifecycle gate or in preflight is not yet
         # holding anything the backend's own flag can see, and would spawn llama-server
