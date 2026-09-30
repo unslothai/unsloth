@@ -188,6 +188,8 @@ import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
+  normalizeModelRef,
+  pickTrainingCompareTarget,
 } from "./lib/training-compare-handoff";
 import {
   externalReasoningTakesEffort,
@@ -282,13 +284,6 @@ const ProjectSourcesPanel = lazy(() =>
   })),
 );
 
-type LoraCandidate = {
-  id: string;
-  baseModel: string;
-  updatedAt?: number;
-  exportType?: "lora" | "merged" | "gguf";
-};
-
 const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
   openai: 0,
   anthropic: 1,
@@ -296,38 +291,6 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
-}
-
-function normalizeModelRef(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
-}
-
-function pickBestLoraForBase(
-  loras: LoraCandidate[],
-  baseModel: string | null,
-): LoraCandidate | null {
-  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
-  if (adapterOnly.length === 0) return null;
-  const sorted = [...adapterOnly].sort(
-    (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
-  );
-  const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0] ?? null;
-
-  const exact = sorted.find(
-    (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
-  );
-  if (exact) return exact;
-
-  const partial = sorted.find((lora) => {
-    const normalizedLoraBase = normalizeModelRef(lora.baseModel);
-    if (!normalizedLoraBase) return false;
-    return (
-      normalizedLoraBase.includes(normalizedBase) ||
-      normalizedBase.includes(normalizedLoraBase)
-    );
-  });
-  return partial ?? sorted[0] ?? null;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -4058,7 +4021,7 @@ export function ChatPage({
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
-        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        const target = pickTrainingCompareTarget(state.loras, handoff);
         const selectWithConfig = async (
           selection: Pick<SelectedModelInput, "id" | "isLora">,
         ) => {
@@ -4076,18 +4039,20 @@ export function ChatPage({
             ...(remembered ? { config: remembered } : {}),
           });
         };
-        if (targetLora) {
-          console.info("[chat-handoff] loading lora", {
-            id: targetLora.id,
-            baseModel: targetLora.baseModel,
+        if (target) {
+          const isLora = target.exportType === "lora";
+          console.info("[chat-handoff] loading trained model", {
+            id: target.id,
+            baseModel: target.baseModel,
+            isLora,
           });
-          await selectWithConfig({ id: targetLora.id, isLora: true });
+          await selectWithConfig({ id: target.id, isLora });
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
           navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
-          console.info("[chat-handoff] loaded lora + opened compare");
+          console.info("[chat-handoff] loaded trained model + opened compare");
           return;
         }
 
