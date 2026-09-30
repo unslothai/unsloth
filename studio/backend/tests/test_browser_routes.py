@@ -30,7 +30,6 @@ def test_the_shell_is_sandboxed_without_same_origin():
 
 def test_the_shell_is_exempt_from_frame_denial():
     import main
-
     assert browser_mod.BROWSER_FRAME_PATH in main._FRAMEABLE_PATHS
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
@@ -72,7 +71,11 @@ def test_decode_prefers_the_header_then_the_meta_charset():
     assert browser_mod._decode_html(meta, None).endswith("café")
 
 
-def _fetch(monkeypatch, result, meta = None):
+def _fetch(
+    monkeypatch,
+    result,
+    meta = None,
+):
     calls = []
 
     def fake_fetch(url, **kwargs):

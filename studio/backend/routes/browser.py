@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.inference.tools import _USER_AGENTS, _fetch_url_raw, _normalize_url_scheme
 from loggers import get_logger
+
 # Same embedders as the canvas shell.
 from routes.inference import _ARTIFACT_PREVIEW_FRAME_ANCESTORS as _FRAME_ANCESTORS
 
@@ -49,7 +50,9 @@ _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"""
 _META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
-_REFRESH_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE)
+_REFRESH_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
+)
 _META_CHARSET_RE = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
 
 # Pages load resources from anywhere; the sandbox (no allow-same-origin) isolates them from Studio.
@@ -357,8 +360,7 @@ def _fetch(request: BrowserFetchRequest) -> tuple[Optional[str], bytes, str, dic
 
 @router.post("/fetch")
 async def browser_fetch(
-    request: BrowserFetchRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: BrowserFetchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Fetch a page for the browser panel. HTML returns as JSON for the sandbox shell; anything
     else (PDF, images, text) returns raw with its content type."""
@@ -369,7 +371,9 @@ async def browser_fetch(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or request.url
-    looks_html = not content_type and body[:512].lstrip().lower().startswith((b"<!doctype html", b"<html"))
+    looks_html = not content_type and body[:512].lstrip().lower().startswith(
+        (b"<!doctype html", b"<html")
+    )
     if content_type in _HTML_TYPES or looks_html:
         page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
         return JSONResponse(
