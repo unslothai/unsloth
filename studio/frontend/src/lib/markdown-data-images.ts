@@ -27,7 +27,7 @@ interface HastNode {
 }
 
 const HTML_TAG_NAME = /^\s*<\/?([a-z][a-z0-9-]*)/i;
-const INNER_TAG = /<(\/?)([a-z][a-z0-9-]*)/gi;
+const INNER_TAG = /<(\/?)([a-z][^\s/>]*)/gi;
 
 function rehypeLiteralUnknownTags(tagNames: string[]) {
   const known = new Set(tagNames);

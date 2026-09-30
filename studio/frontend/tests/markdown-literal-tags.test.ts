@@ -50,6 +50,7 @@ test("placeholders and generic types in prose stay visible", () => {
   );
   for (const [block, line] of [
     ["<div>Use <your-api-key> here</div>", "Use <your-api-key> here"],
+    ["<div>Use <code_snippet> here</div>", "Use <code_snippet> here"],
     [
       "<details>\n<summary>Setup</summary>\nReplace <your-api-key> in /home/<user>/.env\n</details>",
       "Replace <your-api-key> in /home/<user>/.env",
@@ -57,7 +58,7 @@ test("placeholders and generic types in prose stay visible", () => {
   ]) {
     const html = render(block);
     assert.ok(text(html).includes(line), html);
-    assert.doesNotMatch(html, /<your-api-key/);
+    assert.doesNotMatch(html, /<(your-api-key|code_snippet)/);
   }
 });
 
