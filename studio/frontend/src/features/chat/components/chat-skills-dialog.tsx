@@ -25,11 +25,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/i18n";
+import {
+  ChevronLeftStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
   PlusSignIcon,
   Refresh01Icon,
   Scroll01Icon,
@@ -462,7 +464,7 @@ export function ChatSkillsDialog({
                   aria-label={t("skills.title")}
                   className="-ml-2 shrink-0"
                 >
-                  <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
+                  <HugeiconsIcon icon={ChevronLeftStandardIcon} strokeWidth={2} />
                 </Button>
                 <DialogTitle className="truncate">
                   {view.kind === "new" ? t("skills.newSkill") : (selected?.name ?? "")}
@@ -759,7 +761,7 @@ function SkillRow({
       </p>
       <span className="flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
         <HugeiconsIcon
-          icon={ArrowRight01Icon}
+          icon={ChevronRightStandardIcon}
           strokeWidth={2}
           aria-hidden="true"
           className="size-4 text-muted-foreground/50 transition-colors group-hover:text-foreground"

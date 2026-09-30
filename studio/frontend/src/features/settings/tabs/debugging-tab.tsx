@@ -25,12 +25,12 @@ import { useCopyFeedback } from "@/features/hub/hooks/use-copy-feedback";
 import { formatBytes } from "@/features/hub";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownDoubleStandardIcon } from "@/lib/chevron-icons";
 import { stripAnsi } from "@/lib/strip-ansi";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  ArrowDownDoubleIcon,
   Copy01Icon,
   Download01Icon,
   FolderOpenIcon,
@@ -740,7 +740,10 @@ export function DebuggingTab() {
               data-testid="debug-log-jump-to-latest"
               className="absolute right-3 bottom-3 rounded-full shadow-md"
             >
-              <HugeiconsIcon strokeWidth={1.75} icon={ArrowDownDoubleIcon} />
+              <HugeiconsIcon
+                strokeWidth={1.75}
+                icon={ChevronDownDoubleStandardIcon}
+              />
               {t("settings.debugging.jumpToLatest")}
             </Button>
           ) : null}
