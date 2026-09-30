@@ -1488,13 +1488,10 @@ def test_server_status_preserves_explicit_family_provenance(monkeypatch):
     _run_server_load(monkeypatch, b, servers, family_override = "z-image")
 
     family = b.status()["resolved"]["family_override"]
-    assert family == {
-        "value": "z-image",
-        "requested": "z-image",
-        "source": "explicit",
-        "status": "applied",
-        "reason": "requested",
-    }
+    assert (family["value"], family["requested"], family["source"]) == ("z-image",) * 2 + (
+        "explicit",
+    )
+    assert (family["status"], family["reason"]) == ("applied", "requested")
 
 
 def test_server_status_reports_selected_gguf_quant(monkeypatch):

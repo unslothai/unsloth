@@ -1949,17 +1949,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
     )
     snapshot = diffusion.repo_path / "snapshots" / "revision"
-    (snapshot / "transformer").mkdir(parents = True)
-    (snapshot / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "ZImagePipeline",
-                "transformer": ["diffusers", "ZImageTransformer2DModel"],
-            }
-        )
-    )
-    (snapshot / "transformer" / "config.json").write_text("{}")
-    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    _saved_pipeline(snapshot, "ZImagePipeline")
     (diffusion.repo_path / "refs").mkdir()
     (diffusion.repo_path / "refs" / "main").write_text("revision")
     diffusion.revisions[0].snapshot_path = snapshot
@@ -1975,6 +1965,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
     }
     rows = {c["repo_id"]: c for c in result["cached"]}
     assert rows["Tongyi-MAI/Z-Image-Turbo"]["artifact_kind"] == "diffusers_pipeline"
+    # A snapshot on refs/main loads by its Hub id, not a pinned path.
     assert "load_id" not in rows["Tongyi-MAI/Z-Image-Turbo"]
     assert rows["unsloth/Llama-3.2-1B-Instruct"].get("artifact_kind", "unknown") == "unknown"
 
@@ -4988,14 +4979,8 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
 
 def _saved_pipeline(root: Path, class_name: str) -> Path:
     root.mkdir(parents = True, exist_ok = True)
-    (root / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": class_name,
-                "transformer": ["diffusers", "Transformer2DModel"],
-            }
-        )
-    )
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", "Transformer2DModel"]}
+    (root / "model_index.json").write_text(json.dumps(manifest))
     for component in ("transformer", "vae", "text_encoder"):
         (root / component).mkdir(parents = True, exist_ok = True)
         (root / component / "config.json").write_text("{}")

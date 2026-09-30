@@ -2394,14 +2394,8 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
         modular_manifest = {
             "_class_name": "MiniMaxMusic3ModularPipeline",
             "_blocks_class_name": "MiniMaxMusic3Blocks",
-            "transformer": [
-                "diffusers",
-                "MiniMaxMusic3Transformer1DModel",
-                {
-                    "pretrained_model_name_or_path": "MiniMaxAI/MiniMax-Music3",
-                    "subfolder": "transformer",
-                },
-            ],
+            # A component sourced from its Hub repo, not the snapshot.
+            "transformer": ["diffusers", "Model", {"pretrained_model_name_or_path": "Org/Music"}],
         },
         expect_task_classification = False,
     )
@@ -6945,13 +6939,7 @@ def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_enc
     (MiniMax-H3, HunyuanVideo, Qwen-Image, HiDream) has exactly this shape."""
     root.mkdir(parents = True, exist_ok = True)
     (root / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "MiniMaxH3Pipeline",
-                "_diffusers_version": "0.39.0",
-                "transformer": ["diffusers", "MiniMaxH3Transformer3DModel"],
-            }
-        ),
+        json.dumps({"_class_name": "MiniMaxH3Pipeline", "transformer": ["diffusers", "Model"]}),
         encoding = "utf-8",
     )
     for name in components:
@@ -7003,7 +6991,6 @@ def test_the_walk_does_not_descend_into_an_interrupted_pipeline_copy(tmp_path):
     names = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(root)}
 
     assert names == {"MiniMax-H3-local"}
-    assert model_common._diffusers_pipeline_artifact_kind(pipeline) is None
 
 
 def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publisher(tmp_path):

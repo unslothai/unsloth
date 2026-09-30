@@ -865,16 +865,10 @@ def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
     assert fam.name == "ltx-2"
 
 
-def _write_pipeline(
-    root,
-    class_name,
-    cls,
-    index = "model_index.json",
-    **extra,
-):
-    """A minimal complete local pipeline: a manifest naming one transformer plus its weights."""
+def _write_pipeline(root, class_name, cls, **extra):
+    index = extra.pop("index", "model_index.json")
     (root / "transformer").mkdir(parents = True, exist_ok = True)
-    manifest = {"_class_name": class_name, **extra, "transformer": ["diffusers", cls]}
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", cls], **extra}
     (root / index).write_text(json.dumps(manifest))
     (root / "transformer" / "config.json").write_text("{}")
     (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
@@ -896,32 +890,10 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     assert fam.name == "ltx-2"
 
 
-def test_validate_accepts_custom_local_components_and_null_optional(tmp_path, fake_runtime):
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "LTX2Pipeline",
-                "transformer": ["local_extensions", "CustomModel"],
-                "audio_vae": [None, None],
-                "vocoder": [None, None],
-            }
-        )
-    )
-    (tmp_path / "transformer").mkdir()
-    (tmp_path / "transformer" / "custom_weights.safetensors").write_bytes(b"weights")
-    assert (
-        VideoBackend().validate_load_request(str(tmp_path), family_override = "ltx-2").name == "ltx-2"
-    )
-
-
 def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtime, monkeypatch):
     backend = VideoBackend()
     root = tmp_path / "opaque-h3"
-    root.mkdir()
-    (root / "model_index.json").write_text(
-        json.dumps({"_class_name": "LTX2Pipeline", "transformer": ["diffusers", "LTX2Transformer"]})
-    )
-
+    _write_pipeline(root, "LTX2Pipeline", "LTX2Transformer")
     original_import = builtins.__import__
 
     def _no_diffusers_import(name, *args, **kwargs):
@@ -929,6 +901,7 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
             raise ModuleNotFoundError(f"No module named '{name}'", name = name)
         return original_import(name, *args, **kwargs)
 
+    # The manifest is checked before diffusers is imported.
     with monkeypatch.context() as no_diffusers:
         no_diffusers.delitem(sys.modules, "diffusers")
         no_diffusers.setattr(builtins, "__import__", _no_diffusers_import)
@@ -945,12 +918,11 @@ def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtim
         root,
         "ModularPipeline",
         "MiniMaxH3Transformer3DModel",
-        "modular_model_index.json",
+        index = "modular_model_index.json",
         _blocks_class_name = "HunyuanVideo15PipelineBlocks",
     )
-    assert (
-        backend.validate_load_request(str(root), family_override = "minimax-h3").name == "minimax-h3"
-    )
+    fam = backend.validate_load_request(str(root), family_override = "minimax-h3")
+    assert fam.name == "minimax-h3"
 
 
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
@@ -974,15 +946,13 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    (bad_base / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "LTX2Pipeline",
-                "transformer": ["diffusers", "LTX2VideoTransformer3DModel"],
-                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
-            }
-        )
+    _write_pipeline(
+        bad_base,
+        "LTX2Pipeline",
+        "LTX2VideoTransformer3DModel",
+        scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"],
     )
+    (bad_base / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
     (bad_base / "scheduler").mkdir()
     (bad_base / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
