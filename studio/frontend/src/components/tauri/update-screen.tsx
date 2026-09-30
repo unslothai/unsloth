@@ -4,6 +4,7 @@
 import { parseBackendDownloadProgress } from "@/components/tauri/backend-download-progress";
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
 import { LogDetails } from "@/components/tauri/log-details";
+import { shouldUseNativeMacWindowTitlebar } from "@/components/tauri/window-titlebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
@@ -91,6 +92,13 @@ export function UpdateScreen({
 
   return (
     <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+      {shouldUseNativeMacWindowTitlebar() && (
+        <div
+          data-tauri-drag-region={true}
+          aria-hidden="true"
+          className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+        />
+      )}
       <div className="flex min-h-0 w-full max-w-md flex-1 items-center justify-center px-6">
         <motion.div
           initial={{ opacity: 0 }}
