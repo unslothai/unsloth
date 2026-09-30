@@ -1220,7 +1220,7 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
 
 
 def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
-    # Remote image URLs leave image=None, so content arrives as a part LIST:
+    # An image part with no payload leaves image=None, so content arrives as a part LIST:
     # text parts are kept, the image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
@@ -1231,7 +1231,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
                     {"type": "text", "text": "what is this?"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/cat.png"},
+                        "image_url": {"url": "data:image/png;base64,"},
                     },
                 ],
             )

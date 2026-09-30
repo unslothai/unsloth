@@ -468,6 +468,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 private = cmd.get("private", False),
                 gguf = cmd.get("gguf", False),
                 gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
+                adapter_format = cmd.get("adapter_format"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
@@ -596,11 +597,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent). No-op off Windows ROCm. Must run
-    # before importing transformers / unsloth_zoo.
-    from core._torchao_stub import install_torchao_windows_rocm_stub
+    # Before transformers / unsloth_zoo: real torchao via unsloth's shim on Windows ROCm, else the stub.
+    from core._torchao_stub import install_torchao_windows_rocm_real_or_stub
 
-    install_torchao_windows_rocm_stub()
+    install_torchao_windows_rocm_real_or_stub()
 
     try:
         _send_response(

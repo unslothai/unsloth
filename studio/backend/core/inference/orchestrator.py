@@ -244,6 +244,8 @@ def _audio_generation_timeout(
 _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_bits",
     "mlx_kv_bits_requested",
+    "mlx_kv_quant",
+    "mlx_kv_quant_requested",
     "mlx_kv_quant_eligibility",
     "mlx_kv_quant_reason",
     "mlx_kv_quant_note",
@@ -375,6 +377,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "context_length_fitted": model_info.get("context_length_fitted"),
         "context_unbounded_when_batched": model_info.get("context_unbounded_when_batched"),
         "mlx_context_budget": model_info.get("mlx_context_budget"),
     }
@@ -384,6 +387,9 @@ class InferenceOrchestrator:
     """Inference backend orchestrator, subprocess-based. Same API surface as InferenceBackend (so
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
+
+    # Registry keys of the downloads the in-flight load announced; released when the load ends.
+    _load_download_keys: Sequence[str] = ()
 
     def __init__(self):
         self._proc: Optional[mp.Process] = None
@@ -1220,6 +1226,11 @@ class InferenceOrchestrator:
                 deadline = time.monotonic() + timeout
                 continue
 
+            if rtype == "downloads":
+                self._claim_load_downloads(resp)
+                deadline = time.monotonic() + timeout
+                continue
+
             if rtype == "stall":
                 msg = resp.get("message", "Download stalled")
                 logger.warning("Subprocess reported stall: %s", msg)
@@ -1955,7 +1966,7 @@ class InferenceOrchestrator:
         subject: Optional[str] = None,
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
-        mlx_kv_bits: Optional[int] = None,
+        mlx_kv_quant: Optional[str] = None,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
@@ -1999,7 +2010,7 @@ class InferenceOrchestrator:
                 "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
                 if mlx_distributed
                 else None,
-                "mlx_kv_bits": mlx_kv_bits,
+                "mlx_kv_quant": mlx_kv_quant,
                 "chat_template_override": chat_template_override,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
@@ -2257,6 +2268,31 @@ class InferenceOrchestrator:
             except Exception as teardown_exc:
                 logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
+        finally:
+            self._release_load_downloads()
+
+    def _claim_load_downloads(self, resp: dict) -> None:
+        from hub.services.load_downloads import claim_load_downloads
+        self._release_load_downloads()
+        try:
+            self._load_download_keys = claim_load_downloads(
+                resp.get("repo_ids") or [],
+                xet_disabled = bool(resp.get("xet_disabled")),
+                hub_cache = resp.get("hub_cache"),
+            )
+        except Exception as exc:
+            logger.warning("Could not register the load's downloads: %s", exc)
+
+    def _release_load_downloads(self) -> None:
+        keys, self._load_download_keys = self._load_download_keys, []
+        if not keys:
+            return
+        from hub.services.load_downloads import release_load_downloads
+
+        try:
+            release_load_downloads(keys)
+        except Exception as exc:
+            logger.warning("Could not release the load's downloads: %s", exc)
 
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess. Returns True if a load for

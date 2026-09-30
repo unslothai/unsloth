@@ -130,6 +130,9 @@ _PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
 _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
+# OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
+_OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -321,6 +324,17 @@ _PRESENCE_PENALTY_OPTION = typer.Option(
     max = 2.0,
     rich_help_panel = _PANEL_SAMPLING,
     help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+)
+_MAX_TOKENS_OPTION = typer.Option(
+    None,
+    "--max-tokens",
+    min = 1,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = (
+        "Most tokens the agent may generate in one response. Default: a quarter of the "
+        "context window, up to 32,000. Capped at half the window so the conversation "
+        "keeps room."
+    ),
 )
 
 # Agent-session knobs.
@@ -811,6 +825,8 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
+# How often the progress reader re-lists the repos a load announced; each listed repo costs a cache scan per poll.
+_LOAD_DOWNLOAD_LIST_INTERVAL_S = 5.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_PORT_PREFIX = "UNSLOTH_START_PORT: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
@@ -846,9 +862,21 @@ class _DownloadProgressDisplay:
         self._last_bucket = -1
         self._last_line_length = 0
         self._last_expected = 0
+        self._source: Optional[str] = None
         self._interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
 
-    def update(self, progress: dict) -> None:
+    def update(
+        self,
+        progress: dict,
+        source: Optional[str] = None,
+    ) -> None:
+        if source != self._source:
+            # A new repo is a new transfer; else redirected output (prints only on a rising bucket) stays silent for a base that starts after the adapter finished.
+            self._source = source
+            self._samples.clear()
+            self._last_expected = 0
+            # Keep `_shown`: `complete()` and `close()` gate on it.
+            self._last_bucket = -1
         downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
         completed = max(0, int(progress.get("completed_bytes") or 0))
         expected = max(0, int(progress.get("expected_bytes") or 0))
@@ -944,15 +972,27 @@ class _ModelDownloadProgress:
         self._retry_at = 0.0
         self._display = _DownloadProgressDisplay()
         self._configured = False
+        # A local model has no Hub reading of its own, but a remote base it names is still listed.
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
+        # Repos the load announced (its base, the base the loader substitutes): bytes summed for liveness.
+        self._repo_bytes: dict[str, int] = {}
+        self._companions: list[str] = []
+        self._finished: dict[
+            str, dict
+        ] = {}  # Complete companions: final reading kept, never re-read.
+        self._listed_at: Optional[float] = None
+        self._active_repo = model
+
+    def _is_gguf(self) -> bool:
+        return bool(self._variant) or "gguf" in self._model.lower()
 
     def _configure(self) -> None:
         self._configured = True
         if self._disabled:
             return
         # GGUF repos need the selected quant's size; the repo endpoint totals every quant. Resolve the variant first, otherwise show bytes only.
-        if self._variant or "gguf" in self._model.lower():
+        if self._is_gguf():
             try:
                 params = urlencode({"repo_id": self._model})
                 try:
@@ -986,51 +1026,87 @@ class _ModelDownloadProgress:
                 # Older servers lack this endpoint; byte progress is still useful.
                 pass
 
+    def _companion_repos(self) -> list[str]:
+        now = time.monotonic()
+        if self._listed_at is not None and now - self._listed_at < _LOAD_DOWNLOAD_LIST_INTERVAL_S:
+            return self._companions
+        self._listed_at = now
+        try:
+            url = f"{self._base}{self._progress_prefix}/active-downloads"
+            listing = _http_json("GET", url, self._key, timeout = 10)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                self._listed_at = float("inf")  # Older server: no load-owned jobs to find.
+            return self._companions
+        except Exception:
+            return self._companions
+        for item in listing.get("downloads") or []:
+            repo = str(item.get("repo_id") or "")
+            if not (item.get("owner") == "load" or item.get("load_attached")):
+                continue
+            if repo and repo.lower() != self._model.lower() and repo not in self._companions:
+                self._companions.append(repo)
+        return self._companions
+
+    def _read(
+        self,
+        repo: str,
+        gguf: bool = False,
+    ) -> dict:
+        if gguf:
+            params = urlencode(
+                {"repo_id": repo, "variant": self._variant, "expected_bytes": self._expected_bytes}
+            )
+            url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
+        else:
+            params = urlencode({"repo_id": repo})
+            url = f"{self._base}{self._progress_prefix}/download-progress?{params}"
+        return _http_json("GET", url, self._key, timeout = 10)
+
     def poll(self) -> None:
         if not self._configured:
             self._configure()
-        if self._disabled:
-            return
         if time.monotonic() < self._retry_at:
             return
         try:
-            if self._variant or "gguf" in self._model.lower():
-                params = urlencode(
-                    {
-                        "repo_id": self._model,
-                        "variant": self._variant,
-                        "expected_bytes": self._expected_bytes,
-                    }
-                )
-                url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
-            else:
-                url = (
-                    f"{self._base}{self._progress_prefix}/download-progress?"
-                    f"{urlencode({'repo_id': self._model})}"
-                )
+            readings = {}
             try:
-                reading = _http_json("GET", url, self._key, timeout = 10)
+                if not self._disabled:
+                    readings[self._model] = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
                 if exc.code != 404 or self._progress_prefix == "/api/models":
                     raise
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            # The liveness baseline only ever rises. A reading falls for reasons that are
-            # not "bytes left the disk": an incomplete scan reporting a lower bound, a
-            # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
-            # measured absence, not an error), an XET run purging its partial. Following a
-            # reading down would make the recovery back to the same figure look like fresh
-            # growth and renew the deadline for a server that is downloading nothing, and a
-            # flapping mount could do that forever. The cost is that a transfer which truly
-            # restarts is not counted again until it passes its own high mark; that failure
-            # is bounded and says so, where a false renewal is an unbounded wait.
-            self._downloaded_bytes = max(
-                self._downloaded_bytes, max(0, int(reading.get("downloaded_bytes") or 0))
-            )
+            for repo in self._companion_repos():
+                if repo in self._finished:
+                    readings[repo] = self._finished[repo]
+                    continue
+                try:
+                    readings[repo] = item = self._read(repo)
+                except Exception:
+                    continue
+                if (
+                    0
+                    < int(item.get("expected_bytes") or 0)
+                    <= int(item.get("completed_bytes") or 0)
+                ):
+                    self._finished[repo] = item
+            # The line follows whichever repo grew most; a repo first seen already large (a cached base) has not grown.
+            growth = 0
+            for repo, item in readings.items():
+                current = max(0, int(item.get("downloaded_bytes") or 0))
+                if current - self._repo_bytes.get(repo, current) > growth:
+                    growth, self._active_repo = current - self._repo_bytes[repo], repo
+                # Only ever rises, so a dip and recovery never counts as fresh growth.
+                self._repo_bytes[repo] = max(self._repo_bytes.get(repo, 0), current)
+            self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            self._display.update(reading)
+            active = self._active_repo if self._active_repo in readings else self._model
+            if active in readings:
+                self._display.update(readings[active], active)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing
@@ -1789,6 +1865,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
     # The applied value is null when the runtime refused the request.
+    # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
+    "mlx_kv_quant_requested": "mlx_kv_quant",
     "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
@@ -2040,7 +2118,7 @@ def _resolve_model(
             else:
                 payload["gguf_variant"] = load.gguf_variant
         elif attach_public_id is not None and status_snapshot.get("is_gguf"):
-            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
+            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
@@ -2215,9 +2293,9 @@ _QUANT_LABEL_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|TQ[0-9]+_[0-9]+"
+    r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|Q[0-9]+_[0-9]+"
+    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)"
     r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
@@ -4525,6 +4603,42 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
+def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
+    if max_tokens:
+        return max(1, min(int(max_tokens), window // 2))
+    return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
+
+
+def opencode_compaction_reserved(window: int, output: int) -> int:
+    return max(1, min(output, max(window // 10, 8192)))
+
+
+def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
+    """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
+    window = model.get("context_length") or model.get("max_context_length")
+    if not max_tokens:
+        return {}
+    if not window:
+        typer.echo(
+            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            err = True,
+        )
+        return {}
+    output = opencode_output_limit(int(window), max_tokens)
+    if output < max_tokens:
+        typer.echo(
+            f"Warning: --max-tokens {max_tokens} leaves too little of the {int(window):,}-token "
+            f"context for the conversation; using {output:,}.",
+            err = True,
+        )
+    raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
+    inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
+    if output <= ceiling and inherited is None:
+        return {}
+    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -4532,6 +4646,7 @@ def write_opencode_config(
     path: Path,
     yolo: bool = False,
     as_subagent: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -4546,10 +4661,13 @@ def write_opencode_config(
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
+    reserved = None
     if window:
         window = int(window)
-        # A custom-provider model with no limit defaults to context 0, which silently disables OpenCode's auto-compaction; declare the real window and a sane output cap so it compacts instead of overflowing the server.
-        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
+        output = opencode_output_limit(window, max_tokens)
+        reserved = opencode_compaction_reserved(window, output)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
@@ -4562,8 +4680,15 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
-        if managed_compaction and config.get("compaction") == managed_compaction:
+        # Drop a managed compaction block, current or legacy value.
+        managed = {reserved, max(1, window // 10)} if window else set()
+        compaction = config.get("compaction")
+        if (
+            isinstance(compaction, dict)
+            and compaction.keys() == {"auto", "reserved"}
+            and compaction["auto"] is True
+            and compaction["reserved"] in managed
+        ):
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
             "description": _SUBAGENT_DESCRIPTION,
@@ -4579,10 +4704,10 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
-        compaction["reserved"] = max(1, window // 10)
+        compaction["reserved"] = reserved
     tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare --no-launch command, where the subcommand is not known yet. Rides inline (OPENCODE_CONFIG_CONTENT) so it wins over a project config. TUI and `run` launches use --auto and call here with yolo=False, letting OpenCode preserve explicit deny rules.
@@ -4678,7 +4803,7 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         window = int(window)
         # An unspecified model defaults to contextWindow 128000 / maxTokens 16384, far larger than a small Unsloth context, so Pi compacts too late and overflows the server. Pin the real window and a sane output cap, mirroring OpenCode.
         provider_model["contextWindow"] = window
-        provider_model["maxTokens"] = min(window // 4, 8192)
+        provider_model["maxTokens"] = opencode_output_limit(window)
     _subdict(config, "providers")[_PI_PROVIDER] = {
         "api": "openai-completions",
         "baseUrl": f"{base}/v1",
@@ -4959,7 +5084,7 @@ def write_pi_subagent_config(
             "apiKey": key,
             "model": model["id"],
             "contextWindow": window,
-            "maxTokens": min(window // 4, 8192),
+            "maxTokens": opencode_output_limit(window),
             "approve": approve,
         },
     )
@@ -4980,7 +5105,7 @@ def write_dsh_patch(base: str, model: dict, path: Path) -> None:
     if window:
         window = int(window)
         model_entry["contextWindow"] = window
-        model_entry["maxTokens"] = min(window // 4, 8192)
+        model_entry["maxTokens"] = opencode_output_limit(window)
     entries = [
         {
             "id": "llm-pi-ai",
@@ -5370,6 +5495,7 @@ def opencode(
     min_p: Optional[float] = _MIN_P_OPTION,
     repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
     presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -5431,8 +5557,12 @@ def opencode(
                 config_path,
                 yolo = yolo and not native_auto,
                 as_subagent = True,
+                max_tokens = max_tokens,
             )
-            env = {"OPENCODE_CONFIG": str(config_path)}
+            env = {
+                "OPENCODE_CONFIG": str(config_path),
+                **_opencode_output_env(subagent_model, max_tokens),
+            }
             inline_config = _opencode_subagent_inline_config(
                 config_path,
                 session_permission,
@@ -5493,6 +5623,7 @@ def opencode(
             entry,
             config_path,
             yolo = yolo and not native_auto,
+            max_tokens = max_tokens,
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -5507,6 +5638,7 @@ def opencode(
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
+            **_opencode_output_env(entry, max_tokens),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 

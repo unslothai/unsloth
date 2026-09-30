@@ -8,7 +8,10 @@
     cost 42 of a 53 s no-op update, so it is the side that most needs running.
 
     Fixtures are a real executable copied into a candidate directory, and a text file for the
-    one that cannot run, so both the Test-Path gate and the launch are exercised.
+    one that cannot run, so both the Test-Path gate and the launch are exercised. On Windows the
+    text file is never handed to CreateProcess: a .exe that is not a PE image is taken for a DOS
+    program and raises the modal "Unsupported 16-Bit Application" dialog on a desktop. There
+    Start-Process is shadowed for non-PE files only, to fail the way the refused launch does.
 #>
 
 BeforeAll {
@@ -82,6 +85,43 @@ BeforeAll {
         @()
     }
 
+    function Test-IsPeImage {
+        # The two bytes CreateProcess needs before it will treat a file as a Windows image.
+        param([string]$Path)
+        try {
+            $head = [byte[]]::new(2)
+            $stream = [System.IO.File]::OpenRead($Path)
+            try { $read = $stream.Read($head, 0, 2) } finally { $stream.Dispose() }
+            return ($read -eq 2 -and $head[0] -eq 0x4D -and $head[1] -eq 0x5A)
+        } catch {
+            return $false
+        }
+    }
+
+    # Windows only, installed per Describe with Set-Item function:Start-Process (see below). A
+    # plain function rather than a Pester Mock: it shadows the cmdlet for the finder too, and an
+    # unmatched Mock filter falls through to the real command in Pester 5 but fails the call in
+    # Pester 6. Real images launch for real; a non-PE file fails as a refused launch does, with
+    # Start-Process throwing, and is never started. POSIX keeps the real exec, where a text file
+    # fails with ENOEXEC and no UI.
+    $script:RefusedLaunches = [System.Collections.Generic.List[string]]::new()
+    function Start-ProcessUnlessNonPe {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory, Position = 0)][Alias('Path')][string]$FilePath,
+            [string[]]$ArgumentList,
+            [switch]$NoNewWindow,
+            [switch]$PassThru,
+            [string]$RedirectStandardOutput,
+            [string]$RedirectStandardError
+        )
+        if (-not (Test-IsPeImage -Path $FilePath)) {
+            $script:RefusedLaunches.Add($FilePath)
+            throw [System.ComponentModel.Win32Exception]::new(193)
+        }
+        Microsoft.PowerShell.Management\Start-Process @PSBoundParameters
+    }
+
     function New-FakeUv {
         # ok: runs and exits 0. broken: exists, cannot launch. folder: a directory named uv.exe.
         # old: runs, answers below the floor (POSIX only, where the stand-in is a script).
@@ -109,6 +149,10 @@ BeforeAll {
 }
 
 Describe "the fixtures themselves" {
+    BeforeAll {
+        if ($IsWindows) { Set-Item function:Start-Process ${function:Start-ProcessUnlessNonPe} }
+    }
+
     It "has a stand-in that really runs, so a finder miss cannot be blamed on the fixture" {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fixtureprobe_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
         try {
@@ -123,6 +167,9 @@ Describe "the fixtures themselves" {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fixtureprobe_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
         try {
             $exe = New-FakeUv -Dir $dir -Kind broken
+            # What makes it unlaunchable, checked on the file itself rather than only through
+            # the Windows guard.
+            Test-IsPeImage -Path $exe | Should -BeFalse
             Test-ExeAnswers -Path $exe | Should -BeFalse
         } finally {
             Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
@@ -138,6 +185,7 @@ Describe "Find-InstalledUv" {
         if ($IsWindows) {
             function Test-SetupUvVersionAtLeast { param([string]$VersionLine, [string]$Minimum) return $true }
         }
+        if ($IsWindows) { Set-Item function:Start-Process ${function:Start-ProcessUnlessNonPe} }
     }
     BeforeEach { $script:Sandbox = New-Sandbox }
     AfterEach {
@@ -167,6 +215,11 @@ Describe "Find-InstalledUv" {
         New-FakeUv -Dir $good | Out-Null
         Find-InstalledUv | Should -Be ([System.IO.Path]::Combine($env:USERPROFILE, '.local', 'bin'))
         $script:InstalledUvProbeMiss | Should -Not -BeNullOrEmpty
+        if ($IsWindows) {
+            # The broken uv was asked, through the guard, so the skip above is the finder's doing.
+            @($script:RefusedLaunches | Where-Object { $_ -like "*broken dir*" }).Count |
+                Should -BeGreaterThan 0
+        }
     }
 
     It "does not reuse a directory that happens to be named uv.exe" {

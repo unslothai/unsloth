@@ -464,6 +464,26 @@ def test_input_require_grads_hook_is_exact():
     assert torch.signbit(compiled[0, 0]).all()
 
 
+def test_input_require_grads_hook_is_a_no_op_in_compiled_no_grad_decode():
+    """A compiled decode step runs without grad: the hook leaves the embedding output alone."""
+    from transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "hf-internal-testing/tiny-random-LlamaForCausalLM"
+    ).cuda()
+    model.requires_grad_(False)
+    model.enable_input_require_grads()
+    emb = model.get_input_embeddings()
+    ids = torch.tensor([[0, 1, 2]], device = "cuda")
+    dynamo_utils.counters.clear()
+    with torch.no_grad():
+        compiled = torch.compile(lambda i: emb(i), fullgraph = TRACEABLE)(ids)
+        eager = emb(ids)
+    assert not compiled.requires_grad
+    assert _bytes_equal(compiled, eager)
+    assert not dynamo_utils.counters["graph_break"]
+
+
 def test_compile_cache_key_covers_the_kernel_source():
     """A warm FX graph cache served an edited kernel as the old one; key it on the files."""
     from unsloth.kernels import rms_layernorm, rope_embedding

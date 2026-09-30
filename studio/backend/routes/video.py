@@ -201,8 +201,13 @@ async def video_download_plan(
         if fam is not None:
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
         if fam is not None and not training:
+            from core.inference.video_ltx2 import ltx23_identity_without_hashing
+            def _plan_precision_check(*args, **kwargs):
+                with ltx23_identity_without_hashing():
+                    assert_video_precision_available(*args, **kwargs)
+
             await asyncio.to_thread(
-                assert_video_precision_available,
+                _plan_precision_check,
                 fam,
                 model_kind = kind,
                 transformer_quant = request.transformer_quant,
@@ -210,6 +215,8 @@ async def video_download_plan(
                 memory_mode = request.memory_mode,
                 # Judged on the card this pick would load on, as the loader does.
                 gpu_ordinal = gpu_ordinal,
+                checkpoint_filename = request.gguf_filename,
+                checkpoint_repo = request.model_path,
             )
         plan = await asyncio.to_thread(
             backend.download_plan,
@@ -229,6 +236,10 @@ async def video_download_plan(
             # And the MiniMax-H3 partition: the two denoisers live in separate 66.28 GB subfolders, so a ref2va load opens
             # transformer_ref/, which the plan would otherwise miss while staging the fl2va transformer/.
             h3_task = request.h3_task,
+            # Forward the memory / speed policy: an fp8 LTX-2.3 pick under balanced / low_vram loads bf16 and must not stage the FP8 DiT.
+            memory_mode = request.memory_mode,
+            speed_mode = request.speed_mode,
+            allow_device_probe = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -370,6 +381,8 @@ async def load_video_model_gated(
             # anything is measured, and an offloaded DiT or encoder skips the torchao build.
             memory_mode = request.memory_mode,
             gpu_ordinal = gpu_ordinal,
+            checkpoint_filename = request.gguf_filename,
+            checkpoint_repo = request.model_path,
         )
         # Same bar again, for a speech GGUF picked out of a mixed video repo. The backend's own assertion runs on the
         # load worker, INSIDE acquire_for, so a refusal there arrives having already evicted the chat model.
@@ -560,7 +573,7 @@ async def generate_video(
     when it is not the resident one."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import maybe_auto_switch_media_model
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, video_failure_detail
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_MODEL_CHANGED_MSG,
@@ -679,7 +692,7 @@ async def generate_video(
             ):
                 raise HTTPException(status_code = 409, detail = msg)
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+            raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
     _note_generation_account()
