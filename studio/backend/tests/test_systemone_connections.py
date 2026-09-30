@@ -348,6 +348,27 @@ def test_a_system_one_connection_lists_only_decision_models(upstream):
     assert "output_modalities" not in upstream.calls[-1].url.params
 
 
+@pytest.mark.parametrize(
+    "reply,detail",
+    [
+        (httpx.Response(401, json = {"detail": "no key"}), "refused the API key (HTTP 401)"),
+        (httpx.Response(500, text = "boom"), "answered HTTP 500"),
+        (httpx.Response(404, text = "not found"), None),
+        (httpx.Response(200, text = "<html>welcome</html>"), None),
+    ],
+)
+def test_a_system_one_model_list_explains_what_went_wrong(upstream, reply, detail):
+    upstream.replies[0] = reply
+    listed = _providers_post(
+        "/providers/models",
+        {"provider_type": "custom", "api_type": "systemone", "base_url": "http://localhost:8888/v1"},
+    )
+    if detail is None:
+        assert listed == []
+    else:
+        assert detail in listed["detail"]
+
+
 def test_studio_lists_its_decision_models_only_when_asked(monkeypatch, studio):
     from routes import inference
 

@@ -1056,7 +1056,23 @@ async def list_provider_models(
     if answers_decisions_only(payload.provider_type, payload.api_type):
         try:
             ids = await client.list_decision_models()
-        except Exception:
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise HTTPException(
+                    status_code = 502, detail = f"The server refused the API key (HTTP {status})."
+                ) from None
+            if status not in (404, 405):
+                raise HTTPException(
+                    status_code = 502,
+                    detail = f"The server answered HTTP {status} when asked for its models.",
+                ) from None
+            ids = []
+        except httpx.HTTPError:
+            raise HTTPException(
+                status_code = 502, detail = "Couldn't reach the server. Check the base URL."
+            ) from None
+        except ValueError:
             ids = []
         return [
             ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None)

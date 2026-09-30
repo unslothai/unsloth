@@ -136,6 +136,12 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
     },
   };
 
+const SYSTEM_ONE_EMPTY_CATALOG_HINT = {
+  title: "No decision models found on this server.",
+  description:
+    "Type the model name in the box below. For another Unsloth Studio, type default.",
+};
+
 function emptyCatalogHint(providerType: string): {
   title: string;
   description: string;
@@ -735,7 +741,10 @@ export function ChatProvidersSettings({
         prev.filter((id) => modelIds.includes(id)),
       );
       if (modelIds.length === 0) {
-        const hint = emptyCatalogHint(providerType);
+        const hint =
+          providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"
+            ? SYSTEM_ONE_EMPTY_CATALOG_HINT
+            : emptyCatalogHint(providerType);
         toast.info(hint.title, { description: hint.description });
       } else {
         toast.success(
