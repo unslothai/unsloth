@@ -94,15 +94,15 @@ _CASES = [
 _ASSISTANT_LEFTOVER_CASES = [
     (
         {"context": _LONG, "answer": _MID, "explanation": _MID},
-        {"answer": "assistant", "context": "user", "explanation": "system"},
+        {"answer": "assistant", "context": "user"},
     ),
     (
         {"context": _LONG, "answer": _MID, "output": _MID},
-        {"answer": "assistant", "context": "user", "output": "system"},
+        {"answer": "assistant", "context": "user"},
     ),
     (
         {"context": _LONG, "response": _MID, "target": _MID},
-        {"response": "assistant", "context": "user", "target": "system"},
+        {"response": "assistant", "context": "user"},
     ),
 ]
 
@@ -142,6 +142,14 @@ _ANSWER_LEFTOVER_CASES = [
     (
         {"question": _MID, "solution": _LONG, "final_answer": "42"},
         {"question": "user", "solution": "assistant"},
+    ),
+    (
+        {"instruction": _MID, "response_base": _LONG, "response": _MID},
+        {"instruction": "user", "response_base": "assistant"},
+    ),
+    (
+        {"input": _MID, "output": _LONG, "target": "42"},
+        {"input": "user", "output": "assistant"},
     ),
 ]
 
