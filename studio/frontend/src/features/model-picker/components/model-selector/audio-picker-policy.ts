@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AUDIO_CPP_AUDIO_TYPES } from "../../../audio/audio-cpp-catalog.ts";
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
@@ -10,6 +11,7 @@ const NATIVE_AUDIO_TYPES = new Set([
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  ...AUDIO_CPP_AUDIO_TYPES,
 ]);
 
 const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);

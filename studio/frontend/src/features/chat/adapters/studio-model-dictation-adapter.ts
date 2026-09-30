@@ -2,11 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import type { AudioCppRuntimeStatus } from "@/features/audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
+  AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   type SttDevice,
   applyDictationDictionary,
@@ -71,10 +73,12 @@ const stopStream = (stream: MediaStream | null) => {
 };
 
 /** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
- *  ids run through llama.cpp, and a custom HF repo is safetensors on Transformers. */
-export type SttEngine = "transformers" | "gguf" | "mtmd";
+ *  ids run through llama.cpp, audiocpp ids run through audio.cpp, and a custom HF repo is
+ *  safetensors on Transformers. */
+export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 export function sttEngineFor(model: string): SttEngine {
+  if (AUDIO_CPP_STT_MODELS.has(model.trim())) return "audiocpp";
   // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
   if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
   return isCuratedSttModel(model) ? "gguf" : "transformers";
@@ -242,6 +246,9 @@ export interface SttStatus {
   transformers?: SttEngineStatus;
   gguf?: SttEngineStatus;
   mtmd?: SttEngineStatus;
+  audiocpp?: SttEngineStatus;
+  /** What the audio.cpp runtime can run; absent on servers predating it. */
+  audio_cpp_runtime?: AudioCppRuntimeStatus;
 }
 
 // Keep load/unload requests ordered so a new recording cannot race an unload still finishing for the previous one.
@@ -275,7 +282,7 @@ export async function fetchSttStatus(
 
 /** The engine block that owns `model`. A curated Whisper prefers whisper.cpp, but without
  *  whisper-server the backend serves it through Transformers, so that is the fallback.
- *  mtmd models run nowhere else. */
+ *  mtmd and audiocpp models run nowhere else. */
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
@@ -283,6 +290,7 @@ export function sttEngineStatusFor(
 ): SttEngineStatus | undefined {
   const engine = engineOverride ?? sttEngineFor(model);
   if (engine === "mtmd") return status.mtmd;
+  if (engine === "audiocpp") return status.audiocpp;
   if (engine === "gguf" && status.gguf?.available) return status.gguf;
   return status.transformers;
 }

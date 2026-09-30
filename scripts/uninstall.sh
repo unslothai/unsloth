@@ -27,9 +27,10 @@ is not (dash, busybox sh) the shell exits with "Illegal option -h".
 Stops running Unsloth Studio servers, then removes the install dir, launcher
 data dir, CLI shim, desktop shortcut, macOS .app bundle and Launch Services
 entry. In a default-mode install it also removes the shared prebuilts that sit
-beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,.cache}. The
-Hugging Face cache at ~/.cache/huggingface is left in place, as is anything
-else you keep under ~/.unsloth.
+beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,audio.cpp,.cache}.
+The Hugging Face cache at ~/.cache/huggingface is left in place (only audio.cpp's
+unsloth-audiocpp-links beside it goes), as is anything else you keep under
+~/.unsloth.
 
 On WSL it also removes this distro's Windows-side shortcuts under /mnt/*/Users,
 strips the Unsloth block from ~/.bashrc, and uses sudo to delete
@@ -805,7 +806,7 @@ _unsloth_uninstall_main() {
         if _is_unsafe_root "$_mr_root"; then
             echo "  refusing to remove unsafe path: $_mr_root" >&2
         else
-            for _mr_child in llama.cpp node whisper.cpp stable-diffusion.cpp; do
+            for _mr_child in llama.cpp node whisper.cpp audio.cpp stable-diffusion.cpp; do
                 _mr_path="$_mr_root/$_mr_child"
                 if _is_unsafe_root "$_mr_path"; then
                     echo "  refusing to remove unsafe path: $_mr_path" >&2
@@ -820,7 +821,7 @@ _unsloth_uninstall_main() {
                 fi
             done
             for _mr_lock in .llama.cpp.install.lock .node.install.lock \
-                    .whisper.cpp.install.lock .sd.cpp.install.lock; do
+                    .whisper.cpp.install.lock .audio.cpp.install.lock .sd.cpp.install.lock; do
                 _remove_lock_file "$_mr_root/$_mr_lock"
             done
             # The prebuilt installers SHARE <root>/.staging and prune it only when empty, so
@@ -830,7 +831,7 @@ _unsloth_uninstall_main() {
             # The exact shape prebuilt_core.py leaves: a component lock name, ".stale.", and the
             # pid. A bare .*.install.lock.stale.* also matched .backup.install.lock.stale.copy.
             for _mr_lock in .llama.cpp.install.lock .node.install.lock \
-                    .whisper.cpp.install.lock .sd.cpp.install.lock; do
+                    .whisper.cpp.install.lock .audio.cpp.install.lock .sd.cpp.install.lock; do
                 for _mr_stale in "$_mr_root/$_mr_lock".stale.*; do
                     case "${_mr_stale##*.stale.}" in
                         ''|*[!0-9]*) continue ;;
@@ -881,11 +882,25 @@ _unsloth_uninstall_main() {
     # Managed whisper.cpp dictation engine (install_whisper_prebuilt.py), a default-mode sibling.
     # Only present when a prebuilt matching the pinned llama.cpp build existed at install time.
     _remove_path "$HOME/.unsloth/whisper.cpp"
+    # Managed audio.cpp engine (install_audio_cpp_prebuilt.py), a default-mode sibling.
+    _remove_path "$HOME/.unsloth/audio.cpp"
     # Prebuilt install locks: every prebuilt serializes on <parent>/.<name>.install.lock
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
     _remove_lock_file "$HOME/.unsloth/.llama.cpp.install.lock"
     _remove_lock_file "$HOME/.unsloth/.node.install.lock"
     _remove_lock_file "$HOME/.unsloth/.whisper.cpp.install.lock"
+    _remove_lock_file "$HOME/.unsloth/.audio.cpp.install.lock"
+    # audio.cpp lays its models out as links (copies across volumes) in unsloth-audiocpp-links beside
+    # the Hugging Face hub cache (audio_cpp_files.py). The cache itself stays, as the note below says.
+    _hf_hub="${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}"
+    _remove_path "$(dirname "$_hf_hub")/unsloth-audiocpp-links"
+    # The audio.cpp server's scratch home when the Studio root was unusable (audio_cpp_server.py);
+    # per uid, so another user's is never touched, and only a real directory this user owns.
+    _audiocpp_home="${TMPDIR:-/tmp}"
+    _audiocpp_home="${_audiocpp_home%/}/unsloth-audiocpp-home-$(id -u 2>/dev/null)"
+    if [ -d "$_audiocpp_home" ] && [ ! -L "$_audiocpp_home" ] && [ -O "$_audiocpp_home" ]; then
+        _remove_path "$_audiocpp_home"
+    fi
     # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
     # (install_node_prebuilt.py); a crash between the two strands the rename, and a stranded one
     # blocks the rmdir below. Unmatched globs stay literal, hence the existence test.
@@ -893,7 +908,7 @@ _unsloth_uninstall_main() {
     # anything else kept under ~/.unsloth is left in place, and .backup.install.lock.stale.copy
     # is dotted too.
     for _lock in .llama.cpp.install.lock .node.install.lock \
-            .whisper.cpp.install.lock .sd.cpp.install.lock; do
+            .whisper.cpp.install.lock .audio.cpp.install.lock .sd.cpp.install.lock; do
         for _stale in "$HOME/.unsloth/$_lock".stale.*; do
             case "${_stale##*.stale.}" in
                 ''|*[!0-9]*) continue ;;

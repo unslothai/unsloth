@@ -17,7 +17,7 @@ export type LoadedModelKind = "text" | "tts" | "image" | "video" | "stt";
 export type LoadedModelSource = "chat" | "image" | "video" | "stt";
 
 /** The dictation sidecars, as /audio/stt/status names them. */
-export type SttEngine = "transformers" | "mtmd" | "gguf";
+export type SttEngine = "transformers" | "mtmd" | "gguf" | "audiocpp";
 
 export type LoadedModelEntry = {
   /** Stable across polls, so a row does not remount mid-eject. */
@@ -49,12 +49,14 @@ export type SttStatusResponse = SttEngineStatus & {
   transformers?: SttEngineStatus | null;
   mtmd?: SttEngineStatus | null;
   gguf?: SttEngineStatus | null;
+  audiocpp?: SttEngineStatus | null;
 };
 
 const STT_ENGINE_LABELS: Record<SttEngine, string> = {
   transformers: "Transformers",
   mtmd: "llama.cpp",
   gguf: "whisper.cpp",
+  audiocpp: "audio.cpp",
 };
 
 /**
@@ -286,7 +288,7 @@ export function describeSttStatus(
   status: SttStatusResponse | null,
 ): LoadedModelEntry[] {
   if (!status) return [];
-  const engines: SttEngine[] = ["transformers", "mtmd", "gguf"];
+  const engines: SttEngine[] = ["transformers", "mtmd", "gguf", "audiocpp"];
   const entries: LoadedModelEntry[] = [];
   for (const engine of engines) {
     const block = sttEngineStatus(status, engine);

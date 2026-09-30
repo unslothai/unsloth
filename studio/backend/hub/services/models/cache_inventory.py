@@ -47,6 +47,7 @@ from hub.services.models.common import (
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.audio_tokens import detect_local_tts_audio_type
 from utils.hidden_models import (
+    is_audio_cpp_repo_id,
     is_curated_stt_repo_id,
     is_curated_tts_repo_id,
     is_hidden_model,
@@ -473,7 +474,7 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     # Qwen3-ASR's required mmproj is an audio projector, not a vision one, and stt_only covers any repo whose config sniffs as Whisper, curated or not: a third-party checkpoint or a user's own fine-tune is just as unchattable. can_chat is what auto-load and the chat picker filter on, neither of which looks at the task, so task-scoping alone would leave curated STT rows eligible for chat auto-load.
-    if stt_only or is_curated_stt_repo_id(repo_id):
+    if stt_only or is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     # The codec probe covers uncurated safetensors copies and native audio architectures are passed explicitly; a GGUF repo ships no tokenizer_config to probe, so the curated ids answer for those.
@@ -629,7 +630,7 @@ def _scan_cached_gguf(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT repos are still emitted as management rows.
                 if is_hidden_infra and not is_curated_stt and not has_variant_state:
                     continue
@@ -1094,7 +1095,7 @@ def _scan_cached_models(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
                 is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
                 if is_hidden_infra and not is_curated_stt and not is_whisper_stt:

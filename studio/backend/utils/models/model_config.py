@@ -1538,8 +1538,10 @@ def detect_audio_type_checked(
         return None, True
 
     try:
-        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
-        curated_type = NATIVE_AUDIO_MODEL_IDS.get(str(model_name).strip().lower())
+        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS, audio_cpp_audio_type
+        curated_type = NATIVE_AUDIO_MODEL_IDS.get(
+            str(model_name).strip().lower()
+        ) or audio_cpp_audio_type(str(model_name))
     except Exception:
         curated_type = None
     if curated_type:
@@ -4308,6 +4310,9 @@ class ModelConfig:
             return None
 
         identifier = model_id.strip()
+        audio_cpp_config = cls._from_audio_cpp_identifier(identifier)
+        if audio_cpp_config is not None:
+            return audio_cpp_config
         is_local = is_local_path(identifier)
         path = normalize_path(identifier) if is_local else identifier
 
@@ -4709,6 +4714,37 @@ class ModelConfig:
             audio_type = audio_type_val,
             has_audio_input = has_audio_in,
             base_model = base_model,
+        )
+
+    @classmethod
+    def _from_audio_cpp_identifier(cls, identifier: str) -> Optional["ModelConfig"]:
+        """A curated audio.cpp speech or music id, answered from the catalog.
+
+        Its id names a subfolder of one Hub repo, so none of the repo probes below (GGUF,
+        LoRA, vision, config) can read it: the GGUF probe would even refuse it as an
+        unreadable GGUF repo. The catalog already knows everything they would find.
+        """
+        try:
+            from core.inference.audio_cpp_models import lookup
+        except Exception:  # noqa: BLE001 - a missing catalog is not an audio.cpp id
+            return None
+        model = lookup(identifier)
+        if model is None or model.audio_type is None:
+            return None
+        from core.inference import audio_cpp_files
+
+        return cls(
+            identifier = model.id,
+            display_name = model.display_name,
+            path = model.id,
+            is_local = False,
+            is_cached = audio_cpp_files.is_downloaded(model),
+            is_vision = False,
+            is_lora = False,
+            is_audio = True,
+            audio_type = model.audio_type,
+            has_audio_input = False,
+            base_model = None,
         )
 
     @classmethod

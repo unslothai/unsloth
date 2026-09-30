@@ -56,7 +56,10 @@ NATIVE_AUDIO_MODEL_TYPES = {
     "minimax_music3": "minimax_music3",
 }
 
-NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values())
+# audio.cpp speech and music models ride the same worker path; their weights run in audiocpp_server.
+from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES  # noqa: E402
+
+NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values()) | AUDIO_CPP_AUDIO_TYPES
 REMOTE_CODE_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano", "higgs_tts3"))
 PYTHON310_AUDIO_TYPES = frozenset(("higgs_tts2", "higgs_tts3", "minimax_music3"))
 MOSS_LOCAL_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
@@ -380,7 +383,22 @@ def _native_audio_type(model_name: str) -> Optional[str]:
     curated = NATIVE_AUDIO_MODEL_IDS.get(normalized.lower())
     if curated:
         return curated
+    audio_cpp_type = audio_cpp_audio_type(normalized)
+    if audio_cpp_type:
+        return audio_cpp_type
     return native_audio_type_from_local_path(normalized)
+
+
+def audio_cpp_audio_type(model_name: str) -> Optional[str]:
+    """The audio_type of a curated audio.cpp speech or music id, without a Hub request."""
+    from core.inference.audio_cpp_models import lookup
+
+    model = lookup(model_name)
+    return model.audio_type if model is not None else None
+
+
+def is_audio_cpp_audio_model(model_name: str) -> bool:
+    return audio_cpp_audio_type(model_name) is not None
 
 
 def is_native_audio_model(model_name: str) -> bool:
@@ -398,6 +416,10 @@ def native_audio_security_targets(
     hf_token: Optional[str] = None,
 ) -> list[str]:
     """Repositories whose code or weights are loaded for this audio model."""
+    if is_audio_cpp_audio_model(model_name):
+        # The id names a subfolder; the weights, and so the scan, belong to the repo that holds it.
+        from core.inference.audio_cpp_models import AUDIO_CPP_REPO
+        return [AUDIO_CPP_REPO]
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
@@ -671,6 +693,8 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")
+    if is_audio_cpp_audio_model(normalized):
+        return _audio_cpp_download_plan(normalized, hf_token)
     local_checkpoint = Path(normalized).expanduser().exists()
     audio_type = _native_audio_type(normalized)
     if audio_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
@@ -738,6 +762,38 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         "total_bytes": total_bytes,
         "required_bytes": required_bytes,
         "checkpoint_bytes": checkpoint_bytes,
+    }
+
+
+def _audio_cpp_download_plan(model_name: str, hf_token: Optional[str]) -> dict[str, Any]:
+    """Only the files this audio.cpp model needs from the umbrella repo, never the whole repo."""
+    from core.inference import audio_cpp_files
+    from core.inference.audio_cpp_models import AUDIO_CPP_REPO, lookup
+
+    model = lookup(model_name)
+    files = audio_cpp_files.expand_repo_files(model, hf_token)
+    required_bytes = sum(size for _path, size in files)
+    cached = audio_cpp_files.cached_files(model) is not None
+    missing = [] if cached else files
+    missing_bytes = sum(size for _path, size in missing)
+    entries = (
+        [
+            {
+                "repo_id": AUDIO_CPP_REPO,
+                "files": [path for path, _size in missing],
+                "bytes": missing_bytes,
+                "gguf_filename": None,
+                "checkpoint": True,
+            }
+        ]
+        if missing
+        else []
+    )
+    return {
+        "entries": entries,
+        "total_bytes": missing_bytes,
+        "required_bytes": required_bytes,
+        "checkpoint_bytes": required_bytes,
     }
 
 

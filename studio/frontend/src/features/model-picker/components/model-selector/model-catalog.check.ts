@@ -8,6 +8,8 @@
 
 import assert from "node:assert/strict";
 
+import { AUDIO_CPP_REPO, isAudioCppModelId } from "../../../audio/audio-cpp-catalog.ts";
+
 import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   AUDIO_CATALOG,
@@ -1427,13 +1429,15 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
-  // One metadata call per repo id, however many artifacts share it.
+  // One metadata call per repo id, however many artifacts share it. An audio.cpp id is a folder
+  // of one shared repo, so every one of them is checked against that repo.
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
-      const bucket = artifactsByRepo.get(artifact.repoId);
+      const hubRepo = isAudioCppModelId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId;
+      const bucket = artifactsByRepo.get(hubRepo);
       if (bucket) bucket.push(artifact);
-      else artifactsByRepo.set(artifact.repoId, [artifact]);
+      else artifactsByRepo.set(hubRepo, [artifact]);
     }
   }
 
@@ -1476,6 +1480,15 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
       }
     }
 
+    for (const artifact of artifacts) {
+      if (!isAudioCppModelId(artifact.repoId)) continue;
+      // The package folder is the id's first segment past the repo (Moonshine's sizes share one).
+      const folder = artifact.repoId.slice(AUDIO_CPP_REPO.length + 1).split("/")[0];
+      if (!(repo.siblings ?? []).some((s) => s.rfilename.startsWith(`${folder}/`))) {
+        failures.push(`${artifact.repoId}: ${repoId} has no '${folder}/' folder`);
+      }
+    }
+
     const declaredFiles = [
       ...new Set(artifacts.map((a) => a.filename).filter((f): f is string => Boolean(f))),
     ];
@@ -1505,7 +1518,9 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
   // Advisory only. A canonicalId is a display/grouping key and 15 are deliberately not repos;
   // but one that is both `unsloth/*`-shaped and dead clears every owner guard in the app.
-  const artifactIds = new Set([...artifactsByRepo.keys()].map((id) => id.toLowerCase()));
+  const artifactIds = new Set(
+    groups.flatMap((g) => g.artifacts.map((a) => a.repoId.toLowerCase())),
+  );
   const orphans = groups
     .map((g) => g.canonicalId)
     .filter((id) => !artifactIds.has(id.toLowerCase()));

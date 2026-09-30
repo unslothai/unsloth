@@ -145,6 +145,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { isAudioCppModelId } from "../../../audio/audio-cpp-catalog.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
   type CommunityModelPolicy,
@@ -2524,6 +2525,8 @@ function hasGgufSuffix(id: string): boolean {
 }
 
 function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
+  // An audio.cpp package is named -GGUF but only audiocpp_server reads it: no llama.cpp variants.
+  if (isAudioCppModelId(id)) return false;
   return Boolean(hintedIsGguf) || hasGgufSuffix(id);
 }
 

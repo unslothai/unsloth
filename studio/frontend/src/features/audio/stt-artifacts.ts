@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type AudioSttEngine = "transformers" | "gguf" | "mtmd";
+import { AUDIO_CPP_MODELS } from "./audio-cpp-catalog.ts";
+
+export type AudioSttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 const TRANSFORMERS_REPO_BY_KEY: Record<string, string> = {
   tiny: "unsloth/whisper-tiny",
@@ -24,11 +26,20 @@ const GGUF_REPO_BY_KEY: Record<string, string> = {
   "large-v3": "unslothai/whisper-large-v3-GGUF",
 };
 
+// audio.cpp ASR keys are distinct from every other engine's, and the repo is the virtual id.
+const AUDIOCPP_REPO_BY_KEY: Record<string, string> = Object.fromEntries(
+  AUDIO_CPP_MODELS.filter((model) => model.task === "asr").map((model) => [
+    model.key,
+    model.id,
+  ]),
+);
+
 const KEY_BY_REPO = new Map<string, string>(
   [
     ...Object.entries(TRANSFORMERS_REPO_BY_KEY),
     ...Object.entries(GGUF_REPO_BY_KEY),
     ...Object.entries(MTMD_REPO_BY_KEY),
+    ...Object.entries(AUDIOCPP_REPO_BY_KEY),
   ].map(([key, repoId]) => [repoId.toLowerCase(), key]),
 );
 
@@ -41,6 +52,9 @@ const ENGINE_BY_REPO = new Map<string, AudioSttEngine>([
   ),
   ...Object.values(MTMD_REPO_BY_KEY).map(
     (repoId) => [repoId.toLowerCase(), "mtmd"] as const,
+  ),
+  ...Object.values(AUDIOCPP_REPO_BY_KEY).map(
+    (repoId) => [repoId.toLowerCase(), "audiocpp"] as const,
   ),
 ]);
 
@@ -57,6 +71,9 @@ export function sttRepoIdForSidecarKey(
   engine: AudioSttEngine = "transformers",
 ): string {
   const normalized = sidecarKey.trim().toLowerCase();
+  // An audio.cpp key names one artifact whatever engine the caller assumed.
+  if (engine === "audiocpp" || Object.hasOwn(AUDIOCPP_REPO_BY_KEY, normalized))
+    return AUDIOCPP_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "gguf") return GGUF_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "mtmd") return MTMD_REPO_BY_KEY[normalized] ?? sidecarKey;
   return TRANSFORMERS_REPO_BY_KEY[normalized] ?? sidecarKey;

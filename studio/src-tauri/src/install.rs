@@ -1988,6 +1988,12 @@ mod tests {
         context.observe_stdout(
             "whisper.cpp    prebuilt install failed; browser and Transformers dictation remain available",
         );
+        context.observe_stderr(
+            "error: staged audiocpp_server --help exited 127; this host cannot run the bundle, keeping the existing install:",
+        );
+        context.observe_stdout(
+            "audio.cpp      prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available",
+        );
         for index in 0..10 {
             context.observe_stdout(&format!("setup footer line {index}"));
         }
@@ -2003,6 +2009,7 @@ mod tests {
         let mut context = InstallFailureContext::default();
         context.observe_stdout("long paths failed to enable");
         context.observe_stderr("Triton install failed; torch.compile may not work");
+        context.observe_stdout("audio.cpp      install busy; keeping existing runtime");
         assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 3)"));
         assert_eq!(
             context.message(3),

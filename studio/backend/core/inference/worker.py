@@ -2215,7 +2215,12 @@ def run_inference_process(
         _ensure_backend_on_path()
 
         if _native_audio_worker:
-            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+            from core.inference.native_audio import is_audio_cpp_audio_model
+            if is_audio_cpp_audio_model(model_name):
+                # Weights run in audiocpp_server; this worker only proxies to it.
+                from core.inference.audio_cpp_backend import AudioCppBackend as InferenceBackend
+            else:
+                from core.inference.native_audio import NativeAudioBackend as InferenceBackend
         else:
             # Recover from any namespace-package shadow before importing Unsloth.
             from core.import_guards import ensure_real_packages

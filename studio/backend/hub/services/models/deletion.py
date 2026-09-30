@@ -877,6 +877,8 @@ async def delete_cached_model_response(
             _inference_backend_blocks_delete(repo_id)
         ):
             return "Unload the model before deleting"
+        if _audio_cpp_blocks_delete(repo_id):
+            return "Unload the audio.cpp model before deleting"
         return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
 
     try:
@@ -916,7 +918,7 @@ async def delete_cached_model_response(
                 status_code = 400,
                 detail = blocks_detail,
             )
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,
             variant,
@@ -924,9 +926,32 @@ async def delete_cached_model_response(
             cache_path,
             only_if_orphan = only_if_orphan,
         )
+        from utils.hidden_models import is_audio_cpp_repo_id
+
+        if is_audio_cpp_repo_id(repo_id):
+            # The link farm hardlinks the deleted blobs; without this they keep their disk space.
+            from core.inference.audio_cpp_files import prune_link_farm
+            await asyncio.to_thread(prune_link_farm)
+        return result
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
+
+
+def _audio_cpp_blocks_delete(repo_id: str) -> bool:
+    """Whether an audio.cpp model from this umbrella repo is resident. Its id is a subfolder of the
+    repo, so the id comparisons of the other guards never match it."""
+    from utils.hidden_models import is_audio_cpp_repo_id
+
+    if not is_audio_cpp_repo_id(repo_id):
+        return False
+    from core.inference.audio_cpp_models import is_audio_cpp_model
+    from core.inference.orchestrator import peek_inference_backend
+    from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+
+    backend = peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    return bool(is_audio_cpp_model(active) or get_audio_cpp_stt_sidecar().loaded_model)
 
 
 def _delete_cached_model_blocking(

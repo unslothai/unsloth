@@ -5,6 +5,7 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import { isAudioCppModelId } from "../../../audio/audio-cpp-catalog.ts";
 import { classifyMediaGgufFit, type curatedArtifactFit } from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
@@ -15,6 +16,8 @@ const MLX_OWNER_PREFIX = "mlx-community/";
 const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
+  // audio.cpp packages are named -GGUF but are not llama.cpp repos, so they filter with checkpoints.
+  if (isAudioCppModelId(id)) return false;
   return Boolean(hintedIsGguf) || GGUF_SUFFIX_RE.test(id);
 }
 

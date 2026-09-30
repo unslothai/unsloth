@@ -107,6 +107,17 @@ def summarize_resident_stt() -> Dict[str, Any]:
     except Exception as e:
         logger.warning("Could not inspect mtmd STT sidecar: %s", e)
 
+    try:
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+
+        audiocpp = get_audio_cpp_stt_sidecar()
+        if not model:
+            model = audiocpp.loaded_model
+            device = device or audiocpp.device
+        loading = loading or audiocpp.is_loading()
+    except Exception as e:
+        logger.warning("Could not inspect audio.cpp STT sidecar: %s", e)
+
     return {
         "model": model,
         "device": device,
@@ -551,6 +562,34 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 freed.append(f"stt:{mtmd_model}")
     except Exception as e:
         logger.warning("Could not unload mtmd STT model: %s", e)
+
+    try:
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+        audiocpp = get_audio_cpp_stt_sidecar()
+        if audiocpp.is_loading() and audiocpp.cancel_pending_load():
+            logger.info("Cancelling audio.cpp STT model load for training (%s)", reason)
+            # audiocpp_server loads the model before it answers, so the cancelled startup is killed and reaped
+            # under the sidecar lock; wait for that before training claims the memory.
+            audiocpp.wait_for_load_to_settle()
+            if audiocpp.loaded_model:
+                audiocpp.unload()
+            freed.append("stt:audiocpp-loading")
+        else:
+            audiocpp_model = audiocpp.loaded_model
+            if audiocpp_model and _stt_sidecar_holds_no_vram(audiocpp):
+                logger.info(
+                    "Keeping CPU-placed audio.cpp STT model '%s' through training (%s)",
+                    audiocpp_model,
+                    reason,
+                )
+            elif audiocpp_model:
+                logger.info(
+                    "Unloading audio.cpp STT model '%s' for training (%s)", audiocpp_model, reason
+                )
+                audiocpp.unload()
+                freed.append(f"stt:{audiocpp_model}")
+    except Exception as e:
+        logger.warning("Could not unload audio.cpp STT model: %s", e)
 
     return freed
 
