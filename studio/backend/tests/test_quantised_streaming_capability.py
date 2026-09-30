@@ -46,13 +46,29 @@ def test_the_polled_reader_answers_from_the_cache_without_importing(monkeypatch,
     assert namespace["_quantised_streaming"]() is expected
 
 
+def _exec_refresh(
+    monkeypatch,
+    supported,
+    device_count = 1,
+):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: device_count > 0)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: device_count)
+    fake = types.ModuleType("core.inference.video")
+    fake.h3_streamed_int8_supported = supported
+    monkeypatch.setitem(sys.modules, "core.inference.video", fake)
+    device = types.ModuleType("core.inference.diffusion_device")
+    device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", device)
+    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys, "Any": object}
+    exec(_src("_probe_quantised_streaming"), namespace)  # noqa: S102
+    exec(_src("_refresh_quantised_streaming_capability"), namespace)  # noqa: S102
+    return namespace
+
+
 @pytest.mark.parametrize("supported", [True, False])
 def test_the_refresh_caches_the_prequant_verdict(monkeypatch, supported):
-    fake = types.ModuleType("core.inference.video")
-    fake.h3_streamed_int8_supported = lambda: supported
-    monkeypatch.setitem(sys.modules, "core.inference.video", fake)
-    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys}
-    exec(_src("_refresh_quantised_streaming_capability"), namespace)  # noqa: S102
+    namespace = _exec_refresh(monkeypatch, lambda target = None: supported)
     exec(_src("_quantised_streaming"), namespace)  # noqa: S102
     assert namespace["_refresh_quantised_streaming_capability"]() is supported
     assert namespace["_quantised_streaming_capability"] is supported
@@ -74,6 +90,14 @@ def test_a_cold_warm_resolves_it_once_a_load_has_loaded_the_stack(monkeypatch, l
     namespace["_refresh_quantised_streaming_capability"] = lambda: calls.append(1) or True
     assert namespace["_quantised_streaming"]() is loaded
     assert calls == ([1] if loaded else [])
+
+
+def test_a_mixed_host_offers_the_tier_only_when_every_card_qualifies(monkeypatch):
+    """A load can be pinned to any card; one resolving to float16 would keep the bf16 denoiser."""
+    namespace = _exec_refresh(monkeypatch, lambda target = None: target != 1, device_count = 2)
+    assert namespace["_refresh_quantised_streaming_capability"]() is False
+    namespace = _exec_refresh(monkeypatch, lambda target = None: True, device_count = 2)
+    assert namespace["_refresh_quantised_streaming_capability"]() is True
 
 
 def test_the_post_warm_worker_resolves_it_behind_the_torch_guard():
