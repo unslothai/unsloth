@@ -35368,13 +35368,13 @@ def _llama_image_data_url(raw: bytes) -> str:
         upright = exif_upright(img)
         # 16-bit tRNS keys cannot survive the 8-bit scaling, so those pass through as before.
         if img.has_transparency_data and not img.mode.startswith("I;16"):
-            # The alpha band alone: an opaque RGBA screenshot must not pay for an RGBA copy.
+            # Alpha band only: no RGBA copy of opaque screenshots.
             bands = img.getbands()
             alpha = img.getchannel("A") if "A" in bands else img.convert("RGBA").getchannel("A")
             if alpha.getextrema()[0] < 255:
                 del alpha
                 buf = io.BytesIO()
-                # From this decode, not a second one: large transparent images cost enough.
+                # Reuse this decode: a second one doubles peak memory on large images.
                 _mcp_flattened_rgb(upright).save(buf, format = "PNG")
                 return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     if upright is not img:

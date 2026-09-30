@@ -344,8 +344,7 @@ def flattened_rgb(image):
         return image.convert("RGB")
     rgba = image if image.mode == "RGBA" else image.convert("RGBA")
     alpha = rgba.getchannel("A")
-    # Light ink (dark-mode logos, white text) would vanish on white: it goes onto black.
-    # Alpha-weighted, so a faint light halo cannot outvote opaque dark content.
+    # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
     ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
     light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
     canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
