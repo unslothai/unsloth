@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -404,6 +405,34 @@ def test_symlinked_cache_entries_are_hardlinked_under_their_real_names(tmp_path)
     assert os.path.samefile(path, blob)
     # Idempotent.
     assert audio_cpp_files.materialize(m, hub_cache = root) == path
+
+
+def test_an_unwritable_farm_location_is_an_unavailable_error(tmp_path, monkeypatch):
+    from core.inference.audio_cpp_server import AudioCppUnavailableError
+
+    root, snap = _snapshot(tmp_path)
+    blobs = snap.parent.parent / "blobs"
+    blobs.mkdir()
+    blob = blobs / "deadbeef"
+    blob.write_bytes(b"GGUF-weights")
+    m = lookup("audiocpp-canary-180m-flash")
+    link = snap / m.gguf_file
+    link.parent.mkdir(parents = True)
+    try:
+        link.symlink_to(os.path.relpath(blob, link.parent))
+    except OSError:
+        pytest.skip("this filesystem or account cannot create symlinks")
+    farm_root = audio_cpp_files._link_farm_root(root)
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *a, **kw):
+        if farm_root in (self, *self.parents):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    with pytest.raises(AudioCppUnavailableError, match = "writable folder"):
+        audio_cpp_files.materialize(m, hub_cache = root)
 
 
 def test_materialize_of_a_missing_model_raises(tmp_path):

@@ -171,7 +171,14 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
                 _unlink_link(parent)
         if _already_materialized(dst, blob):
             continue
-        dst.parent.mkdir(parents = True, exist_ok = True)
+        try:
+            dst.parent.mkdir(parents = True, exist_ok = True)
+        except OSError as exc:
+            from core.inference.audio_cpp_server import AudioCppUnavailableError
+            raise AudioCppUnavailableError(
+                f"audio.cpp needs a writable folder beside the Hugging Face cache ({farm_root}): {exc}. "
+                "Move the Hugging Face cache in Settings."
+            ) from exc
         # Unique per call: two first loads of one model (dictation materializes outside its load lock)
         # must not unlink each other's staging file.
         tmp = dst.with_name(f"{dst.name}.unsloth-tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
