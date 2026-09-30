@@ -313,6 +313,16 @@ function migrateThroughVersion23(
   );
 }
 
+function migrateThroughVersion24(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 24) {
+    state.parallelismMode = "auto";
+    state.selectedGpuIds = null;
+  }
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -414,6 +424,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion21(state, version);
   migrateThroughVersion22(state, version);
   migrateThroughVersion23(state, version);
+  migrateThroughVersion24(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
