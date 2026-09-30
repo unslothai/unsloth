@@ -1426,20 +1426,33 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           for (const key of LORA_PARAM_KEYS) {
             if (patch[key] !== undefined) _loraParamEditGenerations[key] += 1;
           }
-          setUserEdit((state) => ({
-            ...patch,
-            ...(patch.trainOnCompletions !== undefined
-              ? { trainOnCompletionsDefaultPendingFor: null }
-              : {}),
-            ...(patch.learningRate !== undefined
-              ? {
-                  trainingMethodProvenance: {
-                    ...state.trainingMethodProvenance,
-                    learningRateManuallySet: false,
-                  },
-                }
-              : {}),
-          }));
+          setUserEdit((state) => {
+            const importsCompletionsInCpt =
+              state.trainingMethod === "cpt" &&
+              patch.trainOnCompletions !== undefined;
+            return {
+              ...patch,
+              ...(patch.trainOnCompletions !== undefined
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
+              ...(patch.learningRate !== undefined || importsCompletionsInCpt
+                ? {
+                    trainingMethodProvenance: {
+                      ...state.trainingMethodProvenance,
+                      ...(patch.learningRate !== undefined
+                        ? { learningRateManuallySet: false }
+                        : {}),
+                      ...(importsCompletionsInCpt
+                        ? {
+                            trainOnCompletionsBeforeCpt:
+                              patch.trainOnCompletions,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+            };
+          });
         },
       };
     },

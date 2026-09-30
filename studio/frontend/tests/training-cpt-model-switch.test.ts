@@ -1101,3 +1101,23 @@ test("a cache refetch inside CPT keeps the train on completions the user turned 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
+
+test("a config imported inside CPT decides train on completions after leaving", async () => {
+  for (const imported of [false, true]) {
+    useTrainingConfigStore.getState().reset();
+    setAuthFetchHandler(() => completionDefaults("org/chat", false));
+    useTrainingConfigStore.getState().selectTrainingModel("org/chat", "text");
+    await waitForModelDefaults("org/chat");
+    useTrainingConfigStore.getState().setTrainOnCompletions(!imported);
+
+    useTrainingConfigStore.getState().setTrainingMethod("cpt");
+    useTrainingConfigStore
+      .getState()
+      .applyConfigPatch({ training: { train_on_completions: imported } });
+    useTrainingConfigStore.getState().setTrainingMethod("qlora");
+    assert.equal(
+      useTrainingConfigStore.getState().trainOnCompletions,
+      imported,
+    );
+  }
+});
