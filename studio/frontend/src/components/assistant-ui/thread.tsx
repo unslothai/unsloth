@@ -128,8 +128,11 @@ import {
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import {
   listPromptEntries,
+  listPromptLists,
   type PromptEntry,
+  type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
+import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
@@ -300,6 +303,7 @@ import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
@@ -343,6 +347,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Volume02Icon } from "@/lib/volume-icons";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -353,12 +358,10 @@ import {
   Columns2Icon,
   SlidersHorizontalIcon,
   GitBranchIcon,
-  GlobeIcon,
   HeadphonesIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
-  RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
   XIcon,
@@ -2158,7 +2161,7 @@ export const Thread: FC<{
                 : // + the chat-model notice, which is an opaque absolute bar
                   // directly under the header. 0px whenever it is not showing,
                   // so every other surface keeps the padding it had.
-                  "pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))]",
+                  "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] pt-[var(--thread-header-offset)]",
             )}
           >
             {!hideWelcome && (
@@ -2402,15 +2405,15 @@ const ThreadComposerDock: FC<{
       className={cn(
         // Inset both sides, not just the right: the offset keeps the bottom
         // fade off the scrollbar, and a one-sided one also moves the centre.
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[calc(10px*var(--ui-space-scale,1))] md:right-[calc(10px*var(--ui-space-scale,1))]",
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[var(--thread-scrollbar-gutter,10px)] md:right-[var(--thread-scrollbar-gutter,10px)]",
         overlay ? "z-40" : "z-20",
       )}
     >
-      {/* Fade the top edge so scrolling text is not cut off by a hard line. */}
+      {/* Column width only: across empty gutters the gradient rounds to a visible seam. */}
       <div
         aria-hidden={true}
         className={cn(
-          "thread-bottom-fade absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
+          "thread-bottom-fade absolute bottom-0 left-1/2 w-full max-w-(--thread-max-width) -translate-x-1/2 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[calc(10px*var(--ui-space-scale,1))]",
@@ -3187,10 +3190,9 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch {
-              // Chat-wide, not per file (no audio model, too large, already
-              // attached), and every adapter path toasted: stop quietly.
+              // The adapter toasted. Keep going: a later, smaller clip may still fit.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
-              return;
+              continue;
             }
           }
         }
@@ -3239,8 +3241,8 @@ const Composer: FC<{
     };
   }, [nativeAttachmentTargetKey, aui]);
 
-  // Same drain as audio, one queue over: one clip per message, and the send
-  // gate has to hold across the read either way.
+  // Same drain as audio, one queue over: video is one clip per message, and the
+  // send gate has to hold across the read either way.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;
@@ -5297,12 +5299,9 @@ const Composer: FC<{
       // Saved-prompt Run-list calls this directly, so honour disableQueue here
       // too: queuing from the project new-chat composer misbinds the thread.
       if (disableQueue) return false;
-      return startHydratedPromptQueue(
-        items,
-        waitForCurrentRun,
-        undefined,
-        onAborted,
-      );
+      // false here only means an identical start is already pending and will run: not a refusal.
+      startHydratedPromptQueue(items, waitForCurrentRun, undefined, onAborted);
+      return true;
     },
     [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
@@ -5342,6 +5341,7 @@ const Composer: FC<{
           <ComposerToolsMenu
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
+            audioUploadBusy={audioUpload.busy}
           />
           {/* While dictating, show only the "+"; hide the pill and tool toggles
               so the waveform is the sole status indicator. */}
@@ -6192,7 +6192,7 @@ const WebSearchToggle: FC = () => {
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <PillGlyph>
-        <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+        <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
       </PillGlyph>
       <span>Search</span>
     </button>
@@ -6372,7 +6372,7 @@ const ToolStatusDisplay: FC = () => {
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const kind = toolStatusKind(toolStatus);
   const isNudging = kind === "nudge";
-  const StatusIcon = kind === "terminal" ? TerminalIcon : GlobeIcon;
+  const StatusIcon = kind === "terminal" ? TerminalIcon : InternetGlyph;
   return (
     <div
       data-testid="composer-tool-status"
@@ -6418,7 +6418,8 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
-}> = ({ side = "bottom", researchAvailable }) => {
+  audioUploadBusy: boolean;
+}> = ({ side = "bottom", researchAvailable, audioUploadBusy }) => {
   const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
@@ -6580,13 +6581,20 @@ const ComposerToolsMenu: FC<{
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const exportDisabled = incognito || !activeThreadId || messageCount === 0;
   const { startQueue } = useContext(PromptQueueContext);
+  const { overlay: generatedImageOverlay } = useGeneratedImageOverlay();
+  const menuIsDictating = useAuiState((s) => s.composer.dictation != null);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent
       // when nothing is pinned.
@@ -6594,8 +6602,55 @@ const ComposerToolsMenu: FC<{
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Clear, don't keep: a stale list row would run its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
+    }
+    try {
+      const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
+      setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
+    } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
+
+  const runPromptList = useCallback(
+    (items: string[], fromDialog = false) => {
+      // A queue started while recording would swallow the held transcript send.
+      if (menuIsDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
+      // Starting the queue cancels an in-flight transcription, which would discard it.
+      if (audioUploadBusy) {
+        toast.error("Wait for the transcription to finish before running a list");
+        return;
+      }
+      // Mid image edit, startQueue would bypass the overlay's prompt rewrite.
+      if (generatedImageOverlay) {
+        toast.error("Close the image editor before running a list", {
+          description: "Saved lists cannot be applied to a generated image.",
+        });
+        return;
+      }
+      const started = startQueue(items, undefined, () => {
+        if (fromDialog) setPromptStorageOpen(true);
+        toast.info("Saved list was not queued", {
+          description: "The chat changed before the queue was ready. Try again.",
+        });
+      });
+      if (started) {
+        setPromptStorageOpen(false);
+        return;
+      }
+      // startQueue refuses synchronously without calling onAborted.
+      toast.error("Couldn't queue that list here", {
+        description: "Open a chat first, then run the list.",
+      });
+    },
+    [startQueue, generatedImageOverlay, menuIsDictating, audioUploadBusy, setPromptStorageOpen],
+  );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. The core items
@@ -6652,13 +6707,21 @@ const ComposerToolsMenu: FC<{
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => aui.composer().setText(p.text)}
             >
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
           ))}
-          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          {recentLists.map((l) => (
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
+              <span className="truncate">{l.name}</span>
+              <PromptCountBadge count={l.items.length} />
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 || recentLists.length > 0 ? (
+            <DropdownMenuSeparator />
+          ) : null}
           <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
             All saved prompts…
           </DropdownMenuItem>
@@ -6790,17 +6853,7 @@ const ComposerToolsMenu: FC<{
       onUse={(text) => {
         aui.composer().setText(text);
       }}
-      onRunList={(items) => {
-        const started = startQueue(items, undefined, () => {
-          setPromptStorageOpen(true);
-          toast.info("Saved list was not queued", {
-            description: "The chat changed before the queue was ready. Try again.",
-          });
-        });
-        if (started) {
-          setPromptStorageOpen(false);
-        }
-      }}
+      onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu
       onOpenChange={(open) => {
@@ -6850,7 +6903,7 @@ const ComposerToolsMenu: FC<{
             }
           }}
         >
-          <GlobeIcon />
+          <InternetGlyph />
           Web search
           {toolsEnabled && !searchDisabled ? (
             <HugeiconsIcon
@@ -7277,7 +7330,7 @@ const MessageError: FC = () => {
               type="button"
               className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
             >
-              <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+              <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
               Retry
             </button>
           </ActionBarPrimitive.Reload>
@@ -8383,7 +8436,7 @@ const AssistantActionBar: FC = () => {
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
-              <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
             </TooltipIconButton>
           </ActionBarPrimitive.Reload>
         )}
@@ -8620,6 +8673,8 @@ const EditComposer: FC = () => {
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
+  // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
+  const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -8652,6 +8707,7 @@ const EditComposer: FC = () => {
           submitEdit();
         }}
       >
+        <ComposerAttachments className="mb-0 px-3 pt-3 [&_.aui-pasted-text-chip:not(:hover)]:bg-background" />
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
@@ -8670,7 +8726,7 @@ const EditComposer: FC = () => {
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button type="submit" size="sm" disabled={researchActive}>
+          <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
             Send
           </Button>
         </div>

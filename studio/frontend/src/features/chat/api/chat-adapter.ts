@@ -1698,24 +1698,23 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
   });
 }
 
-export function findLatestUserAudioBase64(
-  messages: RunMessages,
-  includePendingAudio = true,
-): string | undefined {
+/** Every clip on the newest user message, in the order it was attached. */
+function latestUserAudioClips(messages: RunMessages): string[] {
+  const clips: string[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
     for (const part of message.content ?? []) {
       const base64 = extractAudioPartBase64(part);
-      if (base64) return base64;
+      if (base64) clips.push(base64);
     }
 
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
           const base64 = extractAudioPartBase64(part);
-          if (base64) return base64;
+          if (base64) clips.push(base64);
         }
       }
     }
@@ -1726,11 +1725,28 @@ export function findLatestUserAudioBase64(
     // retranscribe the stale clip. Matches the consumed-on-send semantics of the legacy pendingAudio.
     break;
   }
+  return clips;
+}
+
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+  includePendingAudio = true,
+): string | undefined {
+  const [first] = latestUserAudioClips(messages);
+  if (first) return first;
 
   const pendingAudio = includePendingAudio
     ? useChatRuntimeStore.getState().pendingAudioBase64
     : null;
   return pendingAudio ?? undefined;
+}
+
+/** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
+export function findLatestUserExtraAudioBase64(
+  messages: RunMessages,
+): string[] | undefined {
+  const extra = latestUserAudioClips(messages).slice(1);
+  return extra.length > 0 ? extra : undefined;
 }
 
 function extractVideoPartBase64(
@@ -5200,6 +5216,7 @@ export function createOpenAIStreamAdapter(
           externalModelLabel(params.checkpoint) ||
           params.checkpoint,
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
+        audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
       });
       if (attachedMediaReason) {
@@ -5487,6 +5504,7 @@ export function createOpenAIStreamAdapter(
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Declared above the live metadata that reads it, or it is in its temporal dead zone.
       let contextWindowExceeded = false;
+      let quoteCut = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
@@ -6494,6 +6512,8 @@ export function createOpenAIStreamAdapter(
               currentTurnMessages,
               !queuedRunSettings && !continuation,
             ),
+            extra_audio_base64:
+              findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
@@ -6784,6 +6804,11 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.quote_cut) {
+                quoteCut = true;
                 continue;
               }
 
@@ -8155,6 +8180,7 @@ export function createOpenAIStreamAdapter(
         ];
         const finalIncompleteReason =
           resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          (quoteCut ? "quote_cut" : null) ??
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
