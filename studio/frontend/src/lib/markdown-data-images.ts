@@ -17,6 +17,36 @@ interface SanitizeSchema {
   protocols?: Record<string, string[]>;
 }
 
+interface HastNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+const HTML_TAG_NAME = /^\s*<\/?([a-z][a-z0-9-]*)/i;
+
+function rehypeLiteralUnknownTags(tagNames: string[]) {
+  const known = new Set(tagNames);
+  return function walk(node: HastNode): void {
+    const children = node.children ?? [];
+    children.forEach((child, index) => {
+      const tag =
+        child.type === "raw" && HTML_TAG_NAME.exec(child.value ?? "")?.[1];
+      if (!tag || known.has(tag.toLowerCase())) {
+        walk(child);
+        return;
+      }
+      const text = { type: "text", value: child.value };
+      children[index] =
+        node.type === "root"
+          ? { type: "element", tagName: "p", properties: {}, children: [text] }
+          : text;
+    });
+  };
+}
+
 /** Keep data images and resolve sandbox paths before URL hardening. */
 export function withDataImageSupport(
   allowedTags: Record<string, string[]>,
@@ -28,13 +58,15 @@ export function withDataImageSupport(
   // same object, so spreading it in the same order reproduces that pipeline exactly. Naming the keys
   // would pin OUR order instead of theirs.
   const [raw, , harden] = Object.values(defaultRehypePlugins);
+  const tagNames = [...(schema.tagNames ?? []), ...Object.keys(allowedTags)];
   return [
+    [rehypeLiteralUnknownTags, tagNames],
     raw,
     [
       sanitizePlugin,
       {
         ...schema,
-        tagNames: [...(schema.tagNames ?? []), ...Object.keys(allowedTags)],
+        tagNames,
         attributes: { ...schema.attributes, ...allowedTags },
         protocols: {
           ...schema.protocols,
