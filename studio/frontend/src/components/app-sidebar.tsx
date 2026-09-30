@@ -102,7 +102,7 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  Globe02Icon,
+  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -139,7 +139,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
@@ -256,6 +256,7 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import { toast } from "@/lib/toast";
@@ -793,6 +794,13 @@ function ImagesWorkflowList({
   );
 }
 
+// Hugeicons' three dots, spread 1.5 units and centred vertically (its own sit half a unit low).
+const MORE_DOTS_ICON: IconSvgElement = [
+  ["circle", { cx: "4.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+];
+
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
   icon,
@@ -998,7 +1006,53 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Mouse hover previews the flyout; a press pins or unpins it. Touch and keyboard pin it.
+  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
+  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
+  const moreOpen = moreHoverOpen || morePinnedOpen;
+  const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const moreContentRef = useRef<HTMLDivElement | null>(null);
+  // A hover preview must not move focus in or out of the composer.
+  const moreChosen = useRef(false);
+  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearMoreCloseTimer = useCallback(() => {
+    if (!moreCloseTimer.current) return;
+    clearTimeout(moreCloseTimer.current);
+    moreCloseTimer.current = null;
+  }, []);
+  const openMorePreview = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
+      clearMoreCloseTimer();
+      setMoreHoverOpen(true);
+    },
+    [clearMoreCloseTimer],
+  );
+  // Grace period for crossing the gap to the flyout.
+  const closeMorePreviewSoon = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
+      clearMoreCloseTimer();
+      moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
+    },
+    [clearMoreCloseTimer],
+  );
+  const setMoreOpen = useCallback(
+    (next: boolean) => {
+      clearMoreCloseTimer();
+      if (next) moreChosen.current = true;
+      setMorePinnedOpen(next);
+      if (!next) setMoreHoverOpen(false);
+    },
+    [clearMoreCloseTimer],
+  );
+  useEffect(() => clearMoreCloseTimer, [clearMoreCloseTimer]);
+  // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
+  const moreContentFocusProps = {
+    onOpenAutoFocus: (event: Event) => {
+      if (!moreChosen.current) event.preventDefault();
+    },
+  } as Record<string, unknown>;
   const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
   const moreFocusReturning = useRef(false);
   const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
@@ -2694,7 +2748,7 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: Globe02Icon,
+      icon: InternetIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
@@ -5008,7 +5062,7 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5026,10 +5080,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -5249,7 +5303,10 @@ export function AppSidebar() {
               })}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
-                <SidebarMenuItem>
+                <SidebarMenuItem
+                  onPointerEnter={openMorePreview}
+                  onPointerLeave={closeMorePreviewSoon}
+                >
                   <DropdownMenu
                     open={moreOpen}
                     onOpenChange={setMoreOpen}
@@ -5263,16 +5320,27 @@ export function AppSidebar() {
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
+                            ref={moreTriggerRef}
                             // More is a container, not a destination: no active style just because the current page
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
+                            // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
+                            onPointerDown={(event) => {
+                              if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
+                              event.preventDefault();
+                              // An open preview never mounts again, so focus it as a click-open would.
+                              if (!morePinnedOpen && moreHoverOpen) {
+                                moreContentRef.current?.focus({ preventScroll: true });
+                              }
+                              setMoreOpen(!morePinnedOpen);
+                            }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MoreHorizontalIcon}
+                              icon={MORE_DOTS_ICON}
                               strokeWidth={1.75}
-                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                              className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
                             <span className="text-ui-14p5 leading-ui-19 tracking-nav">
                               {t("shell.navigation.more")}
@@ -5291,11 +5359,25 @@ export function AppSidebar() {
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent
+                      ref={moreContentRef}
                       side="right"
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onCloseAutoFocus={() => {
+                      onPointerEnter={openMorePreview}
+                      onPointerLeave={closeMorePreviewSoon}
+                      // The trigger handles its own presses.
+                      onPointerDownOutside={(event) => {
+                        if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+                      }}
+                      {...moreContentFocusProps}
+                      onCloseAutoFocus={(event) => {
+                        const chosen = moreChosen.current;
+                        moreChosen.current = false;
+                        if (!chosen) {
+                          event.preventDefault();
+                          return;
+                        }
                         moreFocusReturning.current = true;
                         queueMicrotask(() => {
                           moreFocusReturning.current = false;
@@ -5690,7 +5772,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );

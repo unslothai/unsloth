@@ -49,13 +49,16 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | {
         _reasoningDurationMs?: unknown;
         context_truncated?: unknown;
+        quote_cut?: unknown;
         usage?: unknown;
         choices?: unknown[];
       }
     | null
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
-  if ("_reasoningDurationMs" in chunk || chunk.context_truncated) return false;
+  if ("_reasoningDurationMs" in chunk || chunk.context_truncated || chunk.quote_cut) {
+    return false;
+  }
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
 }
 
@@ -564,6 +567,7 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  quoteCut?: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
   usage?: unknown;
@@ -576,6 +580,7 @@ export function generationRecoveryMetadata(options: {
     cursor,
     lastEventSeq,
     lengthLimited,
+    quoteCut = false,
     firstChunkAt,
     totalChunks,
     usage,
@@ -593,6 +598,9 @@ export function generationRecoveryMetadata(options: {
   if (status === "completed") {
     if (lengthLimited) {
       next.incomplete = { reason: "length" };
+    } else if (quoteCut) {
+      // Must match the producer's stamp, or the server refuses the settle.
+      next.incomplete = { reason: "quote_cut" };
     } else {
       next.incomplete = undefined;
     }
