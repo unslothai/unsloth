@@ -171,7 +171,8 @@ def routed_generation_count() -> int:
     slot = routed_slot.get()
     if slot is not None:
         return len(slot.generations)
-    return active_generations.count(None, all_generations())
+    elsewhere = all_generations()
+    return active_generations.count(None, elsewhere) if elsewhere else active_generations.count()
 
 
 def drop(slot: ExtraSlot) -> None:
