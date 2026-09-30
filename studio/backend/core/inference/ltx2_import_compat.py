@@ -3,22 +3,10 @@
 
 """Let the diffusers LTX-2 pipelines import on the transformers Studio pins.
 
-diffusers 0.40.0 (and main since huggingface/diffusers#14447, "Ltx 2.5") imports
-``Gemma4UnifiedForConditionalGeneration`` at module level in every ``diffusers.pipelines.ltx2.pipeline_ltx2*``
-module. That class first ships in transformers 5.10, while Studio pins transformers 5.5.0, so ``LTX2Pipeline``
-cannot even be imported and every LTX-2 and LTX-2.3 load and LTX-2 LoRA run fails with
-``cannot import name 'Gemma4UnifiedForConditionalGeneration' from 'transformers'`` (tracked upstream as
-huggingface/diffusers#14773).
-
-The name is only used in the ``text_encoder`` annotation and docstring: the LTX-2 and LTX-2.3 checkpoints Studio
-serves use a Gemma3 encoder. So when the installed transformers lacks it, ``ensure_ltx2_pipelines_importable`` binds
-an inert placeholder on ``transformers`` just long enough to import the pipeline modules that name it, then removes
-it again. Nothing else in the process ever sees the placeholder on ``transformers``, and a transformers that has the
-real class is left completely alone. The placeholder refuses to be constructed or loaded, so a checkpoint that truly
-needs the Gemma4 unified encoder fails with a message naming the transformers release it needs instead of loading
-something wrong.
-
-Retire this module once diffusers guards the import (or Studio's transformers pin reaches 5.10).
+diffusers 0.40 imports ``Gemma4UnifiedForConditionalGeneration`` (transformers >= 5.10) at module level in every
+``diffusers.pipelines.ltx2.pipeline_ltx2*`` module, but only uses it in the ``text_encoder`` annotation (huggingface/
+diffusers#14773). When transformers lacks it, bind an inert placeholder only while those modules import, then remove
+it. Retire once diffusers guards the import or the transformers pin reaches 5.10.
 """
 
 from __future__ import annotations
@@ -30,8 +18,7 @@ import sys
 import threading
 from typing import Any, Optional
 
-# transformers names the diffusers LTX-2 pipelines import at module level, with the first transformers release that
-# exports each one.
+# name -> first transformers release exporting it.
 LTX2_OPTIONAL_TRANSFORMERS_NAMES: dict[str, str] = {
     "Gemma4UnifiedForConditionalGeneration": "5.10",
 }
@@ -73,8 +60,7 @@ def _make_placeholder(name: str, min_version: str) -> type:
 
 
 def _transformers_has(transformers: Any, name: str) -> bool:
-    # transformers' top level is lazy: this getattr imports the real model module when there is one. A release that
-    # names the class but cannot import it is treated as lacking it, which is what the diffusers import would hit.
+    # Lazy getattr imports the real module; a name that fails to import counts as missing, as diffusers would see it.
     try:
         value = getattr(transformers, name)
     except Exception:  # noqa: BLE001 -- AttributeError on an old release, RuntimeError on a broken lazy import
@@ -102,12 +88,7 @@ def _modules_naming(package: Any, names: list[str]) -> list[str]:
 
 
 def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
-    """Make ``diffusers.pipelines.ltx2`` importable when transformers lacks a name it only annotates with.
-
-    Idempotent and cheap after the first success. Returns True when nothing more is needed (the class exists, the
-    modules are imported, or there is no LTX-2 package to fix), False when it could not help, in which case the
-    caller's own import reports the real error unchanged. Never raises.
-    """
+    """Idempotent, never raises. False = could not help; the caller's own import then reports the real error."""
     global _done
     if _done:
         return True
@@ -127,9 +108,8 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             _done = True
             return True
         try:
-            # transformers re-executes its own __init__ (direct_transformers_import) the first time processing_utils is
-            # imported, which REPLACES sys.modules["transformers"] and would drop a name bound on the old object. The
-            # LTX-2 pipelines import ProcessorMixin anyway, so settle the swap first.
+            # First processing_utils import replaces sys.modules["transformers"] (direct_transformers_import), dropping
+            # names bound on the old object: settle the swap first.
             importlib.import_module("transformers.processing_utils")
         except Exception:  # noqa: BLE001 -- the pipeline import below reports whatever this was
             pass
@@ -141,7 +121,6 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
         touched: list[Any] = []
 
         def _bind() -> None:
-            # Bind on whatever module object `from transformers import ...` will read right now.
             current = sys.modules.get("transformers", transformers)
             for name, placeholder in placeholders.items():
                 if name not in current.__dict__:
@@ -150,7 +129,6 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
                         touched.append(current)
 
         def _import(module_name: str) -> Optional[str]:
-            """Import under the stand-in, rebinding once if transformers was swapped mid-import; the error or None."""
             for attempt in (0, 1):
                 _bind()
                 try:
@@ -164,8 +142,7 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
 
         failed: list[tuple[str, str]] = []
         try:
-            # The package import is inside the window too: with DIFFUSERS_SLOW_IMPORT set, importing diffusers (and the
-            # ltx2 package) eagerly imports the LTX-2 pipeline modules themselves.
+            # DIFFUSERS_SLOW_IMPORT makes the package import load the pipeline modules eagerly.
             error = _import(_LTX2_PACKAGE)
             package = sys.modules.get(_LTX2_PACKAGE)
             if error is not None or package is None:
