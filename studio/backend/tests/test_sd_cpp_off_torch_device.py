@@ -119,6 +119,19 @@ def test_an_unanswered_probe_trusts_the_explicit_setting(monkeypatch, inventory)
     assert r.off_torch_sd_cpp_device().index == 1
 
 
+def test_another_vendors_unanswered_probe_does_not_vouch_for_the_card(monkeypatch):
+    inventory = {
+        "unknown": True,
+        "unanswered": ["amd"],
+        "devices": [{"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3080"}],
+    }
+    monkeypatch.setattr(r, "_physical_inventory", lambda: inventory)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia:1")
+    assert r.off_torch_sd_cpp_device() is None
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia:0")
+    assert r.off_torch_sd_cpp_device().index == 0
+
+
 def test_only_the_image_path_changes_build(monkeypatch):
     """Video still installs by torch's backend: its loads are placed by torch."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")

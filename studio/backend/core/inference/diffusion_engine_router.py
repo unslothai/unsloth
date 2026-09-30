@@ -128,7 +128,9 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
     if _INSTALL_ACCELERATOR.get(backend) == accelerator:
         return None
     inventory = _physical_inventory()
-    if not inventory.get("unknown") and vendor not in (inventory.get("unanswered") or ()):
+    unanswered = set(inventory.get("unanswered") or ())
+    # Per vendor: an unanswered AMD probe says nothing about NVIDIA. Unknown naming nobody = cold cache.
+    if vendor not in unanswered and not (inventory.get("unknown") and not unanswered):
         present = any(
             isinstance(device, dict)
             and device.get("vendor") == vendor
