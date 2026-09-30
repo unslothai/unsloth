@@ -253,6 +253,7 @@ def test_index_specs_still_reach_pip():
         "foo[bar,baz]>=1,<2",
         "six>=1.16 ; python_version>'3'",
         "zope.interface!=5.*",
+        "backports.lzma",
     ]
     assert sp._split_index_specs(specs, errors) == specs
     assert errors == []

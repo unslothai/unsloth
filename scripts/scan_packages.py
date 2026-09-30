@@ -1746,15 +1746,15 @@ _LOCAL_ARCHIVE_SUFFIXES = (
     ".whl",
     ".zip",
     ".tar",
-    ".gz",
+    ".tar.gz",
     ".tgz",
-    ".bz2",
+    ".tar.bz2",
     ".tbz",
-    ".xz",
+    ".tar.xz",
     ".txz",
-    ".lz",
     ".tlz",
-    ".lzma",
+    ".tar.lz",
+    ".tar.lzma",
 )
 
 
@@ -2102,7 +2102,7 @@ def _resolve_per_spec_with_deps(
         if key in seen:
             continue
         seen.add(key)
-        if not _split_index_specs([dep], []):
+        if not _split_index_specs([dep], download_errors):
             print(f"  [WARN] skipping non-index indirect dep {dep}", file = sys.stderr)
             continue
         dep_ver = _spec_pin_version(dep)
