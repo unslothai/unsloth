@@ -806,6 +806,29 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
+def safetensors_prefix_mib(path: Any, prefix: str) -> Optional[int]:
+    """MiB held by the tensors named ``prefix*`` in a safetensors file, read from its header alone.
+
+    None when the header is unreadable or no tensor matches, so a caller keeps its whole-file figure."""
+    import json
+    import struct
+
+    try:
+        with open(path, "rb") as fh:
+            (header_len,) = struct.unpack("<Q", fh.read(8))
+            if not 0 < header_len <= 256 * 1024 * 1024:
+                return None
+            header = json.loads(fh.read(header_len))
+        total = 0
+        for name, meta in header.items():
+            if name != "__metadata__" and name.startswith(prefix):
+                start, end = meta["data_offsets"]
+                total += int(end) - int(start)
+    except Exception:  # noqa: BLE001 - not a readable safetensors header
+        return None
+    return -(-total // (1024 * 1024)) if total > 0 else None
+
+
 def estimate_gguf_resident_mib(storage_mib: Optional[int]) -> Optional[int]:
     """Approximate the RESIDENT device size of a GGUF transformer under ``GGUFQuantizationConfig``.
 
@@ -884,6 +907,19 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
         return None
     base = memory.total_mib or memory.free_mib
     return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
+
+
+def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
+    """The budget an explicit ``fast`` is held to: free memory minus HALF the standard reserve (never under 2 GiB).
+
+    ``fast`` is the caller choosing resident placement, so it falls back to offload only when resident would not
+    fit, not when it merely leaves less than ``auto``'s headroom for other tenants. On a 183 GB card the full reserve
+    is 18 GB, which sent a 22B LTX-2.3 load (72 GB peak) with 89 GB free to streamed offload at 5-8x the step time."""
+    if memory.free_mib is None:
+        return None
+    base = memory.total_mib or memory.free_mib
+    reserve = max(2048, _reserve_mib(memory.memory_kind, base) // 2)
+    return max(0, int(memory.free_mib) - reserve)
 
 
 def plan_keeps_transformer_resident(plan: Any) -> bool:
@@ -1165,9 +1201,13 @@ def plan_diffusion_memory(
             reasons.append(f"{device_memory.backend}: CPU offload unavailable; staying resident")
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
-        if budget is not None and required is not None and required > budget:
+        fast_budget = _fast_device_budget_mib(device_memory)
+        if fast_budget is not None and required is not None and required > fast_budget:
             policy, stream_text_encoders, stream_transformer = _offload_tier()
-            reasons.append("fast requested but weights do not fit resident; offloading")
+            reasons.append(
+                f"fast requested but weights do not fit resident ({required} MiB needed, "
+                f"{fast_budget} MiB free after the reserve); offloading"
+            )
             if not stream_transformer:
                 reasons.append(_RESIDENT_TRANSFORMER_REASON)
             elif stream_text_encoders:

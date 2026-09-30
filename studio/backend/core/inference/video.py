@@ -87,6 +87,7 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from .diffusion_memory import (
+    MEMORY_MODE_FAST,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_safetensors_dense_mib,
@@ -98,6 +99,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     release_pinned_host_memory,
+    safetensors_prefix_mib,
     settled_snapshot_device_memory,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
@@ -4772,6 +4774,12 @@ class VideoBackend:
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
             else:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
+                if fam.name == "ltx-2" and transformer_mib is not None:
+                    # An LTX single file also carries the VAE, audio VAE, vocoder and connectors (3.8 GiB on 2.3), which
+                    # the family table already budgets as companions below: price the DiT's own tensors only.
+                    dit_mib = safetensors_prefix_mib(str(checkpoint_path), "model.diffusion_model.")
+                    if dit_mib is not None:
+                        transformer_mib = min(transformer_mib, dit_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
         # Price the plan at the hosted fp8 DiT: the bf16 file size would plan an offload and skip the seed.
@@ -5564,6 +5572,14 @@ class VideoBackend:
                         memory_mode,
                         plan.requested_mode,
                         f"planned '{plan.offload_policy}' offload from the family size table",
+                    )
+                    # A resident request that had to offload is a fallback, not an applied fast.
+                    if plan.requested_mode != MEMORY_MODE_FAST or plan.offload_policy == "none"
+                    else (
+                        memory_mode,
+                        plan.requested_mode,
+                        "; ".join(plan.reasons),
+                        RESOLVED_FELL_BACK,
                     ),
                     "speed_mode": (
                         speed_mode,
