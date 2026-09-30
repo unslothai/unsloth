@@ -2121,8 +2121,6 @@ export function requestedGpuIdsFromResponse(resp: {
     : (resp.gpu_ids ?? null);
 }
 
-// Store fields derived from a load/status response's GPU-memory settings, shared by every
-// load path so the manual-knob round-trip cannot drift.
 type LlamaCppConfigEcho = { requested_llama_cpp_config?: { mode: string } | null };
 
 export function isCustomLlamaLoad(resp: LlamaCppConfigEcho): boolean {
@@ -2157,6 +2155,8 @@ export function managedGpuMemoryFields(
   return loadedGpuMemoryFields(resp);
 }
 
+// Store fields derived from a load/status response's GPU-memory settings, shared by every
+// load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
   is_gguf?: boolean;
   is_diffusion?: boolean;
