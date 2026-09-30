@@ -18,8 +18,10 @@ def _make_layer(out_features, in_features, block, scale_fmt):
         pytest.skip("this transformers has no FP8Linear")
     if scale_fmt == "ue8m0" and not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("this torch has no float8_e8m0fnu")
+    # transformers <= 5.5 FP8Linear has block_size but no scale_fmt (float scales only).
+    extra = {} if scale_fmt == "float" else {"scale_fmt": scale_fmt}
     try:
-        layer = fp8.FP8Linear(in_features, out_features, block_size = block, scale_fmt = scale_fmt)
+        layer = fp8.FP8Linear(in_features, out_features, block_size = block, **extra)
     except TypeError:
         pytest.skip("this transformers FP8Linear takes no scale_fmt")
     layer = layer.cuda()
