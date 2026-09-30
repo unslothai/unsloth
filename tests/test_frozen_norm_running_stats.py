@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A frozen BatchNorm keeps its running stats through LoRA training.
-
-`model.train()` puts every BatchNorm in train mode, so each forward overwrites
-`running_mean` / `running_var` of a frozen encoder (the Parakeet audio tower of Nemotron
-Omni has 24). A LoRA adapter does not save those buffers, so the model in memory drifts
-away from what a reload of the adapter gives. Norms whose own parameters are frozen must
-stay in eval mode; trainable norms (full finetuning, `modules_to_save`) must keep training.
-"""
+"""Frozen BatchNorm / InstanceNorm keep their running stats through LoRA training."""
 
 import copy
 import inspect
@@ -24,13 +17,11 @@ peft = pytest.importorskip("peft")
 U = pytest.importorskip("unsloth.models._utils")
 vision = pytest.importorskip("unsloth.models.vision")
 FastBaseModel = vision.FastBaseModel
-# Trainer.training_step runs this instead of a bare model.train() on every micro-step.
+# Trainer.training_step calls this on every micro-step.
 TRAIN = U._unsloth_train_if_needed
 
 
 class _Tiny(nn.Module):
-    """A conv-style encoder block with BatchNorm1d feeding a LoRA-targeted Linear."""
-
     def __init__(self):
         super().__init__()
         self.conv = nn.Conv1d(4, 4, 1)
@@ -82,9 +73,7 @@ def test_trainer_step_keeps_frozen_norm_stats(monkeypatch):
     assert model.training
     assert all(not m.training for m in _norms(model))
     assert _moved(before, _stats(model)) == []
-    # LoRA still trains
     assert any(p.grad is not None for n, p in model.named_parameters() if "lora_" in n)
-    # for_inference / for_training round trip, then a bare model.train()
     FastBaseModel.for_inference(model)
     assert all(not m.training for m in model.modules())
     FastBaseModel.for_training(model)
@@ -95,7 +84,6 @@ def test_trainer_step_keeps_frozen_norm_stats(monkeypatch):
 
 
 def test_trainable_norm_still_updates(monkeypatch):
-    """Full finetuning: norm parameters are trainable, so train mode is unchanged."""
     monkeypatch.delenv("UNSLOTH_FREEZE_NORM_RUNNING_STATS", raising = False)
     torch.manual_seed(0)
     model = _Tiny()
@@ -158,6 +146,5 @@ def test_eval_state_dict_copy_and_pickle_unaffected(monkeypatch):
 
 
 def test_post_patch_model_installs_the_guard():
-    """FastModel.from_pretrained and get_peft_model both finish in post_patch_model."""
     src = inspect.getsource(FastBaseModel.post_patch_model)
     assert "_unsloth_freeze_norm_running_stats(model)" in src
