@@ -203,7 +203,7 @@ export default function FindBar({
       // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and its navigation controls.
       role="search"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-portal-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[calc(28.25rem*var(--ui-space-scale,1))]"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[calc(28.25rem*var(--ui-space-scale,1))]"
     >
       <input
         ref={inputRef}

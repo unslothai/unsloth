@@ -230,15 +230,15 @@ test("the zoom popup takes the find bar's corner", () => {
   assert.match(provider, /"--studio-content-top-inset": "34px"/);
   assert.match(
     provider,
-    /"--studio-portal-content-top-inset",\s*usesCustomTitlebar \? "34px" : null/,
+    /set\("--studio-content-top-inset", usesCustomTitlebar \? "34px" : null\);/,
   );
   const top =
-    /top-\[calc\(var\(--studio-portal-content-top-inset,0px\)\+3\.5rem\)\] right-4 z-50 flex h-13/;
+    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+3\.5rem\)\] right-4 z-50 flex h-13/;
   assert.match(findBar, top);
   assert.match(findInPage, top);
   assert.match(
     css,
-    /\.interface-zoom-position \{\s*top: calc\(var\(--studio-portal-content-top-inset, 0px\) \+ 3\.5rem\);/,
+    /\.interface-zoom-position \{\s*top: calc\(var\(--studio-content-top-inset, 0px\) \+ 3\.5rem\);/,
   );
   // One place only: it does not move out from under an open find bar.
   assert.equal(css.match(/^\.interface-zoom-position \{/gm)?.length, 1);

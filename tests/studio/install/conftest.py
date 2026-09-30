@@ -94,3 +94,14 @@ def reset_install_pass_state(request):
     _reset_pass_state(request.module)
     yield
     _reset_pass_state(request.module)
+
+
+@pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(request, monkeypatch):
+    """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    # A file's own copy outlives a later file re-registering the sys.modules key.
+    for module in [*sys.modules.values(), *vars(request.module).values()]:
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
