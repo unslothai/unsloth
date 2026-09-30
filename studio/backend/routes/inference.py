@@ -41,6 +41,7 @@ from typing import (
 )
 import functools
 import json
+import re
 import httpx
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
@@ -138,7 +139,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
-from core.inference.llama_cpp import requested_video_fps
+from core.inference.llama_cpp import _llama_chunk_has_generated_output, requested_video_fps
 from core.inference.llama_video_input import shrink_video_for_llama
 
 
@@ -778,7 +779,12 @@ def _raise_unsupported_n(path_label: str, monitor_id: Optional[str] = None) -> N
     _raise_unsupported_openai_parameter("n", message)
 
 
-def _sse_streaming_response(content, *, unstarted_cleanup = None) -> StreamingResponse:
+def _sse_streaming_response(
+    content,
+    *,
+    unstarted_cleanup = None,
+    monitor_id = None,
+) -> StreamingResponse:
     """A ``text/event-stream`` response with the standard SSE headers used by
     every streaming path here: no client/proxy caching, no proxy buffering, and
     a one-shot connection. Two callers build their response inline instead: the
@@ -795,13 +801,49 @@ def _sse_streaming_response(content, *, unstarted_cleanup = None) -> StreamingRe
     return _SameTaskStreamingResponse(
         content,
         media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
+        headers = _monitor_response_headers(
+            {
+                "Cache-Control": "no-cache",
+                "Connection": "close",
+                "X-Accel-Buffering": "no",
+            },
+            monitor_id,
+        ),
         unstarted_cleanup = unstarted_cleanup,
     )
+
+
+def _monitor_response_headers(headers: Optional[dict], monitor_id: Optional[str]) -> dict:
+    result = dict(headers or {})
+    if monitor_id:
+        result["X-Unsloth-Monitor-ID"] = monitor_id
+    return result
+
+
+def _is_prefill_progress_only(data) -> bool:
+    if not isinstance(data, dict) or not isinstance(data.get("prompt_progress"), dict):
+        return False
+    if data.get("usage") or _llama_chunk_has_generated_output(data):
+        return False
+    choices = data.get("choices")
+    return not (
+        isinstance(choices, list)
+        and any(isinstance(c, dict) and c.get("finish_reason") for c in choices)
+    )
+
+
+class _ProgressKeepalive:
+    """Dropped progress still resets the relay's idle timer, so stand in for the keepalive it starved."""
+
+    def __init__(self, interval_s: Optional[float]):
+        self._interval_s = interval_s
+        self._due = time.monotonic() + interval_s if interval_s else None
+
+    def due(self) -> bool:
+        if self._due is None or time.monotonic() < self._due:
+            return False
+        self._due = time.monotonic() + self._interval_s
+        return True
 
 
 def _openai_stream_error_chunk(exc) -> dict:
@@ -919,6 +961,19 @@ def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation
         "model": model_name,
         "choices": [],
         "context_truncated": truncation,
+    }
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _quote_cut_sse_chunk(completion_id: str, model_name: str) -> str:
+    # Report the warning separately to preserve llama-server's finish reason.
+    data = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [],
+        "quote_cut": True,
     }
     return f"data: {json.dumps(data)}\n\n"
 
@@ -3394,6 +3449,7 @@ async def _aiter_llama_stream_items(
     request: Optional[Request] = None,
     first_token_deadline: Optional[float] = None,
     response: Optional[httpx.Response] = None,
+    track_prefill_progress: bool = False,
     post_first_item_read_timeout_s: Optional[
         Union[float, Callable[[], Optional[float]]]
     ] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -3410,7 +3466,11 @@ async def _aiter_llama_stream_items(
     if first_token_deadline is None:
         first_token_deadline = time.monotonic() + _first_token_timeout_s()
     last_item_at: Optional[float] = None
+    last_prefill_progress: Optional[float] = None
+    prefill_buffer = b""
     item_task: Optional[asyncio.Future] = None
+    if track_prefill_progress:
+        from core.inference.llama_cpp import LlamaCppBackend
 
     def _post_first_timeout_s() -> Optional[float]:
         if callable(post_first_item_read_timeout_s):
@@ -3435,9 +3495,10 @@ async def _aiter_llama_stream_items(
                     # and its range is unknowable here, so it latches nothing and
                     # leaves the wall clock, authoritative anyway, to enforce.
                     if waiting_first_item:
+                        # progress renews the prefill deadline beyond the initially latched socket ceiling.
                         ceiling = (
                             None
-                            if callable(post_first_item_read_timeout_s)
+                            if track_prefill_progress or callable(post_first_item_read_timeout_s)
                             else _ceiling_for_first_read(
                                 first_token_deadline, post_first_item_read_timeout_s
                             )
@@ -3495,6 +3556,38 @@ async def _aiter_llama_stream_items(
                 raise httpx.ReadTimeout(timed_out_message) from exc
             finally:
                 item_task = None
+            if track_prefill_progress and last_item_at is None:
+                if isinstance(item, bytes):
+                    prefill_buffer += item
+                    events = re.split(rb"\r\n\r\n|\n\n|\r\r", prefill_buffer)
+                    prefill_buffer = events.pop()
+                    events = [event.decode("utf-8", "replace") for event in events]
+                else:
+                    events = [item]
+                starts_output = False
+                for event in events:
+                    data = LlamaCppBackend._sse_event_payload(event)
+                    if data is None:
+                        continue
+                    if _llama_chunk_has_generated_output(data) or any(
+                        choice.get("finish_reason")
+                        for choice in data.get("choices", [])
+                        if isinstance(choice, dict)
+                    ):
+                        starts_output = True
+                        break
+                    processed = LlamaCppBackend._sse_event_prefill_progress(event)
+                    if processed is not None and (
+                        last_prefill_progress is None or processed > last_prefill_progress
+                    ):
+                        last_prefill_progress = processed
+                        first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                if not starts_output:
+                    if time.monotonic() >= first_token_deadline:
+                        raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                    yield item
+                    continue
+                prefill_buffer = b""
             if last_item_at is None and response is not None:
                 # Before yielding, not before the next read: the consumer may sit
                 # on this item while the first-token deadline is still armed.
@@ -3600,9 +3693,11 @@ from models.inference import (
     ResponsesResponse,
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
+    AnthropicResponseServerToolUseBlock,
     AnthropicResponseTextBlock,
     AnthropicResponseThinkingBlock,
     AnthropicResponseToolUseBlock,
+    AnthropicResponseWebSearchToolResultBlock,
     AnthropicUsage,
     CreateOpenAIContainerBody,
     DeleteOpenAIContainerBody,
@@ -3621,6 +3716,7 @@ from core.inference.anthropic_compat import (
     openai_finish_to_anthropic_stop,
     anthropic_tool_use_id,
     build_anthropic_sse_event,
+    web_search_tool_result_content,
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
@@ -3721,6 +3817,12 @@ def _request_used_api_key(request: Any) -> bool:
     # workflow traffic to an external caller. Saved-secret authorization uses
     # _request_has_api_key instead, narrowed by _request_is_internal_workflow where a
     # Unsloth workflow needs its own connection.
+
+    # A durable run's synthetic request carries no caller credentials; use the origin
+    # recorded when the run was created.
+    recorded = getattr(getattr(request, "state", None), "api_monitor_via_api_key", None)
+    if isinstance(recorded, bool):
+        return recorded
     token = _request_api_key_token(request)
     if token is None:
         # keyless traffic is someone using Unsloth as an API server too
@@ -6750,6 +6852,17 @@ def _monitor_usage(
         prompt_ms = timings.get("prompt_ms")
         # The span the tile rates on: total tokens over total time, not a mean of per-request rates.
         decode_ms = timings.get("predicted_ms")
+        prompt_progress = timings.get("prompt_progress")
+        if isinstance(prompt_progress, dict):
+            api_monitor.set_prompt_progress(
+                monitor_id,
+                total = prompt_progress.get("total"),
+                processed = prompt_progress.get("processed"),
+                cached = prompt_progress.get("cache"),
+                time_ms = prompt_progress.get("time_ms"),
+            )
+        if timings.get("running_phase") == "token_generation":
+            api_monitor.set_running_phase(monitor_id, "token_generation")
     if (
         tok_per_sec is not None
         or prompt_tok_per_sec is not None
@@ -6773,6 +6886,11 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
         return None
 
     def _callback(timings: dict) -> None:
+        # Report the decode phase once per prefill round, not on every token.
+        if "prompt_progress" in timings:
+            _callback.needs_phase = True
+        elif timings.get("running_phase") == "token_generation":
+            _callback.needs_phase = False
         _monitor_usage(
             monitor_id,
             None,
@@ -6780,6 +6898,7 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
             timings = timings,
         )
 
+    _callback.needs_phase = True
     return _callback
 
 
@@ -6906,6 +7025,10 @@ def _monitor_openai_chunk(
             if isinstance(choice, dict) and choice.get("finish_reason"):
                 api_monitor.note_stop_reason(monitor_id, str(choice["finish_reason"]))
     timings = data.get("timings")
+    prompt_progress = data.get("prompt_progress")
+    if isinstance(prompt_progress, dict):
+        timings = dict(timings) if isinstance(timings, dict) else {}
+        timings["prompt_progress"] = prompt_progress
     _monitor_usage(
         monitor_id,
         data.get("usage"),
@@ -7124,7 +7247,10 @@ def _monitor_anthropic_payload(
         return None
     if event_type == "content_block_start":
         content_block = data.get("content_block") or {}
-        if isinstance(content_block, dict) and content_block.get("type") == "tool_use":
+        if isinstance(content_block, dict) and content_block.get("type") in (
+            "tool_use",
+            "server_tool_use",
+        ):
             index = _monitor_anthropic_index(data)
             _ANTHROPIC_MONITOR_TOOL_BLOCKS.setdefault(monitor_id, {})[index] = False
             api_monitor.append_reply(monitor_id, _monitor_call_text(content_block.get("name")))
@@ -7196,7 +7322,7 @@ def _monitor_anthropic_content_blocks(content: Any) -> str:
             continue
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             parts.append(block["text"])
-        elif block.get("type") == "tool_use":
+        elif block.get("type") in ("tool_use", "server_tool_use"):
             parts.append(_monitor_call_text(block.get("name"), block.get("input")))
     return "".join(parts)
 
@@ -26780,15 +26906,10 @@ async def produce_openai_chat_completions(
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
 
-                return _SameTaskStreamingResponse(
+                return _sse_streaming_response(
                     audio_input_stream(),
                     unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "close",
-                        "X-Accel-Buffering": "no",
-                    },
+                    monitor_id = monitor_id,
                 )
             else:
                 # `stream` defaults to False, so this is the ordinary shape of an audio-input chat and it
@@ -27265,6 +27386,9 @@ async def produce_openai_chat_completions(
             use_tools = True
 
         if use_tools:
+            from core.inference.tools import set_mcp_listing_context_tokens
+
+            set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
             tools_to_use = await _select_request_tools(
                 payload,
                 tools_on = _tools_on,
@@ -27769,6 +27893,14 @@ async def produce_openai_chat_completions(
                             _stream_finish = event.get("finish_reason")
                             continue
 
+                        if event["type"] == "quote_cut":
+                            # Bypass content handling to avoid resetting the text cursor.
+                            if _ui_events:
+                                yield _quote_cut_sse_chunk(completion_id, model_name)
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
                         if event["type"] == "reasoning_summary":
                             # Forward server-side reasoning timing to the UI.
                             if _ui_events:
@@ -28018,15 +28150,10 @@ async def produce_openai_chat_completions(
                     reservation.cancel()
                     _tracker.__exit__(None, None, None)
 
-                return _SameTaskStreamingResponse(
+                return _sse_streaming_response(
                     admitted_gguf_tool_stream(),
                     unstarted_cleanup = _gguf_tool_admission_unstarted_cleanup,
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "close",
-                        "X-Accel-Buffering": "no",
-                    },
+                    monitor_id = monitor_id,
                 )
 
             # Non-streaming JSON: drain the agentic generator into one
@@ -28391,6 +28518,11 @@ async def produce_openai_chat_completions(
                                 _stream_usage = cumulative.get("usage")
                                 _stream_timings = cumulative.get("timings")
                                 _stream_finish = cumulative.get("finish_reason")
+                            elif cumulative.get("type") == "quote_cut":
+                                if _ui_events:
+                                    yield _quote_cut_sse_chunk(completion_id, model_name)
+                                elif _drop_keepalive.due():
+                                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             elif cumulative.get("type") == "diffusion_frame":
                                 # Diffusion frame (per-step canvas): pass through as a raw SSE line on the
                                 # tool_status channel. No assistant text, so it never enters the cumulative diff.
@@ -28647,15 +28779,10 @@ async def produce_openai_chat_completions(
                 reservation.cancel()
                 _tracker.__exit__(None, None, None)
 
-            return _SameTaskStreamingResponse(
+            return _sse_streaming_response(
                 admitted_gguf_stream_chunks(),
                 unstarted_cleanup = _gguf_admission_unstarted_cleanup,
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
+                monitor_id = monitor_id,
             )
         else:
             try:
@@ -29274,6 +29401,9 @@ async def produce_openai_chat_completions(
     )
 
     if _sf_use_tools:
+        from core.inference.tools import set_mcp_listing_context_tokens
+
+        set_mcp_listing_context_tokens(_monitor_context_length())
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
@@ -29700,15 +29830,10 @@ async def produce_openai_chat_completions(
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
-            return _SameTaskStreamingResponse(
+            return _sse_streaming_response(
                 sf_tool_stream(),
                 unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
+                monitor_id = monitor_id,
             )
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
@@ -30360,15 +30485,10 @@ async def produce_openai_chat_completions(
                         pass
                 _tracker.__exit__(None, None, None)
 
-        return _SameTaskStreamingResponse(
+        return _sse_streaming_response(
             stream_chunks(),
             unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
+            monitor_id = monitor_id,
         )
 
     # ── Non-streaming response ────────────────────────────────────
@@ -32046,9 +32166,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # request it for internal accounting, then keep the caller's opt-in
             # contract by filtering that chunk through _cmpl_stream_event_out.
             upstream_body = dict(body)
+            _client_wants_progress = bool(body.get("return_progress"))
+            upstream_body["return_progress"] = True
             upstream_stream_options = dict(body.get("stream_options") or {})
             upstream_stream_options["include_usage"] = True
             upstream_body["stream_options"] = upstream_stream_options
+            _keepalive_s = _openai_passthrough_stream_keepalive_interval()
+            from core.inference.llama_cpp import LlamaCppBackend
             from core.inference.llama_keepwarm import mark_response_failed
 
             client = httpx.AsyncClient(
@@ -32100,8 +32224,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
-                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+                    track_prefill_progress = True,
+                    keepalive_interval_s = _keepalive_s,
                 )
+                progress_keepalive = _ProgressKeepalive(_keepalive_s)
                 async for chunk in items_iter:
                     # Out of `buffer`: the split below would hand it to the monitor.
                     if chunk is _LLAMA_STREAM_KEEPALIVE:
@@ -32122,6 +32248,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             # so don't let the middleware claim the slot and evict a
                             # preview-owned model.
                             mark_response_failed(getattr(request, "scope", None))
+                        if (
+                            not _client_wants_progress
+                            and b'"prompt_progress"' in event
+                            and _is_prefill_progress_only(
+                                LlamaCppBackend._sse_event_payload(event.decode("utf-8", "replace"))
+                            )
+                        ):
+                            if progress_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                            continue
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
@@ -32184,7 +32320,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     _direct_llama_request_finished()
                     _tracker.__exit__(None, None, None)
 
-        return _sse_streaming_response(_stream())
+        return _sse_streaming_response(_stream(), monitor_id = monitor_id)
     else:
         # ``stream`` defaults to false, so this common shape registers with the swap gate like the
         # streaming branch: unregistered, a non-forced /unload counts zero generations and kills
@@ -35035,15 +35171,10 @@ async def _responses_stream(
         api_monitor.finish(monitor_id, "cancelled")
         reservation.cancel()
 
-    return _SameTaskStreamingResponse(
+    return _sse_streaming_response(
         admitted_event_generator(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
         unstarted_cleanup = _responses_admission_unstarted_cleanup,
+        monitor_id = monitor_id,
     )
 
 
@@ -35890,7 +36021,9 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _mcp_tools: list[dict] = []
         if _mcp_on:
             from core.inference.mcp_client import mcp_server_snapshot_guard
-            from core.inference.tools import cached_mcp_tools
+            from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+
+            set_mcp_listing_context_tokens(_monitor_context_length())
 
             # A database read, so off the loop. Guarded as the GGUF count guards it, or
             # an interleaving edit pairs a new row with the schema cached before it.
@@ -36261,7 +36394,9 @@ async def chat_count_tokens(
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
-        from core.inference.tools import cached_mcp_tools
+        from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
+
+        set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
         from core.inference.mcp_client import mcp_server_snapshot_guard
 
         # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
@@ -37914,7 +38049,9 @@ def _anthropic_tool_response_from_events(
     baseline, not turn N's final length.
     """
     content_blocks: list = []
-    tool_blocks_by_id: dict[str, AnthropicResponseToolUseBlock] = {}
+    tool_blocks_by_id: dict[
+        str, Union[AnthropicResponseToolUseBlock, AnthropicResponseServerToolUseBlock]
+    ] = {}
     usage = {}
     prev_text = ""
     captured_finish_reason = None
@@ -37964,8 +38101,13 @@ def _anthropic_tool_response_from_events(
                 if event.get("tool_name") and not existing_tool_block.name:
                     existing_tool_block.name = event["tool_name"]
             else:
-                tool_block = AnthropicResponseToolUseBlock(
-                    id = anthropic_tool_use_id(tool_call_id),
+                block_cls, id_prefix = (
+                    (AnthropicResponseServerToolUseBlock, "srvtoolu_")
+                    if event["tool_name"] == "web_search"
+                    else (AnthropicResponseToolUseBlock, "toolu_")
+                )
+                tool_block = block_cls(
+                    id = anthropic_tool_use_id(tool_call_id, id_prefix),
                     name = event["tool_name"],
                     input = arguments,
                 )
@@ -37976,6 +38118,18 @@ def _anthropic_tool_response_from_events(
         elif etype == "tool_end":
             prev_text = ""
             _span_guard.tool_end()
+            # Done with this call: text-parsed calls restart at call_0 each iteration, so a later
+            # call may reuse its id and must open a block of its own.
+            search_call = tool_blocks_by_id.pop(event.get("tool_call_id"), None)
+            if isinstance(search_call, AnthropicResponseServerToolUseBlock):
+                content_blocks.append(
+                    AnthropicResponseWebSearchToolResultBlock(
+                        tool_use_id = search_call.id,
+                        content = web_search_tool_result_content(
+                            event.get("result", ""), search_call.input
+                        ),
+                    )
+                )
             # Server-executed: no longer pending a client action (see above).
             ends_on_tool_use = False
         elif etype == "metadata":
@@ -39821,15 +39975,8 @@ async def _openai_passthrough_stream(
         reservation.cancel()
         _tracker.__exit__(None, None, None)
 
-    return _SameTaskStreamingResponse(
-        _queued_stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
-        unstarted_cleanup = _queued_unstarted_cleanup,
+    return _sse_streaming_response(
+        _queued_stream(), unstarted_cleanup = _queued_unstarted_cleanup, monitor_id = monitor_id
     )
 
 
@@ -39897,6 +40044,9 @@ async def _openai_passthrough_stream_admitted(
         body = await _build_openai_passthrough_body_async(
             payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
         )
+        # The body builder is allowlisted, so the caller's opt-in lives in the extra fields.
+        client_wants_progress = bool((payload.model_extra or {}).get("return_progress"))
+        body["return_progress"] = True
         client_wants_usage = _wants_stream_usage(payload)
         upstream_stream_options = dict(body.get("stream_options") or {})
         upstream_stream_options["include_usage"] = True
@@ -40017,11 +40167,14 @@ async def _openai_passthrough_stream_admitted(
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers = _monitor_response_headers(
+                        {
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "X-Accel-Buffering": "no",
+                        },
+                        monitor_id,
+                    ),
                 )
 
             if resp.status_code == 200:
@@ -40396,15 +40549,18 @@ async def _openai_passthrough_stream_admitted(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
                 lines_iter = resp.aiter_lines()
+                _keepalive_s = _openai_passthrough_stream_keepalive_interval()
                 items_iter = _aiter_llama_stream_items(
                     lines_iter,
                     cancel_event = cancel_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
+                    track_prefill_progress = True,
                     post_first_item_read_timeout_s = _terminal_read_timeout_s,
-                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
+                    keepalive_interval_s = _keepalive_s,
                 )
+                progress_keepalive = _ProgressKeepalive(_keepalive_s)
                 async for raw_line in items_iter:
                     if raw_line is _LLAMA_STREAM_KEEPALIVE:
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
@@ -40477,6 +40633,11 @@ async def _openai_passthrough_stream_admitted(
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
+                    if not client_wants_progress and _is_prefill_progress_only(chunk_data):
+                        _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
+                        if progress_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already
                     # normalized) line relays unchanged (monitored exactly as
@@ -40678,15 +40839,8 @@ async def _openai_passthrough_stream_admitted(
                 finally:
                     _release_admission(admission_lease, _tracker)
 
-        return _SameTaskStreamingResponse(
-            _stream(),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
-            unstarted_cleanup = _unstarted_cleanup,
+        return _sse_streaming_response(
+            _stream(), unstarted_cleanup = _unstarted_cleanup, monitor_id = monitor_id
         )
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):

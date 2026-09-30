@@ -24,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -88,7 +89,6 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   Columns2Icon,
-  GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -131,6 +131,7 @@ import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
@@ -159,9 +160,16 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
+  getInferenceStatus,
   loadModel,
+  unloadModel,
   validateModel,
 } from "./api/chat-api";
+import {
+  CompareRunOwnership,
+  isCompareCancellation,
+  throwIfCompareCancelled,
+} from "./compare-run-ownership";
 import {
   loadedContextForParams,
   resolveExplicitCtxPin,
@@ -569,11 +577,29 @@ function isPortaledDrop(event: ReactDragEvent): boolean {
   return !target?.closest?.(".chat-composer-surface");
 }
 
+const LOAD_SETTLE_POLL_MS = 1000;
+const LOAD_SETTLE_TIMEOUT_MS = 15 * 60_000;
+
+/** Waits for every load, not the target by name: the backend tracks a local GGUF under a path-free id. */
+async function waitForBackendLoadToSettle(): Promise<void> {
+  const deadline = Date.now() + LOAD_SETTLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const status = await getInferenceStatus();
+      if (status.loading.length === 0) return;
+    } catch {
+      // Keep polling: an unreachable backend has not proven the load ended.
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOAD_SETTLE_POLL_MS));
+  }
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
   model2,
   onExitCompare,
+  onComparingChange,
   model1ThreadId,
   model2ThreadId,
   sendUnavailableReason,
@@ -583,6 +609,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  onComparingChange?: (comparing: boolean) => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
   sendUnavailableReason?: string;
@@ -672,6 +699,9 @@ export function SharedComposer({
   const prevRunningRef = useRef(false);
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
+  const compareRunsRef = useRef(
+    new CompareRunOwnership<{ modelPath: string; requestId: string }>(),
+  );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingFixPrompt = useChatArtifactsStore(
@@ -1430,6 +1460,8 @@ export function SharedComposer({
       }
       audioUpload.cancel();
       clearSubmittedDraft();
+      const run = compareRunsRef.current.begin();
+      const compareSignal = run.controller.signal;
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
@@ -1450,6 +1482,7 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        throwIfCompareCancelled(compareSignal);
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // This pane's effective config: an explicit selection config, else the remembered store config
@@ -1669,7 +1702,8 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
-        });
+        }, { signal: compareSignal });
+        throwIfCompareCancelled(compareSignal);
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -1715,9 +1749,12 @@ export function SharedComposer({
             );
           }
         }
+        throwIfCompareCancelled(compareSignal);
         applyCompareStopDecision();
+        const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
           model_path: sel.id,
+          load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
@@ -1763,7 +1800,17 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
+        }, {
+          signal: compareSignal,
+          onRequestStart: () => {
+            compareRunsRef.current.setLoadingModel(run, {
+              modelPath: sel.id,
+              requestId: loadRequestId,
+            });
+          },
         });
+        compareRunsRef.current.setLoadingModel(run, null);
+        throwIfCompareCancelled(compareSignal);
         // Keep a compare pane's per-model speculative choice load-local: persist the global preference
         // only when it came from global settings.
         if (ownConfig.speculativeType == null) {
@@ -1967,6 +2014,7 @@ export function SharedComposer({
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);
+      onComparingChange?.(true);
       try {
         if (handle1 && model1?.id) {
           toast("Loading Model 1…", {
@@ -1975,6 +2023,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const status1 = await ensureModelLoaded(model1);
+          throwIfCompareCancelled(compareSignal);
           releaseCompareModelLifecycle();
           toast("Generating with Model 1…", {
             id: toastId,
@@ -1984,6 +2033,7 @@ export function SharedComposer({
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         if (handle2 && model2?.id) {
@@ -1998,6 +2048,7 @@ export function SharedComposer({
             if (!currentStopDecision.proceed) {
               throw new Error("Second comparison model load cancelled.");
             }
+            throwIfCompareCancelled(compareSignal);
             compareStopDecision = currentStopDecision;
             toast("Loading Model 2…", {
               id: toastId,
@@ -2006,6 +2057,7 @@ export function SharedComposer({
             });
           }
           const status2 = await ensureModelLoaded(model2);
+          throwIfCompareCancelled(compareSignal);
           releaseCompareModelLifecycle();
           toast("Generating with Model 2…", {
             id: toastId,
@@ -2015,6 +2067,7 @@ export function SharedComposer({
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         compareStepSucceededRef.current = true;
@@ -2022,19 +2075,47 @@ export function SharedComposer({
       } catch (err) {
         compareStepSucceededRef.current = false;
         resetPromptQueue();
+        const cancelled = isCompareCancellation(err, compareSignal);
+        let cleanupError: unknown = null;
+        if (run.cleanup) {
+          cleanupError = await run.cleanup.then(
+            () => null,
+            (error: unknown) => error ?? new Error("Model unload failed"),
+          );
+          // The load keeps running when its cancel failed; resyncing before it settles would pin the
+          // outgoing model while the replacement becomes resident.
+          if (cleanupError) {
+            await waitForBackendLoadToSettle();
+          }
+          // A stopped load may have finished or evicted the previous model: adopt the backend's state.
+          await resyncInferenceStatusAfterServerModelChange();
+        }
         // The install already unloaded the previously active model; drop the checkpoint so the UI does
         // not keep pointing at it.
         if (upgradeUnloadedActive) {
           useChatRuntimeStore.getState().clearCheckpoint();
         }
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
+        if (cancelled && !cleanupError) {
+          toast.info("Compare stopped", { id: toastId, duration: 2000 });
+          return;
+        }
+        const failure = cancelled ? cleanupError : err;
+        toast.error(
+          cancelled
+            ? "Compare stopped, but the model load could not be cancelled"
+            : "Compare failed",
+          {
+            id: toastId,
+            description:
+              failure instanceof Error ? failure.message : "Unknown error",
+            duration: cancelled ? 5000 : 4000,
+          },
+        );
       } finally {
+        compareRunsRef.current.release(run);
         releaseCompareModelLifecycle();
         setComparing(false);
+        onComparingChange?.(false);
       }
     } else {
       const liveRuntime = useChatRuntimeStore.getState();
@@ -2084,6 +2165,18 @@ export function SharedComposer({
 
   function stop() {
     if (isDictating) stopDictation();
+    const run = compareRunsRef.current.cancelCurrent();
+    // Aborting the fetch frees only the browser; /unload is what stops the backend load.
+    if (run?.loadingModel && !run.cleanup) {
+      compareRunsRef.current.setCleanup(
+        run,
+        // Scoped to this attempt: never evicts a resident model or another tab's same-named load.
+        unloadModel({
+          model_path: run.loadingModel.modelPath,
+          cancel_load_request_id: run.loadingModel.requestId,
+        }),
+      );
+    }
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
     }
@@ -2654,7 +2747,7 @@ export function SharedComposer({
                   }
                 }}
               >
-                <GlobeIcon />
+                <InternetGlyph />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
@@ -2773,7 +2866,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>

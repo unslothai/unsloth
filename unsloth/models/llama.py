@@ -112,7 +112,7 @@ from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
 from ..tokenizer_utils import *
-from .vision import FastBaseModel
+from .vision import FastBaseModel, _is_text_seq2seq_config
 
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
@@ -1374,6 +1374,9 @@ def _LlamaModel_fast_forward_inference(
         for idx, decoder_layer in enumerate(self.model.layers):
             layer_device, device_index = per_layer_device(decoder_layer)
             X, residual, position_ids = move_to_device(layer_device, X, residual, position_ids)
+            # self_attn is called directly, so no accelerate hook moves the mask to a split layer's device.
+            if attention_mask is not None:
+                attention_mask = move_to_device(layer_device, attention_mask)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
@@ -2411,6 +2414,17 @@ def _fused_lora_skip_reason(
         f" The fused LoRA kernels were skipped because {' and '.join(reasons)}, "
         "which is why the counts are zero. Training is unaffected."
     )
+
+
+_DEFAULT_TARGET_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
 
 
 def _patched_transformers_modules(model_patcher):
@@ -3477,15 +3491,7 @@ class FastLlamaModel:
     def get_peft_model(
         model,
         r = 16,
-        target_modules = [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
+        target_modules = _DEFAULT_TARGET_MODULES,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -3505,7 +3511,9 @@ class FastLlamaModel:
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         **kwargs,
     ):
-        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+        # The flag reflects the LAST load, not this model.
+        _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
             for peft_arg, flag in (
                 ("finetune_vision_layers", False),
                 ("finetune_language_layers", True),
@@ -3515,6 +3523,9 @@ class FastLlamaModel:
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
+            # Identity, not equality: only an omitted argument is replaced; the causal default names no T5 leaf.
+            if target_modules is _DEFAULT_TARGET_MODULES and _text_seq2seq:
+                target_modules = None
             return FastBaseModel.get_peft_model(
                 model = model,
                 r = r,
@@ -4068,7 +4079,9 @@ class FastLlamaModel:
         # module flags every GRPO step, and TrainingArguments defaults it to False, which would silently
         # disable it at train time (#4735). Recorded here so loader.py's from_pretrained path is covered.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
-        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _is_text_seq2seq_config(
+            getattr(model, "config", None)
+        ):
             return FastBaseModel.patch_peft_model(
                 model = model,
                 use_gradient_checkpointing = use_gradient_checkpointing,
