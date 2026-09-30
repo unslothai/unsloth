@@ -4646,11 +4646,56 @@ def _unsloth_train_if_needed(model):
         and _unsloth_wrappees_are_in_train_mode(model)
     ):
         return model
+    _unsloth_freeze_norm_running_stats(model)
     model.train()
     try:
         model._unsloth_train_mode_asserted = True
     except Exception:
         pass
+    return model
+
+
+# Norms whose train mode normalises with batch statistics AND overwrites their running buffers.
+_UNSLOTH_RUNNING_STAT_NORMS = (
+    torch.nn.modules.batchnorm._BatchNorm,
+    torch.nn.modules.instancenorm._InstanceNorm,
+)
+
+
+def _unsloth_norm_stats_are_frozen(module):
+    """A running-stat norm whose own affine parameters are all frozen, so LoRA / frozen-base
+    training never meant to change it. `UNSLOTH_FREEZE_NORM_RUNNING_STATS=0` opts out."""
+    if os.environ.get("UNSLOTH_FREEZE_NORM_RUNNING_STATS", "1") == "0":
+        return False
+    if not getattr(module, "track_running_stats", False):
+        return False
+    params = list(module.parameters(recurse = False))
+    return len(params) > 0 and not any(p.requires_grad for p in params)
+
+
+def _unsloth_norm_train(module, mode = True):
+    if mode and _unsloth_norm_stats_are_frozen(module):
+        mode = False
+    return type(module).train(module, mode)
+
+
+def _unsloth_freeze_norm_running_stats(model):
+    """Keep frozen BatchNorm / InstanceNorm(track_running_stats=True) layers in eval mode.
+
+    `model.train()` (Trainer.training_step, for_training) puts every BatchNorm in train mode, so
+    each forward normalises with the batch's statistics and overwrites `running_mean` /
+    `running_var` of a frozen encoder (e.g. the Parakeet audio tower of Nemotron Omni). A LoRA
+    adapter does not save those buffers, so the model in memory drifts away from what a reload
+    of the adapter gives. Each such norm gets an instance-level `train` that stays in eval while
+    its own parameters are all frozen, checked on every call, so full finetuning (parameters
+    trainable) and norms in `modules_to_save` keep training. Idempotent.
+    """
+    if not isinstance(model, torch.nn.Module):
+        return model
+    for module in model.modules():
+        if isinstance(module, _UNSLOTH_RUNNING_STAT_NORMS) and "train" not in module.__dict__:
+            # functools.partial, not a bound method, so deepcopy / pickle of the module still work.
+            module.train = functools.partial(_unsloth_norm_train, module)
     return model
 
 
