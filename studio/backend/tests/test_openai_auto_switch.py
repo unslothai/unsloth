@@ -5920,7 +5920,8 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
     mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
     Injecting a placeholder system turn would add a system block to the count for Qwen3
-    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show. Templates
+    that raise on no messages (Qwen3.5+) are re-priced only after refusing; see below."""
     seen = {}
 
     class _FakeResponse:
@@ -5961,6 +5962,132 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     count = _CountBackend().count_chat_tokens([], None, None, strict = True)
     assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
     assert count > 0, "a fresh chat still prices the template preamble"
+
+
+class _RefusingEmptyRenderClient:
+    """llama-server with a Qwen3.5+ template that raises on no messages; strips a trailing assistant."""
+
+    sent = []
+    down = False
+    empty_status = 500
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def post(
+        self,
+        url,
+        json = None,
+    ):
+        body = json or {}
+        if url.endswith(("/apply-template", "/input_tokens")):
+            messages = body.get("messages")
+            type(self).sent.append((url.rsplit("/", 1)[-1], messages))
+            if type(self).down:
+                raise RuntimeError("timed out")
+            rendered = list(messages or [])
+            if rendered and rendered[-1].get("role") == "assistant":
+                rendered = rendered[:-1]
+            if not rendered:
+                status = type(self).empty_status
+                return _CountResponse(
+                    {"error": {"code": status, "message": "No messages provided."}},
+                    status_code = status,
+                )
+            if url.endswith("/input_tokens"):
+                return _CountResponse({"input_tokens": 7})
+            return _CountResponse(
+                {"prompt": "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n"}
+            )
+        return _CountResponse({"tokens": str(body.get("content", "")).split()})
+
+
+class _CountResponse:
+    def __init__(
+        self,
+        payload,
+        status_code = 200,
+    ):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def refusing_client(monkeypatch):
+    _RefusingEmptyRenderClient.sent = []
+    _RefusingEmptyRenderClient.down = False
+    _RefusingEmptyRenderClient.empty_status = 500
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _RefusingEmptyRenderClient)
+    return _RefusingEmptyRenderClient
+
+
+@pytest.mark.parametrize("prefer_native", [False, True])
+@pytest.mark.parametrize(
+    "messages",
+    [[], [{"role": "assistant", "content": '{"name": "terminal"}'}]],
+    ids = ["new_chat", "lone_pending_call"],
+)
+def test_a_template_refusing_an_empty_render_is_priced_behind_one_empty_user_turn(
+    refusing_client, prefer_native, messages
+):
+    """#12327: an empty render the template refuses is priced behind one empty user turn, once per load."""
+    backend = _CountBackend()
+    count = backend.count_chat_tokens(
+        messages, None, None, strict = True, prefer_native = prefer_native
+    )
+    assert count > 0, "a refused empty render must still be priced, not refused"
+    assert refusing_client.sent[0][1] == messages, "what the caller sent is still tried first"
+    assert refusing_client.sent[-1][1] == [{"role": "user", "content": ""}] + messages
+
+    refusing_client.sent = []
+    assert (
+        backend.count_chat_tokens(messages, None, None, strict = True, prefer_native = prefer_native)
+        == count
+    )
+    assert all(
+        sent == [{"role": "user", "content": ""}] + messages for _, sent in refusing_client.sent
+    ), "a known refusal must not be re-sent on every recount"
+
+
+def test_a_conversation_the_template_renders_costs_one_request(refusing_client):
+    """The chat path counts real conversations on every turn; the fallback must add nothing there."""
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = True
+    conversation = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "Read ./README.md"},
+    ]
+    backend.count_chat_tokens(conversation, None, None, strict = True)
+    assert refusing_client.sent == [("apply-template", conversation)]
+
+
+def test_an_unreachable_server_is_not_retried_or_taken_for_a_refusal(refusing_client):
+    """A timeout says nothing about the template: no second round trip, and no remembered refusal."""
+    refusing_client.down = True
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert len(refusing_client.sent) == 1
+    assert backend._empty_chat_render_refused is False
+
+
+def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
+    """llama-server answers 503 while loading or out of slots; only a 500 is a template refusal."""
+    refusing_client.empty_status = 503
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert [m for _, m in refusing_client.sent] == [[]], "a busy server is not retried"
+    assert backend._empty_chat_render_refused is False
 
 
 def test_a_count_never_spawns_mcp_servers():

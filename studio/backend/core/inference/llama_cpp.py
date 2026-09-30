@@ -12011,6 +12011,9 @@ class LlamaCppBackend:
     # Property of the host, not the model, so warn once rather than per launch.
     _warned_no_nvlink = False
 
+    # The loaded template refuses an empty render. Reset on every load.
+    _empty_chat_render_refused = False
+
     @staticmethod
     def _sanitize_p2p_env(env: dict) -> Optional[str]:
         """Drop an inherited GGML_CUDA_P2P that must not reach the child; return the
@@ -18128,6 +18131,7 @@ class LlamaCppBackend:
         # carry over when switching models.
         self._context_length = None
         self._chat_template = None
+        self._empty_chat_render_refused = False
         self._markup_tokens = []
         self._markup_profile = None
         self._supports_reasoning = False
@@ -27937,6 +27941,7 @@ class LlamaCppBackend:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
 
                 self._chat_template_override = chat_template_override
+                self._empty_chat_render_refused = False
                 _effective_template = self._effective_chat_template(chat_template_override)
                 if _effective_template:
                     import tempfile
@@ -32368,6 +32373,7 @@ class LlamaCppBackend:
             self._markup_tokens = []
             self._markup_profile = None
             self._chat_template_override = None
+            self._empty_chat_render_refused = False
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_budget = -1
@@ -39948,60 +39954,79 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
-                # An empty list is passed through as-is: llama-server renders through minja, not
-                # jinja2, so messages[0] yields undefined rather than raising and the template
-                # returns its bare preamble. A placeholder turn would add a system block instead.
-                apply_template_failed = False
-                try:
-                    # llama-server's /apply-template renders tool declarations
-                    # into the prompt when ``tools`` is supplied, so pass them
-                    # through, otherwise tool-schema tokens go uncounted.
-                    template_body = {"messages": template_messages}
-                    if tools:
-                        template_body["tools"] = llama_grammar_tools(tools)
-                    # Layered over the load-time --chat-template-kwargs: only keys sent here move.
-                    if chat_template_kwargs:
-                        template_body["chat_template_kwargs"] = chat_template_kwargs
-                    if continue_final_message:
-                        template_body["continue_final_message"] = True
-                        template_body["add_generation_prompt"] = False
-                    if prefer_native:
-                        if should_abort is not None and should_abort():
-                            raise CountAborted()
-                        try:
-                            native = client.post(
-                                f"{self.base_url}/v1/chat/completions/input_tokens",
-                                json = template_body,
-                            )
-                            if native.status_code == 200:
-                                count = native.json().get("input_tokens")
-                                if type(count) is int and count > 0:
-                                    return count
-                        except Exception:
-                            pass
-                        if should_abort is not None and should_abort():
-                            raise CountAborted()
-                    resp = client.post(
-                        f"{self.base_url}/apply-template",
-                        json = template_body,
-                    )
-                    if resp.status_code == 200:
+
+                def _render_count(render_messages) -> tuple[Optional[int], bool]:
+                    """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
+                    try:
+                        # /apply-template renders tool schemas; omitting them undercounts.
+                        template_body = {"messages": render_messages}
+                        if tools:
+                            template_body["tools"] = llama_grammar_tools(tools)
+                        # Layered over the load-time --chat-template-kwargs: only keys sent here move.
+                        if chat_template_kwargs:
+                            template_body["chat_template_kwargs"] = chat_template_kwargs
+                        if continue_final_message:
+                            template_body["continue_final_message"] = True
+                            template_body["add_generation_prompt"] = False
+                        if prefer_native:
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
+                            try:
+                                native = client.post(
+                                    f"{self.base_url}/v1/chat/completions/input_tokens",
+                                    json = template_body,
+                                )
+                                if native.status_code == 200:
+                                    count = native.json().get("input_tokens")
+                                    if type(count) is int and count > 0:
+                                        return count, False
+                            except Exception:
+                                pass
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
+                        resp = client.post(
+                            f"{self.base_url}/apply-template",
+                            json = template_body,
+                        )
+                        if resp.status_code != 200:
+                            return None, resp.status_code == 500
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt)
-                    apply_template_failed = True
-                except CountAborted:
-                    # Not a template failure: swallowed, the text fallback tokenizes anyway,
-                    # which is the work being declined. Must precede the generic except.
-                    raise
-                except Exception:
-                    apply_template_failed = True
+                            return _tokenize(prompt), False
+                    except CountAborted:
+                        # Not a template failure: swallowed, the text fallback tokenizes anyway,
+                        # which is the work being declined. Must precede the generic except.
+                        raise
+                    except Exception:
+                        pass
+                    return None, False
+
+                # Qwen3.5+ templates raise on an empty render (#12327); a lone assistant turn is
+                # stripped as a prefill, so renders empty too. Retry behind an empty user turn.
+                renders_empty = not template_messages or (
+                    len(template_messages) == 1
+                    and isinstance(template_messages[0], dict)
+                    and template_messages[0].get("role") == "assistant"
+                )
+                with_user_turn = [{"role": "user", "content": ""}] + template_messages
+                if renders_empty and self._empty_chat_render_refused:
+                    count, _refused = _render_count(with_user_turn)
+                else:
+                    count, _refused = _render_count(template_messages)
+                    if count is None and _refused and renders_empty:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        count, _ = _render_count(with_user_turn)
+                        if count is not None:
+                            self._empty_chat_render_refused = True
+                if count is not None:
+                    return count
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a
                 # six-turn two-tool prompt), so strict callers error rather than undercount.
-                if strict and apply_template_failed:
+                if strict:
                     raise RuntimeError("llama-server could not render the chat template")
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
