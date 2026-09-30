@@ -337,13 +337,17 @@ def _normalized(path: Path, name: str, rename: dict) -> str:
 
 @pytest.mark.parametrize(
     ("library", "studio"),
-    [("_audio_decode_with_av", "_decode_with_av"), ("_audio_read_mono", "_read_mono")],
+    [
+        ("_audio_decode_with_av", "_decode_with_av"),
+        ("_audio_read_mono", "_read_mono"),
+        ("_audio_av_open", "_av_open"),
+    ],
 )
 def test_the_library_and_studio_decoders_do_not_drift(library, studio):
     # Studio's API process never imports unsloth, so it carries its own copy of the decoder.
     if not _STUDIO_SHIM.exists():
         pytest.skip("no studio checkout")
-    rename = {"_audio_decode_with_av": "_decode_with_av"}
+    rename = {"_audio_decode_with_av": "_decode_with_av", "_audio_av_open": "_av_open"}
     assert _normalized(_REPO / "unsloth" / "import_fixes.py", library, rename) == _normalized(
         _STUDIO_SHIM, studio, {}
     )
