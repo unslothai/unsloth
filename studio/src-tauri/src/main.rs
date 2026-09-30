@@ -57,11 +57,9 @@ const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
-/// Whether the macOS menu bar icon is shown. Absent or unreadable means shown: hiding is opt-in,
-/// and a hidden start without the icon keeps its Dock icon instead (see `.setup`).
+/// Absent or unreadable = shown, so a hidden start never loses its only way back (see `.setup`).
 const TRAY_ICON_VISIBLE_PREFERENCE_FILE: &str = "tray-icon-visible-v1";
 
-/// Stable id so `AppHandle::tray_by_id` can find the tray built in `setup_tray` from a command.
 const TRAY_ID: &str = "main";
 
 /// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
@@ -255,8 +253,6 @@ fn write_tray_icon_visible_preference(config_dir: &Path, visible: bool) -> Resul
     })
 }
 
-/// The stored visibility, defaulting to shown when the app configuration directory itself is
-/// unavailable: hiding is opt-in, and losing the setting must never strand the app trayless.
 fn stored_tray_icon_visible_preference(app: &tauri::AppHandle) -> bool {
     app.path()
         .app_config_dir()
@@ -378,8 +374,7 @@ fn get_tray_icon_visible(app: tauri::AppHandle) -> Option<bool> {
     cfg!(target_os = "macos").then(|| stored_tray_icon_visible_preference(&app))
 }
 
-/// tray-icon removes the macOS status item when hidden and builds a new one when shown, so the
-/// appearance observer has to move to the new button or the artwork stops following light/dark.
+/// tray-icon rebuilds the status item on show, so the appearance observer must follow it.
 fn apply_tray_icon_visible(tray: &tauri::tray::TrayIcon, visible: bool) -> tauri::Result<()> {
     tray.set_visible(visible)?;
     #[cfg(target_os = "macos")]
@@ -411,8 +406,7 @@ fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, S
         .map_err(|error| format!("Could not determine app configuration directory: {error}"))
         .and_then(|config_dir| write_tray_icon_visible_preference(&config_dir, enabled));
     if let Err(error) = persisted {
-        // The icon already changed; a failed save must not leave it out of sync with the
-        // (unsaved) preference, which would make the toggle lie on the next launch.
+        // Keep the icon matching the preference the next launch will read.
         if let Err(restore_error) = apply_tray_icon_visible(&tray, previous) {
             warn!("Could not restore the previous menu bar icon visibility: {restore_error}");
         }
@@ -2669,8 +2663,6 @@ media-src 'self' https:"
     fn tray_icon_visible_preference_defaults_on_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Shown by default: hiding is opt-in, and a never-configured install must not lose its
-        // only way back from a hidden start.
         assert!(read_tray_icon_visible_preference(dir.path()));
         write_tray_icon_visible_preference(dir.path(), false).unwrap();
         assert!(!read_tray_icon_visible_preference(dir.path()));
