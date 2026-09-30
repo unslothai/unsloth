@@ -2952,8 +2952,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
+        from utils.datasets.cells import csv_as_text_kwargs
+
         loader = _mlx_local_dataset_loader_for_files(all_files)
-        return load_dataset(loader, data_files = all_files, split = "train")
+        return load_dataset(
+            loader, data_files = all_files, split = "train", **csv_as_text_kwargs(all_files)
+        )
 
     eval_dataset = None
     if hf_dataset:

@@ -3,6 +3,8 @@
 
 """Turning one raw dataset cell into the text we are willing to train on."""
 
+from pathlib import Path
+
 
 def cell_text(value):
     """The text to train on for a single Alpaca-style dataset cell.
@@ -27,3 +29,17 @@ def cell_text(value):
     if isinstance(value, float) and value != value:
         return ""
     return str(value)
+
+
+def csv_as_text_kwargs(files):
+    if Path(files[0]).suffix.lower() != ".csv":
+        return {}
+    import pandas as pd
+    from datasets import Features, Value
+
+    columns = pd.read_csv(files[0], nrows = 0).columns
+    return {
+        "features": Features({name: Value("string") for name in columns}),
+        "keep_default_na": False,
+        "na_values": [""],
+    }
