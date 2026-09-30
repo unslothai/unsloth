@@ -207,7 +207,7 @@ def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
     assert W.shape == checkpoint.shape and not torch.equal(W, checkpoint)
     assert torch.equal(ip.int4_dequantize(W, qs), ref)
     assert torch.equal(ip.int4_unpack(W, qs), checkpoint)
-    # The fused kernel must pass its self-check, not silently fall back to dequantize + matmul.
+    # The fused kernel must pass its self-check, not fall back silently.
     assert ip._fast_args(W, qs) is not None
     fast = ip._fast_rows(layout, torch.cuda.current_device())
     for rows in (1, 3, fast, fast + 1):
@@ -648,12 +648,11 @@ def test_training_single_row_forward_uses_the_backward_weights():
 
 
 _MARLIN_SCHEMAS = {
-    # vLLM 0.29: a_scales, g_idx_or_none, perm_or_none and is_k_full are back in the signature.
+    # vLLM 0.29 schema
     "g_idx_perm": "(Tensor a, Tensor? c_or_none, Tensor b_q_weight, Tensor? b_bias_or_none, Tensor b_scales, "
     "Tensor? a_scales, Tensor? global_scale, Tensor? b_zeros_or_none, Tensor? g_idx_or_none, Tensor? perm_or_none, "
     "Tensor workspace, int b_type_id, SymInt size_m, SymInt size_n, SymInt size_k, bool is_k_full, "
     "bool use_atomic_add, bool use_fp32_reduce, bool is_zp_float) -> Tensor",
-    # The signature the fixed tuple was written against.
     "no_g_idx": "(Tensor a, Tensor? c_or_none, Tensor b_q_weight, Tensor? b_bias_or_none, Tensor b_scales, "
     "Tensor? a_scales, Tensor? global_scale, Tensor? b_zeros_or_none, Tensor workspace, int b_type_id, "
     "SymInt size_m, SymInt size_n, SymInt size_k, bool use_atomic_add, bool use_fp32_reduce, "

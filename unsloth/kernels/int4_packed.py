@@ -729,12 +729,8 @@ def _fast_args(packed, qs):
 
 
 def _marlin_gemm_args(op, **values):
-    """Positional arguments before and after ``size_m`` for vLLM's ``marlin_gemm``, read from the op schema.
-
-    vLLM has added and removed arguments across releases (``a_scales``, ``g_idx_or_none``, ``perm_or_none``,
-    ``is_k_full``), so a fixed tuple breaks on the next version. Unlisted optional arguments get ``None``; an
-    unlisted required one returns ``None`` and the caller keeps the dequantize path.
-    """
+    """(pre, post) ``size_m`` args for vLLM's ``marlin_gemm`` from its schema (it changes per release).
+    Unlisted optionals get None; an unlisted required arg returns None (keep the dequantize path)."""
     pre, post, seen_m = [], [], False
     for arg in op._schema.arguments[1:]:
         if arg.name == "size_m":
