@@ -84,6 +84,10 @@ class LoadRequest(BaseModel):
             "(llama.cpp or MLX) choose the context itself."
         ),
     )
+    max_seq_length_auto_derived: bool = Field(
+        False,
+        description = "max_seq_length is the previous load's fitted context, not a user choice",
+    )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
@@ -2399,6 +2403,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    extra_audio_base64: Optional[List[str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Further recordings after audio_base64, in order, for models that take "
+            "several clips in one message. Size and duration caps apply to all clips together."
+        ),
+    )
     audio_instructions: Optional[str] = Field(
         None,
         description = (
@@ -2638,8 +2649,9 @@ class ChatCompletionRequest(BaseModel):
             "informational. On Gemini, pass a string cache resource name such "
             "as `cachedContents/abc123` to attach `cachedContent` on the native "
             "request (boolean true is a no-op on Gemini because creating the "
-            "cache requires a separate POST /cachedContents call). Ignored for "
-            "every other provider. Treated as enabled when omitted."
+            "cache requires a separate POST /cachedContents call). On OpenRouter, "
+            "boolean true adds a top-level cache_control for anthropic/ models. "
+            "Ignored for every other provider. Treated as enabled when omitted."
         ),
     )
 
@@ -2662,14 +2674,15 @@ class ChatCompletionRequest(BaseModel):
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (
-            "[x-unsloth] Anthropic cache_control TTL. Defaults to the 5-minute "
+            "[x-unsloth] Anthropic cache_control TTL, also used for Claude on "
+            "OpenRouter. Defaults to the 5-minute "
             "ephemeral pool when omitted. Pass `1h` to write into the 1-hour "
             "pool instead -- 1h writes are billed at 2x base input vs 1.25x "
             "for 5m, but reads stay at 0.1x for both, so 1h pays off the "
             "moment a single extra read lands more than 5 minutes after the "
             "write. Only `5m` and `1h` are forwarded; any other value is "
             "silently ignored downstream so a stale frontend can't make the "
-            "API 422 on the request. No-op on every non-Anthropic provider."
+            "API 422 on the request. No-op on every other provider."
         ),
     )
     compaction_threshold: Optional[int] = Field(
@@ -2835,6 +2848,19 @@ class ChatCompletionRequest(BaseModel):
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
+        return self
+
+    @model_validator(mode = "after")
+    def _promote_extra_audio(self) -> "ChatCompletionRequest":
+        """Keep ``audio_base64`` the first clip whenever any clip is attached.
+
+        Every capability, size and routing check keys on that field, so a request carrying
+        only ``extra_audio_base64`` must not slip past them as audio-free.
+        """
+        extra = [clip for clip in self.extra_audio_base64 or [] if clip]
+        if not self.audio_base64 and extra:
+            self.audio_base64 = extra.pop(0)
+        self.extra_audio_base64 = extra or None
         return self
 
     @model_validator(mode = "after")
@@ -3716,7 +3742,7 @@ class AnthropicThinkingConfig(BaseModel):
     # (adaptive tiers) and Claude Code sends them, and a strict Literal turns an unrecognized value
     # into a hard 400. Only "disabled" means off; treat anything else as a request to think.
     type: str = "enabled"
-    # Accepted for wire compatibility; llama-server has no thinking budget.
+    # Forwarded to llama-server as thinking_budget_tokens when thinking is on.
     budget_tokens: Optional[int] = None
     model_config = {"extra": "allow"}
 
@@ -3755,8 +3781,6 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
-    # Anthropic's native extended-thinking control. Only `type` is honored: llama-server has no
-    # thinking-token budget, so `budget_tokens` is accepted and ignored rather than 400'd.
     thinking: Optional[AnthropicThinkingConfig] = None
     # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
     # over `thinking` when both are present, matching enable_tools precedence.
@@ -3888,6 +3912,19 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
+class AnthropicResponseServerToolUseBlock(BaseModel):
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicResponseWebSearchToolResultBlock(BaseModel):
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str
+    content: Union[list[dict], dict]
+
+
 class AnthropicResponseThinkingBlock(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
@@ -3899,6 +3936,8 @@ class AnthropicResponseThinkingBlock(BaseModel):
 AnthropicResponseBlock = Union[
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
+    AnthropicResponseServerToolUseBlock,
+    AnthropicResponseWebSearchToolResultBlock,
     AnthropicResponseThinkingBlock,
 ]
 
@@ -3968,7 +4007,8 @@ class DiffusionLoadRequest(BaseModel):
         "~2x smaller, "
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
-        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (torchao weight-only, ~3.5x smaller, "
+        "dequantised to bf16 per forward so the prompt encode is slower; cc>=8.0). A "
         "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode. "
         "Fails CLOSED when NOTHING could be cast (409, or a load-progress error); an int8 request "
         "downgraded to fp8 loads and is reported through the status resolved record instead.",
@@ -5089,9 +5129,10 @@ class VideoLoadRequest(BaseModel):
         "the largest resident component. fp8 = diffusers layerwise casting (memory only, cc >= "
         "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
-        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
-        "sm_100+). null/auto leaves the choice to the backend, which keeps the encoder dense on "
-        "every family except MiniMax-H3, where it takes the hosted quantized conditioner; "
+        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only, "
+        "dequantised to bf16 per forward (cc >= 8.0). null/auto leaves the choice to the backend, "
+        "which keeps the encoder dense on every family except MiniMax-H3, where it takes the "
+        "hosted quantized conditioner; "
         "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
         "to ask for it. Mirrors the image backend's field.",
     )

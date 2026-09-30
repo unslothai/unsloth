@@ -574,6 +574,7 @@ class GgufLoadIntent:
     # for the session.
     disable_vision: bool = False
     n_ctx: int = 4096
+    max_seq_length_auto_derived: bool = False
     chat_template_override: Optional[str] = None
     cache_type_kv: Optional[str] = None
     speculative_type: Optional[str] = None
@@ -2149,6 +2150,40 @@ def _finalize_reasoning_only_cumulative(
     return cumulative + "</think>" + visible_fallback
 
 
+def _ends_inside_quote(text: str) -> bool:
+    """Heuristic: text ends on a quote opener left unmatched on its line, or a lone quote."""
+    stripped = (text or "").rstrip()
+    if not stripped or stripped[-1] not in "`\"'":
+        return False
+    if len(stripped) > 1 and not (stripped[-2].isspace() or stripped[-2] in "*_([{"):
+        return False
+    last = stripped[-1]
+    line = stripped.rsplit("\n", 1)[-1]
+    # An apostrophe between letters (Qwen2's, don't) is not a quote mark.
+    marks = sum(
+        1
+        for i, ch in enumerate(line)
+        if ch == last
+        and not (
+            ch == "'" and 0 < i < len(line) - 1 and line[i - 1].isalnum() and line[i + 1].isalnum()
+        )
+    )
+    return marks % 2 == 1
+
+
+def _quote_cut_event(
+    reasoning_text: str,
+    answer_text: str,
+    finish_reason: Optional[str],
+    promote_reasoning_only: bool,
+) -> Optional[dict]:
+    """Flag a mid-quote `stop` in the shown answer; off for Anthropic, which cannot relay it."""
+    if not promote_reasoning_only or finish_reason != "stop":
+        return None
+    shown = answer_text if answer_text.strip() else reasoning_text
+    return {"type": "quote_cut"} if _ends_inside_quote(shown) else None
+
+
 # Only large streamed tool payloads get an early provisional card; render_html
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
@@ -3098,9 +3133,9 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|TQ[0-9]+_[0-9]+"
+    r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|Q[0-9]+_[0-9]+"
+    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,
@@ -6540,7 +6575,7 @@ def _launch_required_ubatch(
 
     # Pass-through arguments override managed projector flags.
     override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
-    if override:
+    if override and not vision_off and not extra_args_disable_mmproj(extra_args):
         required = max(
             required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
         )
@@ -6595,6 +6630,21 @@ def _batch_ubatch_for_mmproj(
     if target <= ubatch:
         return n_batch, n_ubatch
     return n_batch, target
+
+
+def _embedding_batch_ubatch(
+    n_ctx: int,
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Size an unset batch pair to the context for pooling that needs one micro-batch."""
+    _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
+    if (batch_named and ubatch_named) or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
+        return n_batch, n_ubatch
+    # llama.cpp caps the micro-batch at the batch, so the unset side must grow too.
+    return (n_batch if batch_named else n_ctx), (n_ubatch if ubatch_named else n_ctx)
 
 
 def _build_ngram_mod_flags(
@@ -6769,6 +6819,25 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _llama_chunk_has_generated_output(data: dict) -> bool:
+    if data.get("type") == "diffusion_frame":
+        return True
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and any(
+            value not in (None, "", []) for key, value in delta.items() if key != "role"
+        ):
+            return True
+        if choice.get("text") not in (None, ""):
+            return True
+    return False
+
+
 def _report_live_llama_timings(callback, chunk) -> None:
     """Report request-scoped llama.cpp progress without altering the public stream."""
     if callback is None or not isinstance(chunk, dict):
@@ -6779,6 +6848,7 @@ def _report_live_llama_timings(callback, chunk) -> None:
     sample.pop("prompt_ms", None)
     progress = chunk.get("prompt_progress")
     if isinstance(progress, dict):
+        sample["prompt_progress"] = dict(progress)
         try:
             processed = max(0.0, float(progress.get("processed", 0)))
             cached = max(0.0, float(progress.get("cache", 0)))
@@ -6791,6 +6861,8 @@ def _report_live_llama_timings(callback, chunk) -> None:
                 )
         except (TypeError, ValueError, OverflowError):
             pass
+    if getattr(callback, "needs_phase", True) and _llama_chunk_has_generated_output(chunk):
+        sample["running_phase"] = "token_generation"
     if not sample:
         return
     try:
@@ -11938,6 +12010,9 @@ class LlamaCppBackend:
 
     # Property of the host, not the model, so warn once rather than per launch.
     _warned_no_nvlink = False
+
+    # The loaded template refuses an empty render. Reset on every load.
+    _empty_chat_render_refused = False
 
     @staticmethod
     def _sanitize_p2p_env(env: dict) -> Optional[str]:
@@ -18056,6 +18131,7 @@ class LlamaCppBackend:
         # carry over when switching models.
         self._context_length = None
         self._chat_template = None
+        self._empty_chat_render_refused = False
         self._markup_tokens = []
         self._markup_profile = None
         self._supports_reasoning = False
@@ -19868,12 +19944,18 @@ class LlamaCppBackend:
             return False
 
     def _resolve_launch_mmproj_path(
-        self, *, model_path: str, mmproj_path: Optional[str]
+        self,
+        *,
+        model_path: str,
+        mmproj_path: Optional[str],
+        extra_args: Optional[Iterable[str]] = None,
     ) -> Optional[str]:
-        """Return mmproj_path iff it exists on disk AND matches the model family.
-
-        None if mmproj_path is None, missing, or family-mismatched.
-        """
+        """Resolve a projector, trusting an explicit path over filename heuristics."""
+        override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+        if override is not None:
+            if not override or not Path(override).is_file():
+                raise ValueError("The custom mmproj path must name an existing file.")
+            return override
         if not mmproj_path:
             return None
 
@@ -22474,17 +22556,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
-        """Return cmd without the '--mmproj <path>' pair (text-only retry).
-        Every other flag is preserved; a no-op when --mmproj is absent.
-        """
+        """Remove explicit projector paths, including aliases, for managed emission or retry."""
         out: list[str] = []
         skip_value = False
         for tok in cmd:
             if skip_value:
                 skip_value = False
                 continue
-            if tok == "--mmproj":
-                skip_value = True
+            if _flag_name(tok) in {"--mmproj", "-mm"}:
+                skip_value = "=" not in tok
                 continue
             out.append(tok)
         return out
@@ -23125,6 +23205,7 @@ class LlamaCppBackend:
         is_vision = intent.is_vision
         disable_vision = intent.disable_vision
         n_ctx = intent.n_ctx
+        _replayed_ctx_refit = False
         chat_template_override = intent.chat_template_override
         cache_type_kv = intent.cache_type_kv
         speculative_type = intent.speculative_type
@@ -23145,6 +23226,12 @@ class LlamaCppBackend:
         ctx_checkpoints = intent.ctx_checkpoints
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
+        custom_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+        if custom_mmproj is not None:
+            mmproj_path = self._resolve_launch_mmproj_path(
+                model_path = gguf_path or "", mmproj_path = mmproj_path, extra_args = extra_args
+            )
+            is_vision = True
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         reasoning_budget = intent.reasoning_budget
         reasoning_budget_message = intent.reasoning_budget_message
@@ -23847,6 +23934,16 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # MEAN/CLS inputs must fit one micro-batch (LAST splits). Before the projector raise,
+            # which would otherwise read as a user-set micro-batch.
+            if self._pooling_type in (1, 2):
+                n_batch, n_ubatch = _embedding_batch_ubatch(
+                    resolve_requested_ctx(extra_args, n_ctx) or self._context_length or 0,
+                    n_batch,
+                    n_ubatch,
+                    extra_args,
+                )
+
             # Decide after downloading the projector and before pricing the load.
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 _launch_required_ubatch(
@@ -23855,6 +23952,7 @@ class LlamaCppBackend:
                     else self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
+                        extra_args = extra_args,
                     ),
                     # Use the same order-independent metadata read as the estimators.
                     _read_gguf_embedding_length(model_path),
@@ -24223,6 +24321,7 @@ class LlamaCppBackend:
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
+                        extra_args = extra_args,
                     )
                     # The switch turns VISION off, and a projector is not always a
                     # vision tower: ultravox, Voxtral and Qwen3-ASR declare an audio
@@ -25039,6 +25138,24 @@ class LlamaCppBackend:
                     _draft_cpu_no_embedded = _draft_on_cpu and (
                         _separate_draft_launches or not self._nextn_predict_layers
                     )
+                    # A replay was fitted without the drafter: re-fit it like a fresh MTP load, before any explicit_ctx reader.
+                    if (
+                        explicit_ctx
+                        and ctx_override is None
+                        and intent.max_seq_length_auto_derived
+                        # CPU-pinned drafters too: the target still pays rollback state for them.
+                        and _mtp_will_engage
+                        # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
+                        and (
+                            (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                            or _user_mtp_via_extras
+                            or _user_draft_via_extras
+                            or _extra_args_set_spec_type(extra_args)
+                            or _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        )
+                    ):
+                        explicit_ctx = False
+                        _replayed_ctx_refit = True
 
                     # The two tensor -> layer downgrades that need nothing the probe
                     # decides run BEFORE it: the probe is gated on `not tensor_parallel`
@@ -27824,6 +27941,7 @@ class LlamaCppBackend:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
 
                 self._chat_template_override = chat_template_override
+                self._empty_chat_render_refused = False
                 _effective_template = self._effective_chat_template(chat_template_override)
                 if _effective_template:
                     import tempfile
@@ -28461,7 +28579,7 @@ class LlamaCppBackend:
                 # User pass-through args go last. Placement flags are removed
                 # below when the Unsloth picker owns the GPU selection.
                 if _mem_extras:
-                    _emit_extra_args = list(_mem_extras)
+                    _emit_extra_args = self._strip_mmproj_args(list(_mem_extras))
                     if _gpu_ids_own_device_flags:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
@@ -31237,7 +31355,8 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
-                self._requested_n_ctx = int(n_ctx)
+                # A re-fit replay records what launched, which is what the client replays next.
+                self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
                 # Commit with the rest of the known-good state: only a launch that got
@@ -32059,15 +32178,22 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        if intent.gguf_path is not None and self._gguf_path:
+        custom_mmproj = _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
+        source_path = intent.gguf_path
+        if source_path is None and custom_mmproj is not None:
+            if (self._hf_variant or "").lower() != (intent.hf_variant or "").lower():
+                return False
+            source_path = self._gguf_path
+        if source_path is not None and self._gguf_path:
             resident_identity = getattr(self, "_gguf_load_identity", None)
             if resident_identity is not None:
                 candidate_identity = LlamaCppBackend._gguf_load_source_identity(
-                    intent.gguf_path, intent.mmproj_path
+                    source_path,
+                    custom_mmproj or intent.mmproj_path,
                 )
                 return candidate_identity == resident_identity
             try:
-                return Path(self._gguf_path).resolve() == Path(intent.gguf_path).resolve()
+                return Path(self._gguf_path).resolve() == Path(source_path).resolve()
             except OSError:
                 return False
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
@@ -32091,7 +32217,7 @@ class LlamaCppBackend:
         the main ``--gpu-layers``. A drafter explicitly forced to CPU
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
         _args = [str(a) for a in cmd]
-        if any(a.startswith("--mmproj") for a in _args):
+        if any(a.startswith("--mmproj") or _flag_name(a) == "-mm" for a in _args):
             # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
             # GPU backend on it, so the projector holds no VRAM. Last flag wins.
             _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
@@ -32247,6 +32373,7 @@ class LlamaCppBackend:
             self._markup_tokens = []
             self._markup_profile = None
             self._chat_template_override = None
+            self._empty_chat_render_refused = False
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_budget = -1
@@ -33807,6 +33934,8 @@ class LlamaCppBackend:
             return None
 
     _SIDECAR_WEIGHT_FLAGS = (
+        "--mmproj",
+        "-mm",
         "--lora",
         "--lora-scaled",
         "--control-vector",
@@ -34675,22 +34804,7 @@ class LlamaCppBackend:
         data = LlamaCppBackend._sse_event_payload(event)
         if data is None:
             return False
-        if data.get("type") == "diffusion_frame":
-            return True
-        choices = data.get("choices")
-        if not isinstance(choices, list):
-            return False
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            delta = choice.get("delta")
-            if isinstance(delta, dict) and any(
-                value not in (None, "", []) for key, value in delta.items() if key != "role"
-            ):
-                return True
-            if choice.get("text") not in (None, ""):
-                return True
-        return False
+        return _llama_chunk_has_generated_output(data)
 
     @staticmethod
     def _iter_text_cancellable(
@@ -35153,6 +35267,7 @@ class LlamaCppBackend:
         compaction_headroom_ratio: Optional[float] = None,
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
+        thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -35207,6 +35322,8 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
+        if thinking_budget_tokens is not None:
+            payload["thinking_budget_tokens"] = thinking_budget_tokens
         if continue_final_message:
             # llama-server applies the template; it rejects both flags set true.
             payload["continue_final_message"] = True
@@ -35338,6 +35455,8 @@ class LlamaCppBackend:
             ):
                 buffer = ""
                 has_content_tokens = False
+                # Track content separately: a literal `</think>` can appear in the answer.
+                answer_text = ""
                 reasoning_text = ""
                 _prov_entry = None
                 for raw_chunk in self._iter_text_cancellable(
@@ -35435,6 +35554,7 @@ class LlamaCppBackend:
                                 token = delta.get("content", "")
                                 if token:
                                     has_content_tokens = True
+                                    answer_text += token
                                     if in_thinking:
                                         cumulative += "</think>"
                                         in_thinking = False
@@ -35445,6 +35565,14 @@ class LlamaCppBackend:
                             logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                     if _stream_done:
                         break  # exit outer for
+                _cut = _quote_cut_event(
+                    reasoning_text,
+                    answer_text,
+                    _metadata_finish_reason,
+                    promote_reasoning_only,
+                )
+                if _cut is not None:
+                    yield _cut
                 if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
@@ -35515,6 +35643,7 @@ class LlamaCppBackend:
                     # The retry refits, so it must be told the same about this request's
                     # tools as the first attempt was.
                     tools_withheld = tools_withheld,
+                    thinking_budget_tokens = thinking_budget_tokens,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -35576,6 +35705,7 @@ class LlamaCppBackend:
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
+        thinking_budget_tokens: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36318,6 +36448,8 @@ class LlamaCppBackend:
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            if thinking_budget_tokens is not None:
+                payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is
             # no longer trailing, so later turns are normal.
             if continue_final_message and trailing_assistant_text(conversation):
@@ -37567,6 +37699,14 @@ class LlamaCppBackend:
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
+                        _cut = _quote_cut_event(
+                            reasoning_accum,
+                            _visible,
+                            _iter_finish_reason,
+                            promote_reasoning_only,
+                        )
+                        if _cut is not None:
+                            yield _cut
                         _meta = _build_metadata_event(
                             _iter_usage, _iter_timings, _iter_finish_reason
                         )
@@ -38997,6 +39137,8 @@ class LlamaCppBackend:
             stream_payload["logit_bias"] = logit_bias
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
+        if thinking_budget_tokens is not None:
+            stream_payload["thinking_budget_tokens"] = thinking_budget_tokens
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
@@ -39140,6 +39282,8 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        # Track content separately to preserve literal `</think>` in the answer.
+        answer_text = ""
         _prov_entry = None
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
@@ -39356,6 +39500,7 @@ class LlamaCppBackend:
                                                 _final_reasoning_started_at
                                             )
                                         has_content_tokens = True
+                                        answer_text += token
                                         if in_thinking:
                                             cumulative += "</think>"
                                             in_thinking = False
@@ -39667,6 +39812,14 @@ class LlamaCppBackend:
                             if _meta is not None:
                                 yield _meta
                     else:
+                        _cut = _quote_cut_event(
+                            reasoning_text,
+                            answer_text,
+                            _metadata_finish_reason,
+                            promote_reasoning_only,
+                        )
+                        if _cut is not None:
+                            yield _cut
                         _meta = _build_metadata_event(
                             _metadata_usage, _metadata_timings, _metadata_finish_reason
                         )
@@ -39801,60 +39954,79 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
-                # An empty list is passed through as-is: llama-server renders through minja, not
-                # jinja2, so messages[0] yields undefined rather than raising and the template
-                # returns its bare preamble. A placeholder turn would add a system block instead.
-                apply_template_failed = False
-                try:
-                    # llama-server's /apply-template renders tool declarations
-                    # into the prompt when ``tools`` is supplied, so pass them
-                    # through, otherwise tool-schema tokens go uncounted.
-                    template_body = {"messages": template_messages}
-                    if tools:
-                        template_body["tools"] = llama_grammar_tools(tools)
-                    # Layered over the load-time --chat-template-kwargs: only keys sent here move.
-                    if chat_template_kwargs:
-                        template_body["chat_template_kwargs"] = chat_template_kwargs
-                    if continue_final_message:
-                        template_body["continue_final_message"] = True
-                        template_body["add_generation_prompt"] = False
-                    if prefer_native:
-                        if should_abort is not None and should_abort():
-                            raise CountAborted()
-                        try:
-                            native = client.post(
-                                f"{self.base_url}/v1/chat/completions/input_tokens",
-                                json = template_body,
-                            )
-                            if native.status_code == 200:
-                                count = native.json().get("input_tokens")
-                                if type(count) is int and count > 0:
-                                    return count
-                        except Exception:
-                            pass
-                        if should_abort is not None and should_abort():
-                            raise CountAborted()
-                    resp = client.post(
-                        f"{self.base_url}/apply-template",
-                        json = template_body,
-                    )
-                    if resp.status_code == 200:
+
+                def _render_count(render_messages) -> tuple[Optional[int], bool]:
+                    """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
+                    try:
+                        # /apply-template renders tool schemas; omitting them undercounts.
+                        template_body = {"messages": render_messages}
+                        if tools:
+                            template_body["tools"] = llama_grammar_tools(tools)
+                        # Layered over the load-time --chat-template-kwargs: only keys sent here move.
+                        if chat_template_kwargs:
+                            template_body["chat_template_kwargs"] = chat_template_kwargs
+                        if continue_final_message:
+                            template_body["continue_final_message"] = True
+                            template_body["add_generation_prompt"] = False
+                        if prefer_native:
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
+                            try:
+                                native = client.post(
+                                    f"{self.base_url}/v1/chat/completions/input_tokens",
+                                    json = template_body,
+                                )
+                                if native.status_code == 200:
+                                    count = native.json().get("input_tokens")
+                                    if type(count) is int and count > 0:
+                                        return count, False
+                            except Exception:
+                                pass
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
+                        resp = client.post(
+                            f"{self.base_url}/apply-template",
+                            json = template_body,
+                        )
+                        if resp.status_code != 200:
+                            return None, resp.status_code == 500
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt)
-                    apply_template_failed = True
-                except CountAborted:
-                    # Not a template failure: swallowed, the text fallback tokenizes anyway,
-                    # which is the work being declined. Must precede the generic except.
-                    raise
-                except Exception:
-                    apply_template_failed = True
+                            return _tokenize(prompt), False
+                    except CountAborted:
+                        # Not a template failure: swallowed, the text fallback tokenizes anyway,
+                        # which is the work being declined. Must precede the generic except.
+                        raise
+                    except Exception:
+                        pass
+                    return None, False
+
+                # Qwen3.5+ templates raise on an empty render (#12327); a lone assistant turn is
+                # stripped as a prefill, so renders empty too. Retry behind an empty user turn.
+                renders_empty = not template_messages or (
+                    len(template_messages) == 1
+                    and isinstance(template_messages[0], dict)
+                    and template_messages[0].get("role") == "assistant"
+                )
+                with_user_turn = [{"role": "user", "content": ""}] + template_messages
+                if renders_empty and self._empty_chat_render_refused:
+                    count, _refused = _render_count(with_user_turn)
+                else:
+                    count, _refused = _render_count(template_messages)
+                    if count is None and _refused and renders_empty:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        count, _ = _render_count(with_user_turn)
+                        if count is not None:
+                            self._empty_chat_render_refused = True
+                if count is not None:
+                    return count
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a
                 # six-turn two-tool prompt), so strict callers error rather than undercount.
-                if strict and apply_template_failed:
+                if strict:
                     raise RuntimeError("llama-server could not render the chat template")
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a

@@ -208,6 +208,7 @@ from .diffusion_precision import (
     resolve_te_quant_request,
     te_quant_needs_resident_weights,
     te_quant_supported,
+    te_quant_unsupported_reason,
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
@@ -2128,10 +2129,7 @@ class DiffusionBackend:
                 "quantisations"
             )
         elif te_effective is not None and not te_quant_supported(target, te_effective):
-            te_reason = (
-                "this device does not have the tensor cores that backend needs (a CUDA GPU in "
-                "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
-            )
+            te_reason = te_quant_unsupported_reason(te_effective)
         elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
             memory_mode, cpu_offload
         ):
@@ -8355,6 +8353,19 @@ class DiffusionBackend:
             att["value"] = attention_engaged or "native"
             att["reason"] = (
                 "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
+            )
+        # The load recorded "speed tier does not capture" for the deferred tier; the profile that just engaged may
+        # have armed graphs, so re-derive the entry the same way the load does or the badge keeps saying "off".
+        graph = (state.resolved or {}).get("cuda_graph")
+        if isinstance(graph, dict):
+            graph["value"] = "on" if speed_applied.get("cuda_graph") else "off"
+            graph["reason"] = (
+                "denoiser step captured per input shape, replayed bit-identically"
+                if speed_applied.get("cuda_graph")
+                else str(
+                    getattr(state.pipe, "_unsloth_cuda_graph_reason", None)
+                    or "speed tier does not capture"
+                )
             )
         logger.info(
             "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s)",

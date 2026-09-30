@@ -62,6 +62,7 @@ export type ShortcutId =
   | "copyChatAsMarkdown"
   | "copySessionId"
   | "forkChat"
+  | "openCommandPalette"
   | "searchChats"
   | "renameChat"
   | "openKeyboardShortcuts";
@@ -237,6 +238,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyC",
   }),
   def("forkChat", null),
+  // Takes the browser's Print, like find above takes its Find: printing a chat
+  // shell is of no use, and the event is cancellable in every engine.
+  def("openCommandPalette", "Mod+KeyP"),
   // No ⇧⌘P alternate: it is the command-menu chord everywhere else, but in
   // Firefox it opens a private window, and ⌘K is the one people reach for.
   def("searchChats", "Mod+KeyK"),

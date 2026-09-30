@@ -28,6 +28,7 @@ from ..device_type import (
 )
 from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -498,6 +499,10 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             return W
         if W.dtype == torch.float8_e4m3fn:
             return weight_dequant(W, quant_state)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
             # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             absmax = quant_state.absmax
@@ -607,6 +612,10 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             return W
         if W.dtype == torch.float8_e4m3fn:
             return weight_dequant(W, quant_state)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
             # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             absmax = quant_state.absmax
@@ -719,6 +728,10 @@ else:
             return W
         if W.dtype == torch.float8_e4m3fn:
             return weight_dequant(W, quant_state)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
             # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -1136,6 +1149,9 @@ def fast_linear_forward(
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
+    elif type(W_quant) is NVFP4QuantState:
+        # Bias is added once below.
+        out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:

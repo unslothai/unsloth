@@ -3162,6 +3162,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_num_generations
 
+    if "eval_steps" in call_args and "eval_strategy" in call_args:
+        check_eval_steps = (
+            "if eval_steps is not None and eval_strategy != 'steps':\n"
+            '    print(f\'Unsloth: `eval_steps = {eval_steps}` is ignored because `eval_strategy` is {getattr(eval_strategy, "value", eval_strategy)!r}. Set `eval_strategy = "steps"` to evaluate every `eval_steps` steps.\')\n'
+            "\n"
+        )
+        extra_args += check_eval_steps
+
     if "temperature" in call_args:
         check_temperature = (
             "if temperature <= 0:\n"
