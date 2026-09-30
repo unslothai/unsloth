@@ -352,7 +352,9 @@ def test_modulation_values_match_the_single_view_form_bit_for_bit():
     assert torch.equal(got, expected)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the mis-indexing is in Inductor's CUDA lowering")
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "the mis-indexing is in Inductor's CUDA lowering"
+)
 def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
     # The real failure: Studio marks temb's row count unbacked and compiles the block; the second
     # step has two timestep rows, so adaln_indices reach rows 3..5 of the viewed modulation.
@@ -369,7 +371,9 @@ def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
     def modulate(temb, adaln_indices, hidden_states):
         shift, scale, _, _, _, _ = proj(temb)
         normed = norm(hidden_states).to(torch.bfloat16)
-        return normed * (1.0 + scale.index_select(0, adaln_indices)) + shift.index_select(0, adaln_indices)
+        return normed * (1.0 + scale.index_select(0, adaln_indices)) + shift.index_select(
+            0, adaln_indices
+        )
 
     saved = compiler_config.unbacked_sources
     compiler_config.unbacked_sources = "L['temb']"
