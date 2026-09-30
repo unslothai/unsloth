@@ -4,6 +4,7 @@
 "use client";
 
 
+import { AttachmentBrowserOpenProvider } from "@/components/assistant-ui/attachment-browser-open";
 import {
   AttachmentDocumentDialog,
   AttachmentViewer,
@@ -417,7 +418,21 @@ export const AttachmentPreviewDialog: FC<
   PropsWithChildren<{ redactFromReload?: boolean }>
 > = ({ children, redactFromReload = false }) => {
   const source = useAttachmentSource();
+  // Documents open in the chat's browser panel when available.
+  return (
+    <AttachmentBrowserOpenProvider source={source}>
+      <AttachmentPreviewBody source={source} redactFromReload={redactFromReload}>
+        {children}
+      </AttachmentPreviewBody>
+    </AttachmentBrowserOpenProvider>
+  );
+};
 
+const AttachmentPreviewBody: FC<PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>> = ({
+  children,
+  source,
+  redactFromReload,
+}) => {
   if (source.kind === "image") {
     return source.src ? (
       <AttachmentImageDialog source={source} src={source.src} redactFromReload={redactFromReload}>

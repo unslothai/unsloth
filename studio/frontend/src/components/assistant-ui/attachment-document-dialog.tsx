@@ -8,6 +8,8 @@ import {
   attachmentViewerMeta,
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
+import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
+import { filesOpenInBrowser } from "@/features/browser";
 import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
@@ -30,6 +32,7 @@ import {
   type FC,
   type PropsWithChildren,
   type ReactNode,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -67,6 +70,7 @@ export const AttachmentViewer: FC<{
 }) => {
   const t = useT();
   const navigate = useNavigate();
+  const openInBrowser = useContext(AttachmentBrowserOpenContext);
   // Mounted on first open: every mounted viewer's project menu refetches the project list.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
@@ -98,7 +102,13 @@ export const AttachmentViewer: FC<{
   return (
     <>
       <Slot.Root
-        onClick={() => onOpenChange(true)}
+        onClick={() => {
+          if (openInBrowser && filesOpenInBrowser()) {
+            openInBrowser();
+            return;
+          }
+          onOpenChange(true);
+        }}
         className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
       >
         {trigger}

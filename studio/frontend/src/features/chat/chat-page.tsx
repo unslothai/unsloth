@@ -87,6 +87,14 @@ import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { setInAppLinkHandler } from "@/lib/open-link";
+import {
+  BrowserPanel,
+  BrowserToggleButton,
+  openUrlInBrowser,
+  setBrowserPanelAvailable,
+  useBrowserStore,
+} from "@/features/browser";
 import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
@@ -109,7 +117,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -350,6 +358,7 @@ function messageHasImage(message: MessageRecord): boolean {
 }
 
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
+const BROWSER_PANEL_DEFAULT_SIZE = "50%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
@@ -373,6 +382,19 @@ const SingleContent = memo(function SingleContent({
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
+  const browserOpen = useBrowserStore((state) => state.open);
+  const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  const closeBrowser = useBrowserStore((state) => state.closePanel);
+  // Route links and files to the browser panel while it can be shown.
+  useEffect(() => {
+    if (!chatActive || isMobile) return;
+    setBrowserPanelAvailable(true);
+    setInAppLinkHandler(openUrlInBrowser);
+    return () => {
+      setBrowserPanelAvailable(false);
+      setInAppLinkHandler(null);
+    };
+  }, [chatActive, isMobile]);
   useEffect(() => {
     if (!pendingFixPrompt || !chatActive) return;
     useChatArtifactsStore.getState().clearFixPrompt();
@@ -412,11 +434,12 @@ const SingleContent = memo(function SingleContent({
     if (size == null) return;
     // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
     if (size <= 5) {
-      onCloseArtifact();
+      if (useBrowserStore.getState().open) closeBrowser();
+      else onCloseArtifact();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [onCloseArtifact]);
+  }, [onCloseArtifact, closeBrowser]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -429,15 +452,24 @@ const SingleContent = memo(function SingleContent({
       openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
+  const showBrowserPanel = !showResearchPanel && !isMobile && browserOpen;
+  // A ref, so switching panels doesn't re-run the open effects.
+  const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
+  useEffect(() => {
+    defaultPanelSizeRef.current = showBrowserPanel
+      ? BROWSER_PANEL_DEFAULT_SIZE
+      : ARTIFACT_PANEL_DEFAULT_SIZE;
+  });
   // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = !showResearchPanel && Boolean(
+  const showArtifactPanel = !showResearchPanel && !showBrowserPanel && Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
         ? !artifact.threadId || artifact.threadId === threadId
         : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
-  const showContextPanel = showResearchPanel || showArtifactPanel;
+  const showContextPanel =
+    showResearchPanel || showArtifactPanel || showBrowserPanel;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -454,15 +486,27 @@ const SingleContent = memo(function SingleContent({
   const artifactOpenSequence = useChatArtifactsStore(
     (state) => state.openSequence,
   );
+  // Opening a canvas closes the browser, and vice versa.
+  const seenArtifactOpenSequenceRef = useRef(artifactOpenSequence);
   useEffect(() => {
-    if (!showContextPanel || artifactOpenSequence === 0) return;
+    if (seenArtifactOpenSequenceRef.current === artifactOpenSequence) return;
+    seenArtifactOpenSequenceRef.current = artifactOpenSequence;
+    closeBrowser();
+  }, [artifactOpenSequence, closeBrowser]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequences are the re-expand triggers
+  useEffect(() => {
+    if (
+      !showContextPanel ||
+      (artifactOpenSequence === 0 && browserOpenSequence === 0)
+    )
+      return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
-    panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
-  }, [artifactOpenSequence, showContextPanel]);
+    panel.resize(artifactPanelWidthRef.current ?? defaultPanelSizeRef.current);
+  }, [artifactOpenSequence, browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
     const panel = artifactPanelRef.current;
@@ -485,7 +529,7 @@ const SingleContent = memo(function SingleContent({
       resizeFrameId = window.requestAnimationFrame(() => {
         panel.resize(
           showContextPanel
-            ? (artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE)
+            ? (artifactPanelWidthRef.current ?? defaultPanelSizeRef.current)
             : "0%",
         );
       });
@@ -516,8 +560,38 @@ const SingleContent = memo(function SingleContent({
   useEffect(() => {
     if (!researchMatchesThread) return;
     onCloseArtifact();
+    closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
-  }, [researchMatchesThread, onCloseArtifact]);
+  }, [researchMatchesThread, onCloseArtifact, closeBrowser]);
+
+  // Close the browser when leaving this chat. Keyed on the runtime thread id, which stays the same
+  // when a new chat saves its first message.
+  const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const shownThreadIdRef = useRef(shownThreadId);
+  useEffect(() => {
+    if (shownThreadIdRef.current === shownThreadId) return;
+    shownThreadIdRef.current = shownThreadId;
+    closeBrowser();
+  }, [shownThreadId, closeBrowser]);
+  useEffect(() => {
+    if (!chatActive) closeBrowser();
+  }, [chatActive, closeBrowser]);
+
+  // The browser is full height, so the header and notice stop at its edge.
+  const contextSurfaceRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const surface = contextSurfaceRef.current;
+    const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
+    if (!surface || !root || !showBrowserPanel) return;
+    const observer = new ResizeObserver(() => {
+      root.style.setProperty("--studio-side-panel-width", `${surface.getBoundingClientRect().width}px`);
+    });
+    observer.observe(surface);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty("--studio-side-panel-width");
+    };
+  }, [showBrowserPanel]);
 
   const threadPane = (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
@@ -578,7 +652,7 @@ const SingleContent = memo(function SingleContent({
                 ? "58%"
                 : "0%"
           }
-          collapsible={showArtifactPanel}
+          collapsible={showArtifactPanel || showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -586,13 +660,17 @@ const SingleContent = memo(function SingleContent({
           )}
         >
           <div
+            ref={contextSurfaceRef}
             data-artifact-surface-visible={
               isArtifactSurfaceVisible ? "true" : "false"
             }
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              showResearchPanel && "border-l border-border/70",
+              (showResearchPanel || showBrowserPanel) &&
+                "border-l border-border/70",
             )}
+            // No lift animation for the full-height pane.
+            style={showBrowserPanel ? { transform: "none" } : undefined}
           >
              {showResearchPanel && openResearchRunId ? (
                <ResearchActivityPanel
@@ -600,7 +678,9 @@ const SingleContent = memo(function SingleContent({
                  runId={openResearchRunId}
                  onClose={closeResearchPanel}
                />
-             ) : showArtifactPanel && artifact ? (
+             ) : showBrowserPanel ? (
+              <BrowserPanel />
+            ) : showArtifactPanel && artifact ? (
               <ArtifactSurface
                 artifact={artifact}
                 variant="panel"
@@ -4199,18 +4279,21 @@ export function ChatPage({
           subtree, which walks the whole thread on every mutation - 17.5 ms per append on a 357k-
           element thread, against 0.10 ms without this rule (Chromium). ChatModelNotice renders a
           direct child, which tests/thread-ancestor-has-scope.test.ts asserts. */}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
+      <div
+        data-chat-content-root=""
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"
+      >
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[var(--thread-scrollbar-gutter,10px)] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -4404,6 +4487,7 @@ export function ChatPage({
                 </TooltipContent>
               </Tooltip>
             )}
+            {view.mode === "single" && !isMobile ? <BrowserToggleButton /> : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (

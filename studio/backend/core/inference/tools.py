@@ -15542,8 +15542,13 @@ def _fetch_url_raw(
     cancel_event = None,
     website_policy: dict | None = None,
     raw_bytes_max: int | None = None,
+    post_data: bytes | None = None,
+    meta_out: dict | None = None,
 ) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
+    ``meta_out`` receives the final ``url`` and ``charset`` of a successful binary-mode fetch.
 
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
     or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
@@ -15587,6 +15592,7 @@ def _fetch_url_raw(
         current_url = url
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
+        pending_post = post_data
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15632,7 +15638,9 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers = headers)
+            if pending_post is not None:
+                headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
                 # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
                 # the whole fetch budget.
@@ -15644,6 +15652,9 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
+                # 307/308 keep the POST; other redirects turn it into a GET.
+                if e.code not in (307, 308):
+                    pending_post = None
                 hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
@@ -15685,6 +15696,9 @@ def _fetch_url_raw(
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
+                if meta_out is not None:
+                    meta_out["url"] = current_url
+                    meta_out["charset"] = resp.headers.get_content_charset()
                 return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(

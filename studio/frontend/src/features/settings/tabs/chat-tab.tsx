@@ -24,6 +24,11 @@ import {
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
+import {
+  SEARCH_ENGINES,
+  type SearchEngineId,
+  useBrowserPrefsStore,
+} from "@/features/browser";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
@@ -700,6 +705,8 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <BrowserSettings />
+
       <SettingsSection title={t("settings.chat.artifacts.title")}>
         <div ref={networkAccessRowRef}>
           <SettingsRow
@@ -745,5 +752,65 @@ export function ChatTab() {
         ))}
       </SettingsSection>
     </div>
+  );
+}
+
+function BrowserSettings() {
+  const t = useT();
+  const openLinksInBrowser = useBrowserPrefsStore((state) => state.openLinksInBrowser);
+  const openFilesInBrowser = useBrowserPrefsStore((state) => state.openFilesInBrowser);
+  const searchEngine = useBrowserPrefsStore((state) => state.searchEngine);
+  const { setOpenLinksInBrowser, setOpenFilesInBrowser, setSearchEngine } =
+    useBrowserPrefsStore.getState();
+  return (
+    <SettingsSection title={t("browser.settingsTitle")}>
+      <SettingsRow
+        label={t("browser.openLinksSetting")}
+        description={t("browser.openLinksSettingDescription")}
+      >
+        <Select
+          value={openLinksInBrowser ? "panel" : "default"}
+          onValueChange={(value) => setOpenLinksInBrowser(value === "panel")}
+        >
+          <SelectTrigger className="w-40" aria-label={t("browser.openLinksSetting")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">{t("browser.linkDestinationDefault")}</SelectItem>
+            <SelectItem value="panel">{t("browser.linkDestinationPanel")}</SelectItem>
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+      <SettingsRow
+        label={t("browser.openFilesSetting")}
+        description={t("browser.openFilesSettingDescription")}
+      >
+        <Switch
+          aria-label={t("browser.openFilesSetting")}
+          checked={openFilesInBrowser}
+          onCheckedChange={setOpenFilesInBrowser}
+        />
+      </SettingsRow>
+      <SettingsRow
+        label={t("browser.searchEngineSetting")}
+        description={t("browser.searchEngineSettingDescription")}
+      >
+        <Select
+          value={searchEngine}
+          onValueChange={(value) => setSearchEngine(value as SearchEngineId)}
+        >
+          <SelectTrigger className="w-40" aria-label={t("browser.searchEngineSetting")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(SEARCH_ENGINES) as SearchEngineId[]).map((id) => (
+              <SelectItem key={id} value={id}>
+                {SEARCH_ENGINES[id].label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+    </SettingsSection>
   );
 }
