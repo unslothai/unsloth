@@ -31,7 +31,7 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   PlusSignIcon,
-  RefreshIcon,
+  Refresh01Icon,
   Scroll01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -41,6 +41,7 @@ import {
   type ReactElement,
   type ReactNode,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -382,13 +383,13 @@ export function ChatSkillsDialog({
               <Button
                 type="button"
                 size="icon-sm"
-                variant="outline"
+                variant="ghost"
                 disabled={loading}
                 onClick={refresh}
                 aria-label={t("skills.refresh")}
                 title={t("skills.refresh")}
               >
-                {loading ? <Spinner /> : <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />}
+                {loading ? <Spinner /> : <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} />}
               </Button>
               <Button type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
@@ -407,8 +408,8 @@ export function ChatSkillsDialog({
                   .filter((section) => section.skills.length > 0)
                   .map((section) => (
                     <section key={section.source} className="space-y-2">
-                      <div className="flex items-baseline justify-between gap-3 px-1">
-                        <h3 className="text-xs font-medium text-muted-foreground">
+                      <div className="flex min-w-0 items-baseline gap-2 px-1">
+                        <h3 className="shrink-0 text-xs font-medium text-muted-foreground">
                           {t(`skills.section${sectionSuffix(section.source)}`)}
                         </h3>
                         <p className="truncate text-ui-11 text-muted-foreground/70">
@@ -716,55 +717,48 @@ function SkillRow({
 }): ReactElement {
   const t = useT();
   const usable = skill.valid && !skill.shadowed;
+  const descriptionId = useId();
+  // The details button covers the row; the switch sits above it, not inside it.
   return (
     <div
-      role="button"
-      tabIndex={0}
-      aria-label={skill.name}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
       className={cn(
-        "group flex cursor-pointer items-center gap-3 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-8 gap-y-0.5 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate font-medium">{skill.name}</span>
-          {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
-          {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
-          {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
-        </div>
-        <p
-          className={cn(
-            "mt-0.5 line-clamp-2 text-sm",
-            skill.valid ? "text-muted-foreground" : "text-destructive",
-          )}
-        >
-          {skill.valid ? skill.description : skill.error}
-        </p>
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={skill.name}
+        aria-describedby={descriptionId}
+        className="absolute inset-0 cursor-pointer rounded-xl focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      />
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="truncate font-medium">{skill.name}</span>
+        {skill.shadowed ? <Badge variant="secondary">{t("skills.shadowed")}</Badge> : null}
+        {skill.linked ? <Badge variant="outline">{t("skills.linked")}</Badge> : null}
+        {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
       </div>
-      <span
-        className="shrink-0"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
+      <Switch
+        checked={usable && skill.enabled}
+        disabled={!usable || changing}
+        aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
+        onCheckedChange={onToggle}
+      />
+      <p
+        id={descriptionId}
+        className={cn(
+          "line-clamp-2 text-sm",
+          skill.valid ? "text-muted-foreground" : "text-destructive",
+        )}
       >
-        <Switch
-          checked={usable && skill.enabled}
-          disabled={!usable || changing}
-          aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
-          onCheckedChange={onToggle}
-        />
-      </span>
+        {skill.valid ? skill.description : skill.error}
+      </p>
       <HugeiconsIcon
         icon={ArrowRight01Icon}
         strokeWidth={2}
-        className="size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground"
+        aria-hidden="true"
+        className="size-4 justify-self-center text-muted-foreground/50 transition-colors group-hover:text-foreground"
       />
     </div>
   );
@@ -890,7 +884,7 @@ function Editor({
           placeholder={t("skills.descriptionPlaceholder")}
           onChange={(event) => onDescription(event.target.value)}
           className={cn(
-            "max-h-[min(12rem,30vh)] min-h-[calc(4.5rem*var(--ui-space-scale,1))] overflow-y-auto leading-relaxed",
+            "rounded-scroll-box max-h-[min(12rem,30vh)] min-h-[calc(4.5rem*var(--ui-space-scale,1))] overflow-y-auto leading-relaxed",
             readOnly && "text-muted-foreground",
           )}
         />
@@ -916,7 +910,7 @@ function Editor({
           placeholder={t("skills.instructionsPlaceholder")}
           onChange={(event) => onInstructions(event.target.value)}
           className={cn(
-            "h-[min(15rem,32dvh)] min-h-28 resize-y font-mono text-ui-13 leading-relaxed",
+            "rounded-scroll-box h-[min(15rem,32dvh)] min-h-28 resize-y font-mono text-ui-12 leading-relaxed md:text-ui-12",
             readOnly && "text-muted-foreground",
           )}
         />
