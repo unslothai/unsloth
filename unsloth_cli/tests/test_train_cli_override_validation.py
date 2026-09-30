@@ -39,7 +39,7 @@ def _dry_run(*args: str):
     [
         ("--training-type", "lroa"),
         ("--format-type", "chatlm"),
-        ("--gradient-checkpointing", "yes"),
+        ("--gradient-checkpointing", "maybe"),
     ],
 )
 def test_an_invalid_flag_value_exits_2_like_the_same_value_in_a_config(flag, value):
@@ -53,7 +53,7 @@ def test_an_invalid_flag_value_exits_2_like_the_same_value_in_a_config(flag, val
 
 def test_every_invalid_flag_is_reported_at_once():
     result = _dry_run(
-        "--training-type", "lroa", "--format-type", "chatlm", "--gradient-checkpointing", "yes"
+        "--training-type", "lroa", "--format-type", "chatlm", "--gradient-checkpointing", "maybe"
     )
 
     assert result.exit_code == 2
@@ -102,3 +102,31 @@ def test_apply_overrides_raises_config_error_and_names_the_flag():
     message = str(excinfo.value)
     assert "--training-type" in message
     assert "'lora' or 'full'" in message
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "resolved"),
+    [
+        ("--training-type", "LoRA", "training_type: lora"),
+        ("--format-type", "ChatML", "format_type: chatml"),
+        ("--format-type", "raw", "format_type: raw"),
+        ("--gradient-checkpointing", "yes", "gradient_checkpointing: 'true'"),
+        ("--gradient-checkpointing", "false", "gradient_checkpointing: none"),
+        ("--gradient-checkpointing", "off", "gradient_checkpointing: none"),
+    ],
+)
+def test_spellings_the_trainer_already_accepted_still_work(flag, value, resolved):
+    result = _dry_run(flag, value)
+
+    assert result.exit_code == 0, result.output
+    assert resolved in result.output
+
+
+def test_a_yaml_boolean_gradient_checkpointing_is_accepted(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("training:\n  gradient_checkpointing: false\n", encoding = "utf-8")
+
+    result = _dry_run("--config", str(path))
+
+    assert result.exit_code == 0, result.output
+    assert "gradient_checkpointing: none" in result.output
