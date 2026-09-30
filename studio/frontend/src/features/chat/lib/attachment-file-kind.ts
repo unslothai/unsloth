@@ -5,7 +5,6 @@
 
 import {
   AudioWave01Icon,
-  File02Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
   Image02Icon,
@@ -88,12 +87,12 @@ export const ATTACHMENT_KIND_ICONS = {
   pdf: Pdf01Icon,
   audio: AudioWave01Icon,
   video: FlimSlateIcon,
-  document: File02Icon,
+  document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
   web: InternetIcon,
   code: SourceCodeIcon,
-  text: File02Icon,
+  text: FileEmpty02Icon,
   archive: Zip02Icon,
   file: FileEmpty02Icon,
 } as const satisfies Record<AttachmentFileKind, unknown>;

@@ -12,7 +12,7 @@ import {
 import {
   AiEditingIcon,
   AudioWave01Icon,
-  File02Icon,
+  FileEmpty02Icon,
   FilterMailIcon,
   FlimSlateIcon,
   Folder01Icon,
@@ -57,7 +57,7 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
   { value: "images", label: "library.tabs.images", icon: Image02Icon },
   { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
   { value: "audio", label: "library.tabs.audio", icon: AudioWave01Icon },
-  { value: "documents", label: "library.toolbar.documents", icon: File02Icon },
+  { value: "documents", label: "library.toolbar.documents", icon: FileEmpty02Icon },
   { value: "spreadsheets", label: "library.toolbar.spreadsheets", icon: SheetIcon },
   { value: "presentations", label: "library.toolbar.presentations", icon: Presentation01Icon },
   { value: "pdfs", label: "library.toolbar.pdfs", icon: Pdf01Icon },
