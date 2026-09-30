@@ -153,6 +153,14 @@ CORE_FACTORIES = {
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
+    # The seeded server is disabled: its account gets the disabled refusal before any network
+    # call, every other account the 404 that proves the row was not found.
+    "routes.mcp_servers:GET:/{server_id}/ui-resource": Factory(
+        "mcp", success = 400, query = {"uri": "ui://matrix/app.html"}
+    ),
+    "routes.mcp_servers:POST:/{server_id}/ui-tool-call": Factory(
+        "mcp", {"tool_name": "refresh"}, success = 400
+    ),
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
