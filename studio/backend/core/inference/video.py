@@ -106,8 +106,12 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
+    finish_background_pins,
     release_pinned_host_memory,
+    request_background_pins,
     settled_snapshot_device_memory,
+    start_background_pins,
+    stop_background_pins,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
@@ -6116,6 +6120,8 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError(shortfall)
+            # the streamed modules pin after the load returns, overlapping the first encode and compile
+            request_background_pins(pipe)
             offload_policy, vae_tiling = apply_memory_plan(
                 pipe,
                 plan,
@@ -6301,6 +6307,7 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
+        start_background_pins(pipe)
         return self.status()
 
     @staticmethod
@@ -7671,6 +7678,10 @@ class VideoBackend:
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
                 # resolves to its own default card while the pipeline sits on the selected one.
                 self._state_device_target(state)
+                # A render racing the post-load pinner ran every later render slower; the wait is usually over.
+                waited = finish_background_pins(getattr(state, "pipe", None))
+                if waited >= 1.0:
+                    logger.info("video.generate: waited %.1f s for the host weights to finish pinning", waited)
                 fam = state.family
                 if _resolved_inputs is None:
                     first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
@@ -8736,6 +8747,8 @@ class VideoBackend:
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
+            # A pinner still copying would hold its chunks past release_pinned_host_memory().
+            stop_background_pins(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()

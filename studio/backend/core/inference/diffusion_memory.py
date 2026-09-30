@@ -1649,6 +1649,241 @@ def _streamed_pin_plan(
     return pin_transformer, pin_encoders
 
 
+BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_BACKGROUND_PIN"
+_BG_PIN_ATTR = "_unsloth_background_pin"
+_PENDING_PINS_ATTR = "_unsloth_background_pins"
+_BACKGROUND_PIN_REQUEST_ATTR = "_unsloth_background_pin_requested"
+
+
+def request_background_pins(pipe: Any) -> None:
+    """Ask the next group offload apply on ``pipe`` to pin off the load path (see _GroupPinner)."""
+    try:
+        setattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, True)
+    except Exception:  # noqa: BLE001 - a pipe refusing attributes pins eagerly, as before
+        pass
+
+
+def _background_pin_enabled() -> bool:
+    return (os.environ.get(BACKGROUND_PIN_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _offload_groups(module: Any) -> list:
+    """The diffusers offload groups hooked under ``module``, in registration (block) order."""
+    try:
+        from diffusers.hooks import group_offloading as go
+
+        name = getattr(go, "_GROUP_OFFLOADING", "group_offloading")
+    except Exception:  # noqa: BLE001
+        return []
+    groups: list = []
+    seen: set = set()
+    for sub in module.modules():
+        registry = getattr(sub, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        group = getattr(get_hook(name), "group", None) if callable(get_hook) else None
+        if group is not None and id(group) not in seen:
+            seen.add(id(group))
+            groups.append(group)
+    return groups
+
+
+class _GroupPinner:
+    """Pins a streamed module's offload groups on a worker thread, first block first.
+
+    Pinning at load reads every streamed byte from disk before the load returns: 125-139 s of LTX-2.3's 37 GB DiT,
+    20-44 s of Wan2.2-5B's text encoder on Colab. Off the load path the read overlaps the prompt encode and the
+    first compile. A group's ``onload_`` waits for that group only, and the swap happens before the wait releases,
+    so no group is ever onloaded while its host copy is being replaced."""
+
+    def __init__(self, module: Any, groups: list, device: Any, logger: Any = None):
+        import threading
+
+        self.module = module
+        self.label = type(module).__name__
+        self.groups = groups
+        self.device = device
+        self.logger = logger
+        self.pinned = 0
+        self.waited_s = 0.0
+        self._done = {id(g): threading.Event() for g in groups}
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        self._started = False
+        for group in groups:
+            setattr(group, _BG_PIN_ATTR, self)
+
+    def start(self) -> None:
+        with self._lock:
+            if not self._started:
+                self._started = True
+                self._thread.start()
+
+    def wait(self, group: Any) -> None:
+        import threading
+
+        event = self._done.get(id(group))
+        if event is None or threading.current_thread() is self._thread:
+            return
+        self.start()
+        if not event.is_set():
+            import time
+
+            began = time.perf_counter()
+            event.wait()
+            self.waited_s += time.perf_counter() - began
+
+    def join(self) -> None:
+        import threading
+
+        if threading.current_thread() is not self._thread:
+            self._thread.join()
+
+    def stop(self, timeout: Optional[float] = None) -> None:
+        self._stop.set()
+        if self._started:
+            self._thread.join(timeout)
+
+    def _unpinned(self, group: Any) -> list:
+        import torch
+
+        return [
+            (tensor, src)
+            for tensor, src in list(group.cpu_param_dict.items())
+            if type(src) is torch.Tensor
+            and src.device.type == "cpu"
+            and src.numel() > 0
+            and not src.is_pinned()
+        ]
+
+    def _run(self) -> None:
+        import time
+
+        import torch
+
+        start = time.perf_counter()
+        failed = None
+        try:
+            if getattr(self.device, "type", None) == "cuda" and getattr(self.device, "index", None) is not None:
+                torch.cuda.set_device(self.device)
+            for group in self.groups:
+                if self._stop.is_set():
+                    break
+                # One pin per tensor, exactly what the eager apply makes: chunk views streamed ~10% slower on LTX-2.3.
+                placed = [(tensor, src, src.pin_memory()) for tensor, src in self._unpinned(group)]
+                cpu = group.cpu_param_dict
+                for tensor, src, pinned in placed:
+                    if cpu.get(tensor) is src:
+                        cpu[tensor] = pinned
+                        if tensor.device.type == "cpu" and tensor.data_ptr() == src.data_ptr():
+                            tensor.data = pinned
+                        self.pinned += src.nbytes
+                self._done[id(group)].set()
+        except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
+            failed = exc
+        finally:
+            for event in self._done.values():
+                event.set()
+        if self.logger is not None:
+            try:
+                if failed is not None:
+                    self.logger.warning(
+                        "diffusion.memory: background pinning of %s stopped (%s); the rest pins on each onload",
+                        self.label,
+                        failed,
+                    )
+                self.logger.info(
+                    "diffusion.memory: pinned %.1f GiB of %s host weights in the background in %.1f s "
+                    "(onloads waited %.1f s)",
+                    self.pinned / 2**30,
+                    self.label,
+                    time.perf_counter() - start,
+                    self.waited_s,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def install_group_pin_wait() -> bool:
+    """Make a diffusers offload group wait for its background pin before it onloads."""
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001
+        return False
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "onload_", None)
+    if original is None or getattr(original, "_unsloth_pin_wait", False):
+        return False
+
+    @functools.wraps(original)
+    def onload_(self, *args: Any, **kwargs: Any) -> Any:
+        pinner = getattr(self, _BG_PIN_ATTR, None)
+        if pinner is not None:
+            pinner.wait(self)
+        return original(self, *args, **kwargs)
+
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    wrapped = disable(onload_) if callable(disable) else onload_
+    wrapped._unsloth_pin_wait = True
+    group_cls.onload_ = wrapped
+    return True
+
+
+def start_background_pins(pipe: Any) -> int:
+    """Start the pinners the load deferred; returns how many."""
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
+        pinner.start()
+    return len(pinners)
+
+
+def finish_background_pins(pipe: Any) -> float:
+    """Block until every deferred pinner on ``pipe`` is done; returns the seconds waited.
+
+    A render that overlaps the pinner ran its warm renders 2.5 to 3 s slower on an A100 (LTX-2.3, n=15 per arm);
+    letting the pinner finish first matched the eager pin. So the pin overlaps the idle time after the load, not
+    the first render."""
+    import time
+
+    start = time.perf_counter()
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        pinner.start()
+        pinner.join()
+    return time.perf_counter() - start
+
+
+def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        try:
+            pinner.stop(timeout)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
+
+
+def _drop_deferred_pinning(pipe: Any, module: Any) -> None:
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending:
+        pending[:] = [pinner for pinner in pending if pinner.module is not module]
+
+
+def _defer_pinning(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
+    groups = _offload_groups(module)
+    if not groups:
+        return False
+    pinner = _GroupPinner(module, groups, device, logger)
+    pending = getattr(pipe, _PENDING_PINS_ATTR, None)
+    if pending is None:
+        pending = []
+        try:
+            setattr(pipe, _PENDING_PINS_ATTR, pending)
+        except Exception:  # noqa: BLE001 - nowhere to park it: pin now, like the eager path
+            pinner.start()
+            return True
+    pending.append(pinner)
+    return True
+
+
 def install_group_offload_buffer_restore() -> bool:
     """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
     try:
@@ -1691,6 +1926,7 @@ def _apply_group_offload(
     *,
     stream_text_encoders: bool = False,
     stream_transformer: bool = True,
+    background_pin: Optional[bool] = None,
 ) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
     smaller components resident. Returns False (caller falls back to whole-module) on any failure.
@@ -1764,6 +2000,18 @@ def _apply_group_offload(
                 logger,
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
+        # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
+        # starts with start_background_pins once the load has committed.
+        if background_pin is None:
+            background_pin = bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
+        defer = (
+            background_pin
+            and use_stream
+            and "low_cpu_mem_usage" in _params
+            and _background_pin_enabled()
+        )
+        if defer:
+            install_group_pin_wait()
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to()
         # OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group
         # hooks exist.
@@ -1773,7 +2021,11 @@ def _apply_group_offload(
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
         for module in streamed.values():
-            apply_group_offloading(module, **gkwargs)
+            if defer and not gkwargs.get("low_cpu_mem_usage", False):
+                apply_group_offloading(module, **{**gkwargs, "low_cpu_mem_usage": True})
+                _defer_pinning(pipe, module, onload, logger)
+            else:
+                apply_group_offloading(module, **gkwargs)
             installed += 1
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
@@ -1793,7 +2045,11 @@ def _apply_group_offload(
         transformer_demoted = False
         for name, module in streamed_encoders.items():
             try:
-                apply_group_offloading(module, **ekwargs)
+                if defer and not ekwargs.get("low_cpu_mem_usage", False):
+                    apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
+                    _defer_pinning(pipe, module, onload, logger)
+                else:
+                    apply_group_offloading(module, **ekwargs)
                 installed += 1
                 _pin_vision_embedding_device(module)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
@@ -1830,6 +2086,7 @@ def _apply_group_offload(
                 # a leaf-level apply can raise after hooking part of the encoder; resident means no hooks at all, or
                 # the applied VRAM floor reads the whole encoder as streamed while its unhooked layers stay on the card
                 _remove_group_offload_hooks(module)
+                _drop_deferred_pinning(pipe, module)
                 module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
