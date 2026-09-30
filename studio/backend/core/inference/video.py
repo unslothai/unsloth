@@ -107,7 +107,10 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
     release_pinned_host_memory,
+    request_background_pins,
     settled_snapshot_device_memory,
+    start_background_pins,
+    stop_background_pins,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
@@ -6116,6 +6119,8 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError(shortfall)
+            # the streamed modules pin after the load returns, overlapping the first encode and compile
+            request_background_pins(pipe)
             offload_policy, vae_tiling = apply_memory_plan(
                 pipe,
                 plan,
@@ -6301,6 +6306,7 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
+        start_background_pins(pipe)
         return self.status()
 
     @staticmethod
@@ -8736,6 +8742,8 @@ class VideoBackend:
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
+            # A pinner still copying would hold its chunks past release_pinned_host_memory().
+            stop_background_pins(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
