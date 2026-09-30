@@ -685,6 +685,9 @@ def test_local_pipeline_completeness_ignores_a_diffusers_index_on_a_transformers
     assert _complete(tmp_path) is True
     (encoder / "model-00001-of-00001.safetensors").unlink()
     assert _complete(tmp_path) is False
+    # Transformers opens a single checkpoint before the (now stale) index.
+    _touch(encoder / "model.safetensors")
+    assert _complete(tmp_path) is True
 
 
 @pytest.mark.parametrize(

@@ -1382,6 +1382,9 @@ def _local_weights_are_complete(component: Path, library_name: str) -> bool:
         # text_encoder ships both shard sets) cannot veto its own weights.
         if library_name == "transformers":
             stems = tuple(s for s in stems if s != "diffusion_pytorch_model")
+            # Transformers opens a single checkpoint before a shard index (_get_resolved_checkpoint_files).
+            if any(_nonempty_file(component / f"{s}.{ext}") for s in stems):
+                return True
         index = next(
             (p for s in stems if (p := component / f"{s}.{ext}.index.json").exists()), None
         )
