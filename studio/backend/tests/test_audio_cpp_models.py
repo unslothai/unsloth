@@ -714,6 +714,8 @@ def test_downloaded_models_are_found_by_header(hub):
 
     assert sorted(s.downloaded_model_ids()) == [
         f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF",
+        # The legacy key of that downloaded folder, which Settings > Voice compares against.
+        "audiocpp-qwen3-asr-0.6b",
         "someone/Parakeet-GGUF",
     ]
 
@@ -928,8 +930,11 @@ def test_stt_routing_forces_the_audiocpp_engine_for_its_models(hub):
     for alias in ("audiocpp", "audio_cpp", "audio.cpp", " AudioCpp "):
         assert ri._resolve_stt_engine(alias) == "audiocpp"
     assert ri._stt_repo_reference("audiocpp-canary-180m-flash", "audiocpp") == AUDIO_CPP_REPO
-    # Saved legacy keys report as their folder rows.
-    assert ri._stt_resolved_model_id("audiocpp-canary-180m-flash", "audiocpp") == CANARY.id
+    # Saved legacy keys report as themselves (Settings compares against them); folder ids as rows.
+    assert ri._stt_resolved_model_id("audiocpp-canary-180m-flash", "audiocpp") == (
+        "audiocpp-canary-180m-flash"
+    )
+    assert ri._stt_resolved_model_id(CANARY.id, "audiocpp") == CANARY.id
 
 
 def test_stt_sidecar_resolves_any_cached_asr_and_rejects_the_rest(hub):
@@ -1591,3 +1596,65 @@ def test_a_variantless_stt_id_keeps_the_loaded_variant_and_an_explicit_one_switc
         side.unload()
     # Nothing loaded: the bare row id means the row's default.
     assert side.keep_loaded_variant(folder) == folder
+
+
+def test_stt_status_speaks_legacy_keys_to_the_clients_that_saved_them(hub, monkeypatch):
+    from core.inference import stt_audiocpp_sidecar as s
+
+    snap = _snapshot(hub)
+    moon = _gguf_bytes(family = "moonshine_asr")
+    _put(snap, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf", moon)
+    _put(snap, "Moonshine-Streaming-GGUF/moonshine-streaming-small-q8_0.gguf", moon)
+    _put(snap, CANARY.gguf_file, _gguf_bytes(family = "canary_asr"))
+    downloaded = s.downloaded_model_ids()
+    folder = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    # Folder ids for the Audio page, and each key whose own folder and variant is on disk.
+    for name in (
+        folder,
+        CANARY.id,
+        "audiocpp-canary-180m-flash",
+        "audiocpp-moonshine-tiny",
+        "audiocpp-moonshine-small",
+    ):
+        assert name in downloaded
+    assert "audiocpp-parakeet-tdt-0.6b-v3" not in downloaded
+
+    class _Server:
+        def __init__(self, model):
+            self.model, self.backend = model, "cpu"
+
+        def alive(self):
+            return True
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(s, "ensure_engine_available", lambda: "audiocpp_server")
+    monkeypatch.setattr(s.AudioCppServer, "start", lambda model, path, **kw: _Server(model))
+    side = s.AudioCppSttSidecar()
+    try:
+        side.load("audiocpp-moonshine-small")
+        assert (
+            side.loaded_model == "audiocpp-moonshine-small" and side.loaded_variant == "small/Q8_0"
+        )
+        # The same model named by its folder row reports the row, without a restart.
+        side.load(f"{folder}:small/Q8_0")
+        assert side.loaded_model == folder
+        side.load("audiocpp-moonshine-small")
+        assert side.loaded_model == "audiocpp-moonshine-small"
+        # Unloading by either name finds it.
+        side.unload(expected_model = folder)
+        assert side.loaded_model is None
+    finally:
+        side.unload()
+
+
+def test_stt_errors_do_not_name_the_engine(hub):
+    from core.inference import stt_audiocpp_sidecar as s
+    from core.inference.stt_sidecar import SttModelIdError
+
+    with pytest.raises(SttModelIdError) as refused:
+        s.resolve_audio_cpp_stt_model("small")
+    assert "audio.cpp" not in str(refused.value) and "audio runtime" in str(refused.value)
+    unknown = acm.family_policy("brand_new_family", None)
+    assert "audio.cpp" not in unknown.unsupported

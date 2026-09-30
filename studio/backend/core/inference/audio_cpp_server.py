@@ -67,7 +67,7 @@ class AudioCppRequestError(RuntimeError):
     """audiocpp_server answered a request with a non-2xx status."""
 
     def __init__(self, status: int, detail: str) -> None:
-        super().__init__(f"audio.cpp returned HTTP {status}: {detail}")
+        super().__init__(f"The audio runtime returned HTTP {status}: {detail}")
         self.status = status
         self.detail = detail
 

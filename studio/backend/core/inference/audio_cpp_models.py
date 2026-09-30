@@ -392,7 +392,7 @@ def _family_from_spec_tasks(family: str, spec: Optional[dict]) -> AudioCppFamily
     return AudioCppFamily(
         family,
         "",
-        unsupported = f"Studio does not know what the audio.cpp family '{family}' does.",
+        unsupported = f"Studio does not know what the model family '{family}' does.",
     )
 
 
@@ -484,6 +484,15 @@ class AudioCppRef:
 
 
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
+
+
+def is_legacy_key(identifier: Optional[str]) -> bool:
+    """A dictation key saved by earlier builds (``audiocpp-parakeet-tdt-0.6b-v3``). No I/O."""
+    return bool(identifier) and str(identifier).strip() in _LEGACY_KEYS
+
+
+def legacy_keys() -> tuple[str, ...]:
+    return tuple(_LEGACY_KEYS)
 
 
 def is_umbrella_id(identifier: Optional[str]) -> bool:
@@ -1502,7 +1511,7 @@ def _resolve_uncached(
             (t for t in tags if _TAG_FAMILY_RE.match(t) and t in FAMILIES), None
         ) or family_from_names(names)
     if not family:
-        reason = "Studio could not tell which audio.cpp model family this GGUF is."
+        reason = "Studio could not tell which model family this audio GGUF is."
         variant = AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)
         return AudioCppModel(
             id = ref.id,
@@ -1534,8 +1543,7 @@ def _resolve_uncached(
     unsupported = policy.unsupported
     if not variants:
         unsupported = (
-            unsupported
-            or "This repository does not publish every file the audio.cpp package needs."
+            unsupported or "This repository does not publish every file this model package needs."
         )
         variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
     default = variants[0]

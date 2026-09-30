@@ -23,6 +23,8 @@ from typing import Iterator, Optional
 from core.inference import audio_cpp_files, audio_cpp_server
 from core.inference.audio_cpp_models import (
     DEFAULT_AUDIO_CPP_STT_MODEL,
+    is_legacy_key,
+    legacy_keys,
     RECOMMENDED_STT_MODELS,
     AudioCppModel,
     AudioCppModelError,
@@ -91,14 +93,18 @@ def resolve_audio_cpp_stt_model(
         model = DEFAULT_AUDIO_CPP_STT_MODEL
     base, ref_variant = split_variant_ref(str(model).strip())
     if parse_identifier(base) is None:
-        raise SttModelIdError(f"STT model '{model}' is not an audio.cpp GGUF repo.")
+        raise SttModelIdError(
+            f"STT model '{model}' is not an audio GGUF the audio runtime can transcribe with."
+        )
     found = resolve(base, variant or ref_variant, hf_token, network = network)
     if found is None and not network:
         raise SttModelNotDownloadedError(
             f"STT model '{base}' is not downloaded. Download it in Settings, then Voice, before loading it."
         )
     if found is None:
-        raise SttModelIdError(f"STT model '{model}' is not an audio.cpp GGUF repo.")
+        raise SttModelIdError(
+            f"STT model '{model}' is not an audio GGUF the audio runtime can transcribe with."
+        )
     try:
         require_runnable(found, "asr")
     except AudioCppModelError as exc:
@@ -107,14 +113,25 @@ def resolve_audio_cpp_stt_model(
 
 
 def resolve_audio_cpp_stt_model_id(model: Optional[str]) -> str:
-    """The row id dictation reports for ``model``: legacy keys become their folder rows."""
+    """The name dictation reports for ``model``: a legacy key stays that key (Settings compares
+    against it), anything else becomes its row id."""
     if model is None or not str(model).strip():
         return DEFAULT_AUDIO_CPP_STT_MODEL
-    base, _variant = split_variant_ref(str(model).strip())
+    base, variant = split_variant_ref(str(model).strip())
     ref = parse_identifier(base)
     if ref is None:
-        raise SttModelIdError(f"STT model '{model}' is not an audio.cpp GGUF repo.")
+        raise SttModelIdError(
+            f"STT model '{model}' is not an audio GGUF the audio runtime can transcribe with."
+        )
+    if variant is None and is_legacy_key(base):
+        return base
     return ref.id
+
+
+def _reported_name(requested: Optional[str], entry: AudioCppModel) -> str:
+    """How status names a model loaded through ``requested``: its legacy key, else its row id."""
+    base, variant = split_variant_ref(str(requested or "").strip())
+    return base if variant is None and is_legacy_key(base) else entry.id
 
 
 def is_model_downloaded(model: Optional[str]) -> bool:
@@ -125,16 +142,44 @@ def is_model_downloaded(model: Optional[str]) -> bool:
 
 
 def downloaded_model_ids() -> list[str]:
-    """Row ids of the audio.cpp ASR models with a variant in the HF cache, found by header."""
+    """Row ids of the ASR models with a variant in the HF cache (found by header), plus every legacy
+    key whose own folder and variant is downloaded, which Settings and dictation compare against."""
     try:
-        return list(dict.fromkeys(m.id for m in downloaded_models("asr")))
+        ids = list(dict.fromkeys(m.id for m in downloaded_models("asr")))
     except Exception:  # noqa: BLE001 - status never fails on a cache walk
         return []
+    for key in legacy_keys():
+        if acm_resolve_folder(key) not in {i.lower() for i in ids}:
+            continue
+        try:
+            model = resolve(key, network = False)
+        except Exception:  # noqa: BLE001 - one unreadable key never hides the rest
+            continue
+        if (
+            model is not None
+            and model.task == "asr"
+            and model.unsupported is None
+            and audio_cpp_files.is_downloaded(model)
+        ):
+            ids.append(key)
+    return ids
 
 
 # Inference that failed after the server started (a runtime that answers /health and then cannot serve). Recorded on
 # failure and cleared on the next success, for logs and diagnostics only: unlike whisper.cpp there is no engine to fall
 # back to, so it must not mark the engine unavailable and hide every audio.cpp model after one bad clip.
+def acm_resolve_folder(key: str) -> str:
+    """The lowercased row id a legacy key names."""
+    return acm_row_id(key).lower()
+
+
+def acm_row_id(model: Optional[str]) -> str:
+    """The row id any STT name (legacy key, ``id:variant``, folder or repo id) refers to, else ""."""
+    base, _variant = split_variant_ref(str(model or "").strip())
+    ref = parse_identifier(base)
+    return ref.id if ref is not None else ""
+
+
 _runtime_inference_failure: Optional[str] = None
 _runtime_failure_lock = threading.Lock()
 
@@ -259,7 +304,7 @@ class _AudioCppDownloadState:
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
                 raise SttModelIdError(
-                    f"Another audio.cpp dictation model ('{self._model_id}') is still downloading; "
+                    f"Another dictation model ('{self._model_id}') is still downloading; "
                     "wait for it to finish."
                 )
             self._model_id = model_id
@@ -297,13 +342,13 @@ class _AudioCppDownloadState:
                 )
                 total_bytes = int(meta.size or 0)
             except (AttributeError, TypeError, ValueError) as exc:
-                raise RuntimeError("could not resolve audio.cpp download metadata") from exc
+                raise RuntimeError("could not resolve the download metadata") from exc
             revision = meta.commit_hash
             etag = meta.etag
             if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
-                raise RuntimeError("could not resolve an immutable audio.cpp revision")
+                raise RuntimeError("could not resolve an immutable revision")
             if not isinstance(etag, str) or not etag or total_bytes <= 0:
-                raise RuntimeError("could not resolve the audio.cpp file identity")
+                raise RuntimeError("could not resolve the file identity")
             with self._lock:
                 if self._cancelled:
                     return
@@ -392,6 +437,9 @@ class AudioCppSttSidecar:
         self._server: Optional[AudioCppServer] = None
         self._model_id: Optional[str] = None
         self._model: Optional[AudioCppModel] = None
+        # The name the last client used for the loaded model: a legacy key (what Settings and dictation
+        # save) is reported back as that key, so their string comparisons keep matching.
+        self._loaded_as: Optional[str] = None
         self._forced_cpu = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -406,7 +454,9 @@ class AudioCppSttSidecar:
     @property
     def loaded_model(self) -> Optional[str]:
         # Lock-free: transcribe() holds _lock for the whole inference, and status polls must not queue behind it.
-        return self._model_id if self._server_alive() else None
+        if not self._server_alive():
+            return None
+        return self._loaded_as or self._model_id
 
     @property
     def loaded_variant(self) -> Optional[str]:
@@ -492,6 +542,7 @@ class AudioCppSttSidecar:
         self._server = None
         self._model_id = None
         self._model = None
+        self._loaded_as = None
         self._forced_cpu = False
         if server is not None:
             server.stop()
@@ -503,7 +554,8 @@ class AudioCppSttSidecar:
         if current is None:
             return False
         try:
-            return current == resolve_audio_cpp_stt_model_id(expected)
+            # Row ids on both sides: a legacy key and its folder id name the same model.
+            return current == acm_row_id(expected)
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 
@@ -612,6 +664,7 @@ class AudioCppSttSidecar:
                 else audio_device_forces_cpu(device)
             )
             if self._server_alive() and self._model == entry and self._forced_cpu == force_cpu:
+                self._loaded_as = _reported_name(model, entry)
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(entry)
@@ -625,7 +678,7 @@ class AudioCppSttSidecar:
                 self._loading_model = entry.id
             try:
                 if cancel_event.is_set():
-                    raise SttLoadCancelledError("audio.cpp STT model loading was cancelled.")
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.")
                 # Decided under the loading flag: training admission reads is_loading() without the lock. During training
                 # the model goes to CPU so a dictation cannot reclaim the VRAM training just freed.
                 run_on_cpu = force_cpu or _training_active()
@@ -650,6 +703,7 @@ class AudioCppSttSidecar:
                 self._server = server
                 self._model_id = entry.id
                 self._model = entry
+                self._loaded_as = _reported_name(model, entry)
                 self._forced_cpu = force_cpu
                 self._schedule_idle_unload_locked()
             finally:
@@ -672,7 +726,8 @@ class AudioCppSttSidecar:
         del fast  # audio.cpp ASR families decode greedily; there is no beam knob to trade.
         self._raise_if_update_in_progress()
         ensure_engine_available()
-        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
+        target = self.keep_loaded_variant(model)
+        entry = resolve_audio_cpp_stt_model(target)
         lang = normalize_whisper_language(language)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -684,10 +739,11 @@ class AudioCppSttSidecar:
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         with self._lock:
             try:
+                # The caller's own name, so a legacy key stays the name status reports.
                 if cancel_event is None:
-                    self.load(entry.canonical_id)
+                    self.load(target)
                 else:
-                    self.load(entry.canonical_id, request_cancel_event = cancel_event)
+                    self.load(target, request_cancel_event = cancel_event)
                 text = self._post_transcription(wav_bytes, lang, cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -698,7 +754,12 @@ class AudioCppSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        return {"text": text, "language": lang, "duration": duration, "model": entry.id}
+        return {
+            "text": text,
+            "language": lang,
+            "duration": duration,
+            "model": _reported_name(model, entry),
+        }
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()

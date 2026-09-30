@@ -31813,7 +31813,13 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
         if mtmd_ready:
             loaded.add(stt_mtmd_sidecar.get_mtmd_stt_sidecar().loaded_model)
         if audiocpp_ready:
-            loaded.add(stt_audiocpp_sidecar.get_audio_cpp_stt_sidecar().loaded_model)
+            # Status may name it by a legacy key; the listing names rows.
+            loaded.add(
+                stt_audiocpp_sidecar.acm_row_id(
+                    stt_audiocpp_sidecar.get_audio_cpp_stt_sidecar().loaded_model
+                )
+                or None
+            )
         loaded -= {None}
 
         ids: list[str] = []

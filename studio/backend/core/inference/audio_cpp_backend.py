@@ -92,7 +92,7 @@ class AudioCppBackend:
 
         self.device_preference = device_preference
         self._force_cpu = audio_device_forces_cpu(device_preference)
-        self.device = "cpu" if self._force_cpu else "audio.cpp"
+        self.device = "cpu" if self._force_cpu else "gpu"
         self.models: dict[str, dict[str, Any]] = {}
         self.active_model_name: Optional[str] = None
         self.loading_models: set[str] = set()
@@ -120,7 +120,7 @@ class AudioCppBackend:
             model_name, getattr(config, "gguf_variant", None), hf_token
         )
         if model is None:
-            raise RuntimeError(f"'{model_name}' is not an audio.cpp GGUF.")
+            raise RuntimeError(f"'{model_name}' is not an audio GGUF.")
         try:
             require_runnable(model, "tts")
         except AudioCppModelError as exc:
