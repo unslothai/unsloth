@@ -117,6 +117,7 @@ from ._utils import (
     _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
+    _unsloth_freeze_norm_running_stats,
 )
 from ._utils import *
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -4198,6 +4199,7 @@ class FastBaseModel:
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _unsloth_freeze_norm_running_stats(model)
         _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
             # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
