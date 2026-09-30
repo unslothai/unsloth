@@ -5667,6 +5667,8 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
     monkeypatch.setattr(
         mlx_inference, "_kv_quant_eligibility", lambda *a: verdicts.append(a) or FULL
     )
+    # Text loads stay on mlx-lm here; routing through mlx-vlm has its own test.
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: "unavailable")
 
     def load(
         fitted = (24_576, FULL),
