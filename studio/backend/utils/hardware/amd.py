@@ -1382,7 +1382,7 @@ def _groups_that_own(paths: list) -> tuple:
     """How to open ``paths``, read from the nodes themselves.
 
     "render,video" is not always the right pair, and sometimes no group is the answer at
-    all, so the seven buckets returned each carry a different repair:
+    all, so the eight buckets returned each carry a different repair:
 
     ``joinable``   membership WOULD open it, so ``usermod -a -G`` is the fix.
     ``unnamed``    GIDs with no entry in the group database, the container case

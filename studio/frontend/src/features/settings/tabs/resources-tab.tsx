@@ -32,12 +32,13 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
@@ -252,6 +253,12 @@ export function ResourcesTab() {
   const systemInfo = useSystemInfo({
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
+  const storageSectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
   const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
   const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
@@ -287,6 +294,19 @@ export function ResourcesTab() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (scrollTarget !== "resources-caches") return;
+    const frame = window.requestAnimationFrame(() => {
+      storageSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("resources-caches");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
 
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
@@ -473,7 +493,7 @@ export function ResourcesTab() {
     : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="text-xl font-semibold font-heading">
@@ -649,6 +669,24 @@ export function ResourcesTab() {
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
               {separateInferenceGpu.available &&
+                inferenceDisplay.usageDevices.map((device, index) => (
+                  <span
+                    key={`${device.index ?? index}-${device.name ?? "gpu"}`}
+                    className="block normal-case"
+                  >
+                    {`${
+                      device.name ??
+                      t("settings.resources.gpu.deviceWithIndex", {
+                        index: deviceOrdinal(device) ?? index,
+                      })
+                    } · ${t("settings.resources.gpu.used", {
+                      value: isFiniteNumber(device.vram_used_gb)
+                        ? formatGiB(device.vram_used_gb)
+                        : unknownLabel,
+                    })}`}
+                  </span>
+                ))}
+              {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">
                     {t("settings.resources.gpu.sharedEstimatedAvailable", {
@@ -698,7 +736,7 @@ export function ResourcesTab() {
               // pane's, so it reads as one device's usage, not a rule.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
+                className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">
@@ -741,7 +779,7 @@ export function ResourcesTab() {
                     })}
                   </div>
                 ) : (
-                  <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
+                  <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
                     {/* Ruled between the three readings: run together they are
                       easy to misread as one number. */}
                     {/* min-w-0 on each reading, or truncate cannot fire: a flex
@@ -798,7 +836,10 @@ export function ResourcesTab() {
 
       <ModelMemorySection />
 
-      <SettingsSection title={t("settings.resources.storage.title")}>
+      <SettingsSection
+        ref={storageSectionRef}
+        title={t("settings.resources.storage.title")}
+      >
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
           value={t("settings.resources.storage.diskUsage", {
@@ -814,8 +855,35 @@ export function ResourcesTab() {
           description={t("settings.resources.storage.modelsFolderDescription")}
           hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
+          below={
+            cacheLocationDetail || hfCache?.isCustom ? (
+              <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
+                <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                  {cacheLocationDetail ? (
+                    <span
+                      title={cacheLocationDetail}
+                      className="min-w-0 truncate"
+                    >
+                      {cacheLocationDetail}
+                    </span>
+                  ) : null}
+                  {hfCache?.isCustom ? (
+                    <Button
+                      variant="link"
+                      size="xs"
+                      className="h-auto px-0 text-xs"
+                      disabled={cacheSaving}
+                      onClick={() => void saveCacheFolder(null)}
+                    >
+                      {t("settings.resources.storage.resetAction")}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null
+          }
         >
-          <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
                 readOnly
@@ -856,29 +924,6 @@ export function ResourcesTab() {
             >
               {t("settings.resources.storage.changeAction")}
             </Button>
-            {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-                {cacheLocationDetail ? (
-                  <span
-                    title={cacheLocationDetail}
-                    className="min-w-0 truncate"
-                  >
-                    {cacheLocationDetail}
-                  </span>
-                ) : null}
-                {hfCache?.isCustom ? (
-                  <Button
-                    variant="link"
-                    size="xs"
-                    className="h-auto px-0 text-xs"
-                    disabled={cacheSaving}
-                    onClick={() => void saveCacheFolder(null)}
-                  >
-                    {t("settings.resources.storage.resetAction")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </SettingsRow>
         <CacheStorageRows />

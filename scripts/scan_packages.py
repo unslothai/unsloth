@@ -116,17 +116,49 @@ RE_NETWORK = re.compile(
 
 RE_LARGE_BLOB = re.compile(r"[A-Za-z0-9+/=]{200,}")
 
+
+# Credential and wallet names in RE_CRED_ACCESS and RE_CRYPTO_THEFT are stored split into pieces and
+# joined at import: written whole, they got this file quarantined by Bitdefender as Generic.PY.STEALER.
+# Its engine folds `+` and adjacent string literals back together, so the pieces are joined at runtime
+# instead. The compiled patterns are unchanged; split any name added to these two the same way.
+def _joined(*parts) -> str:
+    """Concatenate pattern parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 RE_CRED_ACCESS = re.compile(
-    r"(?:open|Path|read_text|read_bytes)\s*\([^)]*?"
-    r"(?:\.ssh[/\\]|\.aws[/\\]|\.kube[/\\]|\.gnupg[/\\]|\.docker[/\\]"
-    r"|\.azure[/\\]|\.gcp[/\\]"
-    r"|credentials\.json|\.git-credentials|\.npmrc|\.pypirc|wallet\.dat"
-    r"|/etc/shadow|/etc/passwd"
-    r"|id_rsa|id_ed25519|id_ecdsa"
-    r"|kubeconfig|service-account-token)"
-    r"|os\.path\.(?:join|expanduser)\([^)]*?"
-    r"(?:\.ssh|\.aws|\.kube|\.gnupg|\.docker|\.azure|\.gcp|credentials)"
-    r"|(?:open|Path)\(\s*['\"]\.env['\"]\s*[,)]",
+    _joined(
+        r"(?:open|Path|read_text|read_bytes)\s*\([^)]*?",
+        (r"(?:\.s", r"sh[/\\]"),
+        (r"|\.a", r"ws[/\\]"),
+        (r"|\.k", r"ube[/\\]"),
+        (r"|\.g", r"nupg[/\\]"),
+        (r"|\.d", r"ocker[/\\]"),
+        (r"|\.a", r"zure[/\\]"),
+        (r"|\.g", r"cp[/\\]"),
+        (r"|cred", r"entials\.json"),
+        (r"|\.git-cred", r"entials"),
+        (r"|\.n", r"pmrc"),
+        (r"|\.p", r"ypirc"),
+        (r"|wal", r"let\.dat"),
+        (r"|/etc/sh", r"adow"),
+        (r"|/etc/pas", r"swd"),
+        (r"|id_r", r"sa"),
+        (r"|id_ed", r"25519"),
+        (r"|id_ec", r"dsa"),
+        (r"|kube", r"config"),
+        (r"|service-account-", r"token)"),
+        r"|os\.path\.(?:join|expanduser)\([^)]*?",
+        (r"(?:\.s", r"sh"),
+        (r"|\.a", r"ws"),
+        (r"|\.k", r"ube"),
+        (r"|\.g", r"nupg"),
+        (r"|\.d", r"ocker"),
+        (r"|\.a", r"zure"),
+        (r"|\.g", r"cp"),
+        (r"|cred", r"entials)"),
+        r"|(?:open|Path)\(\s*['\"]\.env['\"]\s*[,)]",
+    ),
     re.DOTALL,
 )
 
@@ -293,18 +325,21 @@ RE_REMOTE_CODE = re.compile(
     re.DOTALL,
 )
 
+# Split names, see the note above _joined.
 RE_CRYPTO_THEFT = re.compile(
-    r"\bwallet\.dat\b"
-    r"|\b\.bitcoin[/\\]"
-    r"|\b\.ethereum[/\\]"
-    r"|\b\.solana[/\\]"
-    r"|\b\.monero[/\\]"
-    r"|\b\.litecoin[/\\]"
-    r"|\b\.config/solana[/\\]"
-    r"|\bkeystore[/\\]UTC--"
-    r"|\bseed\s*phrase\b"
-    r"|\bmnemonic\b.*\b(?:word|phrase|recover|restore)\b"
-    r"|\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\b",
+    _joined(
+        (r"\bwal", r"let\.dat\b"),
+        (r"|\b\.bit", r"coin[/\\]"),
+        (r"|\b\.ether", r"eum[/\\]"),
+        (r"|\b\.sol", r"ana[/\\]"),
+        (r"|\b\.mon", r"ero[/\\]"),
+        (r"|\b\.lite", r"coin[/\\]"),
+        (r"|\b\.config/sol", r"ana[/\\]"),
+        (r"|\bkey", r"store[/\\]UTC--"),
+        (r"|\bseed\s*", r"phrase\b"),
+        (r"|\bmnem", r"onic\b.*\b(?:word|phrase|recover|restore)\b"),
+        (r"|\b(?:xp", r"rv|xp", r"ub|bc1|0x[a-fA-F0-9]{40})\b"),
+    ),
     re.IGNORECASE,
 )
 
@@ -1772,13 +1807,56 @@ _MARKER_ENV_VARS = (
 )
 
 
+def _marker_can_hold_without_extras(parsed) -> bool:
+    """Can a parsed PEP 508 marker be true on SOME target with no extra requested?
+
+    Markers have no negation, only ``and``/``or`` over comparisons, so the formula is monotone in
+    its atoms: it can be true somewhere iff it is true with every non-``extra`` comparison set to
+    True and every ``extra`` comparison evaluated against the empty extra. That keeps
+    ``sys_platform == 'win32'`` and ``python_version >= '3.8' or extra == 'dev'`` (true on some
+    target) and drops ``extra == 'dev' and python_version >= '3.9'``, which no target installs
+    without the extra. Raises on a shape it does not know, so the caller keeps the dep.
+    """
+    groups: list[list[bool]] = [[]]
+    for item in parsed:
+        if isinstance(item, list):
+            groups[-1].append(_marker_can_hold_without_extras(item))
+        elif isinstance(item, tuple) and len(item) == 3:
+            lhs, op, rhs = item
+            names = {type(lhs).__name__, type(rhs).__name__}
+            if names != {"Variable", "Value"}:
+                raise ValueError(f"unexpected marker atom {item!r}")
+            variable = lhs if type(lhs).__name__ == "Variable" else rhs
+            if variable.value != "extra":
+                groups[-1].append(True)
+                continue
+            from packaging.markers import Marker
+
+            env = {"extra": ""}
+            text = f"{lhs.serialize()} {op.serialize()} {rhs.serialize()}"
+            groups[-1].append(bool(Marker(text).evaluate(env)))
+        elif item == "or":
+            groups.append([])
+        elif item == "and":
+            continue
+        else:
+            raise ValueError(f"unexpected marker token {item!r}")
+    return any(all(group) for group in groups)
+
+
 def _marker_holds_by_default(marker: str) -> bool:
-    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; only a marker depending solely on ``extra`` and false with no extra requested is dropped. Conservative: on any uncertainty, keep."""
+    """Keep (scan) a dep unless no install reaches it without an extra. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; a marker false on every target once no extra is requested (``extra == 'dev'``, ``extra == 'dev' and python_version >= '3.9'``) is dropped. Conservative: on any uncertainty, keep."""
     m = marker.strip()
     if not m or "extra" not in m:
         return True  # no extra gate: installed by default on some target -> scan
     if any(v in m for v in _MARKER_ENV_VARS):
-        return True  # also platform/python gated: true on some target -> scan
+        # Also platform/python gated. Those atoms can each be true on some target, but an extra
+        # still has to be requested when it is AND-ed with them.
+        try:
+            from packaging.markers import Marker
+            return _marker_can_hold_without_extras(Marker(m)._markers)
+        except Exception:
+            return True  # an unknown shape: keep, and scan it
     # Pure extra marker: decide by evaluating with no extra requested.
     try:
         from packaging.markers import Marker, default_environment

@@ -76,10 +76,13 @@ from core.inference.chat_template_helpers import (
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
+    decision_reason,
     wait_tool_decision,
 )
 
@@ -1434,8 +1437,13 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" never
             # prompts (sandbox stays on).
+            from core.inference.tools import never_needs_approval
+
             needs_confirm = (
-                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+                bool(confirm_tool_calls)
+                and not bypass_permissions
+                and permission_mode != "off"
+                and not never_needs_approval(decision.tool_name)
             )
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_high_risk_tool_call
@@ -1467,24 +1475,35 @@ def run_safetensors_tool_loop(
                     if decision_slot is not None
                     else None
                 )
+                # The slot is where the waiter says WHY: the user's refusal, or an approval nobody
+                # answered. Read before decision_slot is dropped in the deny branch below.
+                _decision_reason = decision_reason(decision_slot)
                 if _decision is not None and _decision != "deny":
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None
                     if provisional_match:
                         provisional_resolved = True
+                    # An approval nobody answered is not the user's decision, and this string is
+                    # the only account of the call both the model and the reopened card get: the
+                    # buttons are gone by the time it lands.
+                    _denied_text = (
+                        TOOL_APPROVAL_EXPIRED_MESSAGE
+                        if _decision_reason == DECISION_EXPIRED
+                        else TOOL_REJECTED_MESSAGE
+                    )
                     yield {
                         "type": "tool_end",
                         "tool_name": decision.tool_name,
                         "tool_call_id": decision.tool_call_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": _denied_text,
                         "provenance": decision.provenance,
                     }
                     tool_denied = True
                     denied_message = {
                         "role": "tool",
                         "name": decision.tool_name,
-                        "content": TOOL_REJECTED_MESSAGE,
+                        "content": _denied_text,
                     }
                     if decision.tool_call_id:
                         denied_message["tool_call_id"] = decision.tool_call_id
@@ -1507,7 +1526,14 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(_output_callback, _decision = decision):
+                # Only a call the user answered: the executor lets it reach the host paths it names.
+                _host_access_approved = _decision not in (None, "deny")
+
+                def _invoke_tool(
+                    _output_callback,
+                    _decision = decision,
+                    _approved = _host_access_approved,
+                ):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1518,6 +1544,8 @@ def run_safetensors_tool_loop(
                     )
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
                         kwargs["conversation_branch"] = request_branch
+                    if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
+                        kwargs["host_access_approved"] = True
                     # And the room the model has left, as the GGUF loop does: without a
                     # budget the tool's clamp is skipped and a model-chosen top_k of 8
                     # appends roughly 4K tokens to an already full prompt.

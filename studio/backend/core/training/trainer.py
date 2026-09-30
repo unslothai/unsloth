@@ -76,6 +76,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
+from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
@@ -171,6 +172,11 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             trainer.remove_callback(callback_cls)
         except Exception:  # noqa: BLE001 - not attached, or an incompatible trainer
             pass
+
+
+# Audio types whose load_model branch hardcodes load_in_4bit=False into from_pretrained, so a
+# 4-bit request never reaches the loader and the base is always 16-bit (float32 for bicodec).
+_FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
 
 
 def _bitsandbytes_allows_4bit() -> bool:
@@ -303,6 +309,16 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     return False if saw_a_usable_value else None
 
 
+def _raise_if_empty_train_split(dataset, stage: str) -> None:
+    # Format detection and SFTTrainer die with a bare StopIteration on an empty split.
+    if hasattr(dataset, "__len__") and len(dataset) == 0:
+        where = f" {stage}" if stage else ""
+        raise ValueError(
+            f"The training dataset has no rows{where}. "
+            "Add at least one example before starting training."
+        )
+
+
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
 _UNSET = object()
 
@@ -357,6 +373,8 @@ class UnslothTrainer:
         self.model_load_error = None
         self.dataset_loaded_from_exact_snapshot = False
         self.dataset_snapshot_path = None
+        # A max_steps bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+        self._kept_row_fraction = 1.0
 
         self.training_start_time: Optional[float] = None
         self.session_start_step: int = 0
@@ -658,7 +676,9 @@ class UnslothTrainer:
 
                 trainer_ref._update_progress(
                     step = current_step,
-                    epoch = round(state.epoch, 2) if state.epoch else 0,
+                    epoch = round(state.epoch * trainer_ref._kept_row_fraction, 2)
+                    if state.epoch
+                    else 0,
                     loss = loss_value,
                     learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
@@ -672,7 +692,9 @@ class UnslothTrainer:
                 )
 
             def on_epoch_end(self, args, state, control, **kwargs):
-                trainer_ref._update_progress(epoch = state.epoch, step = state.global_step)
+                trainer_ref._update_progress(
+                    epoch = state.epoch * trainer_ref._kept_row_fraction, step = state.global_step
+                )
 
             def on_step_end(self, args, state, control, **kwargs):
                 if trainer_ref.should_stop:
@@ -848,6 +870,14 @@ class UnslothTrainer:
         elif "speaker_id" in cols:
             speaker_col = "speaker_id"
 
+        if audio_col is None or text_col is None or speaker_col is None:
+            from hub.utils.dataset_format import detect_multimodal_dataset
+
+            detected = detect_multimodal_dataset(dataset)
+            audio_col = audio_col or detected["detected_audio_column"]
+            text_col = text_col or detected["detected_text_column"]
+            speaker_col = speaker_col or detected["detected_speaker_column"]
+
         return {
             "audio_col": audio_col,
             "text_col": text_col,
@@ -1000,7 +1030,9 @@ class UnslothTrainer:
                         RepositoryNotFoundError,
                     )
                     if isinstance(gate_err, (GatedRepoError, RepositoryNotFoundError)):
-                        friendly = (
+                        from hub.utils.hf_errors import modelscope_missing
+
+                        friendly = modelscope_missing(gate_err) or (
                             f"Access denied for '{model_name}'. This model is gated or private. "
                             f"Please add a Hugging Face token with access and try again."
                         )
@@ -1019,6 +1051,13 @@ class UnslothTrainer:
                 bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
             )
             _auto_dtype = torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
+
+            # The four branches below pass load_in_4bit=False to from_pretrained whatever was
+            # requested (Spark-TTS goes further and needs float32), so the base really is 16-bit.
+            # _patch_adapter_config saves self.load_in_4bit and Chat reloads the base at exactly
+            # that precision, so record what loaded, not what was asked for.
+            if self._audio_type in _FORCED_16BIT_AUDIO_TYPES:
+                self.load_in_4bit = False
 
             if self._audio_type == "csm":
                 # Whisper: FastModel, auto_model=WhisperForConditionalGeneration, load_in_4bit=False
@@ -2693,6 +2732,7 @@ class UnslothTrainer:
         try:
             self.dataset_loaded_from_exact_snapshot = False
             self.dataset_snapshot_path = None
+            self._kept_row_fraction = 1.0
             dataset = None
             eval_dataset = None
             dataset_attestation_source = None
@@ -3115,6 +3155,7 @@ class UnslothTrainer:
             ):
 
                 def _log_bound(kept, total):
+                    self._kept_row_fraction = kept / total
                     logger.info(
                         f"Bounded dataset to {kept} of {total} rows for a "
                         f"max_steps run (seed {max_train_rows_seed})\n"
@@ -3266,6 +3307,8 @@ class UnslothTrainer:
                     self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),
                 )
 
+            _raise_if_empty_train_split(dataset, "")
+
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
@@ -3332,6 +3375,8 @@ class UnslothTrainer:
                 if split_result is not None:
                     train_portion, eval_dataset = split_result
                     dataset_info["dataset"] = train_portion
+
+            _raise_if_empty_train_split(dataset_info["dataset"], "after formatting")
 
             return (dataset_info, eval_dataset)
 
@@ -3988,6 +4033,9 @@ class UnslothTrainer:
                 str(dataset.get("final_format", "")).lower() if isinstance(dataset, dict) else ""
             )
             raw_text_mode = dataset_final_format == "raw_text"
+            self.tokenizer = get_training_chat_template(
+                self.tokenizer, self.model_name, dataset_final_format
+            )
 
             data_collator = None
             if is_deepseek_ocr:
@@ -4546,8 +4594,13 @@ class UnslothTrainer:
             self.is_training = False
 
     def _patch_adapter_config(self, output_dir: str) -> None:
-        """Patch adapter_config.json with unsloth_training_method. Values: 'qlora', 'lora', 'FT',
-        'CPT', 'DPO', 'GRPO', etc. For LoRA/QLoRA, the distinction comes from load_in_4bit."""
+        """Patch adapter_config.json with unsloth_training_method and unsloth_load_in_4bit. Values:
+        'qlora', 'lora', 'FT', 'CPT', 'DPO', 'GRPO', etc. For LoRA/QLoRA, the distinction comes
+        from load_in_4bit.
+
+        Both keys describe the base the run ACTUALLY trained on, so both read the same effective
+        flag: an install where bitsandbytes cannot run 4-bit trained on a 16-bit base and is a
+        'lora', not a 'qlora' whose recorded precision happens to disagree with its own name."""
         config_path = os.path.join(output_dir, "adapter_config.json")
         if not os.path.exists(config_path):
             logger.info("No adapter_config.json found — skipping training method patch")
@@ -4557,14 +4610,17 @@ class UnslothTrainer:
             with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
 
+            trained_in_4bit = bool(self.load_in_4bit) and _bitsandbytes_allows_4bit()
+
             if self.is_cpt:
                 method = "CPT"
-            elif self.load_in_4bit:
+            elif trained_in_4bit:
                 method = "qlora"
             else:
                 method = "lora"
 
             config["unsloth_training_method"] = method
+            config["unsloth_load_in_4bit"] = trained_in_4bit
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
             with open(config_path, "w", encoding = "utf-8") as f:

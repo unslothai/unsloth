@@ -10,6 +10,7 @@ import datetime
 import json
 import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1814,11 +1815,22 @@ def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypa
 
 
 def _capture_backoff(monkeypatch) -> list:
-    """Record the delays the retry loop asks for and return control immediately."""
+    """Record the delays the retry loop asks for and return control immediately.
+
+    `research_runs.asyncio` is the asyncio module itself, so this patches `asyncio.sleep` for
+    every event loop in the process. Another test can leave one running in a background thread,
+    such as a TestClient portal whose disconnect watcher polls with `asyncio.sleep(0.1)`; its
+    calls landed in `delays` by the thousand and the retry assertions failed depending on which
+    tests shared the xdist worker. Only this thread's sleeps are the retry loop's, since
+    `_run_stream` drives it with `asyncio.run` here; any other caller keeps its real delay.
+    """
     delays: list[float] = []
     real_sleep = asyncio.sleep
+    owner = threading.get_ident()
 
     async def _sleep(delay, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay, *args, **kwargs)
         delays.append(delay)
         return await real_sleep(0, *args, **kwargs)
 
@@ -1838,6 +1850,33 @@ def test_stream_completion_retries_a_transport_error_before_any_bytes_stream(mon
     assert _run_stream(supervisor) == ("report", "", "stop", None)
     assert len(sent) == 2
     assert delays == [1]
+
+
+def test_backoff_capture_ignores_another_threads_event_loop(monkeypatch):
+    # A loop left polling in a background thread must not show up as retry backoff.
+    stop = threading.Event()
+    polled = threading.Event()
+
+    async def _watcher():
+        while not stop.is_set():
+            await asyncio.sleep(0.01)
+            polled.set()
+
+    delays = _capture_backoff(monkeypatch)
+    watcher = threading.Thread(target = lambda: asyncio.run(_watcher()), daemon = True)
+    watcher.start()
+    try:
+        assert polled.wait(5)
+        sent = _install_fake_client(
+            monkeypatch,
+            [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
+        )
+        assert _run_stream(_make_supervisor(_noop_check_active)) == ("report", "", "stop", None)
+        assert len(sent) == 2
+        assert delays == [1]
+    finally:
+        stop.set()
+        watcher.join(5)
 
 
 def test_stream_completion_retries_a_transient_server_error(monkeypatch):

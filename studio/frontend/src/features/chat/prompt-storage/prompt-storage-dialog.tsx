@@ -1204,7 +1204,7 @@ function ExportModal({
   return (
     <Dialog open onOpenChange={onClose}>
       {/* */}
-      <DialogContent className="sm:max-w-[520px] gap-0 p-0 overflow-hidden">
+      <DialogContent className="sm:max-w-[calc(520px*var(--ui-space-scale,1))] gap-0 p-0 overflow-hidden">
         <div className="flex flex-col gap-5 p-6">
           {/* */}
           <DialogTitle className="text-base font-semibold tracking-tight">Export</DialogTitle>
@@ -1790,6 +1790,9 @@ function PromptListDetail({
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
+  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
+  const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -1932,6 +1935,19 @@ function PromptListDetail({
         )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
+        <button
+          type="button"
+          onClick={() => togglePinnedList(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            isPinned
+              ? "text-primary hover:bg-primary/10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
         <button
           type="button"
           onClick={() => onExport(exportValue)}
@@ -2108,6 +2124,7 @@ export function PromptStorageDialog({
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
@@ -2519,7 +2536,7 @@ export function PromptStorageDialog({
               wraps on a narrow dialog. */}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
-            <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+            <div className="flex min-h-[calc(132px*var(--ui-space-scale,1))] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2575,6 +2592,11 @@ export function PromptStorageDialog({
                       selected={!showNewList && entry.id === selectedListId}
                       current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
+                      leading={
+                        pinnedListIds.includes(entry.id) ? (
+                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
                       onSelect={() => {
                         setShowNewList(false);
                         setSelectedListId(entry.id);
@@ -2602,7 +2624,7 @@ export function PromptStorageDialog({
             </div>
 
             {/* */}
-            <div className="min-h-[272px] rounded-xl border border-border/60 bg-card p-4">
+            <div className="min-h-[calc(272px*var(--ui-space-scale,1))] rounded-xl border border-border/60 bg-card p-4">
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm

@@ -11,7 +11,10 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
-import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
+import {
+  loadedContextFields,
+  type MlxKvQuant,
+} from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -2292,6 +2295,9 @@ type ChatRuntimeStore = {
   /** Whether loadedContextLength actually bounds the cache. Null where the backend does
    *  not answer, which is not the same as a confirmed false. */
   loadedContextEnforced: boolean | null;
+  loadedContextUnboundedWhenBatched: boolean;
+  loadedParallelSlots: number | null;
+  loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -2391,9 +2397,8 @@ type ChatRuntimeStore = {
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
-  mlxKvBits: number | null;
-  /** Width the backend was last asked for; the verdict belongs beside it. */
-  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuant: MlxKvQuant | null;
+  loadedMlxKvQuantRequested: MlxKvQuant | null;
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
@@ -2411,8 +2416,9 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
-  /** --parallel slots override for GGUF loads (null = server default). Never re-seeded from an
-   *  echo: the resolved count would pin a blank control. */
+  /** User reply-width override, for either backend (null = server default). GGUF spends it
+   *  on llama-server's --parallel slots; MLX on how many replies decode together.
+   *  Never re-seeded from an echo: the resolved count would pin a blank control. */
   nParallel: number | null;
   /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
    *  switch cannot lose the override. */
@@ -3551,6 +3557,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
 }): void {
   const state = useChatRuntimeStore.getState();
   if (state.params.checkpoint !== opts.checkpoint) return;
@@ -3561,6 +3568,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
+    apiType: opts.apiType,
     current: pinned
       ? state.reasoningEffort
       : (takeEffortDisplacedByPin() ?? state.reasoningEffort),
@@ -4100,6 +4108,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,
+  loadedContextUnboundedWhenBatched: false,
+  loadedParallelSlots: null,
+  loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -4169,8 +4180,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
-  mlxKvBits: null,
-  loadedMlxKvBitsRequested: null,
+  mlxKvQuant: null,
+  loadedMlxKvQuantRequested: null,
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
@@ -5117,8 +5128,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
-      mlxKvBits: null,
-      loadedMlxKvBitsRequested: null,
+      mlxKvQuant: null,
+      loadedMlxKvQuantRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,

@@ -38,6 +38,7 @@ import traceback
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal, Iterator
@@ -83,6 +84,22 @@ _MAX_TRACKED_START_REQUESTS = 64
 _MAX_START_CANCEL_TOMBSTONES = 1024
 _START_CANCEL_TOMBSTONE_TTL_S = 300.0
 _START_CANCELLED_ERROR_CODE = "training_start_cancelled"
+DEFAULT_TRAINING_OPTIMIZER = "adamw_8bit"
+XPU_SAFE_TRAINING_OPTIMIZER = "adamw_torch"
+XPU_DEVICE_BACKEND = "xpu"
+PAGED_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_8bit"
+ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_32bit"
+# Not a bit-width question: XPU routes optimizer_update_32bit to Triton too
+# (bitsandbytes backends/xpu/ops.py), which asserts on a SYCL toolchain we do not ship.
+XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS = frozenset(
+    (
+        DEFAULT_TRAINING_OPTIMIZER,
+        PAGED_BITSANDBYTES_TRAINING_OPTIMIZER,
+        ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER,
+        PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER,
+    )
+)
 
 _pyplot = None
 _pyplot_failed = False
@@ -198,8 +215,25 @@ def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
     return is_apple_silicon_training_platform()
 
 
+def normalize_training_optimizer_for_device(optimizer: Any, *, device_backend: str) -> Any:
+    if not isinstance(optimizer, str):
+        return optimizer
+    optimizer_key = optimizer.strip().lower().replace("-", "_")
+    if (
+        device_backend == XPU_DEVICE_BACKEND
+        and optimizer_key in XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS
+    ):
+        return XPU_SAFE_TRAINING_OPTIMIZER
+    return optimizer
+
+
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     """Build the normalized worker config shared by Unsloth and the CLI adapter."""
+    device_backend = get_device().value
+    optimizer = normalize_training_optimizer_for_device(
+        values.get("optim", DEFAULT_TRAINING_OPTIMIZER),
+        device_backend = device_backend,
+    )
     config = {
         "model_name": values["model_name"],
         "project_name": values.get("project_name"),
@@ -258,7 +292,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
         "packing": values.get("packing", False),
-        "optim": values.get("optim", "adamw_8bit"),
+        "optim": optimizer,
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),
         "lora_r": values.get("lora_r", 16),
@@ -298,7 +332,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
-    config["device_backend"] = get_device().value
+    config["device_backend"] = device_backend
     return config
 
 
@@ -1622,6 +1656,7 @@ class TrainingBackend:
             del self._start_requests[request_id]
             overflow -= 1
 
+    @_invalidates_gpu_memory("training start")
     @owned_job()
     def start_training(
         self,
@@ -1729,7 +1764,7 @@ class TrainingBackend:
             lora_rank = config.get("lora_r", 16),
             target_modules = config.get("target_modules"),
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
+            optimizer = config.get("optim", DEFAULT_TRAINING_OPTIMIZER),
         )
 
         defer_auto_selection = False
@@ -1973,6 +2008,7 @@ class TrainingBackend:
                 )
             return True
 
+    @_invalidates_gpu_memory("training stop")
     @job_control
     def stop_training(
         self,
@@ -3076,13 +3112,15 @@ class TrainingBackend:
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
-                self._progress.elapsed_seconds = event.get("elapsed_seconds")
-                self._progress.eta_seconds = event.get("eta_seconds")
+                self._progress.elapsed_seconds = event.get(
+                    "elapsed_seconds", self._progress.elapsed_seconds
+                )
+                self._progress.eta_seconds = event.get("eta_seconds", self._progress.eta_seconds)
                 self._progress.session_start_step = event.get(
                     "session_start_step", self._progress.session_start_step
                 )
-                self._progress.grad_norm = event.get("grad_norm")
-                self._progress.num_tokens = event.get("num_tokens")
+                self._progress.grad_norm = event.get("grad_norm", self._progress.grad_norm)
+                self._progress.num_tokens = event.get("num_tokens", self._progress.num_tokens)
                 self._progress.eval_loss = event.get("eval_loss")
                 _peak = event.get("peak_memory_gb")
                 if _peak is not None:
