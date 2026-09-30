@@ -85,15 +85,25 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
-# Shell a page is written into. It injects <base> and a script that turns navigations into messages
-# to the panel, since a real navigation would leave the proxy.
+# Shell a page is loaded into. It injects <base> and a script that turns navigations into messages
+# to the panel, since a real navigation would leave the proxy. The page lives in a srcdoc child, and
+# the shell then sets frame-src 'none' on itself: the child keeps its own copy of the policy (embeds
+# still load), but the child itself can no longer be navigated. That check uses the shell's policy,
+# not the embedder's (the desktop app allows every loopback port), and needs no Navigation API.
 _FRAME_HTML = r"""<!doctype html>
 <html>
-  <head><meta charset="utf-8" /></head>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      iframe { display: block; width: 100%; height: 100%; border: 0; }
+    </style>
+  </head>
   <body>
     <script>
       const boot = (cfg) => {
-        const shellOrigin = location.origin;
+        // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
+        const shellOrigin = location.origin === "null" ? null : location.origin;
         let pageUrl = cfg.url || location.href;
         const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
         // URLs built from location point at this shell; map them to the page's site.
@@ -278,17 +288,28 @@ _FRAME_HTML = r"""<!doctype html>
         if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
         return "<head>" + tags + "</head>" + html;
       };
+      let page = null;
       window.addEventListener("message", (event) => {
-        // Only the parent may drive the shell.
-        if (event.source !== parent) return;
+        // Relay the page's messages; the panel only trusts this window.
+        if (page && event.source === page.contentWindow) {
+          if (event.data && event.data.source === "unsloth-browser") parent.postMessage(event.data, "*");
+          return;
+        }
+        // Only the parent may drive the shell, once.
+        if (event.source !== parent || page) return;
         const data = event.data;
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
         const cfg = { url: data.url || null, refresh: data.refresh || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
-        document.open();
-        document.write(inject(data.html, base + script));
-        document.close();
+        page = document.createElement("iframe");
+        page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.srcdoc = inject(data.html, base + script);
+        document.body.appendChild(page);
+        const lock = document.createElement("meta");
+        lock.httpEquiv = "Content-Security-Policy";
+        lock.content = "frame-src 'none'";
+        document.head.appendChild(lock);
       });
     </script>
   </body>

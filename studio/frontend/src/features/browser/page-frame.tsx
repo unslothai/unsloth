@@ -3,23 +3,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl } from "./api";
+import { type FrameMessage, parseFrameMessage } from "./frame-message";
 
-export type FrameMessage =
-  | {
-      type: "navigate";
-      url: string;
-      newTab?: boolean;
-      background?: boolean;
-      replace?: boolean;
-      method?: "GET" | "POST";
-      body?: string;
-    }
-  | { type: "external"; url: string }
-  | { type: "loaded"; title: string; favicon: string | null }
-  | { type: "title"; title: string }
-  | { type: "url"; url: string }
-  | { type: "reload" }
-  | { type: "shortcut"; key: string; shift: boolean };
+export type { FrameMessage };
 
 let loadCounter = 0;
 
@@ -66,7 +52,7 @@ export function PageFrame({
   useEffect(() => {
     onMessageRef.current = onMessage;
   });
-  // One shell per page: document.open() drops the shell's listener.
+  // One shell per page.
   const [loadId] = useState(() => String(++loadCounter));
   const postedRef = useRef(false);
 
@@ -74,10 +60,10 @@ export function PageFrame({
     const listener = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
-      const data = event.data as ({ source?: string } & FrameMessage) | null;
-      if (!data || data.source !== "unsloth-browser") return;
-      if (isUserAction(data) && !allowUserAction(frame, data)) return;
-      onMessageRef.current(data);
+      const message = parseFrameMessage(event.data);
+      if (!message) return;
+      if (isUserAction(message) && !allowUserAction(frame, message)) return;
+      onMessageRef.current(message);
     };
     window.addEventListener("message", listener);
     return () => window.removeEventListener("message", listener);
@@ -92,7 +78,7 @@ export function PageFrame({
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
       onLoad={() => {
-        // Post once; the written page fires load again.
+        // Post once.
         if (postedRef.current) return;
         postedRef.current = true;
         frameRef.current?.contentWindow?.postMessage(

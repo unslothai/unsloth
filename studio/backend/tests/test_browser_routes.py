@@ -48,9 +48,19 @@ def test_the_shell_is_exempt_from_frame_denial():
 
 def test_the_shell_only_obeys_its_parent():
     shell = browser_mod._FRAME_HTML
-    assert "if (event.source !== parent) return;" in shell
+    assert "if (event.source !== parent || page) return;" in shell
     # The navigation script and <base> go ahead of the page's own markup.
     assert "inject(data.html, base + script)" in shell
+
+
+def test_the_page_cannot_navigate_its_own_frame():
+    shell = browser_mod._FRAME_HTML
+    # The page runs in a srcdoc child; afterwards the shell refuses every navigation of it.
+    assert "page.srcdoc = inject(" in shell
+    assert shell.index("document.body.appendChild(page)") < shell.index("lock.content = \"frame-src 'none'\"")
+    assert "document.write(" not in shell
+    # Only the child's messages are relayed.
+    assert "event.source === page.contentWindow" in shell
 
 
 def test_prepare_page_strips_what_would_escape_the_sandbox():

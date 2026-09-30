@@ -5,6 +5,7 @@ import { useChatArtifactsStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
+import { PageCache } from "./page-cache";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -68,9 +69,7 @@ const isWeb = (url: string) => /^https?:\/\//i.test(url.trim());
 const MAX_HISTORY = 50;
 
 // Loaded pages by history entry, so back and forward skip the fetch. Reload bumps reloadKey.
-const MAX_CACHED_PAGES = 12;
-const MAX_CACHED_BLOB_BYTES = 8 * 1024 * 1024;
-const pageCache = new Map<BrowserEntry, { page: BrowserPage; reloadKey: number }>();
+const pageCache = new PageCache<BrowserEntry>();
 
 const entryIds = new WeakMap<BrowserEntry, number>();
 let nextEntryId = 0;
@@ -86,23 +85,11 @@ export function entryKey(entry: BrowserEntry): number {
 }
 
 export function cachedPage(entry: BrowserEntry, reloadKey: number): BrowserPage | undefined {
-  const hit = pageCache.get(entry);
-  if (!hit || hit.reloadKey !== reloadKey) return undefined;
-  // Most recently used last.
-  pageCache.delete(entry);
-  pageCache.set(entry, hit);
-  return hit.page;
+  return pageCache.get(entry, reloadKey);
 }
 
 export function cachePage(entry: BrowserEntry, reloadKey: number, page: BrowserPage): void {
-  pageCache.delete(entry);
-  if (page.kind === "raw" && page.blob.size > MAX_CACHED_BLOB_BYTES) return;
-  pageCache.set(entry, { page, reloadKey });
-  while (pageCache.size > MAX_CACHED_PAGES) {
-    const oldest = pageCache.keys().next().value;
-    if (oldest === undefined) break;
-    pageCache.delete(oldest);
-  }
+  pageCache.set(entry, reloadKey, page);
 }
 
 let nextId = 0;
@@ -295,6 +282,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const index = tabs.findIndex((tab) => tab.id === tabId);
       if (index < 0) return;
       const remaining = tabs.filter((tab) => tab.id !== tabId);
+      for (const entry of tabs[index]?.history ?? []) pageCache.delete(entry);
       releaseFiles(remaining);
       pageDownloads.delete(tabId);
       if (remaining.length === 0) {

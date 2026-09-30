@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { BrowserPage } from "../src/features/browser/api.ts";
+import { PageCache } from "../src/features/browser/page-cache.ts";
+
+const MB = 1024 * 1024;
+const html = (bytes: number): BrowserPage => ({
+  kind: "html",
+  url: "https://example.com/",
+  base: "https://example.com/",
+  refresh: null,
+  html: "x".repeat(bytes / 2),
+});
+
+test("HTML pages count toward the byte budget", () => {
+  const cache = new PageCache<object>(12, 32 * MB, 8 * MB);
+  const keys = Array.from({ length: 12 }, () => ({}));
+  for (const key of keys) cache.set(key, 0, html(6 * MB));
+  // Twelve 6 MB pages would be 72 MB; only the newest five fit in 32 MB.
+  assert.equal(cache.size, 5);
+  assert.ok(cache.bytes <= 32 * MB);
+  assert.equal(cache.get(keys[0], 0), undefined);
+  assert.ok(cache.get(keys[11], 0));
+});
+
+test("a page over the per-page limit is not kept", () => {
+  const cache = new PageCache<object>(12, 32 * MB, 8 * MB);
+  const key = {};
+  cache.set(key, 0, html(20 * MB));
+  assert.equal(cache.size, 0);
+  assert.equal(cache.bytes, 0);
+});
+
+test("reloads, replacements and deletes keep the total right", () => {
+  const cache = new PageCache<object>(12, 32 * MB, 8 * MB);
+  const key = {};
+  cache.set(key, 0, html(2 * MB));
+  assert.equal(cache.get(key, 1), undefined);
+  cache.set(key, 1, html(4 * MB));
+  assert.equal(cache.bytes, 4 * MB);
+  cache.delete(key);
+  assert.equal(cache.bytes, 0);
+});
+
+test("the least recently used page goes first", () => {
+  const cache = new PageCache<object>(2, 32 * MB, 8 * MB);
+  const [a, b, c] = [{}, {}, {}];
+  cache.set(a, 0, html(2));
+  cache.set(b, 0, html(2));
+  cache.get(a, 0);
+  cache.set(c, 0, html(2));
+  assert.ok(cache.get(a, 0));
+  assert.equal(cache.get(b, 0), undefined);
+});
