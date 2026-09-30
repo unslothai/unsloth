@@ -681,3 +681,35 @@ def test_clearing_the_hub_cache_prunes_the_link_farm(tmp_path, monkeypatch):
     cache_inventory.purge_cache("hf_hub")
     assert pruned == [root]
     assert not os.path.exists(served)
+
+
+def test_deleting_the_umbrella_repo_prunes_the_farm_of_the_cache_it_was_in(tmp_path, monkeypatch):
+    import asyncio
+
+    from hub.services.models import deletion
+    from hub.utils import hf_cache_state
+
+    other_root, _snap = _snapshot(tmp_path / "old")  # a remembered, non-active cache
+    repo_folder = other_root / ("models--" + AUDIO_CPP_REPO.replace("/", "--"))
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [other_root])
+    monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
+    for guard in (
+        "_llama_cpp_blocks_delete",
+        "_inference_backend_blocks_delete",
+        "_audio_cpp_blocks_delete",
+    ):
+        monkeypatch.setattr(deletion, guard, lambda *a: False)
+    for guard in ("_diffusion_blocks_delete", "_video_blocks_delete"):
+        monkeypatch.setattr(deletion, guard, lambda *a: None)
+    monkeypatch.setattr(deletion, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id)
+    monkeypatch.setattr(deletion.downloads.registry, "begin_delete", lambda *a: True)
+    monkeypatch.setattr(deletion.downloads.registry, "end_delete", lambda *a: None)
+    monkeypatch.setattr(
+        deletion, "_delete_cached_model_blocking", lambda *a, **k: {"deleted": True}
+    )
+    monkeypatch.setattr(deletion.cache_inventory, "invalidate_hf_cache_scans", lambda: None)
+    pruned = []
+    monkeypatch.setattr(audio_cpp_files, "prune_link_farm", lambda hub = None: pruned.append(hub))
+    asyncio.run(deletion.delete_cached_model_response(AUDIO_CPP_REPO, cache_path = str(repo_folder)))
+    # The Hub row sends the repo folder; the farm sits beside that folder's hub root.
+    assert pruned == [other_root.resolve()]

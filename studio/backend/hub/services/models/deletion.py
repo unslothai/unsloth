@@ -931,9 +931,13 @@ async def delete_cached_model_response(
         if is_audio_cpp_repo_id(repo_id):
             # The link farm hardlinks the deleted blobs; without this they keep their disk space.
             from core.inference.audio_cpp_files import prune_link_farm
+            from hub.utils.hf_cache_state import scoped_delete_root
 
-            # The farm beside the cache the repo was deleted from, which need not be the active one.
-            await asyncio.to_thread(prune_link_farm, Path(cache_path) if cache_path else None)
+            # The farm beside the hub root the repo was deleted from: cache_path names the repo folder,
+            # which need not be in the active cache.
+            await asyncio.to_thread(
+                prune_link_farm, scoped_delete_root("model", repo_id, cache_path)
+            )
         return result
     finally:
         downloads.registry.end_delete(repo_key, variant)
