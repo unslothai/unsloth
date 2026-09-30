@@ -208,12 +208,10 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "clean_gpu_cache()" in gemma2_source
     assert "torch.cuda.empty_cache()" not in granite_source
     assert "clean_gpu_cache()" in granite_source
-    # The retry after a failed load flushes before reallocating, else the half-built model and its
-    # replacement are resident at once; keying that flush off cuda alone made it a no-op on XPU and NPU.
+    # Keyed off cuda alone, the load-retry flush and the optimizer fence were no-ops on NPU / XPU.
     assert "torch.cuda.empty_cache()" not in loader_utils_source
     assert "torch.xpu.empty_cache()" not in loader_utils_source
     assert "clean_gpu_cache()" in loader_utils_source
-    # Same shape in the optimizer's step: the fence after the update is skipped when only cuda is asked.
     assert "torch.cuda.synchronize()" not in q_galore_source
     assert "device_synchronize()" in q_galore_source
 
