@@ -4,7 +4,10 @@
 "use client";
 
 
-import { AttachmentBrowserOpenProvider } from "@/components/assistant-ui/attachment-browser-open";
+import {
+  AttachmentBrowserOpenProvider,
+  AttachmentFileContextMenu,
+} from "@/components/assistant-ui/attachment-browser-open";
 import {
   AttachmentDocumentDialog,
   AttachmentViewer,
@@ -44,6 +47,7 @@ import {
   type FC,
   type PropsWithChildren,
   type ReactNode,
+  isValidElement,
   useEffect,
   useMemo,
   useState,
@@ -422,7 +426,11 @@ export const AttachmentPreviewDialog: FC<
   return (
     <AttachmentBrowserOpenProvider source={source}>
       <AttachmentPreviewBody source={source} redactFromReload={redactFromReload}>
-        {children}
+        {isValidElement(children) ? (
+          <AttachmentFileContextMenu source={source}>{children}</AttachmentFileContextMenu>
+        ) : (
+          children
+        )}
       </AttachmentPreviewBody>
     </AttachmentBrowserOpenProvider>
   );

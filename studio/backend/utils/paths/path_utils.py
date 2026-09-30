@@ -413,6 +413,53 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
 
 
+# What "Open in default app" may hand to the OS: documents and media, which open in a viewer. A
+# script, app bundle or installer would run instead, and these files are model-written.
+DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
+    {
+        ".pdf", ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml",
+        ".yml", ".log", ".rtf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".png", ".jpg",
+        ".jpeg", ".gif", ".webp", ".bmp", ".avif", ".tif", ".tiff", ".mp3", ".wav", ".flac", ".ogg",
+        ".m4a", ".mp4", ".mov", ".webm", ".mkv", ".parquet", ".ipynb",
+    }
+)
+
+
+def open_in_default_app(path: Path) -> None:
+    """Open the regular file *path* with the OS default app (best effort per platform).
+
+    Refuses (``PermissionError``) anything outside ``DEFAULT_APP_OPEN_EXTENSIONS`` and raises
+    ``FileNotFoundError`` when *path* is not a regular file; a symlink is refused like a missing file.
+    """
+    import stat as stat_module
+    import subprocess
+
+    if path.suffix.lower() not in DEFAULT_APP_OPEN_EXTENSIONS:
+        raise PermissionError(str(path))
+    try:
+        entry = os.lstat(path)
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    if not stat_module.S_ISREG(entry.st_mode):
+        raise FileNotFoundError(str(path))
+    target = str(path)
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    elif os.name == "nt":
+        os.startfile(target)  # noqa: S606 - local user's own default app
+    elif _IS_WSL:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", target],
+            capture_output = True,
+            text = True,
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        subprocess.Popen(["explorer.exe", windows_path])
+    else:
+        subprocess.Popen(["xdg-open", target])
+
+
 # pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
 _PC_CASE_SENSITIVE = 11
 

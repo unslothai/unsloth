@@ -4,12 +4,15 @@
 "use client";
 
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
+import { authFetch } from "@/features/auth";
 import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
 import { toast } from "@/lib/toast";
 import { useAuiState } from "@assistant-ui/react";
-import type { FC, PropsWithChildren } from "react";
+import { Slot } from "radix-ui";
+import { type ComponentProps, type FC, type PropsWithChildren, type ReactElement, useContext } from "react";
 import { AttachmentBrowserOpenContext } from "./attachment-browser-open-context";
+import { FileContextMenu } from "./link-context-menu";
 
 type Opened = { blob: Blob; plainText?: boolean };
 
@@ -90,4 +93,62 @@ export const AttachmentBrowserOpenProvider: FC<PropsWithChildren<{ source: Attac
     );
   }
   return children;
+};
+
+// The attachment's bytes as held here: the File, text, or its own image/media URL.
+function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
+  const { file, src } = source;
+  if (file) return () => Promise.resolve(file);
+  const local = localLoader(source);
+  if (local) return () => local().then(({ blob }) => blob);
+  if (src) {
+    return () =>
+      (/^(blob|data):/i.test(src) ? fetch(src) : authFetch(src)).then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.blob();
+      });
+  }
+  return null;
+}
+
+type MenuProps = { source: AttachmentSource; children: ReactElement } & Omit<ComponentProps<"button">, "children">;
+
+const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({ source, load, children, ...rest }) => {
+  // Opening does what a click does where the attachment opens in the browser.
+  const open = useContext(AttachmentBrowserOpenContext) ?? undefined;
+  return (
+    <FileContextMenu
+      file={{ name: source.name || "attachment", contentType: source.contentType, load, open }}
+      {...rest}
+    >
+      {children}
+    </FileContextMenu>
+  );
+};
+
+const SentOriginalMenu: FC<MenuProps> = (props) => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
+  return <AttachmentMenu {...props} load={() => fetchChatAttachmentBlob(messageId, attachmentId)} />;
+};
+
+/** Right-click menu for an attachment chip; the chip's own click (a dialog trigger) passes through. */
+export const AttachmentFileContextMenu: FC<MenuProps> = ({ source, children, ...rest }) => {
+  const load = blobLoader(source);
+  if (load) {
+    return (
+      <AttachmentMenu source={source} load={load} {...rest}>
+        {children}
+      </AttachmentMenu>
+    );
+  }
+  // Only sent documents have a stored original to fetch.
+  if (source.kind === "document" && source.hasOriginal) {
+    return (
+      <SentOriginalMenu source={source} {...rest}>
+        {children}
+      </SentOriginalMenu>
+    );
+  }
+  return <Slot.Root {...rest}>{children}</Slot.Root>;
 };

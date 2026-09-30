@@ -183,6 +183,25 @@ export function decodeSegment(segment: string): string {
  * honestly instead of silently fetching another chat's file (or another route).
  */
 export function sandboxFileForSrc(src: string): string | null {
+  const file = sandboxPathForSrc(src);
+  if (file === null) return null;
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+  // A `.csv` is a download card, not an `<img>`; leave it to the file cards.
+  return SANDBOX_INLINE_IMAGE_EXTS.has(ext) ? file : null;
+}
+
+/**
+ * The sandbox file a model-written markdown link points at, of any type: `[report](outputs/report.csv)`.
+ * Only a path whose last segment has an extension counts, so `[intro](#intro)` or a bare word stays a link.
+ */
+export function sandboxFileForHref(href: string): string | null {
+  if (href.trim().startsWith("#")) return null;
+  const file = sandboxPathForSrc(href);
+  return file !== null && /[^/]\.[A-Za-z0-9]{1,8}$/.test(file) ? file : null;
+}
+
+function sandboxPathForSrc(src: string): string | null {
   const trimmed = src.trim();
   if (!trimmed || HAS_SCHEME_RE.test(trimmed) || PROTOCOL_RELATIVE_RE.test(trimmed)) {
     return null;
@@ -206,11 +225,7 @@ export function sandboxFileForSrc(src: string): string | null {
     return null;
   }
   const parts = decoded.filter((segment) => segment !== ".");
-  const name = parts[parts.length - 1] ?? "";
-  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
-  // A `.csv` is a download card, not an `<img>`; leave it to the file cards.
-  if (!SANDBOX_INLINE_IMAGE_EXTS.has(ext)) return null;
-  return parts.join("/");
+  return parts.length > 0 ? parts.join("/") : null;
 }
 
 /**
@@ -264,4 +279,18 @@ export function sandboxFilePath(sessionId: string, filename: string): string {
     .join("/");
   const { prefix, query } = sandboxRoutePrefix(sessionId);
   return `${prefix}/${path}${query}`;
+}
+
+/**
+ * The route URL for a markdown link to a file the chat's tools wrote, like `markdownSandboxImageSrc` for images:
+ * a bare `outputs/report.csv` would otherwise be blocked as a relative link. Null when the href is no such file.
+ */
+export function markdownSandboxLinkHref(
+  href: string,
+  ctx: { threadId: string | undefined; projectId: string | null | undefined },
+): string | null {
+  const file = sandboxFileForHref(href);
+  if (file === null) return null;
+  const sessionId = sandboxSessionInSrc(href) ?? sandboxSessionIdFor(ctx.threadId, ctx.projectId);
+  return sessionId ? sandboxFilePath(sessionId, file) : null;
 }

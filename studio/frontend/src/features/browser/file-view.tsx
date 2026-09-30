@@ -8,7 +8,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { ArtifactHtmlFrame, attachmentTextLanguage, truncateAttachmentPreviewText } from "@/features/chat";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
-import { useEffect, useMemo, useState } from "react";
+import { cn } from "@/lib/utils";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 
 const HTML_NAME = /\.(html?|xhtml)$/i;
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\b/i;
@@ -42,20 +44,45 @@ function Unavailable({ message }: { message: string }) {
   return <p className="m-auto max-w-sm px-6 text-center text-sm text-muted-foreground">{message}</p>;
 }
 
+// Streamdown's highlighted source and the plain fallback both use <pre>; wrapping is a class away.
+const WRAP_CLASS = "[&_pre]:whitespace-pre-wrap! [&_pre]:break-words [&_code]:whitespace-pre-wrap! [&_.min-w-max]:min-w-0!";
+
+export type TextFileKind = "html" | "markdown" | "code" | "text";
+
+function isHtml(name: string, contentType: string): boolean {
+  return HTML_NAME.test(name) || HTML_TYPE.test(contentType);
+}
+
+/** How a text file shows, or null for documents, media and files that don't show as text. */
+export function textFileKind(name: string, contentType: string, plainText = false): TextFileKind | null {
+  if (plainText) return "text";
+  if (mediaKind(name, contentType) || documentKind(name, contentType)) return null;
+  if (!(TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType)) return null;
+  if (isHtml(name, contentType)) return "html";
+  if (isMarkdown(name, contentType)) return "markdown";
+  return attachmentTextLanguage(name, null) ? "code" : "text";
+}
+
 function TextFile({
   blob,
   name,
   contentType,
   plainText,
   scale,
+  tabId,
+  reloadNonce,
 }: {
   blob: Blob;
   name: string;
   contentType: string;
   plainText: boolean;
   scale: number;
+  tabId: string | undefined;
+  reloadNonce: number;
 }) {
   const [text, setText] = useState<string | null>(null);
+  const view = useBrowserStore((state) => (tabId ? state.fileViews[tabId] : undefined)) ?? DEFAULT_FILE_VIEW;
+  const requestEdits = useBrowserStore((state) => state.requestEdits);
   useEffect(() => {
     let active = true;
     void blob.text().then((value) => active && setText(value));
@@ -63,21 +90,62 @@ function TextFile({
       active = false;
     };
   }, [blob]);
-  const language = useMemo(
-    () => (text && text.length <= MAX_HIGHLIGHT_CHARS ? attachmentTextLanguage(name, null) : null),
-    [text, name],
+  const kind = textFileKind(name, contentType, plainText);
+  // Stable: the frame reports its counts from an effect that depends on these.
+  const onConsoleOpenChange = useCallback(
+    (consoleOpen: boolean) => tabId && useBrowserStore.getState().setFileView(tabId, { consoleOpen }),
+    [tabId],
   );
+  const onOutputCountChange = useCallback(
+    ({ errors }: { errors: number }) => tabId && useBrowserStore.getState().setFileView(tabId, { errorCount: errors }),
+    [tabId],
+  );
+  const language = useMemo(() => {
+    if (!text || text.length > MAX_HIGHLIGHT_CHARS) return null;
+    if (kind === "html") return "html";
+    if (kind === "markdown") return "markdown";
+    return attachmentTextLanguage(name, null);
+  }, [text, name, kind]);
   if (text === null) return <Spinner className="m-auto size-6" />;
   const preview = truncateAttachmentPreviewText(text);
+  const source = (kind === "html" || kind === "markdown") && view.mode === "source";
+  const sourceView = language ? (
+    <div className={cn("size-full overflow-auto", view.wrap && WRAP_CLASS)} style={{ zoom: scale }}>
+      <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />
+    </div>
+  ) : (
+    <pre
+      style={{ zoom: scale }}
+      className={cn(
+        "size-full overflow-auto px-6 py-4 font-mono text-sm leading-relaxed select-text",
+        kind === "text" || view.wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+      )}
+    >
+      {preview.text}
+    </pre>
+  );
   // Same frame as the attachment preview: network stays off until the user allows it.
-  if (!plainText && (HTML_NAME.test(name) || HTML_TYPE.test(contentType))) {
+  if (kind === "html") {
     return (
-      <div className="size-full overflow-auto">
-        <ArtifactHtmlFrame code={preview.text} title={name} fill={true} />
-      </div>
+      <>
+        {/* Kept mounted behind the source, as the canvas does, so the console keeps its output. */}
+        <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
+          <ArtifactHtmlFrame
+            code={preview.text}
+            title={name}
+            fill={true}
+            reloadNonce={reloadNonce}
+            consoleOpen={view.consoleOpen}
+            onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
+            onOutputCountChange={tabId ? onOutputCountChange : undefined}
+            onFixWithModel={requestEdits ?? undefined}
+          />
+        </div>
+        {source ? sourceView : null}
+      </>
     );
   }
-  if (!plainText && isMarkdown(name, contentType)) {
+  if (kind === "markdown" && !source) {
     return (
       <div className="size-full overflow-auto px-6" style={{ zoom: scale }}>
         <MarkdownPreview
@@ -88,21 +156,7 @@ function TextFile({
       </div>
     );
   }
-  if (language) {
-    return (
-      <div className="size-full overflow-auto" style={{ zoom: scale }}>
-        <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />
-      </div>
-    );
-  }
-  return (
-    <pre
-      style={{ zoom: scale }}
-      className="size-full overflow-auto whitespace-pre-wrap break-words px-6 py-4 font-mono text-sm leading-relaxed select-text"
-    >
-      {preview.text}
-    </pre>
-  );
+  return sourceView;
 }
 
 /** A document, image, media file or text, using the attachment viewers. */
@@ -112,12 +166,17 @@ export function FileView({
   contentType,
   plainText = false,
   scale = 1,
+  tabId,
+  reloadNonce = 0,
 }: {
   blob: Blob;
   name: string;
   contentType: string;
   plainText?: boolean;
   scale?: number;
+  /** The tab showing it, whose Preview/Source, console and wrap settings apply. */
+  tabId?: string;
+  reloadNonce?: number;
 }) {
   const t = useT();
   const media = plainText ? null : mediaKind(name, contentType);
@@ -163,7 +222,15 @@ export function FileView({
   }
   if (plainText || TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType) {
     return (
-      <TextFile blob={blob} name={name} contentType={contentType} plainText={plainText} scale={scale} />
+      <TextFile
+        blob={blob}
+        name={name}
+        contentType={contentType}
+        plainText={plainText}
+        scale={scale}
+        tabId={tabId}
+        reloadNonce={reloadNonce}
+      />
     );
   }
   return <Unavailable message={t("browser.cannotShowFile")} />;

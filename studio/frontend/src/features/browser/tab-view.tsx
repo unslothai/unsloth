@@ -225,6 +225,8 @@ function LocalFile({ tab }: { tab: BrowserTab }) {
       contentType={entry.contentType}
       plainText={entry.plainText}
       scale={tab.zoom}
+      tabId={tab.id}
+      reloadNonce={tab.reloadKey}
     />
   );
 }

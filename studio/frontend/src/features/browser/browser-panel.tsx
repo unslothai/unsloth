@@ -26,16 +26,29 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ATTACHMENT_KIND_ICONS, ATTACHMENT_KIND_ICON_CLASS, attachmentFileKind } from "@/features/chat";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  ATTACHMENT_KIND_ICONS,
+  ATTACHMENT_KIND_ICON_CLASS,
+  attachmentFileKind,
+} from "@/features/chat";
 import { startLibraryChat } from "@/features/library";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  useSettingsDialogStore,
+  useShortcut,
+  useShortcutLabel,
+} from "@/features/settings";
 import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
 import { RefreshGlyph } from "@/lib/refresh-icon";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -45,31 +58,42 @@ import {
   ArrowRight02Icon,
   ArrowUp01Icon,
   ArrowUpRight01Icon,
+  BubbleChatAddIcon,
   Cancel01Icon,
   Clock01Icon,
-  CursorMagicSelection02Icon,
+  ComputerTerminal01Icon,
+  Copy01Icon,
+  CursorRectangleSelection02Icon,
   Download01Icon,
   InternetIcon,
   LinkSquare02Icon,
   MinusSignIcon,
   MoreHorizontalIcon,
+  PaintBoardIcon,
   PlusSignIcon,
-  SidebarRightIcon,
   SmartPhone01Icon,
+  SourceCodeIcon,
   Tablet01Icon,
+  TextWrapIcon,
+  ViewIcon,
 } from "@hugeicons/core-free-icons";
-import { type IconSvgElement, HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, memo, useEffect, useRef, useState } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { useBrowserHistoryStore } from "./history-store";
+import { AnnotateLayer } from "./annotate-layer";
+import { textFileKind } from "./file-view";
+import { EnterFullViewIcon, ExitFullViewIcon, SplitPaneIcon } from "./icons";
 import { sendFrameCommand } from "./page-frame";
 import { useBrowserPrefsStore } from "./prefs-store";
 import {
   type BrowserEntry,
   type BrowserTab,
+  DEFAULT_FILE_VIEW,
   type DeviceMode,
+  type FileViewState,
   browserFile,
   clearPageCache,
   currentEntry,
@@ -109,23 +133,37 @@ export function displayAddress(address: string, full: boolean): string {
 
 /** "invoice_INV-6-1.pdf" -> "Invoice Inv 6 1", as the file button shows it. */
 export function fileTitle(name: string): string {
-  const base = name.replace(/\.[^./]{1,8}$/, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-  return (base || name).replace(/\S+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+  const base = name
+    .replace(/\.[^./]{1,8}$/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (base || name).replace(
+    /\S+/g,
+    (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
+  );
 }
 
 // Browser zoom steps, as Chrome has them.
-const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+const ZOOM_STEPS = [
+  0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4,
+  5,
+];
 
 function stepZoom(zoom: number, direction: 1 | -1): number {
-  if (direction > 0) return ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? zoom;
+  if (direction > 0)
+    return ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? zoom;
   return [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? zoom;
 }
 
 // Bordered pill in light mode, filled in dark, like the toolbar controls it groups.
-const PILL = "border border-border/80 bg-card dark:border-transparent dark:bg-accent";
+const PILL =
+  "border border-border/80 bg-card dark:border-transparent dark:bg-accent";
 
 type ButtonProps = {
   label: string;
+  /** Key chord shown beside the label in the tooltip. */
+  shortcut?: string | null;
   icon?: IconSvgElement;
   onClick?: () => void;
   disabled?: boolean;
@@ -133,7 +171,15 @@ type ButtonProps = {
   children?: ReactNode;
 };
 
-function IconButton({ label, icon, onClick, disabled, className, children }: ButtonProps) {
+function IconButton({
+  label,
+  shortcut,
+  icon,
+  onClick,
+  disabled,
+  className,
+  children,
+}: ButtonProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
@@ -147,11 +193,28 @@ function IconButton({ label, icon, onClick, disabled, className, children }: But
             className,
           )}
         >
-          {icon ? <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4.5" /> : children}
+          {icon ? (
+            <HugeiconsIcon
+              icon={icon}
+              strokeWidth={1.75}
+              className="size-4.5"
+            />
+          ) : (
+            children
+          )}
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
-        {label}
+        {shortcut ? (
+          <span className="flex items-center gap-1.5">
+            {label}
+            <kbd className="rounded bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+              {shortcut}
+            </kbd>
+          </span>
+        ) : (
+          label
+        )}
       </TooltipContent>
     </Tooltip>
   );
@@ -159,18 +222,35 @@ function IconButton({ label, icon, onClick, disabled, className, children }: But
 
 /** A round toolbar button on its own pill. */
 function CircleButton(props: ButtonProps) {
-  return <IconButton {...props} className={cn(PILL, "size-8 hover:bg-card dark:hover:bg-accent", props.className)} />;
+  return (
+    <IconButton
+      {...props}
+      className={cn(
+        PILL,
+        "size-8 hover:bg-card dark:hover:bg-accent",
+        props.className,
+      )}
+    />
+  );
 }
 
 const DOCUMENT_KINDS = new Set(["pdf", "word", "spreadsheet", "presentation"]);
 
-function KindIcon({ name, contentType, className }: { name: string; contentType?: string; className?: string }) {
+function KindIcon({
+  name,
+  contentType,
+  className,
+}: { name: string; contentType?: string; className?: string }) {
   const kind = attachmentFileKind(name, contentType);
   return (
     <HugeiconsIcon
       icon={ATTACHMENT_KIND_ICONS[kind]}
       strokeWidth={1.75}
-      className={cn("size-4 shrink-0", ATTACHMENT_KIND_ICON_CLASS[kind], className)}
+      className={cn(
+        "size-4 shrink-0",
+        ATTACHMENT_KIND_ICON_CLASS[kind],
+        className,
+      )}
     />
   );
 }
@@ -179,10 +259,17 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
   const [failedFor, setFailedFor] = useState<string | null>(null);
   const entry = currentEntry(tab);
   if (tab.loading) return <Spinner className="size-4 shrink-0" />;
-  if (entry.kind === "file") return <KindIcon name={entry.name} contentType={entry.contentType} />;
+  if (entry.kind === "file")
+    return <KindIcon name={entry.name} contentType={entry.contentType} />;
   if (entry.kind === "internal") {
     const icon = entry.page === "history" ? Clock01Icon : Download01Icon;
-    return <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4 shrink-0" />;
+    return (
+      <HugeiconsIcon
+        icon={icon}
+        strokeWidth={1.75}
+        className="size-4 shrink-0"
+      />
+    );
   }
   if (tab.favicon && failedFor !== tab.favicon) {
     return (
@@ -199,9 +286,16 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
   if (entry.kind === "web") {
     const name = fileNameFromUrl(tab.displayUrl ?? entry.url);
     const type = tab.documentType ?? undefined;
-    if (DOCUMENT_KINDS.has(attachmentFileKind(name, type))) return <KindIcon name={name} contentType={type} />;
+    if (DOCUMENT_KINDS.has(attachmentFileKind(name, type)))
+      return <KindIcon name={name} contentType={type} />;
   }
-  return <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4 shrink-0" />;
+  return (
+    <HugeiconsIcon
+      icon={InternetIcon}
+      strokeWidth={1.75}
+      className="size-4 shrink-0"
+    />
+  );
 }
 
 function useTabTitle() {
@@ -209,16 +303,32 @@ function useTabTitle() {
   return (tab: BrowserTab, entry: BrowserEntry) => {
     if (tab.title) return tab.title;
     if (entry.kind === "newtab") return t("browser.newTab");
-    if (entry.kind === "internal") return t(entry.page === "history" ? "browser.pages.history" : "browser.pages.downloads");
+    if (entry.kind === "internal")
+      return t(
+        entry.page === "history"
+          ? "browser.pages.history"
+          : "browser.pages.downloads",
+      );
     // Unloaded background tabs show their site.
     return entry.kind === "web" ? hostOf(entry.url) : entry.name;
   };
 }
 
-function TabStrip({ tabs, activeTabId }: { tabs: BrowserTab[]; activeTabId: string | null }) {
+function TabStrip({
+  tabs,
+  activeTabId,
+}: { tabs: BrowserTab[]; activeTabId: string | null }) {
   const t = useT();
   const tabTitle = useTabTitle();
-  const { activateTab, closeTab, newTab, closePanel } = useBrowserStore.getState();
+  const fullView = useBrowserStore((state) => state.fullView);
+  const { activateTab, closeTab, newTab, closePanel, setFullView } =
+    useBrowserStore.getState();
+  const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
+  useShortcut("toggleBrowserFullView", (event) => {
+    event.preventDefault();
+    const state = useBrowserStore.getState();
+    state.setFullView(!state.fullView);
+  });
   return (
     <div className="flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]">
       <div
@@ -230,10 +340,20 @@ function TabStrip({ tabs, activeTabId }: { tabs: BrowserTab[]; activeTabId: stri
           const active = tab.id === activeTabId;
           const title = tabTitle(tab, currentEntry(tab));
           // Dividers sit between inactive tabs only.
-          const divided = index > 0 && !active && tabs[index - 1]?.id !== activeTabId;
+          const divided =
+            index > 0 && !active && tabs[index - 1]?.id !== activeTabId;
           return (
-            <div key={tab.id} className="flex min-w-24 max-w-56 flex-1 items-center">
-              <span aria-hidden={true} className={cn("h-4 w-px shrink-0 bg-border", !divided && "invisible")} />
+            <div
+              key={tab.id}
+              className="flex min-w-24 max-w-56 flex-1 items-center"
+            >
+              <span
+                aria-hidden={true}
+                className={cn(
+                  "h-4 w-px shrink-0 bg-border",
+                  !divided && "invisible",
+                )}
+              />
               <div
                 role="tab"
                 aria-selected={active}
@@ -244,7 +364,8 @@ function TabStrip({ tabs, activeTabId }: { tabs: BrowserTab[]; activeTabId: stri
                   if (event.button === 1) closeTab(tab.id);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") activateTab(tab.id);
+                  if (event.key === "Enter" || event.key === " ")
+                    activateTab(tab.id);
                 }}
                 className={cn(
                   "group/tab mx-0.5 flex h-[calc(30px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[10px] pl-2.5 pr-1 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -264,21 +385,38 @@ function TabStrip({ tabs, activeTabId }: { tabs: BrowserTab[]; activeTabId: stri
                   }}
                   className={cn(
                     "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
-                    !active && "opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100",
+                    !active &&
+                      "opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100",
                   )}
                 >
-                  <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-3.5" />
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
                 </button>
               </div>
             </div>
           );
         })}
       </div>
-      <IconButton label={t("browser.newTab")} icon={Add01Icon} onClick={newTab} className="size-8" />
+      <IconButton
+        label={t("browser.newTab")}
+        icon={Add01Icon}
+        onClick={newTab}
+        className="size-8"
+      />
       <span aria-hidden={true} className="mx-1 h-4 w-px shrink-0 bg-border" />
       <IconButton
+        label={t(fullView ? "browser.fullView.exit" : "browser.fullView.enter")}
+        shortcut={fullViewShortcut}
+        icon={fullView ? ExitFullViewIcon : EnterFullViewIcon}
+        onClick={() => setFullView(!fullView)}
+        className="size-8"
+      />
+      <IconButton
         label={t("browser.close")}
-        icon={SidebarRightIcon}
+        icon={SplitPaneIcon}
         onClick={closePanel}
         className="size-8 rounded-[10px] bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground"
       />
@@ -354,7 +492,9 @@ function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
             aria-hidden={true}
             className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-ui-13 text-foreground"
           >
-            <span className="truncate">{displayAddress(address, showFullUrl)}</span>
+            <span className="truncate">
+              {displayAddress(address, showFullUrl)}
+            </span>
           </span>
         ) : null}
       </div>
@@ -367,10 +507,17 @@ function tabDownload(tab: BrowserTab | undefined): BrowserDownload | undefined {
   const entry = currentEntry(tab);
   if (entry.kind === "file") {
     const blob = browserFile(entry.fileId);
-    return blob ? { blob, name: entry.name, contentType: entry.contentType, url: null } : undefined;
+    return blob
+      ? { blob, name: entry.name, contentType: entry.contentType, url: null }
+      : undefined;
   }
   const page = pageDownload(tab.id);
-  return page ? { ...page, url: tab.displayUrl ?? (entry.kind === "web" ? entry.url : null) } : undefined;
+  return page
+    ? {
+        ...page,
+        url: tab.displayUrl ?? (entry.kind === "web" ? entry.url : null),
+      }
+    : undefined;
 }
 
 function webAddress(tab: BrowserTab | undefined): string | null {
@@ -383,7 +530,12 @@ function WebActions({ tab }: { tab: BrowserTab | undefined }) {
   const webUrl = webAddress(tab);
   const download = tabDownload(tab);
   return (
-    <div className={cn(PILL, "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5")}>
+    <div
+      className={cn(
+        PILL,
+        "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5",
+      )}
+    >
       <IconButton
         label={t("browser.openExternal")}
         icon={LinkSquare02Icon}
@@ -402,21 +554,30 @@ function WebActions({ tab }: { tab: BrowserTab | undefined }) {
 
 /** Whether the tab shows a web page (not a document) that page commands reach. */
 function showsWebPage(tab: BrowserTab | undefined): boolean {
-  return Boolean(tab && currentEntry(tab).kind === "web" && !tab.documentType && !tab.loading);
+  return Boolean(
+    tab &&
+      currentEntry(tab).kind === "web" &&
+      !tab.documentType &&
+      !tab.loading,
+  );
 }
 
 function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
   const zoom = tab?.zoom ?? 1;
-  const setZoom = (next: number) => tab && useBrowserStore.getState().setZoom(tab.id, next);
-  const percent = new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(zoom);
+  const setZoom = (next: number) =>
+    tab && useBrowserStore.getState().setZoom(tab.id, next);
+  const percent = new Intl.NumberFormat(locale, {
+    style: "percent",
+    maximumFractionDigits: 0,
+  }).format(zoom);
   const step =
-    "flex size-7 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground disabled:cursor-default disabled:opacity-35";
+    "flex h-full w-8 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground disabled:cursor-default disabled:opacity-35";
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 text-sm">
+    <div className="flex items-center gap-2 py-1 pl-3 pr-1 text-sm">
       <span className="flex-1">{t("browser.menu.zoom")}</span>
-      <div className="flex h-7 items-center rounded-lg border border-border">
+      <div className="flex h-8 items-center rounded-[10px] border border-border">
         <button
           type="button"
           aria-label={t("browser.menu.zoomOut")}
@@ -424,9 +585,15 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
           onClick={() => setZoom(stepZoom(zoom, -1))}
           className={step}
         >
-          <HugeiconsIcon icon={MinusSignIcon} strokeWidth={1.75} className="size-3.5" />
+          <HugeiconsIcon
+            icon={MinusSignIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
         </button>
-        <span className="min-w-12 border-x border-border text-center tabular-nums">{percent}</span>
+        <span className="min-w-14 border-x border-border text-center tabular-nums">
+          {percent}
+        </span>
         <button
           type="button"
           aria-label={t("browser.menu.zoomIn")}
@@ -434,7 +601,11 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
           onClick={() => setZoom(stepZoom(zoom, 1))}
           className={step}
         >
-          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-3.5" />
+          <HugeiconsIcon
+            icon={PlusSignIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
         </button>
       </div>
       <button
@@ -463,7 +634,9 @@ export function ClearBrowsingDataDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("browser.clearData.title")}</AlertDialogTitle>
-          <AlertDialogDescription>{t("browser.clearData.description")}</AlertDialogDescription>
+          <AlertDialogDescription>
+            {t("browser.clearData.description")}
+          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>{t("browser.clearData.cancel")}</AlertDialogCancel>
@@ -491,7 +664,11 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   const webUrl = webAddress(tab);
   const webPage = showsWebPage(tab);
   const store = useBrowserStore.getState();
-  const mod = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+  const mod =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPad/.test(navigator.platform)
+      ? "⌘"
+      : "Ctrl+";
   return (
     <>
       <DropdownMenu>
@@ -506,7 +683,11 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
                   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 )}
               >
-                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
+                <HugeiconsIcon
+                  icon={MoreHorizontalIcon}
+                  strokeWidth={1.75}
+                  className="size-4.5"
+                />
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
@@ -514,15 +695,25 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
             {t("browser.more")}
           </TooltipContent>
         </Tooltip>
-        <DropdownMenuContent align="end" className="min-w-64">
-          <DropdownMenuItem disabled={!webPage} onSelect={() => store.setFindOpen(true)}>
+        <DropdownMenuContent
+          align="end"
+          sideOffset={6}
+          className="min-w-72 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+        >
+          <DropdownMenuItem
+            disabled={!webPage}
+            onSelect={() => store.setFindOpen(true)}
+          >
             {t("browser.menu.find")}
             <DropdownMenuShortcut>{mod}F</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={!webUrl}
             onSelect={() =>
-              webUrl && void copyToClipboard(webUrl).then((ok) => ok && toast.success(t("browser.linkCopied")))
+              webUrl &&
+              void copyToClipboard(webUrl).then(
+                (ok) => ok && toast.success(t("browser.linkCopied")),
+              )
             }
           >
             {t("browser.copyLink")}
@@ -530,19 +721,28 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
           <DropdownMenuSeparator />
           <ZoomControl tab={tab} />
           <DropdownMenuSeparator />
-          <DropdownMenuCheckboxItem
+          <DropdownMenuItem
             disabled={!webPage && device === "off"}
-            checked={device !== "off"}
-            onCheckedChange={(checked) => store.setDevice(checked ? "mobile" : "off")}
+            onSelect={() =>
+              store.setDevice(device === "off" ? "mobile" : "off")
+            }
           >
-            {t("browser.menu.deviceToolbar")}
-          </DropdownMenuCheckboxItem>
+            {t(
+              device === "off"
+                ? "browser.menu.deviceToolbar"
+                : "browser.device.close",
+            )}
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => store.openInternal("downloads")}>
             {t("browser.pages.downloads")}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => store.openInternal("history")}>{t("browser.pages.history")}</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setClearOpen(true)}>{t("browser.menu.clearData")}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => store.openInternal("history")}>
+            {t("browser.pages.history")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setClearOpen(true)}>
+            {t("browser.menu.clearData")}
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => useSettingsDialogStore.getState().openDialog("browser")}>
             {t("browser.settings")}
@@ -559,7 +759,12 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   const { goBack, goForward, reload } = useBrowserStore.getState();
   return (
     <>
-      <div className={cn(PILL, "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5")}>
+      <div
+        className={cn(
+          PILL,
+          "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5",
+        )}
+      >
         <IconButton
           label={t("browser.back")}
           icon={ArrowLeft02Icon}
@@ -572,7 +777,10 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
           disabled={!tab || tab.index >= tab.history.length - 1}
           onClick={() => tab && goForward(tab.id)}
         />
-        <span aria-hidden={true} className="mx-0.5 h-4 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-wash-gain,1)),transparent)]" />
+        <span
+          aria-hidden={true}
+          className="mx-0.5 h-4 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-wash-gain,1)),transparent)]"
+        />
         <IconButton
           label={t("browser.reload")}
           disabled={!tab || currentEntry(tab).kind !== "web"}
@@ -589,15 +797,56 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
 }
 
 /** Toolbar for an opened file: its menu, Request edits, zoom and download. */
-function FileToolbar({ tab, entry }: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+function FileToolbar({
+  tab,
+  entry,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
+  const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
+  const annotating = useBrowserStore((state) => state.annotateTabId === tab.id);
+  const openInCanvas = useBrowserStore((state) => state.openInCanvas);
+  const view = useBrowserStore((state) => state.fileViews[tab.id]) ?? DEFAULT_FILE_VIEW;
+  const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
+  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  // HTML and Markdown render, so they switch to their source as the canvas does.
+  const hasSource = kind === "html" || kind === "markdown";
+  const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
+  const htmlPreview = kind === "html" && view.mode === "preview";
+  const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
+  const copyContents = () => {
+    if (!blob) return;
+    void copyToClipboardFrom(() => blob.text()).then((ok) => {
+      if (!ok) {
+        toast.error(t("browser.file.copyFailed"));
+        return;
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  const runAgain = () => {
+    setView({ mode: "preview" });
+    useBrowserStore.getState().reload(tab.id);
+  };
+  const toggleConsole = () =>
+    htmlPreview
+      ? setView({ consoleOpen: !view.consoleOpen })
+      : setView({ mode: "preview", consoleOpen: true });
+  const openCanvas = () => {
+    if (!blob || !openInCanvas) return;
+    void blob.text().then((code) => openInCanvas({ title: fileTitle(entry.name), code }));
+  };
   const openInNewChat = () => {
     if (!blob) return;
-    startLibraryChat(navigate, { files: [new File([blob], entry.name, { type: entry.contentType || blob.type })] });
+    startLibraryChat(navigate, {
+      files: [
+        new File([blob], entry.name, { type: entry.contentType || blob.type }),
+      ],
+    });
   };
   const openInBrowser = () => {
     if (!blob) return;
@@ -611,9 +860,16 @@ function FileToolbar({ tab, entry }: { tab: BrowserTab; entry: Extract<BrowserEn
         <DropdownMenuTrigger asChild={true}>
           <button
             type="button"
-            className="flex h-9 min-w-0 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] pl-3 pr-2.5 text-ui-13p5 text-foreground outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
+            className={cn(
+              PILL,
+              "flex h-9 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-3 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+            )}
           >
-            <KindIcon name={entry.name} contentType={entry.contentType} className="size-4.5" />
+            <KindIcon
+              name={entry.name}
+              contentType={entry.contentType}
+              className="size-4.5"
+            />
             <span className="min-w-0 truncate">{fileTitle(entry.name)}</span>
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
@@ -622,46 +878,250 @@ function FileToolbar({ tab, entry }: { tab: BrowserTab; entry: Extract<BrowserEn
             />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72 max-w-[calc(100vw-2rem)]">
-          <div className="flex items-start gap-3 px-2 py-2 text-sm">
-            <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" />
+        <DropdownMenuContent
+          align="start"
+          sideOffset={6}
+          className="w-80 max-w-[calc(100vw-2rem)] rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+        >
+          <div className="flex items-start gap-3 px-3 py-2 text-sm">
+            <KindIcon
+              name={entry.name}
+              contentType={entry.contentType}
+              className="mt-0.5 size-4.5"
+            />
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger disabled={!blob}>
-              <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon
+                icon={ArrowUpRight01Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
               {t("browser.file.openIn")}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              <DropdownMenuItem onSelect={openInNewChat}>{t("browser.file.newChat")}</DropdownMenuItem>
+            <DropdownMenuSubContent className="min-w-52 rounded-[20px] p-1.5">
+              <DropdownMenuItem onSelect={openInNewChat}>
+                <HugeiconsIcon
+                  icon={BubbleChatAddIcon}
+                  strokeWidth={1.75}
+                  className="size-4.5"
+                />
+                {t("browser.file.newChat")}
+              </DropdownMenuItem>
+              {kind === "html" && openInCanvas ? (
+                <DropdownMenuItem onSelect={openCanvas}>
+                  <HugeiconsIcon
+                    icon={PaintBoardIcon}
+                    strokeWidth={1.75}
+                    className="size-4.5"
+                  />
+                  {t("browser.file.canvas")}
+                </DropdownMenuItem>
+              ) : null}
               {/* A blob URL can't be handed to another app from the desktop app. */}
               {isTauri ? null : (
-                <DropdownMenuItem onSelect={openInBrowser}>{t("browser.file.newBrowserTab")}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={openInBrowser}>
+                  <HugeiconsIcon
+                    icon={InternetIcon}
+                    strokeWidth={1.75}
+                    className="size-4.5"
+                  />
+                  {t("browser.file.newBrowserTab")}
+                </DropdownMenuItem>
               )}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+          {kind === "html" ? (
+            <>
+              <DropdownMenuItem onSelect={runAgain}>
+                <RefreshGlyph strokeWidth={1.75} className="size-4" />
+                {t("browser.file.runAgain")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={toggleConsole}>
+                <HugeiconsIcon
+                  icon={ComputerTerminal01Icon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+                {t("browser.file.console")}
+                {view.errorCount > 0 ? (
+                  <span className="ml-auto rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
+                    {view.errorCount}
+                  </span>
+                ) : null}
+              </DropdownMenuItem>
+            </>
+          ) : null}
+          {kind ? (
+            <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
+              <HugeiconsIcon
+                icon={Copy01Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {t("browser.file.copy")}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem
+            disabled={!download}
+            onSelect={() => download && void saveBrowserDownload(download)}
+          >
+            <HugeiconsIcon
+              icon={Download01Icon}
+              strokeWidth={1.75}
+              className="size-4"
+            />
+            {t("browser.download")}
+          </DropdownMenuItem>
+          {showsSource ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem
+                checked={view.wrap || kind === "text"}
+                disabled={kind === "text"}
+                onCheckedChange={(wrap) => setView({ wrap })}
+                onSelect={(event) => event.preventDefault()}
+              >
+                <HugeiconsIcon
+                  icon={TextWrapIcon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+                {t("browser.file.wrap")}
+              </DropdownMenuCheckboxItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
-      {requestEdits ? (
+      {requestEdits || canAnnotate ? (
         <button
           type="button"
-          onClick={() => requestEdits(t("browser.file.requestEditsPrompt", { name: entry.name }))}
+          aria-pressed={canAnnotate ? annotating : undefined}
+          aria-label={t("browser.file.requestEdits")}
+          // Marks parts of the file to change, as ChatGPT does; without a chat to send them to, it
+          // stages a prompt naming the file instead.
+          onClick={() =>
+            canAnnotate
+              ? useBrowserStore.getState().setAnnotating(annotating ? null : tab.id)
+              : requestEdits?.(
+                  t("browser.file.requestEditsPrompt", { name: entry.name }),
+                )
+          }
           className={cn(
             PILL,
-            "flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+            "flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-2.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring @[34rem]:px-3.5",
+            annotating && "text-primary",
           )}
         >
-          <HugeiconsIcon icon={CursorMagicSelection02Icon} strokeWidth={1.75} className="size-4.5" />
-          {t("browser.file.requestEdits")}
+          <HugeiconsIcon
+            icon={CursorRectangleSelection02Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
+          <span className="hidden @[34rem]:inline">{t("browser.file.requestEdits")}</span>
         </button>
       ) : null}
-      <span className="min-w-0 flex-1" />
+      <span
+        aria-hidden={true}
+        className="min-w-0 flex-1 pointer-events-none!"
+      />
+      {hasSource ? (
+        <div
+          role="tablist"
+          aria-label={t("browser.file.viewMode")}
+          className={cn(PILL, "flex h-9 shrink-0 items-center gap-0.5 rounded-full p-0.5")}
+        >
+          {(["preview", "source"] as const).map((mode) => (
+            <Tooltip key={mode}>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view.mode === mode}
+                  aria-label={t(`browser.file.${mode}`)}
+                  onClick={() => setView({ mode })}
+                  className={cn(
+                    "flex size-8 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    view.mode === mode
+                      ? "bg-background text-foreground shadow-sm dark:bg-card"
+                      : "hover:text-foreground",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={mode === "preview" ? ViewIcon : SourceCodeIcon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t(`browser.file.${mode}`)}
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
+      ) : null}
+      {kind === "html" ? (
+        <>
+          <CircleButton
+            label={t("browser.file.runAgain")}
+            onClick={runAgain}
+            // In a narrow pane these fold into the file menu, keeping the file's name in view.
+            className="hidden size-9 @[40rem]:flex"
+          >
+            <RefreshGlyph strokeWidth={1.75} className="size-4" />
+          </CircleButton>
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label={t("browser.file.console")}
+                aria-pressed={htmlPreview && view.consoleOpen}
+                onClick={toggleConsole}
+                className={cn(
+                  PILL,
+                  "hidden h-9 min-w-9 @[40rem]:flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  htmlPreview && view.consoleOpen && "text-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={ComputerTerminal01Icon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+                {view.errorCount > 0 ? (
+                  <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
+                    {view.errorCount}
+                  </span>
+                ) : null}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="tooltip-compact">
+              {t("browser.file.console")}
+            </TooltipContent>
+          </Tooltip>
+        </>
+      ) : null}
+      {kind ? (
+        <CircleButton
+          label={copied ? t("browser.file.copied") : t("browser.file.copy")}
+          icon={copied ? Tick02Icon : Copy01Icon}
+          disabled={!blob}
+          onClick={copyContents}
+          className="hidden size-9 @[40rem]:flex"
+        />
+      ) : null}
       <ScaleMenu
         value={tab.zoom}
         scales={ATTACHMENT_PAGE_SCALES}
-        onChange={(value) => useBrowserStore.getState().setZoom(tab.id, value === "fit" ? 1 : value)}
-        className={cn(PILL, "mr-0 h-9 hover:bg-card dark:hover:bg-accent")}
+        onChange={(value) =>
+          useBrowserStore
+            .getState()
+            .setZoom(tab.id, value === "fit" ? 1 : value)
+        }
+        className={cn(PILL, "mr-0 hidden h-9 hover:bg-card @[28rem]:flex dark:hover:bg-accent")}
       />
       <CircleButton
         label={t("browser.download")}
@@ -685,7 +1145,8 @@ function FindBar({ tab }: { tab: BrowserTab | undefined }) {
   }, []);
   const find = (backwards = false) => {
     if (!tab || !query) return;
-    if (!sendFrameCommand(tab.id, { command: "find", query, backwards })) setFindMiss(true);
+    if (!sendFrameCommand(tab.id, { command: "find", query, backwards }))
+      setFindMiss(true);
   };
   return (
     <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-2">
@@ -706,45 +1167,74 @@ function FindBar({ tab }: { tab: BrowserTab | undefined }) {
         className={cn(
           PILL,
           "h-8 min-w-0 flex-1 rounded-full px-4 text-ui-13 outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring/40",
-          miss && query && "ring-2 ring-destructive/40 focus:ring-destructive/40",
+          miss &&
+            query &&
+            "ring-2 ring-destructive/40 focus:ring-destructive/40",
         )}
       />
       {miss && query ? (
-        <span className="shrink-0 text-ui-12 text-muted-foreground">{t("browser.find.noMatches")}</span>
+        <span className="shrink-0 text-ui-12 text-muted-foreground">
+          {t("browser.find.noMatches")}
+        </span>
       ) : null}
-      <div className={cn(PILL, "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5")}>
+      <div
+        className={cn(
+          PILL,
+          "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5",
+        )}
+      >
         <IconButton
           label={t("browser.find.previous")}
           icon={ArrowUp01Icon}
           disabled={!query}
           onClick={() => find(true)}
         />
-        <IconButton label={t("browser.find.next")} icon={ArrowDown01Icon} disabled={!query} onClick={() => find()} />
+        <IconButton
+          label={t("browser.find.next")}
+          icon={ArrowDown01Icon}
+          disabled={!query}
+          onClick={() => find()}
+        />
       </div>
-      <CircleButton label={t("browser.find.close")} icon={Cancel01Icon} onClick={() => setFindOpen(false)} />
+      <CircleButton
+        label={t("browser.find.close")}
+        icon={Cancel01Icon}
+        onClick={() => setFindOpen(false)}
+      />
     </div>
   );
 }
 
-const DEVICE_WIDTHS: Record<Exclude<DeviceMode, "off">, number> = { mobile: 390, tablet: 820 };
+const DEVICE_WIDTHS: Record<Exclude<DeviceMode, "off">, number> = {
+  mobile: 390,
+  tablet: 820,
+};
 
 function DeviceBar() {
   const t = useT();
   const device = useBrowserStore((state) => state.device);
   const { setDevice } = useBrowserStore.getState();
-  const option = (mode: Exclude<DeviceMode, "off">, icon: IconSvgElement, label: string) => (
+  const option = (
+    mode: Exclude<DeviceMode, "off">,
+    icon: IconSvgElement,
+    label: string,
+  ) => (
     <button
       type="button"
       aria-pressed={device === mode}
       onClick={() => setDevice(mode)}
       className={cn(
         "flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-3 text-ui-12 transition-colors",
-        device === mode ? "bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground" : "text-muted-foreground hover:text-foreground",
+        device === mode
+          ? "bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
       {label}
-      <span className="tabular-nums text-muted-foreground">{DEVICE_WIDTHS[mode]}</span>
+      <span className="tabular-nums text-muted-foreground">
+        {DEVICE_WIDTHS[mode]}
+      </span>
     </button>
   );
   return (
@@ -771,20 +1261,30 @@ export const BrowserPanel = memo(function BrowserPanel() {
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const findOpen = useBrowserStore((state) => state.findOpen);
   const device = useBrowserStore((state) => state.device);
+  const annotateTabId = useBrowserStore((state) => state.annotateTabId);
+  const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeEntry = activeTab ? currentEntry(activeTab) : null;
   // Mount tabs on first view. Most recent last.
-  const [mounted, setMounted] = useState<readonly string[]>(() => (activeTabId ? [activeTabId] : []));
+  const [mounted, setMounted] = useState<readonly string[]>(() =>
+    activeTabId ? [activeTabId] : [],
+  );
   if (activeTabId && mounted[mounted.length - 1] !== activeTabId) {
     const open = new Set(tabs.map((tab) => tab.id));
     setMounted(
-      [...mounted.filter((id) => id !== activeTabId && open.has(id)), activeTabId].slice(-MAX_MOUNTED_TABS),
+      [
+        ...mounted.filter((id) => id !== activeTabId && open.has(id)),
+        activeTabId,
+      ].slice(-MAX_MOUNTED_TABS),
     );
   }
   // Files sit on the viewer's gray, with no line under the toolbar.
   const fileTab = activeEntry?.kind === "file";
   const documentShown = fileTab || Boolean(activeTab?.documentType);
-  const deviceWidth = device !== "off" && activeEntry?.kind === "web" ? DEVICE_WIDTHS[device] : null;
+  const deviceWidth =
+    device !== "off" && activeEntry?.kind === "web"
+      ? DEVICE_WIDTHS[device]
+      : null;
 
   return (
     // Full-height pane; the top inset clears a desktop titlebar.
@@ -796,40 +1296,77 @@ export const BrowserPanel = memo(function BrowserPanel() {
       {/* Toolbar and page sit on a card, raised off the tab strip. */}
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-[14px] border-t border-border/60 dark:border-transparent",
-          documentShown ? "bg-[color-mix(in_oklab,var(--muted)_55%,var(--card))]" : "bg-card",
+          "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-[14px] border-t border-border/60 dark:border-transparent",
+          documentShown
+            ? "bg-[color-mix(in_oklab,var(--muted)_55%,var(--card))]"
+            : "bg-card",
         )}
       >
-        <div className="flex shrink-0 items-center gap-1.5 px-2.5 py-2">
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 px-2.5 py-2",
+            // A file's controls float over it with nothing behind them, so the page scrolls under.
+            fileTab &&
+              "browser-file-toolbar @container pointer-events-none absolute inset-x-0 top-0 z-20 *:pointer-events-auto",
+          )}
+        >
           {activeTab && activeEntry?.kind === "file" ? (
             <FileToolbar tab={activeTab} entry={activeEntry} />
           ) : (
             <WebToolbar tab={activeTab} />
           )}
         </div>
-        {findOpen && showsWebPage(activeTab) ? <FindBar key={activeTabId} tab={activeTab} /> : null}
+        {findOpen && showsWebPage(activeTab) ? (
+          <FindBar key={activeTabId} tab={activeTab} />
+        ) : null}
         {deviceWidth ? <DeviceBar /> : null}
         <div
+          ref={setPageElement}
           className={cn(
             "relative min-h-0 flex-1 overflow-hidden",
-            !fileTab && "border-t border-border/70",
+            fileTab ? "browser-file-page" : "border-t border-border/70",
             documentShown ? "bg-transparent" : "bg-background",
             deviceWidth && "bg-muted/60",
           )}
         >
           {activeTab?.loading ? (
             <div className="absolute inset-x-0 top-0 z-10 h-[2.5px] overflow-hidden">
-              <span aria-hidden={true} className="artifact-loading-line block h-full rounded-full motion-reduce:hidden" />
+              <span
+                aria-hidden={true}
+                className="artifact-loading-line block h-full rounded-full motion-reduce:hidden"
+              />
             </div>
           ) : null}
           <div
-            className={cn("relative mx-auto h-full", deviceWidth && "border-x border-border/70 bg-background shadow-sm")}
-            style={deviceWidth ? { width: `min(100%, ${deviceWidth}px)` } : undefined}
+            className={cn(
+              "relative mx-auto h-full",
+              deviceWidth &&
+                "border-x border-border/70 bg-background shadow-sm",
+            )}
+            style={
+              deviceWidth ? { width: `min(100%, ${deviceWidth}px)` } : undefined
+            }
           >
             {tabs.map((tab) =>
-              mounted.includes(tab.id) ? <TabView key={tab.id} tab={tab} active={tab.id === activeTabId} /> : null,
+              mounted.includes(tab.id) ? (
+                <TabView
+                  key={tab.id}
+                  tab={tab}
+                  active={tab.id === activeTabId}
+                />
+              ) : null,
             )}
           </div>
+          {activeTab &&
+          activeEntry?.kind === "file" &&
+          annotateTabId === activeTab.id &&
+          pageElement ? (
+            <AnnotateLayer
+              key={activeTab.id}
+              page={pageElement}
+              fileName={activeEntry.name}
+            />
+          ) : null}
         </div>
       </div>
     </section>

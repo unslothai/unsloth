@@ -402,6 +402,7 @@ def test_sandbox_listing_route_exists():
     # :path so a file written into a subdirectory is reachable.
     assert sandbox_routes == [
         "/sandbox/{session_id}",
+        "/sandbox/{session_id}/open",
         "/sandbox/{session_id}/reveal",
         "/sandbox/{session_id}/{filename:path}",
     ]
@@ -6452,3 +6453,94 @@ def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkey
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
+
+
+def _sandbox_route_setup(tmp_path, monkeypatch):
+    from routes import inference
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    (sandbox / "outputs").mkdir(parents = True)
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: os.path.realpath(sandbox)
+    )
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    launched = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
+    return inference, sandbox, launched
+
+
+def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkeypatch):
+    import asyncio
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "outputs" / "report.pdf").write_bytes(b"%PDF-1.4")
+
+    result = asyncio.new_event_loop().run_until_complete(
+        inference.open_sandbox_file(
+            "thread-1", request = None, file = "outputs/report.pdf", token = None, session = None
+        )
+    )
+    assert result == {"status": "ok"}
+    assert len(launched) == 1
+    assert launched[0][-1] == os.path.realpath(sandbox / "outputs" / "report.pdf")
+
+
+def test_a_model_written_script_never_opens_in_the_default_app(tmp_path, monkeypatch):
+    """The files are model-written: a script or app would run, not be viewed."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    for name in ("run.sh", "run.command", "page.html", "Tool.app"):
+        (sandbox / name).write_text("x", encoding = "utf-8")
+        with pytest.raises(HTTPException) as caught:
+            asyncio.new_event_loop().run_until_complete(
+                inference.open_sandbox_file(
+                    "thread-1", request = None, file = name, token = None, session = None
+                )
+            )
+        assert caught.value.status_code == 415, name
+    assert launched == []
+
+
+def test_opening_refuses_links_and_escapes(tmp_path, monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    outside = tmp_path / "secret.pdf"
+    outside.write_bytes(b"%PDF-1.4")
+    (sandbox / "link.pdf").symlink_to(outside)
+    for name in ("link.pdf", "../../secret.pdf", "missing.pdf", "outputs"):
+        with pytest.raises(HTTPException) as caught:
+            asyncio.new_event_loop().run_until_complete(
+                inference.open_sandbox_file(
+                    "thread-1", request = None, file = name, token = None, session = None
+                )
+            )
+        assert caught.value.status_code in (403, 404), name
+    assert launched == []
+
+
+def test_revealing_a_sandbox_file_selects_that_file(tmp_path, monkeypatch):
+    import asyncio
+
+    from pathlib import Path as _Path
+
+    from utils.paths import path_utils
+
+    inference, sandbox, _launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    target = sandbox / "outputs" / "report.csv"
+    target.write_text("a,b", encoding = "utf-8")
+    revealed = []
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path))
+
+    result = asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir(
+            "thread-1", request = None, token = None, session = None, file = "outputs/report.csv"
+        )
+    )
+    assert result["path"] == os.path.realpath(target)
+    assert revealed == [_Path(os.path.realpath(target))]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatArtifactsStore } from "@/features/chat";
+import { type DocumentAnnotations, useChatArtifactsStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -24,7 +24,32 @@ export type InternalPage = "history" | "downloads";
 
 export type DeviceMode = "off" | "mobile" | "tablet";
 
+/** Which side of the browser the chat sits on when they are split. */
+export type ChatSide = "left" | "right";
+
+/** The chat floating over a full-view browser: hidden to a button, its composer, or the whole conversation. */
+export type ChatDock = "minimized" | "composer" | "expanded";
+
 export type RequestEdits = (prompt: string) => void;
+
+export type SendAnnotations = (annotations: DocumentAnnotations) => void;
+
+export type OpenInCanvas = (file: { title: string; code: string }) => void;
+
+/** How a text file tab shows its file, like the canvas: the rendered page or its source. */
+export type FileViewMode = "preview" | "source";
+
+export type FileViewState = {
+  mode: FileViewMode;
+  /** The HTML console under the page. */
+  consoleOpen: boolean;
+  /** Errors the HTML page reported, for the console button's badge. */
+  errorCount: number;
+  /** Long lines wrap in the source and text views. */
+  wrap: boolean;
+};
+
+export const DEFAULT_FILE_VIEW: FileViewState = { mode: "preview", consoleOpen: false, errorCount: 0, wrap: false };
 
 export type BrowserTab = {
   id: string;
@@ -156,10 +181,24 @@ type BrowserState = {
   findMiss: boolean;
   /** Device toolbar: pages shown at a phone or tablet width. */
   device: DeviceMode;
+  /** Full view: the browser takes the whole width and the chat floats over it. */
+  fullView: boolean;
+  chatDock: ChatDock;
+  chatSide: ChatSide;
   /** Whether the chat beside the panel has messages; the header toggle hides in a new chat. */
   chatHasMessages: boolean;
   /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
+  /** Sends a file's annotations to the chat; set by the chat while it is shown. */
+  sendAnnotations: SendAnnotations | null;
+  /** Opens an HTML file in the chat's canvas; set by the chat while it is shown. */
+  openInCanvas: OpenInCanvas | null;
+  /** The file tab being annotated for Request edits. */
+  annotateTabId: string | null;
+  setAnnotating: (tabId: string | null) => void;
+  /** Per file tab; absent means DEFAULT_FILE_VIEW. */
+  fileViews: Record<string, FileViewState>;
+  setFileView: (tabId: string, patch: Partial<FileViewState>) => void;
   openPanel: () => void;
   closePanel: () => void;
   togglePanel: () => void;
@@ -183,6 +222,10 @@ type BrowserState = {
   setFindOpen: (open: boolean) => void;
   setFindMiss: (miss: boolean) => void;
   setDevice: (device: DeviceMode) => void;
+  setFullView: (fullView: boolean) => void;
+  setChatDock: (dock: ChatDock) => void;
+  /** Leaves full view with the chat on this side. */
+  splitWithChatOn: (side: ChatSide) => void;
 };
 
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
@@ -250,8 +293,23 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     findOpen: false,
     findMiss: false,
     device: "off",
+    fullView: false,
+    chatDock: "composer",
+    chatSide: "left",
     chatHasMessages: false,
     requestEdits: null,
+    sendAnnotations: null,
+    openInCanvas: null,
+    annotateTabId: null,
+    setAnnotating: (annotateTabId) => set({ annotateTabId }),
+    fileViews: {},
+    setFileView: (tabId, patch) =>
+      set((state) => {
+        const current = state.fileViews[tabId] ?? DEFAULT_FILE_VIEW;
+        const next = { ...current, ...patch };
+        if ((Object.keys(next) as (keyof FileViewState)[]).every((key) => next[key] === current[key])) return state;
+        return { fileViews: { ...state.fileViews, [tabId]: next } };
+      }),
     openPanel: () => {
       if (get().tabs.length === 0) {
         get().newTab();
@@ -260,7 +318,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       showPanel();
       set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
-    closePanel: () => set({ open: false }),
+    closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
     togglePanel: () => (get().open ? get().closePanel() : get().openPanel()),
     newTab: () => {
       openTab(createTab({ kind: "newtab" }));
@@ -314,7 +372,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
       })),
-    activateTab: (tabId) => set({ activeTabId: tabId, findOpen: false, findMiss: false }),
+    activateTab: (tabId) => set({ activeTabId: tabId, findOpen: false, findMiss: false, annotateTabId: null }),
     closeTab: (tabId) => {
       const { tabs, activeTabId } = get();
       const index = tabs.findIndex((tab) => tab.id === tabId);
@@ -323,13 +381,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       for (const entry of tabs[index]?.history ?? []) pageCache.delete(entry);
       releaseFiles(remaining);
       pageDownloads.delete(tabId);
+      const { [tabId]: _closed, ...fileViews } = get().fileViews;
       if (remaining.length === 0) {
-        set({ tabs: [], activeTabId: null, open: false });
+        set({ tabs: [], activeTabId: null, open: false, fileViews });
         return;
       }
       const nextActive =
         activeTabId === tabId ? (remaining[Math.min(index, remaining.length - 1)]?.id ?? null) : activeTabId;
-      set({ tabs: remaining, activeTabId: nextActive });
+      set({ tabs: remaining, activeTabId: nextActive, fileViews });
     },
     updateTab: (tabId, patch) =>
       set((state) => {
@@ -352,5 +411,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     setFindOpen: (findOpen) => set({ findOpen, findMiss: false }),
     setFindMiss: (findMiss) => set({ findMiss }),
     setDevice: (device) => set({ device }),
+    setFullView: (fullView) => set({ fullView, chatDock: "composer" }),
+    setChatDock: (chatDock) => set({ chatDock }),
+    splitWithChatOn: (chatSide) => set({ fullView: false, chatSide }),
   };
 });

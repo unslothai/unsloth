@@ -210,6 +210,10 @@ import {
   isPastedTextFile,
 } from "./utils/pasted-text";
 import {
+  annotationsContentText,
+  annotationsOfFile,
+} from "./utils/document-annotations";
+import {
   adoptPreStreamRunReservation,
   claimPreStreamRunReservation,
   findPreStreamRunReservation,
@@ -574,7 +578,8 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await readTextAttachmentOnce(attachment.file);
+    const annotations = annotationsOfFile(attachment.file);
+    const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -584,12 +589,15 @@ class TextAttachmentAdapter implements AttachmentAdapter {
         {
           type: "text",
           // A pasted file gets its own tag and size, the markers that outlive the File once the message is stored.
-          text: attachmentContentText(
-            attachment.name,
-            text,
-            isPastedTextFile(attachment.file),
-            attachment.file.size,
-          ),
+          // Annotations carry their own tag, which the chip reads back once the File is gone.
+          text: annotations
+            ? annotationsContentText(annotations)
+            : attachmentContentText(
+                attachment.name,
+                text,
+                isPastedTextFile(attachment.file),
+                attachment.file.size,
+              ),
         },
       ],
       status: { type: "complete" },
