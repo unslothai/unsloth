@@ -175,7 +175,9 @@ def test_a_closed_request_cancels_the_fetch(monkeypatch):
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", slow_fetch)
     with pytest.raises(HTTPException) as caught:
-        _call(browser_mod.BrowserFetchRequest(url = "https://example.com/"), _Client(disconnected = True))
+        _call(
+            browser_mod.BrowserFetchRequest(url = "https://example.com/"), _Client(disconnected = True)
+        )
     assert caught.value.status_code == 499
     # Wait for the pool thread to see the cancel.
     for _ in range(browser_mod._FETCH_POOL._max_workers):
