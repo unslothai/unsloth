@@ -143,6 +143,13 @@ export const en = {
       close: "Close find",
       truncated: "This page is too long to search in full.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Zoom out",
+      zoomIn: "Zoom in",
+      reset: "Reset",
+      announce: "Zoom {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -207,6 +214,14 @@ export const en = {
       help: "Help",
       logOut: "Log out",
       shutdown: "Shutdown",
+    },
+    commandPalette: {
+      placeholder: "Type a command or search...",
+      noResults: "No results found.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Search chats...",
     },
     notFound: {
       title: "Page not found",
@@ -485,6 +500,10 @@ export const en = {
         openKeyboardShortcuts: {
           label: "Keyboard shortcuts",
           description: "Open this shortcuts list",
+        },
+        openCommandPalette: {
+          label: "Command palette",
+          description: "Open the command palette",
         },
         searchChats: {
           label: "Search chats",

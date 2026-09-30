@@ -145,6 +145,13 @@ export const hi = {
       close: "खोज बंद करें",
       truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
     },
+    zoom: {
+      label: "ज़ूम",
+      zoomOut: "ज़ूम आउट",
+      zoomIn: "ज़ूम इन",
+      reset: "रीसेट करें",
+      announce: "ज़ूम {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -205,6 +212,14 @@ export const hi = {
       help: "सहायता",
       logOut: "लॉग आउट",
       shutdown: "शटडाउन",
+    },
+    commandPalette: {
+      placeholder: "कमांड टाइप करें या खोजें...",
+      noResults: "कोई परिणाम नहीं मिला।",
+      navigation: "नेविगेशन",
+      actions: "क्रियाएँ",
+      chat: "चैट",
+      searchChats: "चैट खोजें...",
     },
     notFound: {
       title: "पेज नहीं मिला",
@@ -481,6 +496,10 @@ export const hi = {
         openKeyboardShortcuts: {
           label: "कीबोर्ड शॉर्टकट",
           description: "यह शॉर्टकट सूची खोलें",
+        },
+        openCommandPalette: {
+          label: "कमांड पैलेट",
+          description: "कमांड पैलेट खोलें",
         },
         searchChats: {
           label: "चैट खोजें",

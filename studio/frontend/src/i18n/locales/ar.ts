@@ -142,6 +142,13 @@ export const ar = {
       close: "إغلاق البحث",
       truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
     },
+    zoom: {
+      label: "التكبير",
+      zoomOut: "تصغير",
+      zoomIn: "تكبير",
+      reset: "إعادة تعيين",
+      announce: "التكبير {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -202,6 +209,14 @@ export const ar = {
       help: "مساعدة",
       logOut: "تسجيل الخروج",
       shutdown: "إيقاف التشغيل",
+    },
+    commandPalette: {
+      placeholder: "اكتب أمرًا أو ابحث...",
+      noResults: "لم يُعثر على أي نتائج.",
+      navigation: "التنقل",
+      actions: "الإجراءات",
+      chat: "الدردشة",
+      searchChats: "ابحث في الدردشات...",
     },
     notFound: {
       title: "الصفحة غير موجودة",
@@ -478,6 +493,10 @@ export const ar = {
         openKeyboardShortcuts: {
           label: "اختصارات لوحة المفاتيح",
           description: "فتح قائمة الاختصارات هذه",
+        },
+        openCommandPalette: {
+          label: "لوحة الأوامر",
+          description: "فتح لوحة الأوامر",
         },
         searchChats: {
           label: "بحث في المحادثات",

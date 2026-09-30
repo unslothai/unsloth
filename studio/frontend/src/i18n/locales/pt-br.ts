@@ -144,6 +144,13 @@ export const ptBR = {
       close: "Fechar busca",
       truncated: "Esta página é longa demais para ser pesquisada por completo.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Diminuir zoom",
+      zoomIn: "Aumentar zoom",
+      reset: "Redefinir",
+      announce: "Zoom {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -204,6 +211,14 @@ export const ptBR = {
       help: "Ajuda",
       logOut: "Sair",
       shutdown: "Desligar",
+    },
+    commandPalette: {
+      placeholder: "Digite um comando ou pesquise...",
+      noResults: "Nenhum resultado encontrado.",
+      navigation: "Navegação",
+      actions: "Ações",
+      chat: "Chat",
+      searchChats: "Buscar chats...",
     },
     notFound: {
       title: "Página não encontrada",
@@ -480,6 +495,10 @@ export const ptBR = {
         openKeyboardShortcuts: {
           label: "Atalhos de teclado",
           description: "Abrir esta lista de atalhos",
+        },
+        openCommandPalette: {
+          label: "Paleta de comandos",
+          description: "Abrir a paleta de comandos",
         },
         searchChats: {
           label: "Pesquisar chats",

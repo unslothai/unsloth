@@ -140,6 +140,13 @@ export const zhCN = {
       close: "关闭查找",
       truncated: "此页面过长，无法搜索全部内容。",
     },
+    zoom: {
+      label: "缩放",
+      zoomOut: "缩小",
+      zoomIn: "放大",
+      reset: "重置",
+      announce: "缩放 {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -200,6 +207,14 @@ export const zhCN = {
       help: "帮助",
       logOut: "退出登录",
       shutdown: "关闭服务",
+    },
+    commandPalette: {
+      placeholder: "输入命令或搜索...",
+      noResults: "未找到结果。",
+      navigation: "导航",
+      actions: "操作",
+      chat: "聊天",
+      searchChats: "搜索聊天...",
     },
     notFound: {
       title: "页面未找到",
@@ -476,6 +491,10 @@ export const zhCN = {
         openKeyboardShortcuts: {
           label: "键盘快捷键",
           description: "打开该快捷键列表",
+        },
+        openCommandPalette: {
+          label: "命令面板",
+          description: "打开命令面板",
         },
         searchChats: {
           label: "搜索聊天",
