@@ -40,9 +40,7 @@ class ProcessorMixin:
 {extra}
 """
 
-# transformers' processing_utils re-executes transformers/__init__.py and so replaces sys.modules["transformers"]
-# (direct_transformers_import). A name bound on the old module object is invisible to a later `from transformers
-# import ...`, which is exactly what broke the first version of the shim.
+# Mirrors transformers: the first processing_utils import replaces sys.modules["transformers"].
 _PROCESSING_UTILS = """
 import importlib.util
 import os
@@ -181,7 +179,6 @@ def test_ensure_makes_every_ltx2_pipeline_importable(fake_stack):
         text_encoder = sys.modules["transformers"].Gemma3ForConditionalGeneration()
     )
     assert pipe.text_encoder is not None
-    # Idempotent.
     assert compat.ensure_ltx2_pipelines_importable() is True
 
 
@@ -197,7 +194,6 @@ def test_slow_import_mode_package_import_is_shimmed_too(fake_stack):
     assert compat.ensure_ltx2_pipelines_importable() is True
     module = importlib.import_module("diffusers.pipelines.ltx2.pipeline_ltx2")
     assert module.LTX2Pipeline is not None
-    # the stand-in is gone from transformers once the imports are done
     assert NAME not in sys.modules["transformers"].__dict__
 
 
