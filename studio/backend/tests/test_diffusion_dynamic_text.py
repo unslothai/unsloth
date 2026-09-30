@@ -449,9 +449,8 @@ class _Q21Transformer(torch.nn.Module):
 
 @pytest.mark.parametrize("dynamic", [None, True])
 def test_new_prompt_length_does_not_recompile_the_prefix_kv_write(dynamic):
-    """torch 2.13+ specialised the armed ``cache_write_slice.stop`` through ``is not None`` on the slice, so every new
-    Qwen-Image-2.1 prompt length compiled the block again (seconds per new prompt). dynamic=True is the default tier
-    of an unquantized DiT once the divisibility backport is in."""
+    """torch 2.13+ guarded ``cache_write_slice.stop`` via ``is not None``: each new prompt length recompiled the block.
+    dynamic=True is an unquantized DiT's default tier once the divisibility backport is in."""
     from torch._dynamo.utils import counters
 
     Transformer = type("QwenImage21Transformer2DModel", (_Q21Transformer,), {})
