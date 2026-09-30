@@ -946,3 +946,40 @@ def test_a_public_preview_never_reaches_a_model_kept_alongside(backends):
         return inf.get_llama_cpp_backend()
 
     assert asyncio.run(chat("org/B-GGUF")) is primary
+
+
+def test_a_transformers_install_stops_the_workers_of_models_kept_alongside(backends, monkeypatch):
+    import core.export as export
+    import core.training as training
+    import utils.transformers_latest as transformers_latest
+    from models.inference import InstallLatestTransformersRequest
+
+    kept = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner")
+    kept.orchestrator.is_worker_alive = lambda: kept.orchestrator.active_model_name is not None
+    kept.orchestrator._cleanup = lambda: setattr(kept.orchestrator, "active_model_name", None)
+    model_slots.slots.append(kept)
+    idle = SimpleNamespace(
+        is_training_active = lambda: False,
+        is_export_active = lambda: False,
+        current_checkpoint = None,
+        cleanup_memory = lambda: None,
+        is_worker_alive = lambda: False,
+    )
+    monkeypatch.setattr(training, "get_training_backend", lambda: idle)
+    monkeypatch.setattr(export, "get_export_backend", lambda: idle)
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", lambda **kwargs: 0)
+    alive_at_swap = []
+
+    def install(version, before_swap, *args):
+        before_swap()
+        alive_at_swap.append(kept.orchestrator.is_worker_alive())
+        return {"success": False, "message": "stop here"}
+
+    monkeypatch.setattr(transformers_latest, "install_latest_transformers", install)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inf.install_latest_transformers_route(
+                InstallLatestTransformersRequest(version = "9.9.9"), "s"
+            )
+        )
+    assert alive_at_swap == [False] and kept not in model_slots.slots

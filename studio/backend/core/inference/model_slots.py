@@ -209,6 +209,23 @@ def drop(slot: ExtraSlot) -> None:
         slot.orchestrator._cleanup()
 
 
+def stop_orchestrator_workers() -> None:
+    """Drop every slot running an orchestrator worker, for the transformers sidecar swap. Raises
+    when one survives: it would lazy-import from the swapped package tree."""
+
+    def alive(slot):
+        worker_alive = getattr(slot.orchestrator, "is_worker_alive", None)
+        return bool(callable(worker_alive) and worker_alive())
+
+    doomed = [s for s in list(slots) if s.orchestrator.active_model_name or alive(s)]
+    for slot in doomed:
+        drop(slot)
+    if any(alive(slot) for slot in doomed):
+        raise RuntimeError(
+            "An inference worker kept alongside is still alive before the transformers swap"
+        )
+
+
 def _drop_where(predicate) -> int:
     filling = loading[0] if loading else None
     doomed = [slot for slot in list(slots) if predicate(slot, slot is filling)]

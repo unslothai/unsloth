@@ -19325,6 +19325,7 @@ async def install_latest_transformers_route(
                 stopped = backend._shutdown_subprocess()
                 if not stopped or worker_alive():
                     raise RuntimeError("Inference worker still alive before the transformers swap")
+            model_slots.stop_orchestrator_workers()
 
         def _run_install() -> dict:
             # Owns the reservation from here: releasing in the thread, not the route,
