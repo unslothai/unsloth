@@ -16,7 +16,7 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Delete02Icon,
   Download01Icon,
   Image03Icon,
@@ -1152,7 +1152,7 @@ function RecipePopover({
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
-            <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
+            <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
             Restore these settings
           </Button>
         </div>
@@ -5409,7 +5409,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
