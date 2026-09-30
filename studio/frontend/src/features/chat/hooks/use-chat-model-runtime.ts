@@ -1064,7 +1064,10 @@ export function useChatModelRuntime() {
           // /unload then leaves the resident model untouched, so derive the UI
           // checkpoint from the backend rather than clearing it optimistically.
           if (!preserveCheckpoint) {
-            if (!useChatRuntimeStore.getState().keepModelsLoaded) clearCheckpoint();
+            // Kept models stay loaded, unless this run already unloaded the selected one (a reload).
+            if (!useChatRuntimeStore.getState().keepModelsLoaded || run.residentModelUnloaded) {
+              clearCheckpoint();
+            }
             await refresh();
           }
           return true;

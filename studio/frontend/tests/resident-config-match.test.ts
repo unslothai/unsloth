@@ -2011,3 +2011,10 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
     /others\.map\(\(id\) =>\s*unloadModel\(\{ model_path: id, force_cancel_active: decision\.forceCancelActive \}\),\s*\),\s*\);\s*if \(selectedLocal && !\(await ejectModel\(undefined, decision\)\)\) return false;\s*await refresh\(\);/,
   );
 });
+
+test("cancelling a load clears the selection unless kept models stay loaded and this run unloaded none", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(!preserveCheckpoint\) \{[\s\S]{0,160}?if \(!useChatRuntimeStore\.getState\(\)\.keepModelsLoaded \|\| run\.residentModelUnloaded\) \{\s*clearCheckpoint\(\);\s*\}\s*await refresh\(\);/,
+  );
+});
