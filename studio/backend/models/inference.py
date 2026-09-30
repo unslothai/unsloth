@@ -3902,7 +3902,7 @@ class AnthropicResponseServerToolUseBlock(BaseModel):
 class AnthropicResponseWebSearchToolResultBlock(BaseModel):
     type: Literal["web_search_tool_result"] = "web_search_tool_result"
     tool_use_id: str
-    content: list[dict]
+    content: Union[list[dict], dict]
 
 
 class AnthropicResponseThinkingBlock(BaseModel):

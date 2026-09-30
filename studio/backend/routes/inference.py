@@ -37897,7 +37897,9 @@ def _anthropic_tool_response_from_events(
     baseline, not turn N's final length.
     """
     content_blocks: list = []
-    tool_blocks_by_id: dict[str, AnthropicResponseToolUseBlock] = {}
+    tool_blocks_by_id: dict[
+        str, Union[AnthropicResponseToolUseBlock, AnthropicResponseServerToolUseBlock]
+    ] = {}
     usage = {}
     prev_text = ""
     captured_finish_reason = None
@@ -37947,18 +37949,16 @@ def _anthropic_tool_response_from_events(
                 if event.get("tool_name") and not existing_tool_block.name:
                     existing_tool_block.name = event["tool_name"]
             else:
-                if event["tool_name"] == "web_search":
-                    tool_block = AnthropicResponseServerToolUseBlock(
-                        id = anthropic_tool_use_id(tool_call_id, "srvtoolu_"),
-                        name = event["tool_name"],
-                        input = arguments,
-                    )
-                else:
-                    tool_block = AnthropicResponseToolUseBlock(
-                        id = anthropic_tool_use_id(tool_call_id),
-                        name = event["tool_name"],
-                        input = arguments,
-                    )
+                block_cls, id_prefix = (
+                    (AnthropicResponseServerToolUseBlock, "srvtoolu_")
+                    if event["tool_name"] == "web_search"
+                    else (AnthropicResponseToolUseBlock, "toolu_")
+                )
+                tool_block = block_cls(
+                    id = anthropic_tool_use_id(tool_call_id, id_prefix),
+                    name = event["tool_name"],
+                    input = arguments,
+                )
                 if tool_call_id:
                     tool_blocks_by_id[tool_call_id] = tool_block
                 content_blocks.append(tool_block)
@@ -37966,25 +37966,18 @@ def _anthropic_tool_response_from_events(
         elif etype == "tool_end":
             prev_text = ""
             _span_guard.tool_end()
-            if event.get("tool_name") == "web_search":
-                search_call = tool_blocks_by_id.get(event.get("tool_call_id")) or next(
-                    (
-                        block
-                        for block in reversed(content_blocks)
-                        if isinstance(
-                            block,
-                            (AnthropicResponseToolUseBlock, AnthropicResponseServerToolUseBlock),
-                        )
-                    ),
-                    None,
-                )
-                if search_call is not None:
-                    content_blocks.append(
-                        AnthropicResponseWebSearchToolResultBlock(
-                            tool_use_id = search_call.id,
-                            content = web_search_tool_result_content(event.get("result", "")),
-                        )
+            # Done with this call: text-parsed calls restart at call_0 each iteration, so a later
+            # call may reuse its id and must open a block of its own.
+            search_call = tool_blocks_by_id.pop(event.get("tool_call_id"), None)
+            if isinstance(search_call, AnthropicResponseServerToolUseBlock):
+                content_blocks.append(
+                    AnthropicResponseWebSearchToolResultBlock(
+                        tool_use_id = search_call.id,
+                        content = web_search_tool_result_content(
+                            event.get("result", ""), search_call.input
+                        ),
                     )
+                )
             # Server-executed: no longer pending a client action (see above).
             ends_on_tool_use = False
         elif etype == "metadata":
