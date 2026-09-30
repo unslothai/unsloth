@@ -57,7 +57,9 @@ def test_the_page_cannot_navigate_its_own_frame():
     shell = browser_mod._FRAME_HTML
     # The page runs in a srcdoc child; afterwards the shell refuses every navigation of it.
     assert "page.srcdoc = inject(" in shell
-    assert shell.index("document.body.appendChild(page)") < shell.index("lock.content = \"frame-src 'none'\"")
+    assert shell.index("document.body.appendChild(page)") < shell.index(
+        "lock.content = \"frame-src 'none'\""
+    )
     assert "document.write(" not in shell
     # Only the child's messages are relayed.
     assert "event.source === page.contentWindow" in shell
