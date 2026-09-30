@@ -106,7 +106,6 @@ def test_non_gpu_device_tokens_are_ignored():
 
 
 def test_a_stripped_flag_is_not_acted_on():
-    # Explicit gpu_ids own placement and strip the user's device flags from the argv.
     cmd, pin, note = _widen([0], ["--ctx-size", "4096"])
     assert pin == [0]
     assert cmd == ["--ctx-size", "4096"]
@@ -146,7 +145,6 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
 
 
 def test_an_explicit_gpu_ids_pin_is_never_widened_onto_another_card():
-    # gpu_ids is the pool the training guard budgeted: a companion outside it stays refused.
     cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], may_widen = False)
     assert pin == [0]
     assert cmd == ["--mmproj-device", "CUDA1"]
