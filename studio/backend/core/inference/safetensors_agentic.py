@@ -1217,10 +1217,14 @@ def run_safetensors_tool_loop(
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
                     and not _has_answer_artifact(
-                        _reprompt_intent_text(
-                            content_accum,
-                            reasoning_prefilled = reasoning_prefilled,
-                            visible_only = True,
+                        strip_tool_markup(
+                            _reprompt_intent_text(
+                                content_accum,
+                                reasoning_prefilled = reasoning_prefilled,
+                                visible_only = True,
+                            ),
+                            final = True,
+                            enabled_tool_names = _enabled_tool_names,
                         )
                     )
                 ):

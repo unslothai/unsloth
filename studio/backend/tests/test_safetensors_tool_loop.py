@@ -3338,6 +3338,32 @@ class TestLoopRePrompt:
         statuses = [e["text"] for e in events if e["type"] == "status"]
         assert NUDGE_TOOL_CALLS_STATUS in statuses
 
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            pytest.param(
+                'Let me run it.\n<tool_call>\n```json\n{"name": "python", "arguments": '
+                '{"code": "print(1)"}}\n```\n</tool_call>',
+                id = "fenced_json_call",
+            ),
+            pytest.param(
+                "Let me run it.\n<tool_call>\n```python\nprint(1)\n```\n</tool_call>",
+                id = "fenced_code_call",
+            ),
+        ],
+    )
+    def test_unparsed_call_with_a_fence_is_still_reprompted(self, chunk):
+        call = '<tool_call>\n{"name": "python", "arguments": {"code": "print(1)"}}\n</tool_call>'
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], [call], ["1"]],
+            exec_results = ["1"],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+        assert exec_fn.calls
+
     def test_max_reprompts_capped(self):
         # Model keeps stalling with intent -- after MAX_ACT_REPROMPTS re-prompts
         # the loop must give up rather than burn forever.
