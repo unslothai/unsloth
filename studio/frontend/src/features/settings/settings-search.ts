@@ -273,6 +273,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.copyChatAsMarkdown.label",
     "settings.keyboardShortcuts.actions.copySessionId.label",
     "settings.keyboardShortcuts.actions.forkChat.label",
+    "settings.keyboardShortcuts.actions.openCommandPalette.label",
     "settings.keyboardShortcuts.actions.searchChats.label",
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",

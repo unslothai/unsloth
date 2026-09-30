@@ -138,12 +138,17 @@
 
 
 
+/* usWinAscent carries the line gap (no USE_TYPO_METRICS), so DirectWrite set text 0.1em low;
+   the overrides are the hhea values (units / 2048). */
 @font-face {
 	font-family: "Hellix";
 	src: url("/fonts/Hellix-Regular.woff") format("woff");
 	font-weight: 400;
 	font-style: normal;
 	font-display: swap;
+	ascent-override: 81.5918%;
+	descent-override: 18.4082%;
+	line-gap-override: 20.0195%;
 }
 
 @font-face {
@@ -152,6 +157,9 @@
 	font-weight: 500;
 	font-style: normal;
 	font-display: swap;
+	ascent-override: 82.1777%;
+	descent-override: 17.8223%;
+	line-gap-override: 20.0195%;
 }
 
 @font-face {
@@ -366,9 +374,9 @@
 	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
 	   --picker-control-pad. Height matches the h-9 it replaces at 16px. */
 	--picker-control-h: calc(1.125rem * var(--ui-space-scale, 1) + 1.125rem * var(--ui-font-scale, 1));
-	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. It
-	   also stops the "Trending" label clipping, so it tracks the scale. */
-	--picker-control-pad: calc(0.75rem * var(--ui-space-scale, 1));
+	/* Extra width for Search Hub and the two dropdowns. Sized so the
+	   Safetensors filter (dot and label) fits, so it tracks the scale. */
+	--picker-control-pad: calc(1.5rem * var(--ui-space-scale, 1));
 	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
 	   side, i.e. px-3 to px-4 on the tabs. */
 	--picker-tab-pad: calc(0.5rem * var(--ui-space-scale, 1));
@@ -2143,7 +2151,7 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
-	/* The backward-traversal reveal sentinel in thread.tsx is a real tab stop, so it needs a
+	/* The backward-traversal reveal sentinels in thread.tsx are real tab stops, so they need a
 	   real focus indicator. The rule above is scoped to :where(div, main, ...) and never
 	   matched a span, so focus visibly disappeared for one stop before the next Shift+Tab
 	   reached the action bar, which is a focus-visible failure rather than a cosmetic one.
@@ -2152,14 +2160,16 @@ html[data-chat-font] .aui-root {
 	   in layout, so the indicator appears without shifting the message the way giving the span
 	   dimensions on focus would. Nothing is drawn at rest, and :focus-visible means a mouse
 	   click never draws it either. */
-	.aui-assistant-reveal-sentinel {
+	.aui-assistant-reveal-sentinel,
+	.aui-user-reveal-sentinel {
 		display: inline-block;
 		width: 0;
 		height: 0;
 		vertical-align: middle;
 	}
 
-	.aui-assistant-reveal-sentinel:focus-visible {
+	.aui-assistant-reveal-sentinel:focus-visible,
+	.aui-user-reveal-sentinel:focus-visible {
 		outline: 1px solid var(--ring-soft);
 		outline-offset: 6px;
 		border-radius: 2px;
@@ -4227,6 +4237,34 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* Streamdown's table controls, drawn like the code block's (ACTION_BUTTON_CLASS in
+	   markdown-text.tsx). Without controls the table box is the only child. */
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) {
+		margin-right: calc(var(--spacing) * 1);
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative {
+		display: flex;
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button,
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: calc(var(--spacing) * 8);
+		height: calc(var(--spacing) * 8);
+		padding: 0;
+		border-radius: 10px;
+		color: var(--color-chat-icon-fg);
+	}
+
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > button:hover:not(:disabled),
+	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) > .relative > button:hover:not(:disabled) {
+		background-color: var(--color-chat-icon-bg-hover);
+		color: var(--color-chat-icon-fg-hover);
+	}
+
 	/* Chat: use the app sans stack for UI + prose. */
 	.aui-thread-root {
 		--font-heading: var(--font-sans);
@@ -4509,6 +4547,14 @@ html[data-chat-font] .aui-root {
 
 [data-sonner-toast][data-styled='true'] [data-content] {
 	min-width: 0;
+}
+
+/* A load failure carries a real diagnostic: a summary line, the runner's output, and the
+   path of the log it came from. Default `white-space: normal` collapsed every newline to
+   a space, so the structure the backend built was destroyed on the way to the reader. */
+[data-sonner-toast][data-styled='true'] [data-title],
+[data-sonner-toast][data-styled='true'] [data-description] {
+	white-space: pre-wrap;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) {
@@ -4802,11 +4848,52 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
+/* Images prompt boxes: inset the scroll track so the thumb stays inside the
+   rounded corners. Chromium ignores ::-webkit-scrollbar while scrollbar-width
+   or scrollbar-color is set, so reset them. */
+@supports selector(::-webkit-scrollbar) {
+	.image-prompt-box,
+	.dark .image-prompt-box {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.image-prompt-box::-webkit-scrollbar {
+	width: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-track {
+	margin-block: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-thumb {
+	border: 4px solid transparent;
+	background-clip: padding-box;
+}
+
+/* Attachment card page previews: drop the viewer's gray backdrop, padding and
+   scrollbars so the first page fills the card. */
+.attachment-card-preview-page > * {
+	background: transparent;
+	padding-block: 0;
+}
+
+.attachment-card-preview * {
+	scrollbar-width: none;
+}
+
+.attachment-card-preview *::-webkit-scrollbar {
+	display: none;
+}
+
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
    drags the thumb itself, so a tall draft never shows a heavy dark rail. */
 .composer-input,
 .unsloth-composer-input {
 	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+	/* Text wraps; at fractional zoom a 1px overflow otherwise shows a stray scrollbar. */
+	overflow-x: hidden;
 }
 
 .composer-input::-webkit-scrollbar-thumb,
@@ -4882,20 +4969,34 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
-/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
-   set; on Windows reset both (:hover too, or it flips back) to restore it. */
+/* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set, and its standard
+   Windows scrollbar draws arrows. :hover too, or the reveal rules flip it back; the width
+   stays overridable so !important and inline hides still win. */
 @supports selector(::-webkit-scrollbar) {
-	:root.client-windows .sidebar-scroll-fade,
-	:root.client-windows .sidebar-scroll-fade:hover,
-	:root.client-windows .run-settings-scroll,
-	:root.client-windows .run-settings-scroll:hover,
-	:root.client-windows .aui-thread-viewport,
-	:root.client-windows .aui-thread-viewport:hover,
-	:root.client-windows .hover-scrollbar,
-	:root.client-windows .hover-scrollbar:hover {
+	:root.client-windows *,
+	:root.client-windows *:hover {
 		scrollbar-width: auto;
-		scrollbar-color: auto;
+		scrollbar-color: auto !important;
 	}
+
+	/* Set inline for Firefox, which this block never reaches. */
+	:root.client-windows [data-radix-select-viewport] {
+		scrollbar-width: auto !important;
+	}
+
+	/* The unlayered thin default kept these visible; keep them so, without arrows. */
+	:root.client-windows .no-scrollbar::-webkit-scrollbar {
+		display: block;
+	}
+
+	:root.client-windows {
+		--thread-scrollbar-gutter: 8px;
+	}
+}
+
+/* Start the classic scrollbar below the chat header, which overlays the thread. */
+:root.client-windows .aui-thread-viewport::-webkit-scrollbar-track {
+	margin-top: var(--thread-header-offset, 0px);
 }
 
 /* Run settings: always reserve the scrollbar gutter so the header close
@@ -4907,6 +5008,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 /* Reserve the measured overlay strip; classic scrollbars already take space. */
 .overlay-scrollbar-gutter {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
+}
+
+/* Chromium's thin scrollbar width; scrollbars ignore the UI scale. */
+:root {
+	--thread-scrollbar-gutter: 10px;
 }
 
 /* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
@@ -5403,10 +5509,27 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .dark .find-bar-surface {
-	/* #2c2c2c, on the same curve as --card: the bar has to stay above the
-	   cards it floats over at every contrast, not just the default. */
-	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));
+	/* Sidebar menu surface (7%) a step lighter; 8% stays under --border. */
+	background-color: color-mix(in srgb, var(--card), white 8%);
 	box-shadow: 0 4px 20px 6px var(--background);
+}
+
+/* Zoom popup: the find bar's corner, drawn in front of the bar when both show. */
+.interface-zoom-position {
+	top: calc(var(--studio-content-top-inset, 0px) + 3.5rem);
+}
+
+/* Nothing notifies JS when these mount, so CSS keeps the portaled bars under them. */
+html:has([aria-modal="true"], [data-blocking-screen]) [data-find-bar-layer],
+html:has([data-blocking-screen]) .interface-zoom-position {
+	display: none;
+}
+
+/* Toasts stack under the open find bar: its top, its h-13, then 8px. Not the zoom popup, which
+   shares the surface class. */
+:root:has([data-find-bar-layer]:not([hidden]) .find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
+	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
+	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 }
 
 @layer components {

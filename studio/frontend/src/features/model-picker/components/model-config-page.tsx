@@ -3073,13 +3073,7 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
-  const handleRun = () => {
-    if (sharedVariantUnresolved) {
-      return;
-    }
-    if (budgetSettling) {
-      return;
-    }
+  const commitDraft = () => {
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value, so commit
     // every numeric input imperatively.
@@ -3154,56 +3148,41 @@ export function ModelConfigPage({
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
-    // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
-    const effectivePersistenceOnly =
-      isActiveModel && effectiveAtBaseline && rememberChanged;
+    return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
+  };
+
+  const persistConfig = (next: PerModelConfig) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalizedRuntimeConfig = normalizePerModelConfig(
-      effectiveRuntimeConfig,
-    );
-    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
-    let saveFailed = false;
+    const normalized = normalizePerModelConfig(next);
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    if (remember) {
-      saveFailed = !savePerModelConfig(
-        configId,
-        target.ggufVariant,
-        normalizedRuntimeConfig,
-        evicted,
-      );
-    } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
-    }
+    const saved = remember
+      ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
+      : deletePerModelConfig(configId, target.ggufVariant);
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    if (
-      !saveFailed &&
-      (target.apiLoadable ?? target.isGguf) &&
-      !nativePathToken
-    ) {
+    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? normalizedRuntimeConfig : null,
+        remember ? normalized : null,
         remember
           ? {
               resetReasoningBudget:
                 baseline.reasoningBudget !== -1 &&
-                normalizedRuntimeConfig.reasoningBudget === -1,
+                normalized.reasoningBudget === -1,
               resetReasoningBudgetMessage:
                 baseline.reasoningBudgetMessage !== "" &&
-                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+                normalized.reasoningBudgetMessage === "",
             }
           : undefined,
       );
     }
     // Only once the write landed: a blocked or full localStorage leaves the values on screen,
     // and clearing anyway let the next read replace them with the older stored row.
-    if (!saveFailed) {
+    if (saved) {
       clearModelConfigDraftEdited(draftKey);
     }
     // Saving can push the local map over budget and drop other models, whose server entries would
@@ -3213,24 +3192,71 @@ export function ModelConfigPage({
         keepLaunchFlags: true,
       });
     }
+    return { saved, defaultConfig: isDefaultConfig(normalized) };
+  };
+
+  const finishPersist = (defaultConfig: boolean) => {
+    const nextRemember = remember && !defaultConfig;
+    setSavedRemember(nextRemember);
+    setRemember(nextRemember);
+    toast.success(
+      nextRemember
+        ? "Settings saved."
+        : remember
+          ? "Default settings kept."
+          : "Settings forgotten.",
+    );
+  };
+
+  const handleSave = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
+    const { effectiveRuntimeConfig } = commitDraft();
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
+    if (!saved) {
+      toast.error("Couldn't save settings for this model.");
+      return;
+    }
+    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // Not on a forget: that stored nothing, and pinning here would change the next load.
+    // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
+    if (
+      remember &&
+      effectiveRuntimeConfig.customContextLength !== config.customContextLength
+    ) {
+      setConfig((current) => ({
+        ...current,
+        customContextLength: effectiveRuntimeConfig.customContextLength,
+      }));
+    }
+    finishPersist(defaultConfig);
+  };
+
+  const handleRun = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
+    if (budgetSettling) {
+      return;
+    }
+    const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
+      commitDraft();
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectivePersistenceOnly =
+      isActiveModel &&
+      perModelConfigsEqual(effectiveConfig, baseline) &&
+      rememberChanged;
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (effectivePersistenceOnly) {
-      if (saveFailed) {
+      if (!saved) {
         toast.error("Couldn't save settings for this model.");
         return;
       }
-      const nextRemember = remember && !defaultConfig;
-      setSavedRemember(nextRemember);
-      setRemember(nextRemember);
-      toast.success(
-        nextRemember
-          ? "Settings saved."
-          : remember
-            ? "Default settings kept."
-            : "Settings forgotten.",
-      );
+      finishPersist(defaultConfig);
       return;
     }
-    if (saveFailed) {
+    if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
     // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
@@ -3491,13 +3517,9 @@ export function ModelConfigPage({
         )}
       </div>
 
-      <div
-        className={
-          variant === "sidebar"
-            ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
-            : "mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5"
-        }
-      >
+      {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
+          commits a draft mounts Save settings, moving Load out from under the cursor. */}
+      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -3516,13 +3538,7 @@ export function ModelConfigPage({
             Remember for this model
           </label>
         </div>
-        <div
-          className={
-            variant === "sidebar"
-              ? "flex flex-wrap items-center gap-2"
-              : "flex shrink-0 items-center gap-2"
-          }
-        >
+        <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
             type="button"
@@ -3544,6 +3560,30 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
+          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
+          {!persistenceOnly && (remember || savedRemember) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={FOOTER_BUTTON_CLASS}
+              // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
+              // settings the load path strips or has already captured. Forget stores nothing, so
+              // broken saved arguments must not lock it.
+              disabled={
+                sharedVariantUnresolved ||
+                stagedMetadataPending ||
+                budgetSettling ||
+                (remember &&
+                  ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                    sharedExtraArgsRefused ||
+                    extraArgsHydrating))
+              }
+              onClick={handleSave}
+            >
+              {remember ? "Save settings" : "Forget settings"}
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"

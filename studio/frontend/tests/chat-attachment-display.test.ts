@@ -32,7 +32,11 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
     ["Rain 2.6-1.mp3", "audio/mpeg", "audio"],
     ["Book.m4a", "", "audio"],
     ["clip.mov", "", "video"],
-    ["Untitled document.docx", "", "document"],
+    ["Untitled document.docx", "", "word"],
+    ["notes.odt", "", "word"],
+    ["Draft", "application/vnd.google-apps.document", "word"],
+    ["Template", "application/vnd.oasis.opendocument.text-template", "word"],
+    ["book.epub", "", "document"],
     ["results.csv", "text/csv", "spreadsheet"],
     ["deck.pptx", "", "presentation"],
     ["flappy-bird(1)(1).html", "", "web"],
@@ -55,7 +59,7 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
 test("the common kinds carry the colors people recognize", () => {
   assert.match(ATTACHMENT_KIND_ICON_CLASS.pdf, /red/);
   assert.match(ATTACHMENT_KIND_ICON_CLASS.audio, /violet/);
-  assert.match(ATTACHMENT_KIND_ICON_CLASS.document, /blue/);
+  assert.match(ATTACHMENT_KIND_ICON_CLASS.word, /#4285F4/);
   assert.match(ATTACHMENT_KIND_ICON_CLASS.spreadsheet, /emerald/);
   assert.match(ATTACHMENT_KIND_ICON_CLASS.presentation, /orange/);
 });
@@ -218,13 +222,13 @@ test("files handed to a new chat wait until it is on screen", async () => {
   assert.match(fn, /\.then\(\(\) => \{\n\s*requestAnimationFrame\(/);
 });
 
-test("an image card in the composer has no border or fill; file cards keep both", () => {
+test("an image card in the composer shares the file card border but has no fill", () => {
   const card = ATTACHMENT.slice(
     ATTACHMENT.indexOf("const ComposerAttachmentCard: FC"),
     ATTACHMENT.indexOf("const SentAttachmentLayoutContext"),
   );
   assert.match(card, /const src = useAttachmentImageSrc\(\);/);
-  assert.match(card, /!src && CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
+  assert.match(card, /CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
   assert.match(card, /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} \/>/);
 });
 
@@ -248,7 +252,7 @@ test("a sent text file downloads whole, not the capped preview", async () => {
 
 test("a composer clip reads as a video, not by its .mp4 name as audio", () => {
   assert.match(ATTACHMENT, /if \(isVideoAttachment\(attachment\)\) return "Video";\n\s*return isAudioAttachment\(/);
-  assert.match(ATTACHMENT, /isVideo\n\s*\? Video01Icon\n\s*: isAudioAttachment\(name, contentType\)/);
+  assert.match(ATTACHMENT, /isVideo\n\s*\? FlimSlateIcon\n\s*: isAudioAttachment\(name, contentType\)/);
 });
 
 test("a sent document shown from its stored text downloads and chats as a .txt", async () => {
@@ -259,4 +263,9 @@ test("a sent document shown from its stored text downloads and chats as a .txt",
   );
   assert.match(dialog, /const name = saveAs\?\.name \?\? \(source\.name \|\| "attachment"\);/);
   assert.match(dialog, /downloadFile\(blob, name, contentType \|\| undefined\)/);
+});
+
+test("a card preview follows the text adapter before a binary document viewer", async () => {
+  const preview = await readSrcAsync("components/assistant-ui/attachment-card-preview.tsx");
+  assert.match(preview, /if \(binary && isTextAttachment\(file\.name, file\.type\)\) return \{ kind: "text" \};\n\s*if \(document\)/);
 });

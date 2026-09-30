@@ -131,6 +131,7 @@ INCIDENTS = [
     ("268b771b9", None, "tests/studio/install/test_keep_install_backcompat_9979.py", "AV009"),
     ("268b771b9", None, "tests/security/test_release_desktop_signing_simulation.py", "AV009"),
     ("268b771b9", None, "tests/studio/test_install_rollback_lifecycle.ps1", "AV010"),
+    ("8c8dd864c", None, "install.sh", "AV016"),
 ]
 
 

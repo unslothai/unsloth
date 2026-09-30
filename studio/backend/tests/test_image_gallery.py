@@ -532,3 +532,11 @@ def test_save_looks_up_the_folder_after_encoding(tmp_path, monkeypatch):
     monkeypatch.setattr(gallery, "gallery_dir", lambda: order.append("dir") or tmp_path)
     gallery.save(Image.new("RGB", (4, 4)), {"prompt": "p"})
     assert order[:2] == ["encode", "dir"]
+
+
+def test_thumbnail_is_a_downscaled_webp_of_the_png():
+    record = gallery.save(Image.new("RGB", (64, 32), (200, 10, 10)), _meta())
+    data = gallery.thumbnail(gallery.image_path(record["id"]), 16)
+    with Image.open(io.BytesIO(data)) as im:
+        assert im.format == "WEBP"
+        assert im.size == (16, 8)

@@ -457,7 +457,7 @@ function Sidebar({
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && (
+        {state === "expanded" && (!collapseToZero || pinned) && (
           <SidebarResizeHandle
             side={side}
             // The shared handle hides itself below `sm`, a viewport rule that

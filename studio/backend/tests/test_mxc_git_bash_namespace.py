@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import mxc_probe, os_sandbox, sandbox_windows_mxc
+from core.inference import mxc_probe, mxc_read_grants, os_sandbox, sandbox_windows_mxc
 
 # What Git for Windows' bash prints under an AppContainer before it reads its command (microsoft/mxc#1061).
 MSYS_STARTUP_FAILURE = (
@@ -17,7 +17,10 @@ DLL_INIT_FAILED = 3221225794  # 0xC0000142
 
 
 @pytest.fixture(autouse = True)
-def _fresh_probe_cache():
+def _fresh_probe_cache(monkeypatch):
+    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
+    monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
+    monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
     mxc_probe.invalidate_cache()
     yield
     mxc_probe.invalidate_cache()

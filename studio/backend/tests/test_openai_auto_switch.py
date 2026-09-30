@@ -8395,6 +8395,18 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
             assert connection.closed
 
 
+def test_out_of_range_scan_folder_ids_remove_nothing(monkeypatch):
+    import sqlite3
+
+    from hub.storage import scan_folders
+    for storage in (studio_db, scan_folders):
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE scan_folders (id INTEGER PRIMARY KEY, path TEXT)")
+        monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+        for folder_id in (2**63, -(2**63) - 1):
+            assert storage.remove_scan_folder(folder_id) is False
+
+
 def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
     from hub.services.models import local_inventory
 
@@ -11033,39 +11045,130 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     return backend, recorder
 
 
-@pytest.mark.parametrize(
-    ("url", "detail"),
-    [
-        ("data:image/png;base64,", "Failed to decode image"),
-        (
-            "https://example.com/image.png",
-            "Remote image URLs are not supported. Use a base64 data URL.",
-        ),
-    ],
-    ids = ["empty data url", "remote url"],
-)
-def test_chat_rejects_unsupported_openai_images_before_non_gguf_switch(monkeypatch, url, detail):
-    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
-    payload = _chat_request(
+def _chat_image_request(*urls):
+    return _chat_request(
         model = "org/B-GGUF",
         messages = [
             ChatMessage(
                 role = "user",
                 content = [
-                    ImageContentPart(
-                        type = "image_url",
-                        image_url = ImageUrl(url = url),
-                    )
+                    ImageContentPart(type = "image_url", image_url = ImageUrl(url = url)) for url in urls
                 ],
             )
         ],
     )
 
+
+def test_chat_rejects_an_empty_data_url_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    payload = _chat_image_request("data:image/png;base64,")
+
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
     assert exc.value.status_code == 400
-    assert exc.value.detail == detail
+    assert exc.value.detail == "Failed to decode image"
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_chat_loads_a_non_gguf_target_for_remote_images(monkeypatch, count):
+    # The loaded model fetches the URLs as a resident one does, so the switch is not refused.
+    _, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    recorder.fail = True
+    urls = [f"https://example.com/{index}.png" for index in range(count)]
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_chat_completions(_chat_image_request(*urls), object(), "tester")
+        )
+
+    assert exc.value.detail == "load failed"
+    assert len(recorder.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("turns", "detail"),
+    [
+        ([["http://example.com/0.png"]], "Unsupported image URL scheme ('http:')"),
+        (
+            [["https://example.com/0.png", "http://example.com/1.png"]],
+            "one image per message",
+        ),
+        (
+            [["http://example.com/0.png"], ["https://example.com/1.png"]],
+            "Unsupported image URL scheme ('http:')",
+        ),
+    ],
+    ids = ["alone", "beside https", "earlier turn"],
+)
+def test_chat_refuses_an_unfetchable_scheme_before_non_gguf_switch(monkeypatch, turns, detail):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [_chat_image_request(*urls).messages[0] for urls in turns],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert detail in exc.value.detail
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_chat_leaves_an_unread_older_image_to_the_loaded_model(monkeypatch):
+    # The newer remote image is the one the model reads, so the older one is not validated.
+    _, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    recorder.fail = True
+    turns = ["data:image/png;base64,Zm9v", "https://example.com/0.png"]
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [_chat_image_request(url).messages[0] for url in turns],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.detail == "load failed"
+    assert len(recorder.calls) == 1
+
+
+def test_chat_validates_a_legacy_image_beside_a_remote_one_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    monkeypatch.setattr(inference_route, "_local_target_may_take_several_images", lambda *_a: True)
+    payload = _chat_image_request("https://example.com/0.png")
+    payload.image_base64 = "Zm9v"
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.detail == "Failed to decode image"
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_chat_refuses_a_remote_image_beside_a_legacy_one_before_non_gguf_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    reply = _chat_image_request("https://example.com/0.png").messages[0]
+    reply.role = "assistant"
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            reply,
+            ChatMessage(role = "user", content = "and?"),
+        ],
+        image_base64 = "aGVsbG8=",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert "one image per message" in exc.value.detail
     assert recorder.calls == []
     assert backend.model_identifier == "org/A-GGUF"
 
