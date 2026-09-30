@@ -358,10 +358,13 @@ with sync_playwright() as p:
             seen = (_commits["started"], len(_commits["inflight"]), len(_commits["loads_ended"]))
             if seen != progress[0]:
                 progress[:] = [seen, time.monotonic()]
-            # 30 s with nothing tracked starting or ending, and no /load open, is a lost event
-            # rather than work in progress: a real /load keeps the full timeout.
+            # 30 s with nothing tracked starting or ending, while only settings writes are open,
+            # is a lost event rather than work in progress. Any open /load, /validate or /unload
+            # keeps the full timeout: the frontend awaits /unload before /load, and a large GGUF
+            # teardown can take minutes.
             if (
                 _commits["inflight"]
+                and all("/api/settings/" in req.url for req in _commits["inflight"])
                 and not _pending_loads()
                 and time.monotonic() - progress[1] > 30
             ):
@@ -393,7 +396,7 @@ with sync_playwright() as p:
                 info(f"WARN {what}: the load flow ended without sending /api/inference/load")
             elif outcome == "stalled":
                 info(
-                    f"WARN {what}: nothing changed for 30s with no /load open; still counted in "
+                    f"WARN {what}: nothing changed for 30s with only settings writes open; still counted in "
                     f"flight: {sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}"
                 )
                 # Those events are not coming; carrying them would stall every later wait too.
