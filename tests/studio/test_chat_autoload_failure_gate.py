@@ -561,6 +561,9 @@ function reasoningCapsFromLoad(_x: any) { return {}; }
 function resolveToolsEnabledOnLoad(_x: any) { return {}; }
 function loadedGpuMemoryFields(_x: any) { return {}; }
 function resolveLoadedSpeculativeSettings(_x: any) { return {}; }
+function managedGpuMemoryFields(_x: any) { return {}; }
+function managedKvCacheFields(_x: any) { return {}; }
+function managedSpeculativeSettings(_x: any) { return {}; }
 function isMultimodalResponse(_x: any) { return false; }
 
 async function listCachedGguf(signal?: any) {
