@@ -4840,6 +4840,20 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
+def _off_mode_sandbox_gate(payload, ui_events: bool) -> bool:
+    """Whether an "off" request arms the confirm gate: only on a stream that can show a prompt.
+
+    Elsewhere "off" stays unprompted, so no route guard or non-streaming client sees a change.
+    """
+    return (
+        getattr(payload, "permission_mode", None) == "off"
+        and not getattr(payload, "_off_confirm_opt_out", False)
+        and not getattr(payload, "bypass_permissions", False)
+        and bool(getattr(payload, "stream", False))
+        and bool(ui_events)
+    )
+
+
 def _catalog_names(tools) -> list[str]:
     """Tool names out of a resolved catalogue, for the confirm-gate classifier."""
     names = []
@@ -4855,7 +4869,7 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
     The gate can only prompt while streaming, so a non-streaming request that will
-    prompt must 400 up front. auto ("Approve for me") only prompts for a call the
+    prompt must 400 up front. auto ("Auto-approve") only prompts for a call the
     classifier flags, so an auto request whose confirm is derived from the mode
     (not an explicit confirm_tool_calls=true) and whose selectable tools are all
     always-safe (web_search / RAG) never prompts and needs no stream. ask,
@@ -24952,7 +24966,8 @@ async def _proxy_to_external_provider(
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
-                    confirm_calls = _permission_mode_confirm(payload),
+                    confirm_calls = _permission_mode_confirm(payload)
+                    or _off_mode_sandbox_gate(payload, _ui_events),
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
@@ -25369,7 +25384,8 @@ async def _proxy_to_external_provider(
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
-                    confirm_calls = _permission_mode_confirm(payload),
+                    confirm_calls = _permission_mode_confirm(payload)
+                    or _off_mode_sandbox_gate(payload, _ui_events),
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
@@ -27652,6 +27668,8 @@ async def produce_openai_chat_completions(
                         param = "confirm_tool_calls",
                     ),
                 )
+            # After the channel check, which "off" never trips.
+            _effective_confirm = _effective_confirm or _off_mode_sandbox_gate(payload, _ui_events)
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
             system_prompt = _apply_current_date_prompt(
@@ -29657,6 +29675,8 @@ async def produce_openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
+        # After the channel check, which "off" never trips (see the GGUF branch).
+        _sf_effective_confirm = _sf_effective_confirm or _off_mode_sandbox_gate(payload, _ui_events)
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,

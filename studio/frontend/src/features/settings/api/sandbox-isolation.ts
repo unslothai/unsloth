@@ -15,6 +15,7 @@ export type SandboxToolStatus = {
   reason: string;
   limitations: string[];
   protectionState: string | null;
+  remediation: string;
 };
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
@@ -32,12 +33,21 @@ export type WindowsSandboxStatus = {
   prepareRepeatsAfterRestart: boolean;
 };
 
+export type SandboxSetupPlan = {
+  action: "linux-install" | "windows-setup" | null;
+  elevation: string | null;
+  manualCommand: string;
+  reason: string;
+  canRun: boolean;
+};
+
 export type SandboxStatus = {
   platform: string;
   python: SandboxToolStatus;
   terminal: SandboxToolStatus;
   terminalShell: TerminalShell | null;
   windows: WindowsSandboxStatus | null;
+  setup: SandboxSetupPlan | null;
   checkedAt: number;
   restored?: number;
 };
@@ -71,6 +81,17 @@ type ApiToolStatus = {
   limitations?: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
   protection_state?: string | null;
+  remediation?: string | null;
+};
+
+type ApiSetupPlan = {
+  action?: string | null;
+  elevation?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  manual_command?: string | null;
+  reason?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  can_run?: boolean;
 };
 
 type ApiWindowsStatus = {
@@ -101,6 +122,7 @@ type ApiSandboxStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   terminal_shell?: TerminalShell | null;
   windows?: ApiWindowsStatus | null;
+  setup?: ApiSetupPlan | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   checked_at?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -128,6 +150,22 @@ function toolFromApi(tool: ApiToolStatus | undefined): SandboxToolStatus {
     reason: tool?.reason ?? "",
     limitations: tool?.limitations ?? [],
     protectionState: tool?.protection_state ?? null,
+    remediation: tool?.remediation ?? "",
+  };
+}
+
+function setupFromApi(setup: ApiSetupPlan | null | undefined): SandboxSetupPlan | null {
+  if (!setup) return null;
+  const action =
+    setup.action === "linux-install" || setup.action === "windows-setup"
+      ? setup.action
+      : null;
+  return {
+    action,
+    elevation: setup.elevation ?? null,
+    manualCommand: setup.manual_command ?? "",
+    reason: setup.reason ?? "",
+    canRun: action !== null && (setup.can_run ?? true),
   };
 }
 
@@ -158,6 +196,7 @@ export function statusFromApi(status: ApiSandboxStatus): SandboxStatus {
     terminal: toolFromApi(status.terminal),
     terminalShell: status.terminal_shell ?? null,
     windows: windowsFromApi(status.windows),
+    setup: setupFromApi(status.setup),
     checkedAt: status.checked_at ?? 0,
   };
   if (typeof status.grants_restored === "number") out.restored = status.grants_restored;

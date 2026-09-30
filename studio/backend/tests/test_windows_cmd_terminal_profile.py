@@ -68,7 +68,19 @@ MSYS = mxc_probe.MSYS_NAMESPACE_REASON
         (BASH, _cap(True), _cap(True), "bash"),
         (BASH, _cap(False, MSYS), _cap(True), "cmd_isolated"),
         (BASH, _cap(False, MSYS), _cap(False, "no"), "bash"),
-        (BASH, _cap(False, "the live MXC probe did not complete cleanly"), _cap(True), "bash"),
+        # A freshly prepared host fails bash without the MSYS signature while cmd passes.
+        (
+            BASH,
+            _cap(False, "the live MXC probe did not complete cleanly"),
+            _cap(True),
+            "cmd_isolated",
+        ),
+        (
+            BASH,
+            _cap(False, "the live MXC probe did not complete cleanly"),
+            _cap(False, "no"),
+            "bash",
+        ),
         (None, None, _cap(True), "cmd_isolated"),
         (None, None, _cap(False, "no"), "cmd_fallback"),
     ],
@@ -78,10 +90,8 @@ def test_profile_matrix(windows, bash, bash_cap, cmd_cap, expected):
     assert tools._terminal_profile() == expected
 
 
-def test_cmd_is_only_probed_after_the_msys_verdict(windows):
-    calls = windows(
-        bash_cap = _cap(False, "the live MXC probe did not complete cleanly"), cmd_cap = _cap(True)
-    )
+def test_cmd_is_only_probed_after_bash_fails(windows):
+    calls = windows(bash_cap = _cap(True), cmd_cap = _cap(True))
     tools._terminal_profile()
     assert calls == [BASH]
 

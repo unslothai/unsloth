@@ -68,7 +68,7 @@ function measure(
   return { result, attribute: row.attribute };
 }
 
-// "Run automatically" + "Deep research" + Search + Code, laid out three ways.
+// "Full access in sandbox" + "Deep research" + Search + Code, laid out three ways.
 const WIDTHS = { none: 470, first: 330, true: 190 };
 
 test("keeps every label when the row already fits", () => {

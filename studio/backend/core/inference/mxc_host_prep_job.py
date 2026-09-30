@@ -22,6 +22,8 @@ _PREPARED_PREFIX = "[mxc-prebuilt] host prepared:"
 _ALREADY_PREPARED = "[mxc-prebuilt] host already prepared"
 
 _lock = threading.Lock()
+# Shared with the Settings setup job: never two elevated helpers.
+HOST_CHANGE_LOCK = threading.Lock()
 _current: "HostPrepJob | None" = None
 _on_finish: list[Callable[[], None]] = []
 
@@ -116,19 +118,24 @@ def _run(job: HostPrepJob, proc: subprocess.Popen) -> None:
 
 def start() -> HostPrepJob:
     global _current
-    from . import mxc_probe
+    from . import mxc_probe, sandbox_setup_job, sandbox_setup_plan
 
-    with _lock:
-        if _current is not None and _current.state == "running":
-            return _current
-        job = HostPrepJob(id = uuid.uuid4().hex)
-        try:
-            proc = _spawn(mxc_probe.host_prep_command())
-        except Exception as exc:  # noqa: BLE001 - surfaced as a failed job
-            job.state, job.finished_at = "failed", time.time()
-            job.output_tail = [f"Could not start the host preparation: {exc}"]
+    with HOST_CHANGE_LOCK:
+        setup = sandbox_setup_job.current()
+        if setup is not None and setup.state == "running":
+            # Only the chained setup ends in this preparation; a runtime-only install never does.
+            return sandbox_setup_job._joined(setup, sandbox_setup_plan.WINDOWS_SETUP)
+        with _lock:
+            if _current is not None and _current.state == "running":
+                return _current
+            job = HostPrepJob(id = uuid.uuid4().hex)
+            try:
+                proc = _spawn(mxc_probe.host_prep_command())
+            except Exception as exc:  # noqa: BLE001 - surfaced as a failed job
+                job.state, job.finished_at = "failed", time.time()
+                job.output_tail = [f"Could not start the host preparation: {exc}"]
+                _current = job
+                return job
             _current = job
-            return job
-        _current = job
     threading.Thread(target = _run, args = (job, proc), name = "mxc-host-prep", daemon = True).start()
     return job
