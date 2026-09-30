@@ -205,14 +205,15 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
-          <p className="line-clamp-2 break-all pr-7 font-medium text-ui-14 leading-snug text-foreground">
+        // Two-line name slot keeps the icon in one place on every card.
+        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+          <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
           </p>
-          <div className="flex flex-1 items-center justify-center">
+          <div className="flex items-center justify-center">
             <KindIcon item={item} className={cardIconClass(item)} />
           </div>
-          <p className="truncate pr-6 text-ui-13 text-muted-foreground">
+          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
             {showTime && formatCardTime(item.updatedAt, locale)}
           </p>
         </div>

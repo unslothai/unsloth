@@ -1787,14 +1787,15 @@ function FavoriteTile({
           FILE_CARD_SURFACE,
         )}
       >
-        <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
-          <p className="line-clamp-2 break-words pr-7 font-medium text-ui-14 leading-snug text-foreground">
+        {/* Same layout as the file cards. */}
+        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-13p5 leading-snug text-foreground">
             {title}
           </p>
-          <div className="flex flex-1 items-center justify-center text-foreground">
+          <div className="flex items-center justify-center text-foreground">
             {icon}
           </div>
-          <p className="truncate pr-6 text-ui-13 text-muted-foreground">
+          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
             {showTime && time ? formatCardTime(time, locale) : ""}
           </p>
         </div>
