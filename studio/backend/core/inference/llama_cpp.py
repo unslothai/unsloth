@@ -6371,7 +6371,7 @@ def _widen_pin_ids_for_companion_devices(
         changed = True
     if not changed and widened == main_ids:
         return list(main_ids), ""
-    return widened, f"[{main_ids}] -> {widened}"
+    return widened, f"{main_ids} -> {widened}"
 
 
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
