@@ -266,7 +266,13 @@ def test_training_keeps_an_off_torch_images_model():
     assert 'getattr(diffusion, "runs_off_torch_device", False) is True' in source
 
 
-def _drive_load_route(monkeypatch, *, predicted, training_active):
+def _drive_load_route(
+    monkeypatch,
+    *,
+    predicted,
+    training_active,
+    video_engine = None,
+):
     """Run the real image-load route with every hardware and engine answer stubbed; returns the
     route calls in order, plus what the route raised."""
     import asyncio
@@ -319,6 +325,15 @@ def _drive_load_route(monkeypatch, *, predicted, training_active):
     monkeypatch.setattr(route, "_repo_is_in_the_hub_cache", lambda *_a: True)
     monkeypatch.setattr(account_access, "admit_media_load", lambda _k, fn, *_a: fn())
     monkeypatch.setattr(account_access, "note_resident_components", lambda *_a, **_k: None)
+
+    monkeypatch.setattr(
+        "core.inference.video.get_video_backend",
+        lambda: SimpleNamespace(
+            status = lambda: {"engine": video_engine},
+            unload = lambda: calls.append("video_unload"),
+        ),
+    )
+    monkeypatch.setattr(arb, "release", lambda owner: calls.append(f"release:{owner}"))
 
     request = DiffusionLoadRequest(model_path = "org/image", gguf_filename = "model.gguf")
     try:
@@ -482,3 +497,16 @@ def test_a_native_video_load_frees_the_off_torch_images_engine(monkeypatch, fami
     request = VideoLoadRequest(model_path = "org/video", gguf_filename = "model.gguf")
     asyncio.run(video_route.load_video_model_gated(request, "tester"))
     assert unloaded == (["images"] if evicted else [])
+
+
+@pytest.mark.parametrize(
+    "video_engine, evicted", [("sd_cpp", True), ("diffusers", False), (None, False)]
+)
+def test_an_off_torch_image_load_frees_a_native_video_model(monkeypatch, video_engine, evicted):
+    """The install it may run replaces the build a native H3 model was loaded from."""
+    calls, raised = _drive_load_route(
+        monkeypatch, predicted = ENGINE_SD_CPP, training_active = False, video_engine = video_engine
+    )
+    assert raised is None, raised
+    assert ("video_unload" in calls) is evicted
+    assert calls.index("select_and_activate") > (calls.index("video_unload") if evicted else -1)
