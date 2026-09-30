@@ -152,8 +152,7 @@ class Int4PackedLinear(nn.Linear):
         from ..kernels.int4_packed import int4_matmul
 
         qs = self.quant_state
-        # Train mode (e.g. the no-grad first pass of gradient checkpointing) keeps the exact dequantize + matmul:
-        # the fused kernel would build a per-layer scale cache and differ numerically from the recompute.
+        # Train mode (incl. GC's no-grad first pass): exact dequant + matmul, same math as the recompute.
         out = int4_matmul(
             x.to(qs.dtype), self._parameters["weight_packed"], qs, fast = not self.training
         )
@@ -161,8 +160,7 @@ class Int4PackedLinear(nn.Linear):
 
     def train(self, mode = True):
         if mode:
-            # The fused-kernel call caches permuted scale / zero copies per layer (1/8 of the packed weight):
-            # training never uses them, so free them instead of carrying them through every step.
+            # Free the fused kernel's per-layer scale cache (1/8 of the packed weight); training never uses it.
             qs = self.__dict__.get("_int4_quant_state")
             if qs is not None:
                 qs._fast = None
