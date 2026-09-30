@@ -1205,16 +1205,16 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo needs 42.9 GB of card dense and 34.9 GB pre-quantised under the 70% rule.
+// Z-Image-Turbo: 27.3 GB card dense (bf16, not the fp32 download), 19.3 GB pre-quantised, under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
-  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
   false,
 );
 for (const schemes of [["fp8"], ["int8"]]) {
   assert.equal(
     curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-      gpuGb: 40,
+      gpuGb: 24,
       systemRamGb: 128,
       denseQuantSchemes: schemes,
     }),
@@ -1224,11 +1224,15 @@ for (const schemes of [["fp8"], ["int8"]]) {
 }
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     denseQuantSchemes: [],
   }),
   false,
+);
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 32, systemRamGb: 128 }),
+  true,
 );
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
@@ -1321,7 +1325,7 @@ const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     isDownloaded: notDownloaded,
   }).format,
@@ -1339,6 +1343,15 @@ assert.equal(
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
     gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  zTurboId,
+);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 16,
     systemRamGb: 128,
     denseQuantSchemes: ["fp8"],
     isDownloaded: notDownloaded,

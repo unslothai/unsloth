@@ -178,7 +178,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 30, {
+      // Resident bf16 GiB, not the Hub's fp32 DiT: 11.5 DiT + 7.5 Qwen3-4B + 0.2 VAE.
+      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 19.1, {
         totalParams: 6154908736,
         prequantRepo: "unsloth/Z-Image-Turbo-FP8",
         prequantSizeGb: { fp8: 5.86, int8: 5.86 },
