@@ -21,7 +21,7 @@ test("the More flyout's rule sits as far from its rows as the menu's own edge", 
   const source = await readSrcAsync("components/app-sidebar.tsx");
 
   const menu =
-    /<DropdownMenuContent\s+side="right"\s+align="start"\s+sideOffset=\{6\}\s+className="([^"]*)"/.exec(
+    /<DropdownMenuContent\s+(?:ref=\{\w+\}\s+)?side="right"\s+align="start"\s+sideOffset=\{6\}\s+className="([^"]*)"/.exec(
       source,
     );
   assert.ok(menu, "could not find the More flyout's DropdownMenuContent");

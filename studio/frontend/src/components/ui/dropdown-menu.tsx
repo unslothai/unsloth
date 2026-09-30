@@ -8,6 +8,7 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { snapRowInsets, useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -40,6 +41,7 @@ function DropdownMenuContent({
   className,
   align = "start",
   sideOffset = 0,
+  collisionPadding,
   children,
   ref,
   ...props
@@ -51,6 +53,7 @@ function DropdownMenuContent({
         ref={snappedRef}
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         className={cn(
           // Width in whole pixels: Firefox draws a row's hover pill a device pixel off centre in a
@@ -271,6 +274,7 @@ function DropdownMenuSubContent({
   sideOffset,
   alignOffset,
   alignEnd,
+  collisionPadding,
   style,
   ref,
   ...props
@@ -341,6 +345,7 @@ function DropdownMenuSubContent({
         data-slot="dropdown-menu-sub-content"
         sideOffset={compactSideOffset}
         alignOffset={resolvedAlignOffset}
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         style={{
           ...style,
           visibility:

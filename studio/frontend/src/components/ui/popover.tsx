@@ -8,6 +8,7 @@ import type * as React from "react";
 
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 
 function Popover({
@@ -26,6 +27,7 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 0,
+  collisionPadding,
   container,
   ref,
   ...props
@@ -43,6 +45,7 @@ function PopoverContent({
       <PopoverPrimitive.Content
         ref={snappedRef}
         data-slot="popover-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         sideOffset={sideOffset}
         className={cn(
