@@ -35,7 +35,7 @@ test("the sidebar More flyout previews on mouse hover and pins on a press", asyn
   // A press pins or unpins, and is not treated as an outside press.
   assert.match(
     flyout,
-    /onPointerDown=\{\(event\) => \{[\s\S]*?event\.preventDefault\(\);\s*setMoreOpen\(!morePinnedOpen\);/,
+    /onPointerDown=\{\(event\) => \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?setMoreOpen\(!morePinnedOpen\);/,
   );
   assert.match(
     flyout,
@@ -72,6 +72,12 @@ test("a hover preview leaves focus where it was", async () => {
     /onOpenAutoFocus: \(event: Event\) => \{\s*if \(!moreChosen\.current\) event\.preventDefault\(\);/,
   );
   assert.match(flyout, /\{\.\.\.moreContentFocusProps\}/);
+  // Pinning an open preview focuses the menu, as a click-open does.
+  assert.match(flyout, /ref=\{moreContentRef\}/);
+  assert.match(
+    flyout,
+    /if \(!morePinnedOpen && moreHoverOpen\) \{\s*moreContentRef\.current\?\.focus\(\{ preventScroll: true \}\);/,
+  );
   assert.match(
     flyout,
     /onCloseAutoFocus=\{\(event\) => \{\s*const chosen = moreChosen\.current;\s*moreChosen\.current = false;\s*if \(!chosen\) \{\s*event\.preventDefault\(\);/,

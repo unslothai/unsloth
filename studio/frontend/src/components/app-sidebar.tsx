@@ -1011,6 +1011,7 @@ export function AppSidebar() {
   const [morePinnedOpen, setMorePinnedOpen] = useState(false);
   const moreOpen = moreHoverOpen || morePinnedOpen;
   const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const moreContentRef = useRef<HTMLDivElement | null>(null);
   // A hover preview must not move focus in or out of the composer.
   const moreChosen = useRef(false);
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -5328,6 +5329,10 @@ export function AppSidebar() {
                             onPointerDown={(event) => {
                               if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
                               event.preventDefault();
+                              // An open preview never mounts again, so focus it as a click-open would.
+                              if (!morePinnedOpen && moreHoverOpen) {
+                                moreContentRef.current?.focus({ preventScroll: true });
+                              }
                               setMoreOpen(!morePinnedOpen);
                             }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
@@ -5354,6 +5359,7 @@ export function AppSidebar() {
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent
+                      ref={moreContentRef}
                       side="right"
                       align="start"
                       sideOffset={6}
