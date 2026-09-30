@@ -69,8 +69,6 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
   explicitFamily,
-  FAMILY_OVERRIDE_HINT,
-  familyOverrideOptions,
   resolvedFamilyOverrideSelection,
   useFamilyOverride,
 } from "@/features/model-picker/components/model-selector/family-override";
@@ -1505,7 +1503,7 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
-  const { familyOverride, setFamilyOverride, opaqueKind, selectorModelId } = useFamilyOverride(status);
+  const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   const conditioning = status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
@@ -4468,14 +4466,7 @@ export function ImagesPage({
 
   const advancedControls = (
     <>
-      <AdvancedSelect
-        label="Family"
-        hint={FAMILY_OVERRIDE_HINT}
-        badge={<ResolvedBadge status={status} controlKey="family_override" />}
-        value={familyOverride}
-        onValueChange={setFamilyOverride}
-        options={familyOverrideOptions(status?.supported_families)}
-      />
+      <AdvancedSelect {...familySelect} badge={<ResolvedBadge status={status} controlKey="family_override" />} />
       <AdvancedSelect
         label="On model selection"
         hint="Choose Download only to prepare the selected model and its required assets without loading it. Applies to the next model you select; progress and cancellation appear in Downloads."
