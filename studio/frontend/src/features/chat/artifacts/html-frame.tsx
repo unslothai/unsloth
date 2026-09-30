@@ -51,7 +51,7 @@ const BLOCKED_HOSTS_SHOWN = 3;
 // Canvas notices look like the app's toasts: same surface, shadow, type and pill actions.
 const NOTICE_WRAP = "absolute inset-x-0 top-0 flex justify-center p-2";
 const NOTICE =
-  "max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-[var(--radius)] border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
+  "max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-[calc(var(--radius)+6px)] border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
 const NOTICE_BODY =
   "text-ui-13 leading-[1.4] text-muted-foreground [&_p:not(:last-child)]:mb-2.5";
 const NOTICE_BUTTON = "h-6 rounded-full px-2 text-ui-12 font-medium";
