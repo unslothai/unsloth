@@ -54,8 +54,8 @@ export interface GpuInfo {
   denseQuantSchemes: readonly string[];
   /** False until system info arrives, and on backends that do not report it. */
   nvfp4Diffusion: boolean;
-  /** Group offload can stream torchao weights. False until resolved and on older backends. */
-  quantisedStreaming: boolean;
+  /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
+  quantisedStreaming?: boolean;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
