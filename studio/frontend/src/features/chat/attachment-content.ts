@@ -760,6 +760,25 @@ export function repackDocxAttachmentArchive(
 const WORDPROCESSINGML_NAMESPACE =
   "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const DOCX_NOTE_BREAKS = new Set(["p", "tab", "br", "cr"]);
+const DOCX_NOTE_SKIP = new Set(["del", "moveFrom", "rt", "Fallback"]);
+
+function docxNoteText(node: Node): string {
+  let text = "";
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType !== 1) continue;
+    const element = child as Element;
+    const name = element.localName;
+    if (DOCX_NOTE_SKIP.has(name)) continue;
+    if (name === "t" && element.namespaceURI === WORDPROCESSINGML_NAMESPACE) {
+      text += element.textContent ?? "";
+    } else if (name === "noBreakHyphen") {
+      text += "-";
+    } else {
+      text += (DOCX_NOTE_BREAKS.has(name) ? " " : "") + docxNoteText(element);
+    }
+  }
+  return text;
+}
 
 export function readDocxNotesText(archive: Uint8Array): string {
   const names = new Set<string>();
@@ -803,13 +822,7 @@ export function readDocxNotesText(archive: Uint8Array): string {
       const type = note.getAttributeNS(WORDPROCESSINGML_NAMESPACE, "type");
       if (type && type !== "normal") continue;
       number++;
-      const text = Array.from(
-        note.getElementsByTagNameNS(WORDPROCESSINGML_NAMESPACE, "*"),
-        (node) => (node.localName === "t" ? node.textContent : DOCX_NOTE_BREAKS.has(node.localName) ? " " : ""),
-      )
-        .join("")
-        .replace(/\s+/g, " ")
-        .trim();
+      const text = docxNoteText(note).replace(/\s+/g, " ").trim();
       if (text) lines.push(`[${number}] ${text}`);
     }
     if (lines.length > 1) sections.push(lines.join("\n"));
