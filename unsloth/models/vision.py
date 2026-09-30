@@ -2433,6 +2433,9 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
+_NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -4138,6 +4141,11 @@ class FastBaseModel:
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
+        # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
+        _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        if _force_non_reentrant:
+            use_reentrant = False
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
@@ -4160,6 +4168,16 @@ class FastBaseModel:
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
+        else:
+            # Drop the wrapper an earlier deepseek_v41 load in this process installed.
+            for _mod, _name in (
+                (torch_checkpoint, "checkpoint"),
+                (torch_checkpoint, "_old_checkpoint"),
+                (hf_modeling_utils, "checkpoint"),
+            ):
+                _orig = getattr(getattr(_mod, _name, None), "_unsloth_original", None)
+                if _orig is not None:
+                    setattr(_mod, _name, _orig)
 
         from .loader_utils import enable_composite_gradient_checkpointing
         from .remote_moe_shims import prepare_remote_moe_for_training
@@ -4201,6 +4219,32 @@ class FastBaseModel:
                 return _original_gc_enable(**kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
+
+        if _force_non_reentrant:
+            # Wrap the unpatched method so a second post_patch_model (get_peft_model) replaces the wrapper instead of nesting it.
+            _original_gc_enable_nr = getattr(
+                model.gradient_checkpointing_enable,
+                "_unsloth_gc_original",
+                model.gradient_checkpointing_enable,
+            )
+
+            def _gc_enable_non_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
+                gc_kwargs["use_reentrant"] = False
+                # Bind this model's wrapper (and its offloading) even if a later load restored the global.
+                _prev_checkpoint = hf_modeling_utils.checkpoint
+                hf_modeling_utils.checkpoint = _nonre_checkpoint
+                try:
+                    return _original_gc_enable_nr(gc_kwargs, *args, **kwargs)
+                finally:
+                    hf_modeling_utils.checkpoint = _prev_checkpoint
+
+            _gc_enable_non_reentrant._unsloth_gc_original = _original_gc_enable_nr
+            model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 
         from transformers.trainer import Trainer
 
