@@ -110,6 +110,7 @@ def test_apply_overrides_raises_config_error_and_names_the_flag():
         ("--gradient-checkpointing", "yes", "gradient_checkpointing: 'true'"),
         ("--gradient-checkpointing", "false", "gradient_checkpointing: none"),
         ("--gradient-checkpointing", "off", "gradient_checkpointing: none"),
+        ("--gradient-checkpointing", "", "gradient_checkpointing: unsloth"),
     ],
 )
 def test_spellings_the_trainer_already_accepted_still_work(flag, value, resolved):

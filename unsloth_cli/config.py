@@ -52,6 +52,8 @@ class TrainingConfig(BaseModel):
         if isinstance(value, bool):
             return "true" if value else "none"
         text = _lower_str(value)
+        if text == "":
+            return "unsloth"
         if text in ("1", "yes"):
             return "true"
         if text in ("false", "0", "no", "off"):
