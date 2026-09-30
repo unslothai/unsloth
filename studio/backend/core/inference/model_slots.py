@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Models kept loaded alongside the primary one ("Keep other models loaded").
-
-Each kept model is a slot: its own llama-server backend and orchestrator. A request is routed to
-the slot serving the model it names by setting ``routed_slot`` for the rest of its task, so the
-existing ``get_llama_cpp_backend`` / ``get_inference_backend`` lookups answer with that slot.
-"""
-
-from __future__ import annotations
+"""Models kept loaded alongside the primary one, each with its own llama-server and orchestrator.
+A task naming one sets ``routed_slot``, so the usual backend getters answer with that slot."""
 
 import asyncio
 import atexit
@@ -49,11 +43,6 @@ def in_slot(slot: Optional[ExtraSlot], fn: Callable):
     context = contextvars.copy_context()
     context.run(routed_slot.set, slot)
     return context.run(fn)
-
-
-def backends() -> list[tuple[Any, Any]]:
-    """The (llama, orchestrator) of every kept model, whichever account loaded it."""
-    return [(slot.llama, slot.orchestrator) for slot in list(slots)]
 
 
 def filling_model() -> Optional[str]:
@@ -118,40 +107,30 @@ def reserve(slot: ExtraSlot) -> bool:
         if slot not in slots:
             return False
         slot.refs += 1
+
+    def release(_task = None):
+        with lock:
+            slot.refs -= 1
+
     task = asyncio.current_task()
-    if task is None:
-        release(slot)
-    else:
-        task.add_done_callback(lambda _task: release(slot))
+    release() if task is None else task.add_done_callback(release)
     return True
 
 
-def release(slot: ExtraSlot) -> None:
-    with lock:
-        slot.refs -= 1
-
-
 def eviction_victims(
-    exclude: Optional[ExtraSlot],
+    exclude,
     short_mib: int,
     gpu_indices = None,
 ) -> list[ExtraSlot]:
     """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
     one at a time when a footprint is unknown, since the retry prices the rest. A slot still
     answering is never a victim."""
-    candidates = sorted(
-        (
-            s
-            for s in visible()
-            if s is not exclude and in_use(s) and not s.generations and not s.refs
-        ),
-        key = lambda s: s.last_used,
-    )
+    candidates = [s for s in visible() if s is not exclude and in_use(s)]
     victims, freed = [], 0
-    for slot in candidates:
+    for slot in sorted(candidates, key = lambda s: s.last_used):
         planned = getattr(slot.llama, "_planned_vram_mib", {})
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
-        if planned and not held:
+        if slot.generations or slot.refs or (planned and not held):
             continue
         victims.append(slot)
         freed += held
@@ -170,7 +149,7 @@ def claim_victim(slot: ExtraSlot) -> bool:
 
 
 def evict(
-    exclude: Optional[ExtraSlot],
+    exclude,
     short_mib: int,
     gpu_indices = None,
 ) -> list[ExtraSlot]:
@@ -239,16 +218,14 @@ def _drop_where(predicate) -> int:
 
 def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
     """Drop every slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
-    return _drop_where(
-        lambda slot, filling: not (spare_filling and filling)
-        and (
-            keep is None
-            or (
-                bool(slot.llama.is_loaded or slot.orchestrator.active_model_name)
-                and not keep(slot.llama)
-            )
+
+    def doomed(slot, filling):
+        loaded = slot.llama.is_loaded or slot.orchestrator.active_model_name
+        return not (spare_filling and filling) and (
+            keep is None or bool(loaded and not keep(slot.llama))
         )
-    )
+
+    return _drop_where(doomed)
 
 
 def unload_llama_slots() -> int:
