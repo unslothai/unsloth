@@ -78,6 +78,8 @@ let _modelConfigController: AbortController | null = null;
 
 // Has the user manually toggled trainOnCompletions since the last auto-set?
 let _trainOnCompletionsManuallySet = false;
+// The flag outlives a model switch; CPT provenance only trusts it for this model.
+let _trainOnCompletionsManualModel: string | null = null;
 
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
@@ -402,7 +404,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
               // Fill only: a value captured on entering CPT is the user's, not a default.
               ...(requestedSelectionOwnsLoraSnapshot &&
-              !_trainOnCompletionsManuallySet &&
+              !(
+                _trainOnCompletionsManuallySet &&
+                _trainOnCompletionsManualModel === modelName
+              ) &&
               get().trainingMethodProvenance.trainOnCompletionsBeforeCpt ===
                 null
                 ? cptCompletionProvenanceRefresh
@@ -1051,6 +1056,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             state.trainingMethod !== "cpt" &&
             trainingMethod === "cpt" &&
             _trainOnCompletionsManuallySet &&
+            _trainOnCompletionsManualModel === state.selectedModel &&
             patch.trainingMethodProvenance
           ) {
             patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
@@ -1378,6 +1384,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsManualModel = get().selectedModel;
           setUserEdit({
             trainOnCompletions,
             trainOnCompletionsDefaultPendingFor: null,

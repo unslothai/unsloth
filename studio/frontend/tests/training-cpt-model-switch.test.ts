@@ -1233,3 +1233,40 @@ test("an image split picked inside CPT keeps completions off after manual toggle
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
+
+test("a manual toggle on the previous model does not decide the next model's CPT restore", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() => completionModel("old/model", false));
+  useTrainingConfigStore.getState().selectTrainingModel("old/model", "text");
+  await settleStore();
+  useTrainingConfigStore.getState().setTrainOnCompletions(true);
+
+  let resolveDefaults!: (response: Response) => void;
+  setAuthFetchHandler(
+    () =>
+      new Promise<Response>((resolve) => {
+        resolveDefaults = resolve;
+      }),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("new/model", "text");
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  useTrainingConfigStore.getState().setBatchSize(8);
+  resolveDefaults(
+    Response.json({
+      id: "new/model",
+      config: { training: { train_on_completions: false } },
+      is_vision: false,
+      is_embedding: false,
+      is_audio: false,
+      audio_type_known: true,
+      is_lora: false,
+      model_type: "text",
+      model_size_bytes: null,
+      max_position_embeddings: 32768,
+    }),
+  );
+  await settleStore();
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
