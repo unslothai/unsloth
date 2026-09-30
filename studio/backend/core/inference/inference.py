@@ -2174,7 +2174,6 @@ class InferenceBackend:
 
         clips = [audio_array, *(extra_audio_arrays or [])]
         try:
-            # Transcribe each clip separately, in order.
             for index, clip in enumerate(clips):
                 if cancel_event is not None and cancel_event.is_set():
                     return

@@ -633,7 +633,6 @@ export function SharedComposer({
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [convertingImages, setConvertingImages] = useState(0);
-  // In attach order.
   const [pendingAudio, setPendingAudio] = useState<
     {
       id: string;
@@ -646,7 +645,6 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
-  // Sizes of clips still being read, by id.
   const readingAudioRef = useRef(new Map<string, number>());
   const setCurrentText = useCallback(
     (value: string | ((previous: string) => string)) => {

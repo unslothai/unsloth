@@ -55,7 +55,6 @@ export function maxAudioFilesFor(model: { isMlx?: boolean } | undefined): number
   return model?.isMlx ? 1 : MAX_AUDIO_FILES;
 }
 
-/** Why another clip cannot be added, or null. */
 export function getAudioAddError(
   count: number,
   totalSize: number,

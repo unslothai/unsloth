@@ -15,7 +15,6 @@ export function attachedMediaUnavailableReason({
   checkpoint: string | null | undefined;
   modelLabel: string;
   audio: boolean;
-  /** Number of clips on the turn. */
   audioCount?: number;
   video: boolean;
 }): string | null {

@@ -23101,21 +23101,13 @@ def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
     passthrough = _sniff_audio_container(raw)
     if passthrough is None:
         return None
-    # Forwarding skips every bounded decoder, so the duration cap has to be
-    # applied from the headers instead. A 16 kbps MP3 holds hours inside the
-    # 25 MB upload cap, and llama-server was left to decode all of it.
+    # Forwarding skips the bounded decoders: cap duration from headers (16 kbps MP3 = hours).
     seconds = _passthrough_audio_seconds(raw, passthrough, _MAX_AUDIO_SECONDS)
     if seconds is not None and seconds > _MAX_AUDIO_SECONDS:
         raise _DecodedAudioTooLongError(
             f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
         )
-    # Headers that cannot state a length do not earn a free pass. Forwarding
-    # them anyway meant the cap held only for containers honest enough to
-    # describe themselves, which is the wrong way round: four junk bytes in
-    # an MPEG stream, or a WAV with no data chunk, ended the header walk and
-    # took the whole recording through with it. Decoding costs a transcode
-    # and nothing else, and puts the file back under both ceilings, so it
-    # still reaches the model.
+    # No stated length (junk MPEG bytes, WAV without data chunk) means decode, not forward.
     if seconds is None:
         return None
     return passthrough, seconds
@@ -27419,7 +27411,6 @@ async def produce_openai_chat_completions(
         # audio encoder); other containers are transcoded to WAV here. The part
         # is injected into the message list below so it rides through both the
         # plain and tool-calling paths, exactly like image_url parts.
-        # One input_audio part per clip, in upload order.
         prepared_audio: list[tuple[str, str]] = []
         if payload.audio_base64:
             if not getattr(llama_backend, "_has_audio_input", False):
