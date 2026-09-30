@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth train` flags were written onto the config with setattr and never validated, so
-`--training-type lroa` ran full finetuning (anything but "lora" is full) and a bad
-`--format-type` or `--gradient-checkpointing` reached the trainer, while the same values in a
-config file exited 2."""
+"""`unsloth train` flags must be validated like the same keys in a config file."""
 
 from __future__ import annotations
 

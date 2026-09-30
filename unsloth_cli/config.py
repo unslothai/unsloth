@@ -111,7 +111,6 @@ class Config(BaseModel):
                             setattr(section, key, value)
                             break
             except ValidationError as error:
-                # validate_assignment checks each flag the way load_config checks the file.
                 flag = "--" + key.replace("_", "-")
                 for err in error.errors():
                     errors.append(f"  - {flag}: {err.get('msg', 'invalid value')}")
