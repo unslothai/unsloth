@@ -246,3 +246,11 @@ def test_legacy_image_base64_jpeg_is_forwarded_unchanged():
     messages = _openai_messages_for_passthrough(payload, vision = True)
     parts = [p for p in messages[-1]["content"] if p.get("type") == "image_url"]
     assert [p["image_url"]["url"] for p in parts] == [f"data:image/jpeg;base64,{b64}"]
+
+
+def test_sixteen_bit_colour_keyed_png_still_passes_through():
+    img = Image.new("I;16", (16, 16), 30000)
+    img.putpixel((0, 0), 100)
+    raw = _encode(img, "PNG", transparency = 100)
+    head, out = _split(_llama_image_data_url(raw))
+    assert (head, out) == ("data:image/png;base64", raw)

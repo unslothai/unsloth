@@ -35366,12 +35366,17 @@ def _llama_image_data_url(raw: bytes) -> str:
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
         upright = exif_upright(img)
-        see_through = False
-        if img.has_transparency_data:
+        # 16-bit tRNS keys cannot survive the 8-bit scaling, so those pass through as before.
+        if img.has_transparency_data and not img.mode.startswith("I;16"):
             # The alpha band alone: an opaque RGBA screenshot must not pay for an RGBA copy.
             bands = img.getbands()
             alpha = img.getchannel("A") if "A" in bands else img.convert("RGBA").getchannel("A")
-            see_through = alpha.getextrema()[0] < 255
+            if alpha.getextrema()[0] < 255:
+                del alpha
+                buf = io.BytesIO()
+                # From this decode, not a second one: large transparent images cost enough.
+                _mcp_flattened_rgb(upright).save(buf, format = "PNG")
+                return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     if upright is not img:
         buf = io.BytesIO()
         if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
@@ -35385,7 +35390,7 @@ def _llama_image_data_url(raw: bytes) -> str:
             return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
         _mcp_flattened_rgb(upright).save(buf, format = "PNG")
         return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-    if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw) and not see_through:
+    if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
         return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
     if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
         return f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"

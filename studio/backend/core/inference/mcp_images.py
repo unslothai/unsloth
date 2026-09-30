@@ -336,11 +336,13 @@ def flattened_rgb(image):
         if image.mode != "I;16":
             image = image.convert("I")
         image = image.point(lambda v: v * (1.0 / 257), mode = "L")
+        # A 16-bit tRNS key would match the wrong 8-bit samples; drop it, as convert("RGB") did.
+        image.info.pop("transparency", None)
     # "transparency" also keys a colour out of L / RGB PNGs (tRNS), not just P.
     has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
     if not has_alpha:
         return image.convert("RGB")
-    rgba = image.convert("RGBA")
+    rgba = image if image.mode == "RGBA" else image.convert("RGBA")
     alpha = rgba.getchannel("A")
     # Light ink (dark-mode logos, white text) would vanish on white: it goes onto black.
     # Alpha-weighted, so a faint light halo cannot outvote opaque dark content.
