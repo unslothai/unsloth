@@ -636,6 +636,7 @@ class TrainingStartRequest(BaseModel):
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
+    parallelism_mode: Literal["auto", "single", "model_parallel"] = "auto"
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -695,6 +696,19 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(
                 "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
                 "'unsloth' or 'true', or offload_layers to 0."
+            )
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_parallelism_selection(self) -> "TrainingStartRequest":
+        ids = self.gpu_ids or []
+        if self.parallelism_mode == "auto" and ids:
+            raise ValueError("parallelism_mode='auto' cannot include gpu_ids.")
+        if self.parallelism_mode == "single" and len(ids) != 1:
+            raise ValueError("parallelism_mode='single' requires exactly one gpu_id.")
+        if self.parallelism_mode == "model_parallel" and len(ids) < 2:
+            raise ValueError(
+                "parallelism_mode='model_parallel' requires at least two gpu_ids."
             )
         return self
 

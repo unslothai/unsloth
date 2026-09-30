@@ -26,7 +26,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 22;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 23;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -291,6 +291,16 @@ function migrateThroughVersion22(
   }
 }
 
+function migrateThroughVersion23(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 23) {
+    state.parallelismMode = "auto";
+    state.selectedGpuIds = null;
+  }
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -391,6 +401,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion19(state, version);
   migrateThroughVersion21(state, version);
   migrateThroughVersion22(state, version);
+  migrateThroughVersion23(state, version);
   return state as unknown as TrainingConfigStore;
 }
 

@@ -307,5 +307,8 @@ export function buildTrainingStartPayload(
     tensorboard_dir: config.enableTensorboard
       ? config.tensorboardDir.trim() || null
       : null,
+    parallelism_mode: config.parallelismMode,
+    gpu_ids:
+      config.parallelismMode === "auto" ? null : config.selectedGpuIds,
   };
 }
