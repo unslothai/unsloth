@@ -52,6 +52,7 @@ from .diffusion_families import (
     LoadIdentity,
     load_identity,
     local_pipeline_components_are_complete,
+    _family_override_resolved,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -799,11 +800,6 @@ def _assert_local_base_is_pipeline(
             f"Local base_repo is not a diffusers pipeline directory "
             f"(no valid {' or '.join(indexes)}): {base}"
         )
-
-
-def _family_override_resolved(family_override: Optional[str], fam: Any) -> tuple:
-    reason = "detected from the model" if family_override is None else "requested"
-    return (family_override, fam.name, reason)
 
 
 def _repo_access_message(repo: str, *, gated: bool) -> str:
@@ -2827,7 +2823,12 @@ class DiffusionBackend:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        # Resolve once, here: re-ranking after free VRAM moves can approve one card and place weights on another.
+        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
+        # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
+        # Gated on the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection
+        # the contract says to drop. Re-ranked only when the caller did not already do it: free VRAM moves between the
+        # route's preflight and here, so resolving twice can approve a scheme against one card and place the weights
+        # on another.
         if gpu_ordinal is None:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)

@@ -108,17 +108,13 @@ def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArt
         return None
     from core.inference.diffusion_families import local_pipeline_components_are_complete
 
-    return _PIPELINE_ARTIFACT_KINDS.get(
-        tuple(local_pipeline_components_are_complete(path, name) for name in _PIPELINE_MANIFESTS)
+    index, modular = (
+        local_pipeline_components_are_complete(path, name)
+        for name in ("model_index.json", "modular_model_index.json")
     )
-
-
-_PIPELINE_MANIFESTS = ("model_index.json", "modular_model_index.json")
-_PIPELINE_ARTIFACT_KINDS = {
-    (True, True): "diffusers_dual_pipeline",
-    (True, False): "diffusers_pipeline",
-    (False, True): "diffusers_modular_pipeline",
-}
+    if index:
+        return "diffusers_dual_pipeline" if modular else "diffusers_pipeline"
+    return "diffusers_modular_pipeline" if modular else None
 
 
 def _is_diffusers_pipeline_dir(path: Path) -> bool:

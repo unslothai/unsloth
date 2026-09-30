@@ -53,6 +53,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
     supported_family_names,
+    _family_override_resolved,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -2400,9 +2401,14 @@ class SdCppDiffusionBackend:
         self,
         repo_id: str,
         *,
-        display_repo_id: Optional[str] = None,
-        # Must match DiffusionBackend.begin_load: the route passes it unconditionally to whichever engine is active.
+        # Same name, position and default as DiffusionBackend.begin_load: the route calls whichever engine was
+        # activated through ONE call site and passes this unconditionally, so an engine that does not declare it
+        # TypeErrors every load on the hosts that select it. Covers the MODEL ASSETS only: the GGUF, the VAE and the
+        # text encoders this pick fetches from the Hub. It deliberately says nothing about the sd-cli/sd-server
+        # BINARY, which is a separate managed tree with its own install policy; a background load may still install
+        # one, exactly as it does today.
         local_files_only: bool = False,
+        display_repo_id: Optional[str] = None,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -2431,6 +2437,10 @@ class SdCppDiffusionBackend:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
+        # but a direct caller (an MCP client, a test, a plugin) hands over gpu_ids alone, and without this the native
+        # engine is the one engine that would drop the pick silently. Re-ranked only when nobody has, so a
+        # route-resolved winner is never second-guessed against free VRAM that has moved since.
         if gpu_ordinal is None:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)
@@ -2858,9 +2868,6 @@ class SdCppDiffusionBackend:
                         gpu_ordinal,
                     )
                 )
-                family_reason = (
-                    "detected from the model" if family_override is None else "requested"
-                )
                 state = _SdState(
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
@@ -2880,7 +2887,7 @@ class SdCppDiffusionBackend:
                     mode = mode,
                     hf_token = hf_token,
                     resolved = build_resolved_record(
-                        {"family_override": (family_override, fam.name, family_reason)}
+                        {"family_override": _family_override_resolved(family_override, fam)}
                     ),
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,

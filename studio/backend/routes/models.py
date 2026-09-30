@@ -5360,7 +5360,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
-                    # Pin the snapshot whose manifest earned the override: refs/main may move before load.
+                    # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
                     if row_task is None and pipeline_artifact_kind is not None:
                         row["load_id"] = str(selected)
                     elif model_load_id:
