@@ -41,16 +41,11 @@ def _eager_vision_attention(module, query, key, value, attention_mask, **kwargs)
     return torch.cat(outputs, dim = 1), None
 
 
-def configure_vision_attention(pipe, *, family, device, logger) -> bool:
+def configure_vision_attention(pipe, *, family, target, logger) -> bool:
     """Change only this encoder's vision backend, leaving text and denoising alone."""
     if family != "qwen-image-2.1":
         return False
-    import torch
-
-    if not (getattr(torch.version, "hip", None) or "rocm" in torch.__version__.lower()):
-        return False
-    target = torch.device(device)
-    if target.type != "cuda":
+    if getattr(target, "backend", None) != "rocm" or getattr(target, "device", None) != "cuda":
         return False
     override = (os.environ.get(_ENV) or "auto").strip().lower()
     if override in ("0", "false", "off", "no"):
@@ -58,9 +53,11 @@ def configure_vision_attention(pipe, *, family, device, logger) -> bool:
     if override not in ("auto", "1", "true", "on", "yes"):
         raise ValueError(f"Invalid {_ENV}={override!r}; use auto, 1/true/on/yes or 0/false/off/no")
     if override == "auto":
+        import torch
         try:
             from utils.hardware.hardware import _props_gfx_arch
-            if _props_gfx_arch(torch.cuda.get_device_properties(target)) != "gfx1151":
+            props = torch.cuda.get_device_properties(torch.device(target.torch_device))
+            if _props_gfx_arch(props) != "gfx1151":
                 return False
         except Exception:
             return False
