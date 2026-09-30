@@ -70,19 +70,29 @@ export function CustomLlamaConfigEditor({
   const sections = customConfigSections(ini);
   const oversized =
     new TextEncoder().encode(ini).length > MAX_LLAMA_CPP_CONFIG_BYTES;
+  // Storage drops a blank configuration, so it would load and save as managed without saying so.
+  const blank = active && ini.trim().length === 0;
   useEffect(() => {
     revision.current += 1;
     // Load repeats authoritative preflight. An unvalidated draft may still be submitted.
-    onLoadableChange(!active || !oversized);
+    onLoadableChange(!active || (!oversized && !blank));
   }, [
     ini,
     section,
     active,
     oversized,
+    blank,
     modelPath,
     ggufVariant,
     onLoadableChange,
   ]);
+  // A validation still in flight must not gate Load after the editor is gone.
+  useEffect(
+    () => () => {
+      revision.current += 1;
+    },
+    [],
+  );
   const validate = async () => {
     const current = ++revision.current;
     setBusyKey(inputKey);
@@ -120,7 +130,7 @@ export function CustomLlamaConfigEditor({
         valid: false,
         message: error instanceof Error ? error.message : "Validation failed.",
       });
-      onLoadableChange(false);
+      // No verdict was reached, so Load stays available; it repeats the preflight itself.
     } finally {
       if (current === revision.current) setBusyKey(null);
     }
@@ -197,11 +207,16 @@ export function CustomLlamaConfigEditor({
               Configuration must fit within 64 KiB.
             </p>
           )}
+          {blank && (
+            <p role="alert" className="text-ui-11 text-destructive">
+              Configuration is empty.
+            </p>
+          )}
           <Button
             type="button"
             variant="outline"
             size="sm"
-            disabled={busy || oversized}
+            disabled={busy || oversized || blank}
             onClick={() => void validate()}
           >
             {busy ? "Validating…" : "Validate configuration"}

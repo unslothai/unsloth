@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { isImeComposing, isSurfaceBackgrounded } from "@/features/settings";
+import { isImeComposing } from "@/features/settings";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -11,7 +11,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
+import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
 import {
   resolveDismissiblePortalSurfaces,
   resolveFindScope,
@@ -166,7 +166,7 @@ export default function FindBar({
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
-      if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
+      if (isFindScopeBackgrounded()) return;
       if (resolveDismissiblePortalSurfaces(resolveFindScope()).length > 0)
         return;
       event.preventDefault();

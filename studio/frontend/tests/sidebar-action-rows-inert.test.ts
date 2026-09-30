@@ -81,9 +81,9 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
   );
   // New Chat is the only outside row that aligns with the scroller's rail.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 1);
-  // Nav rows, pinned chats, Projects, Recents, and training runs sit inside the
-  // scroller; the footer is the sixth unrailed use outside it.
-  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 6);
+  // Nav rows, pinned chats, custom sections, Projects, Recents, and training runs sit
+  // inside the scroller; the footer is the seventh unrailed use outside it.
+  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 7);
 
   const footer = source
     .split("<SidebarFooter")[1]
@@ -134,15 +134,18 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  // Only the Windows auto reset may set a width; hiding the rail is what a
+  // Only the Windows-wide auto reset may set a width; hiding the rail is what a
   // width override caused before.
   const railWidthDecls = (
     INDEX.match(
       /\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g,
     ) ?? []
   ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());
-  assert.deepEqual(railWidthDecls, ["auto"]);
-  assert.match(INDEX, /:root\.client-windows \.sidebar-scroll-fade,/);
+  assert.deepEqual(railWidthDecls, []);
+  assert.match(
+    INDEX,
+    /:root\.client-windows \*,\s*:root\.client-windows \*:hover \{\s*scrollbar-width: auto;/,
+  );
   assert.equal(
     /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),
     false,

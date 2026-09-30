@@ -1385,7 +1385,7 @@ def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monk
     assert probe("int8") is False
     half = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
     assert _video_auto(monkeypatch, scheme = "nvfp4", fam = half) is None
-    assert _video_auto.calls[-1]["has_prequant"]("nvfp4") is False
+    assert _video_auto.calls == []
 
 
 def test_speed_off_and_the_modular_workflow_are_never_seeded_here(monkeypatch):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import threading
@@ -51,7 +52,7 @@ class _PoolEntry:
         self.generation = generation
         # Runs when the last reference goes, which for a short-lived thread is when its thread-local
         # storage is torn down.
-        self._closer = weakref.finalize(self, _close_quietly, conn)
+        self._closer = weakref.finalize(self, _close_quietly, conn, os.getpid())
 
     def release(self) -> None:
         """Close now, and disarm the finalizer so it cannot close it a second time."""
@@ -121,7 +122,14 @@ _pool_generation = 0
 _pool_lock = threading.Lock()
 
 
-def _close_quietly(conn: sqlite3.Connection) -> None:
+# Closing or freeing a handle in a forked child can block on a lock held when it forked.
+_inherited_by_fork: list[sqlite3.Connection] = []
+
+
+def _close_quietly(conn: sqlite3.Connection, owner_pid: int) -> None:
+    if os.getpid() != owner_pid:
+        _inherited_by_fork.append(conn)
+        return
     try:
         conn.close()
     except Exception:
@@ -344,6 +352,8 @@ def _loads(value: str | None, fallback: Any) -> Any:
 # Kept with the run for the producer but outside its identity, so a retried create from a browser whose offset moved
 # (DST) still matches the committed run.
 TIMEZONE_HEADERS_FIELD = "timezone_headers"
+# Server-derived API monitor and usage-receipt attribution; not a credential or part of retry identity.
+API_MONITOR_ORIGIN_FIELD = "api_monitor_via_api_key"
 
 
 def canonical_request(
@@ -367,7 +377,7 @@ def canonical_request(
             "requestPayload": {
                 key: value
                 for key, value in request_payload.items()
-                if key != TIMEZONE_HEADERS_FIELD
+                if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
             },
         },
         sort_keys = True,

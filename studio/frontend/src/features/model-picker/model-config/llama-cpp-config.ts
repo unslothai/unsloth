@@ -14,6 +14,11 @@ export interface LlamaCppConfigSummary {
   diagnostics: string[];
 }
 
+export const MANAGED_LLAMA_CPP_CONFIG: LlamaCppConfig = {
+  version: 1,
+  mode: "managed",
+};
+
 export const MAX_LLAMA_CPP_CONFIG_BYTES = 65_536;
 
 /** Shape validation only. The selected server is authoritative for INI semantics. */
@@ -51,8 +56,18 @@ export function customConfigSections(ini: string): string[] {
   ];
 }
 
-export function llamaCppConfigPayload(config: LlamaCppConfig | undefined) {
-  return config === undefined ? {} : { llama_cpp_config: config };
+export function llamaCppConfigPayload(
+  config: LlamaCppConfig | undefined,
+  options: { isDiffusion?: boolean } = {},
+) {
+  if (config === undefined) return {};
+  // The diffusion runner has no llama-server; explicit managed keeps the backend from inheriting custom.
+  return {
+    llama_cpp_config:
+      options.isDiffusion && config.mode === "custom"
+        ? MANAGED_LLAMA_CPP_CONFIG
+        : config,
+  };
 }
 
 export const SAMPLING_WIRE_FIELDS = {
@@ -67,6 +82,16 @@ export const SAMPLING_WIRE_FIELDS = {
   reasoningEffort: "reasoning_effort",
   preserveThinking: "preserve_thinking",
 } as const;
+
+/** The sampling a chat preset owns (getPresetOwnedParams); reasoning stays outside presets. */
+export const PRESET_SAMPLING_WIRES: readonly string[] = [
+  SAMPLING_WIRE_FIELDS.temperature,
+  SAMPLING_WIRE_FIELDS.topP,
+  SAMPLING_WIRE_FIELDS.topK,
+  SAMPLING_WIRE_FIELDS.minP,
+  SAMPLING_WIRE_FIELDS.repetitionPenalty,
+  SAMPLING_WIRE_FIELDS.presencePenalty,
+];
 
 export function explicitSamplingFields(
   snapshot: Record<string, unknown>,

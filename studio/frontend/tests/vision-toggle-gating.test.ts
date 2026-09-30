@@ -84,6 +84,7 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
   };
   const gguf = bodyOf("GgufAdvancedSettings");
   const mlx = bodyOf("MlxAdvancedSettings");
+  const row = bodyOf("VisionRow");
   const wiring = "checked={!config.disableVision}";
 
   assert.equal(
@@ -91,19 +92,22 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
     1,
     "expected exactly one Vision switch in the file",
   );
+  assert.ok(row.includes(wiring), "Vision switch is not in VisionRow");
+  assert.ok(row.includes(">Vision</span>"));
   assert.ok(
-    gguf.includes(wiring),
-    "Vision switch is not in GgufAdvancedSettings",
+    gguf.includes("<VisionRow"),
+    "Vision row is not in GgufAdvancedSettings",
   );
   assert.ok(
-    !mlx.includes(wiring),
-    "Vision switch leaked into MlxAdvancedSettings",
+    !mlx.includes("<VisionRow"),
+    "Vision row leaked into MlxAdvancedSettings",
   );
   assert.ok(
     !mlx.includes("disableVision"),
     "MlxAdvancedSettings reads disableVision, which it cannot act on",
   );
-  assert.ok(gguf.includes(">Vision</span>"));
+  // The only other use is the custom-config copy, rendered beside the GGUF editor.
+  assert.equal(CONFIG_PAGE.split("<VisionRow").length - 1, 2);
 
   // And the GGUF half only renders under target.isGguf, so a non-GGUF target
   // shows no Vision switch at all.
@@ -120,6 +124,10 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
   assert.ok(ggufAt > 0 && mlxAt > 0, "one of the panels is never rendered");
   assert.equal(gateAbove(ggufAt), "isGguf");
   assert.equal(gateAbove(mlxAt), "!isGguf");
+  const customVisionAt = lines
+    .map((l) => l.includes("<VisionRow"))
+    .lastIndexOf(true);
+  assert.equal(gateAbove(customVisionAt), "isGguf");
 });
 
 const VISION_GGUF = {
@@ -285,28 +293,29 @@ test("the Vision row is gated out for diffusion models", () => {
   );
 
   const lines = CONFIG_PAGE.split("\n");
-  const visionAt = lines.findIndex((line) =>
-    line.includes("checked={!config.disableVision}"),
-  );
-  assert.notEqual(visionAt, -1, "no Vision switch to gate");
+  const uses = lines.flatMap((line, i) => (line.includes("<VisionRow") ? [i] : []));
+  assert.equal(uses.length, 2, "expected the GGUF row and the custom-config row");
 
-  // The nearest JSX conditional boundary above the switch. A `)}` first means the
+  // The nearest JSX conditional boundary above each use. A `)}` first means the
   // gate closed before the row, i.e. the row is not inside it.
-  let nearest = "none";
-  for (let i = visionAt; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line === "{!isDiffusion && (") {
-      nearest = "!isDiffusion";
-      break;
+  const nearest = (at: number): string => {
+    for (let i = at; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith("{!isDiffusion &&")) return "!isDiffusion";
+      if (line === "{customActive && (") return "customActive";
+      if (line === ")}") return "closed";
     }
-    if (line === ")}") {
-      nearest = "closed";
-      break;
-    }
-  }
+    return "none";
+  };
   assert.equal(
-    nearest,
+    nearest(uses[0]),
     "!isDiffusion",
     "the Vision row is not inside a !isDiffusion gate",
+  );
+  // The custom copy is gated on customActive, which a diffusion model never is.
+  assert.equal(nearest(uses[1]), "customActive");
+  assert.match(
+    CONFIG_PAGE,
+    /const customActive =\s*config\.llamaCppConfig\?\.mode === "custom" && !resolvedIsDiffusion;/,
   );
 });

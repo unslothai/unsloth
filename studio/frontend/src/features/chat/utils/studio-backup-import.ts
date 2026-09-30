@@ -206,6 +206,10 @@ export function studioBackupToConversations(
         record.attachments = raw.attachments as MessageRecord["attachments"];
       }
       if (isDict(raw.metadata)) record.metadata = detachMetadata(raw.metadata);
+      // Ordering adjustments are not exact send times.
+      if (num(raw.createdAt) === null || ts !== createdAt) {
+        record.metadata = { ...record.metadata, createdAtEstimated: true };
+      }
       return record;
     });
 

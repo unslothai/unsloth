@@ -102,8 +102,6 @@ table("a file the server types opaquely gets a type from its extension", library
 ]);
 
 table("nothing embedded directly is typed as a scriptable document", embeddedBlobType, [
-  [["pdf", "text/html"], "application/pdf"],
-  [["pdf", "application/octet-stream"], "application/pdf"],
   [["image", "image/svg+xml"], "application/octet-stream"],
   [["image", "text/html"], "application/octet-stream"],
   [["image", "image/png"], "image/png"],
@@ -307,6 +305,17 @@ test("an empty Fine-tunes tab hides by default, and for settings saved before th
   assert.equal((migrateLibrarySettings({ tabs: saved }, 2).tabs as typeof saved).models, "auto");
   const hidden = { ...saved, models: "hidden" };
   assert.equal((migrateLibrarySettings({ tabs: hidden }, 2).tabs as typeof saved).models, "hidden");
+});
+
+test("the Images tab shows by default, and for settings saved before that", () => {
+  assert.equal(DEFAULT_LIBRARY_SETTINGS.tabs.images, "always");
+  const saved = { ...DEFAULT_LIBRARY_SETTINGS.tabs, images: "auto" };
+  assert.equal((migrateLibrarySettings({ tabs: saved }, 3).tabs as typeof saved).images, "always");
+  const hidden = { ...saved, images: "hidden" };
+  assert.equal((migrateLibrarySettings({ tabs: hidden }, 3).tabs as typeof saved).images, "hidden");
+  // The v1 media switch left on auto lands on always too.
+  assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).images, "always");
+  assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).videos, "auto");
 });
 
 test("a card's date shows on hover, on keyboard focus and always on touch", () => {

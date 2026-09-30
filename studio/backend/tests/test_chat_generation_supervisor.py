@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 from starlette.requests import Request
 
-from core.inference import llama_keepwarm
+from core.inference import chat_generation_runs, llama_keepwarm
 from core.inference.chat_generation_runs import (
     _EVENT_FLUSH_SECONDS,
     ChatGenerationSupervisor,
@@ -77,6 +77,97 @@ def _route_request(supervisor):
         app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor)),
         headers = {},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["off", "full"])
+@pytest.mark.parametrize(
+    "caller,expected",
+    [("session", False), ("keyless", True), ("api-key", True), ("workflow", False)],
+)
+async def test_durable_producer_preserves_monitor_origin(monkeypatch, scope, caller, expected):
+    from auth import policy, storage
+    from utils import keyless_api_access as keyless
+
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+    app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
+    headers = (
+        []
+        if caller == "keyless"
+        else [
+            (
+                b"authorization",
+                b"Bearer session-jwt" if caller == "session" else b"Bearer sk-unsloth-test",
+            )
+        ]
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/inference/chat-runs",
+            "headers": headers,
+            "app": app,
+            "client": ("127.0.0.1", 5000),
+            "server": ("127.0.0.1", 8000),
+        }
+    )
+    # Origin is fixed at run creation; the settings change below must not alter it.
+    keyless.mark_keyless_admission(request, caller == "keyless")
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
+    monkeypatch.setattr(storage, "is_internal_api_key", lambda _token: caller == "workflow")
+    run = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
+    assert run["requestPayload"][runs_db.API_MONITOR_ORIGIN_FIELD] is expected
+    request.state.api_monitor_via_api_key = not expected
+    retry = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
+    assert retry["created"] is False
+    assert retry["requestPayload"][runs_db.API_MONITOR_ORIGIN_FIELD] is expected
+    monkeypatch.setattr(keyless, "get_keyless_api_access_scope", lambda: scope)
+    observed = []
+
+    async def body():
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, background, _subject, *, cancel_on_disconnect):
+        observed.append(
+            (
+                inference._request_used_api_key(background),
+                runs_db.API_MONITOR_ORIGIN_FIELD in payload.model_extra,
+                "authorization" in background.headers,
+            )
+        )
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    await ChatGenerationSupervisor(app)._produce("run-1")
+    assert observed == [(expected, False, False)]
+
+
+def test_monitor_origin_is_not_part_of_retry_identity():
+    args = dict(thread_id = "t", user_message_id = "u", assistant_message_id = "a")
+    payload = {"model": "local"}
+    _, original = runs_db.canonical_request(**args, request_payload = payload)
+    for origin in (False, True):
+        encoded, identity = runs_db.canonical_request(
+            **args, request_payload = {**payload, runs_db.API_MONITOR_ORIGIN_FIELD: origin}
+        )
+        assert identity == original
+        assert json.loads(encoded)[runs_db.API_MONITOR_ORIGIN_FIELD] is origin
+
+
+def test_client_cannot_supply_monitor_origin():
+    from fastapi import HTTPException
+
+    payload = _create_payload()
+    payload.requestPayload[runs_db.API_MONITOR_ORIGIN_FIELD] = False
+    with pytest.raises(HTTPException) as exc:
+        run_routes._sanitize_request(payload)
+    assert exc.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -310,6 +401,38 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     # The lease counts writes, so it renewed three times before the first token.
     assert sampled["progress"][1] == 3, sampled["progress"]
     assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "comment, reaped",
+    [("_OPENAI_TOOL_HEARTBEAT_SSE", []), ("_OPENAI_PASSTHROUGH_SSE_KEEPALIVE", ["run-1"])],
+)
+async def test_a_silent_tool_holds_the_lease_but_a_stalled_stream_does_not(
+    durable_run, monkeypatch, comment, reaped
+):
+    comment = getattr(inference, comment)
+    now = {"ms": runs_db.now_ms()}
+    monkeypatch.setattr(runs_db, "now_ms", lambda: now["ms"])
+    sampled = {}
+
+    async def body():
+        now["ms"] += 21 * 60_000
+        yield comment
+        # Asked for only once the producer has handled the comment before it.
+        yield comment
+        sampled["reaped"] = runs_db.reconcile_runs(stale_after_ms = 1_200_000)
+        yield "data: [DONE]\n\n"
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        # Preparation has already read its own interval; only the stream's rate limit is lifted.
+        monkeypatch.setattr(chat_generation_runs, "_renew_interval_seconds", lambda: 0.0)
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    assert sampled["reaped"] == reaped
 
 
 async def _subscriber_sequences(after = 0):

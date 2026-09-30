@@ -70,6 +70,8 @@ def _background_request(
     run_id: str,
     cancel_event: threading.Event,
     timezone_headers: dict[str, str] | None = None,
+    *,
+    via_api_key: bool | None = None,
 ) -> Request:
     scope = {
         "type": "http",
@@ -92,7 +94,10 @@ def _background_request(
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
-        "state": {"generation_cancel_event": cancel_event},
+        "state": {
+            "generation_cancel_event": cancel_event,
+            "api_monitor_via_api_key": via_api_key,
+        },
     }
 
     async def receive():
@@ -395,6 +400,8 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
+# A server-side tool still running. Rate limited like the wait marker.
+_TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
 
 
 def _minimum_lease_seconds() -> float:
@@ -749,13 +756,16 @@ class ChatGenerationSupervisor:
 
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
+                via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(self.app, run_id, cancel_event, timezone_headers),
+                    _background_request(
+                        self.app, run_id, cancel_event, timezone_headers, via_api_key = via_api_key
+                    ),
                     owner,
                     cancel_on_disconnect = False,
                 )
@@ -800,7 +810,7 @@ class ChatGenerationSupervisor:
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text:
+                elif _ADMISSION_WAIT_MARKER in text or _TOOL_HEARTBEAT_MARKER in text:
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s

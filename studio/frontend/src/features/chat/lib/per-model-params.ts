@@ -11,7 +11,6 @@ import type {
 } from "../types/runtime";
 import { explicitSamplingFields } from "../../model-picker/model-config/llama-cpp-config.ts";
 import {
-  PERSISTED_INFERENCE_PARAM_KEYS,
   REMEMBERED_INFERENCE_PARAM_KEYS,
   type PersistedInferenceParamKey,
 } from "./persisted-inference-param-keys.ts";

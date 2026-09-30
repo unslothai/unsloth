@@ -143,3 +143,37 @@ test("explicit reasoning and preserve-thinking choices use their direct wire nam
     ["enable_thinking", "preserve_thinking"],
   );
 });
+
+test("a caller-built mask is kept as given, so Default hands sampling back to the INI", () => {
+  reset();
+  let live = useChatRuntimeStore.getState();
+  live.setParams({ ...live.params, temperature: 0.9 });
+  live = useChatRuntimeStore.getState();
+  assert.deepEqual(live.params.samplingFieldsExplicit, ["temperature"]);
+  // Applying Default: its values differ from the live ones, but its mask is empty.
+  live.setParams({
+    ...live.params,
+    temperature: DEFAULT_INFERENCE_PARAMS.temperature,
+    samplingFieldsExplicit: [],
+  });
+  assert.deepEqual(
+    useChatRuntimeStore.getState().params.samplingFieldsExplicit,
+    [],
+  );
+});
+
+test("a preset whose value equals the live one still pins it", () => {
+  reset();
+  let live = useChatRuntimeStore.getState();
+  live.setParams({ ...live.params, temperature: 0.9 });
+  live = useChatRuntimeStore.getState();
+  live.setParams({
+    ...live.params,
+    temperature: 0.9,
+    samplingFieldsExplicit: ["temperature", "top_p"],
+  });
+  assert.deepEqual(
+    useChatRuntimeStore.getState().params.samplingFieldsExplicit,
+    ["temperature", "top_p"],
+  );
+});

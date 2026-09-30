@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -45,7 +45,12 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
-import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  streamChatCompletions,
+  uploadChatAttachmentOriginal,
+} from "./api/chat-api";
+import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
   cancelChatGenerationRun,
@@ -58,12 +63,21 @@ import {
 } from "./api/chat-generation-api";
 import {
   TEXT_ATTACHMENT_ACCEPT,
+  decodeHtmlAttachmentBytes,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
+  extractOfficeAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
+  getPdfAttachmentTextError,
 } from "./attachment-content";
+import {
+  type ChatAttachmentOriginal,
+  persistAttachmentOriginals,
+  reuseStagedUpload,
+  withAttachmentOriginal,
+} from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -79,18 +93,34 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
+import {
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  normalizeChatImage,
+} from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
+import {
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+  RTF_ATTACHMENT_ACCEPT,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+} from "./open-document-accept";
+import {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
+import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
+  codeToolsOn,
   commitHeldThreadScopedEditsToTheirThread,
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
@@ -165,7 +195,13 @@ import {
   isChatThreadDeleted,
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
-import { fallbackTitleFromUserText } from "./utils/chat-title";
+import {
+  answeringCheckpoint,
+  buildTitleRequest,
+  fallbackTitleFromUserText,
+  titleCheckpoint,
+  titleFromStream,
+} from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
@@ -206,15 +242,6 @@ const pendingRunStartReadyByMessageId = new Map<
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
-type TitleResponse = {
-  choices?: Array<{
-    finish_reason?: string | null;
-    message?: {
-      content?: string;
-    };
-  }>;
-};
-
 class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
   private readonly getThreadIds: () => Array<string | null | undefined>;
@@ -233,8 +260,8 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 
   add(state: { file: File }) {
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
-    // for an audio-only 3GP recording, so settle that from the container's own tracks first, as the
-    // native readers do. Every other file goes straight through, keeping the delegate's own return.
+    // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
+    // first, as the native readers do. Every other file goes straight through.
     if (!needsAttachmentTrackInspection(state.file)) {
       return this.delegate.add(state);
     }
@@ -247,9 +274,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const file = await classifiedAttachmentFile(state.file);
     const added = await this.delegate.add({ ...state, file });
     if (Symbol.asyncIterator in added) {
-      // Only the audio and video adapters claim a 3GP and both resolve to one
-      // attachment, so this drains a generator to its last value rather than
-      // forwarding the progress an adapter here does not report.
       let last: PendingAttachment | undefined;
       for await (const value of added) last = value;
       if (!last) throw new Error("The attachment adapter yielded nothing.");
@@ -265,8 +289,16 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
+    const { incognito } = useChatRuntimeStore.getState();
+    const epoch = getAuthSessionEpoch();
     try {
-      return await this.delegate.send(attachment);
+      return await withAttachmentOriginal(
+        attachment,
+        await this.delegate.send(attachment),
+        incognito,
+        epoch,
+        pythonToolRunsInStudio(),
+      );
     } catch (error) {
       if (
         reservationToken &&
@@ -280,9 +312,14 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
-  accept = "image/jpeg,image/png,image/webp,image/gif";
+  accept = CHAT_IMAGE_ACCEPT;
+  private readonly converted = new Map<string, Promise<File | null>>();
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
+  async *add({
+    file: picked,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const state = useChatRuntimeStore.getState();
     const checkpoint = state.params.checkpoint;
     const activeModel = state.models.find((m) => m.id === checkpoint);
@@ -307,55 +344,84 @@ class VisionImageAdapter implements AttachmentAdapter {
       );
       externalModelLabel = externalSelection.modelId;
     }
-    const unavailableReason = getImageInputUnavailableReason({
-      activeModel,
-      isExternalModel,
-      externalSupportsVision,
-      externalModelLabel,
-      loadedIsMultimodal: state.loadedIsMultimodal,
-      modelLoaded,
-      loadError: state.lastModelLoadError,
-      visionDisabledByUser: state.loadedVisionDisabledByUser,
-      mmprojFallbackReason: state.mmprojFallbackReason,
-    });
+    const unavailableReason = !modelLoaded
+      ? null
+      : getImageInputUnavailableReason({
+          activeModel,
+          isExternalModel,
+          externalSupportsVision,
+          externalModelLabel,
+          loadedIsMultimodal: state.loadedIsMultimodal,
+          modelLoaded,
+          loadError: state.lastModelLoadError,
+          visionDisabledByUser: state.loadedVisionDisabledByUser,
+          mmprojFallbackReason: state.mmprojFallbackReason,
+        });
     if (unavailableReason) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
 
     const maxSize = 20 * 1024 * 1024;
-    if (file.size > maxSize) {
+    if (picked.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
     }
-
-    return {
+    const attachment = {
       id: crypto.randomUUID(),
       type: "image",
-      name: file.name,
-      contentType: file.type,
-      file,
+      name: picked.name,
+      contentType: picked.type,
+      file: picked,
       status: { type: "requires-action", reason: "composer-send" },
+    } satisfies PendingAttachment;
+    if (convertedImageType(picked) === null) {
+      yield attachment;
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "running", reason: "uploading", progress: 0 },
     };
+    const conversion = normalizeChatImage(picked);
+    this.converted.set(
+      attachment.id,
+      conversion.catch(() => null),
+    );
+    let file: File;
+    try {
+      file = await conversion;
+    } catch (error) {
+      if (!this.converted.has(attachment.id)) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    // Removed while converting: yielding again would put it back.
+    if (!this.converted.has(attachment.id)) {
+      return;
+    }
+    yield { ...attachment, name: file.name, contentType: file.type, file };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const conversion = this.converted.get(attachment.id);
+    this.converted.delete(attachment.id);
+    const file = conversion ? await conversion : attachment.file;
     return {
       id: attachment.id,
       type: "image",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "image",
-          image: await this.fileToBase64DataURL(attachment.file),
-        },
-      ],
+      name: file?.name ?? attachment.name,
+      contentType: file?.type ?? attachment.contentType,
+      content: file
+        ? [{ type: "image", image: await this.fileToBase64DataURL(file) }]
+        : [],
       status: { type: "complete" },
     };
   }
 
-  async remove(): Promise<void> {
-    return Promise.resolve();
+  async remove(attachment: { id: string }): Promise<void> {
+    this.converted.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
@@ -370,39 +436,74 @@ class VisionImageAdapter implements AttachmentAdapter {
 
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
+  private readonly texts = new Map<string, Promise<string | null>>();
 
   // Refused here, not at send: the composer empties itself before it awaits send(), so a ceiling that
   // only fires there discards the typed message too. The throw is invisible (nothing subscribes to
   // attachmentAddError and the picker never awaits addAttachment), so the toast is the only reason given.
-  add({ file }: { file: File }): Promise<PendingAttachment> {
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const sizeError = getDocumentAttachmentSizeError(file, "PDF");
     if (sizeError) {
       toast.error(sizeError);
       throw new Error(sizeError);
     }
-    return Promise.resolve({
+    const attachment = {
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    // A running chip parks Send while the PDF is read; without one, Send goes out without the PDF.
+    yield attachment;
+    const text = extractPdfAttachmentText(file).catch(() => null);
+    this.texts.set(attachment.id, text);
+    const error = pdfAttachmentError(file.name, await text);
+    // Removed or sent while reading: yielding again would put the chip back.
+    if (this.texts.get(attachment.id) !== text) return;
+    if (error) {
+      toast.error(error);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await extractPdfAttachmentText(attachment.file);
+    const pending = this.texts.get(attachment.id);
+    this.texts.delete(attachment.id);
+    const text = await (pending ??
+      extractPdfAttachmentText(attachment.file).catch(() => null));
+    // Rechecked: Code or a temporary chat can change after the attach check passed.
+    const textError = pdfAttachmentError(attachment.name, text);
+    if (textError && attachment.status.type !== "incomplete") {
+      toast.error(textError);
+    }
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      content: [
+        {
+          type: "text",
+          text: `[PDF: ${attachment.name}]\n${textError ?? text}`,
+        },
+      ],
       status: { type: "complete" },
     };
   }
 
-  remove(): Promise<void> {
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
     return Promise.resolve();
   }
 }
@@ -515,7 +616,8 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = extractHtmlAttachmentText(await attachment.file.text());
+    const bytes = new Uint8Array(await attachment.file.arrayBuffer());
+    const text = extractHtmlAttachmentText(decodeHtmlAttachmentBytes(bytes));
     return {
       id: attachment.id,
       type: "document",
@@ -566,6 +668,123 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   remove(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+const OFFICE_LABELS: Record<string, "XLSX" | "PPTX"> = {
+  xlsx: "XLSX",
+  xlsm: "XLSX",
+  pptx: "PPTX",
+};
+
+class OfficeAttachmentAdapter implements AttachmentAdapter {
+  accept = [
+    ".xlsx,.xlsm,.pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ].join(",");
+
+  private label(name: string, type: string): "XLSX" | "PPTX" {
+    const extension = name.split(".").pop()?.toLowerCase() ?? "";
+    const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
+    return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
+  }
+
+  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const label = this.label(file.name, file.type);
+    let text: string;
+    try {
+      text = await extractOfficeAttachmentText(file, label);
+    } catch (cause) {
+      const message = (cause as Error | undefined)?.message;
+      const tooLarge = `${label} file is too large: ${file.name}`;
+      const error =
+        message === tooLarge || message === "File is too large to preview."
+          ? tooLarge
+          : `${label} file could not be read: ${file.name}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const label = this.label(attachment.name, attachment.contentType ?? "");
+    const text = this.texts.get(attachment.id) ?? (await extractOfficeAttachmentText(attachment.file, label));
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[${label}: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+class RtfAttachmentAdapter implements AttachmentAdapter {
+  accept = RTF_ATTACHMENT_ACCEPT;
+  // Read at add, like OfficeAttachmentAdapter: the composer drops the typed message before send().
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    let text: string;
+    try {
+      ({ text } = await readRtfAttachmentContent(file, file.name));
+    } catch (cause) {
+      const error = `RTF file could not be read: ${file.name}: ${(cause as Error).message}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const text =
+      this.texts.get(attachment.id) ??
+      (await readRtfAttachmentContent(attachment.file, attachment.name)).text;
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[RTF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
     return Promise.resolve();
   }
 }
@@ -659,6 +878,134 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+
+/** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
+function pythonToolRunsInStudio(): boolean {
+  const state = useChatRuntimeStore.getState();
+  // The effective Code state, as the send path computes it: Full access turns it on locally.
+  const codeToolsEnabled = codeToolsOn(state);
+  const external = parseExternalModelId(state.params.checkpoint);
+  if (!external) return state.supportsTools && codeToolsEnabled;
+  const provider = (
+    loadConnectionsEnabled() ? loadExternalProviders() : []
+  ).find((p) => p.id === external.providerId);
+  if (
+    !provider ||
+    providerModelSupportsStudioTools(
+      provider.providerType,
+      external.modelId,
+    ) !== true
+  ) {
+    return false;
+  }
+  return selectCodeToolNames({
+    codeToolsEnabled,
+    hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution(
+      provider.providerType,
+      external.modelId,
+      provider.baseUrl,
+      provider.apiType,
+    ),
+    providerHostsCodeExecution: providerHostsCodeExecution(
+      provider.providerType,
+      provider.baseUrl,
+      provider.apiType,
+    ),
+  }).local.includes("python");
+}
+
+function pythonToolOpensAttachments(): boolean {
+  return pythonToolRunsInStudio() && !useChatRuntimeStore.getState().incognito;
+}
+
+function pdfAttachmentError(name: string, text: string | null): string | null {
+  return text === null
+    ? `PDF file could not be read: ${name}`
+    : getPdfAttachmentTextError(name, text, pythonToolOpensAttachments());
+}
+
+class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
+  accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
+  private readonly uploads = new Map<
+    string,
+    Promise<ChatAttachmentOriginal | null>
+  >();
+  private readonly uploadedAt = new Map<string, number>();
+
+  private upload(file: File): Promise<ChatAttachmentOriginal | null> {
+    return uploadChatAttachmentOriginal(file).catch(() => null);
+  }
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const refusal = !pythonToolRunsInStudio()
+      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      : useChatRuntimeStore.getState().incognito
+        ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
+        : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
+          ? `File is too large: ${file.name}`
+          : null;
+    if (refusal) {
+      toast.error(refusal);
+      throw new Error(refusal);
+    }
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    yield attachment;
+    const upload = this.upload(file);
+    this.uploads.set(attachment.id, upload);
+    this.uploadedAt.set(attachment.id, Date.now());
+    const original = await upload;
+    if (this.uploads.get(attachment.id) !== upload) return;
+    if (!original) {
+      this.uploads.delete(attachment.id);
+      toast.error(`Could not upload ${file.name}`);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const original =
+      (reuseStagedUpload(this.uploadedAt.get(attachment.id))
+        ? await this.uploads.get(attachment.id)
+        : null) ?? (await this.upload(attachment.file));
+    this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
+    const text = original
+      ? `[${attachment.name}: only the python tool can read this file]`
+      : `[${attachment.name} could not be uploaded, so it cannot be read]`;
+    const complete: CompleteAttachment = {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text }],
+      status: { type: "complete" },
+    };
+    return original ? ({ ...complete, original } as CompleteAttachment) : complete;
+  }
+
+  async remove(attachment: { id: string }): Promise<void> {
+    this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
+  }
+}
+
 function clip(input: string, maxLen: number): string {
   const text = input.replace(/\s+/g, " ").trim();
   if (text.length <= maxLen) return text;
@@ -686,11 +1033,11 @@ function titleTextOf(m: ThreadMessage | undefined): string {
 }
 
 async function generateTitleWithModel(payload: {
+  checkpoint: string;
   userText: string;
   assistantText?: string;
 }): Promise<string | null> {
-  const params = useChatRuntimeStore.getState().params;
-  if (!params.checkpoint) return null;
+  if (!payload.checkpoint) return null;
 
   const user = clip(payload.userText, 256);
   const assistant = clip(payload.assistantText ?? "", 384);
@@ -699,62 +1046,19 @@ async function generateTitleWithModel(payload: {
     parts.push(`Assistant: ${assistant}`);
   }
 
-  function normalizeTitle(raw: string): string | null {
-    let title = raw.split(/\r?\n/, 1)[0] ?? "";
-    title = title.replace(/^\s*title\s*:\s*/i, "");
-    title = title.replace(/[^\x20-\x7E]+/g, " ");
-    title = title.replace(/["'`]+/g, "");
-
-    // Echo fail-safe: reject leading role labels before punctuation strips the ":".
-    if (/^\s*(user|assistant|base|lora)\s*:/i.test(title)) {
-      return null;
-    }
-
-    title = title.replace(/[.!?:;,]+/g, " ");
-    title = title.replace(/\s+/g, " ").trim();
-
-    const words = title.split(" ").filter(Boolean).slice(0, 6);
-    const joined = words.join(" ").trim();
-    if (!joined) return null;
-    return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  try {
+    // Inside the try: building this encrypts a browser key over the network.
+    const request = await buildTitleRequest(
+      payload.checkpoint,
+      parts.join("\n"),
+    );
+    if (!request) return null;
+    return await titleFromStream(
+      streamChatCompletions(request, new AbortController().signal),
+    );
+  } catch {
+    return null;
   }
-
-  const response = await authFetch("/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: params.checkpoint,
-      stream: false,
-      temperature: 0.2,
-      top_p: 0.9,
-      max_tokens: 24,
-      top_k: 20,
-      repetition_penalty: 1.0,
-      enable_thinking: false,
-      reasoning_effort: "none",
-      // Titling is a one-shot summarisation: never let it enter the tool loop. Omitting the field
-      // would inherit the server's tools-on default and put tool schemas in a 24-token prompt.
-      enable_tools: false,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
-        },
-        { role: "user", content: parts.join("\n") },
-      ],
-    }),
-  });
-
-  const body = (await response
-    .json()
-    .catch(() => null)) as TitleResponse | null;
-  if (!response.ok) return null;
-  const choice = body?.choices?.[0];
-  if (choice?.finish_reason === "length") return null;
-  const raw: string | undefined = choice?.message?.content;
-  if (!raw || /<\/?think>/i.test(raw)) return null;
-  return normalizeTitle(raw);
 }
 
 const inflightTitleByKey = new Set<string>();
@@ -774,7 +1078,7 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -790,7 +1094,9 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       role: "user" as const,
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       attachments: cloneAttachments(m.attachments),
-      metadata: { custom: {} },
+      metadata: {
+        custom: m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {},
+      },
     };
   }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
@@ -1398,9 +1704,13 @@ export async function persistTemporaryThread({
       createdAt:
         creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
     });
-    const records: MessageRecord[] = parentsFirst(messages).map(({ parentId, message }) => {
+    const epoch = getAuthSessionEpoch();
+    const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
+      // Documents kept in memory are uploaded now, before the File is lost to JSON.
       const attachments =
-        message.role === "user" ? cloneAttachments(message.attachments) : [];
+        message.role === "user"
+          ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))
+          : [];
       const metadata = message.metadata?.custom as
         | Record<string, unknown>
         | undefined;
@@ -1414,7 +1724,7 @@ export async function persistTemporaryThread({
         ...(metadata && { metadata }),
         createdAt: message.createdAt?.getTime?.() ?? Date.now(),
       };
-    });
+    }));
     await syncStoredChatMessages(threadId, records, { pruneMissing: false });
     temporaryThreadCreation.delete(threadId);
   } catch (error) {
@@ -1578,6 +1888,9 @@ function createStudioDbAdapter(
             );
       const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
+      const answeredWith = answeringCheckpoint(
+        firstAssistant?.metadata?.custom,
+      );
 
       if (!autoTitle) {
         const title = fallbackTitleFromUserText(userText);
@@ -1614,6 +1927,10 @@ function createStudioDbAdapter(
       try {
         const title =
           (await generateTitleWithModel({
+            checkpoint: titleCheckpoint(
+              answeredWith,
+              useChatRuntimeStore.getState().params.checkpoint,
+            ),
             userText,
             assistantText,
           })) || fallbackTitleFromUserText(userText);
@@ -2415,7 +2732,10 @@ function useStudioRuntimeAdapters(
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),
           new DocxAttachmentAdapter(),
+          new OfficeAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
+          new RtfAttachmentAdapter(),
+          new ToolOnlyAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

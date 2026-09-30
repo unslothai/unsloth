@@ -5,7 +5,9 @@
 import { fetchLoadModelOverride } from "@/features/model-picker/api/model-overrides";
 // eslint-disable-next-line no-restricted-imports -- Keep the import-free payload helper independent of the picker UI.
 import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
+import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -26,8 +28,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -69,6 +72,11 @@ import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  CHAT_IMAGE_ACCEPT,
+  isChatImageFile,
+  normalizeChatImage,
+} from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -85,7 +93,6 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   Columns2Icon,
-  GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -118,10 +125,17 @@ import {
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
-import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
+import {
+  listPromptEntries,
+  listPromptLists,
+  type PromptEntry,
+  type PromptListEntry,
+} from "./api/prompts-api";
+import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
@@ -150,9 +164,16 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
+  getInferenceStatus,
   loadModel,
+  unloadModel,
   validateModel,
 } from "./api/chat-api";
+import {
+  CompareRunOwnership,
+  isCompareCancellation,
+  throwIfCompareCancelled,
+} from "./compare-run-ownership";
 import {
   loadedContextForParams,
   resolveExplicitCtxPin,
@@ -241,7 +262,6 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
-const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
@@ -561,11 +581,29 @@ function isPortaledDrop(event: ReactDragEvent): boolean {
   return !target?.closest?.(".chat-composer-surface");
 }
 
+const LOAD_SETTLE_POLL_MS = 1000;
+const LOAD_SETTLE_TIMEOUT_MS = 15 * 60_000;
+
+/** Waits for every load, not the target by name: the backend tracks a local GGUF under a path-free id. */
+async function waitForBackendLoadToSettle(): Promise<void> {
+  const deadline = Date.now() + LOAD_SETTLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const status = await getInferenceStatus();
+      if (status.loading.length === 0) return;
+    } catch {
+      // Keep polling: an unreachable backend has not proven the load ended.
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOAD_SETTLE_POLL_MS));
+  }
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
   model2,
   onExitCompare,
+  onComparingChange,
   model1ThreadId,
   model2ThreadId,
   sendUnavailableReason,
@@ -575,6 +613,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  onComparingChange?: (comparing: boolean) => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
   sendUnavailableReason?: string;
@@ -596,6 +635,7 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [convertingImages, setConvertingImages] = useState(0);
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;
     base64: string;
@@ -613,6 +653,10 @@ export function SharedComposer({
     },
     [],
   );
+  // Audio files still being read into base64, which pendingAudio cannot see yet.
+  const audioDecodingRef = useRef(0);
+  // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
+  const attachingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -624,15 +668,30 @@ export function SharedComposer({
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Clear, don't keep: a stale list row would run its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
+    }
+    try {
+      const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
+      setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
+    } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -644,8 +703,25 @@ export function SharedComposer({
   const prevRunningRef = useRef(false);
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
+  const compareRunsRef = useRef(
+    new CompareRunOwnership<{ modelPath: string; requestId: string }>(),
+  );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    setCurrentText((current) =>
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Not the selector: a single chat's composer stays mounted, hidden, ahead of this one.
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1034,7 +1110,7 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback(
+  const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
       if (!input?.length) return;
       // Compare takes audio, so an audio-only 3GP must not be read off its
@@ -1044,6 +1120,7 @@ export function SharedComposer({
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
       let videoUnsupported = false;
+      let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -1053,10 +1130,18 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
-            setPendingAudioStore(base64, file.name);
-          });
+          audioDecodingRef.current += 1;
+          fileToBase64(file)
+            .then((base64) => {
+              setPendingAudio({ name: file.name, base64, contentType: file.type });
+              setPendingAudioStore(base64, file.name);
+            })
+            .catch(() => {
+              toast.error("Could not read that audio file.");
+            })
+            .finally(() => {
+              audioDecodingRef.current -= 1;
+            });
           continue;
         }
         // video_base64 targets the single loaded GGUF, so at most one side of a compare could answer. Say
@@ -1065,19 +1150,33 @@ export function SharedComposer({
           videoUnsupported = true;
           continue;
         }
-        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+        if (!isChatImageFile(file)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
           continue;
         }
-        next.push({ id: crypto.randomUUID(), file });
+        let image: File;
+        setConvertingImages((count) => count + 1);
+        try {
+          image = await normalizeChatImage(file);
+        } catch (error) {
+          conversionError ??=
+            error instanceof Error ? error.message : String(error);
+          continue;
+        } finally {
+          setConvertingImages((count) => count - 1);
+        }
+        next.push({ id: crypto.randomUUID(), file: image });
       }
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (conversionError) {
+        toast.error(conversionError);
       }
       if (videoUnsupported) {
         toast.error("Video can't be attached in compare mode", {
@@ -1089,31 +1188,46 @@ export function SharedComposer({
     [setPendingAudioStore, attachUnavailableReason],
   );
 
+  const trackAttaching = useCallback(async (work: () => Promise<void>) => {
+    attachingRef.current += 1;
+    try {
+      await work();
+    } finally {
+      attachingRef.current -= 1;
+    }
+  }, []);
+
+  const addFiles = useCallback(
+    (input: FileList | readonly File[] | null) =>
+      trackAttaching(() => addFilesUntracked(input)),
+    [trackAttaching, addFilesUntracked],
+  );
+
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
         event,
-        async (pasted) => {
-          // Classify before the check, so a pasted audio-only 3GP is not read
-          // as unsupported on its extension alone.
-          const files = await classifiedAttachmentFiles(pasted);
-          // Let addFiles report audio size errors.
-          const supported = files.some(
-            (file) =>
-              isAudioAttachmentFile(file) ||
-              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
-                file.size <= MAX_IMAGE_SIZE),
-          );
-          if (!supported) throw new Error("Unsupported compare attachment");
-          await addFiles(files);
-        },
+        (pasted) =>
+          trackAttaching(async () => {
+            // Classify before the check, so a pasted audio-only 3GP is not read
+            // as unsupported on its extension alone.
+            const files = await classifiedAttachmentFiles(pasted);
+            // Let addFiles report audio size errors.
+            const supported = files.some(
+              (file) =>
+                isAudioAttachmentFile(file) ||
+                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+            );
+            if (!supported) throw new Error("Unsupported compare attachment");
+            await addFilesUntracked(files);
+          }),
         () =>
           toast.error("Could not paste files.", {
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
     },
-    [addFiles],
+    [trackAttaching, addFilesUntracked],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1155,7 +1269,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) {
+    if (composingRef.current || convertingImages > 0) {
       resetPromptQueue();
       return;
     }
@@ -1350,6 +1464,8 @@ export function SharedComposer({
       }
       audioUpload.cancel();
       clearSubmittedDraft();
+      const run = compareRunsRef.current.begin();
+      const compareSignal = run.controller.signal;
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
@@ -1370,6 +1486,7 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        throwIfCompareCancelled(compareSignal);
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // This pane's effective config: an explicit selection config, else the remembered store config
@@ -1599,7 +1716,8 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
-        });
+        }, { signal: compareSignal });
+        throwIfCompareCancelled(compareSignal);
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -1645,9 +1763,12 @@ export function SharedComposer({
             );
           }
         }
+        throwIfCompareCancelled(compareSignal);
         applyCompareStopDecision();
+        const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
           model_path: sel.id,
+          load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
@@ -1657,7 +1778,7 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1670,6 +1791,7 @@ export function SharedComposer({
               : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
+          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1679,7 +1801,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                n_parallel: ownConfig.nParallel ?? null,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which keeps
                 // CLI-set flags working.
                 ...llamaCppConfigPayload(ownConfig.llamaCppConfig),
@@ -1696,7 +1817,17 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
+        }, {
+          signal: compareSignal,
+          onRequestStart: () => {
+            compareRunsRef.current.setLoadingModel(run, {
+              modelPath: sel.id,
+              requestId: loadRequestId,
+            });
+          },
         });
+        compareRunsRef.current.setLoadingModel(run, null);
+        throwIfCompareCancelled(compareSignal);
         // Keep a compare pane's per-model speculative choice load-local: persist the global preference
         // only when it came from global settings.
         if (ownConfig.speculativeType == null) {
@@ -1705,6 +1836,13 @@ export function SharedComposer({
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
         // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
+        const compareOffload = offloadWarning(offloadCountsFrom(resp));
+        if (compareOffload) {
+          toast.warning(
+            `${compareModelDisplayName(sel.id)} loaded${compareOffload.titleSuffix}`,
+            { description: compareOffload.description, duration: 8000 },
+          );
+        }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1743,7 +1881,7 @@ export function SharedComposer({
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          ((resp.is_gguf ?? false) && !(resp.is_diffusion ?? false)) || (resp.is_mlx ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
         // same rule for the batch sizes
@@ -1897,6 +2035,7 @@ export function SharedComposer({
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);
+      onComparingChange?.(true);
       try {
         if (handle1 && model1?.id) {
           toast("Loading Model 1…", {
@@ -1905,6 +2044,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const status1 = await ensureModelLoaded(model1);
+          throwIfCompareCancelled(compareSignal);
           releaseCompareModelLifecycle();
           toast("Generating with Model 1…", {
             id: toastId,
@@ -1914,6 +2054,7 @@ export function SharedComposer({
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         if (handle2 && model2?.id) {
@@ -1928,6 +2069,7 @@ export function SharedComposer({
             if (!currentStopDecision.proceed) {
               throw new Error("Second comparison model load cancelled.");
             }
+            throwIfCompareCancelled(compareSignal);
             compareStopDecision = currentStopDecision;
             toast("Loading Model 2…", {
               id: toastId,
@@ -1936,6 +2078,7 @@ export function SharedComposer({
             });
           }
           const status2 = await ensureModelLoaded(model2);
+          throwIfCompareCancelled(compareSignal);
           releaseCompareModelLifecycle();
           toast("Generating with Model 2…", {
             id: toastId,
@@ -1945,6 +2088,7 @@ export function SharedComposer({
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         compareStepSucceededRef.current = true;
@@ -1952,19 +2096,47 @@ export function SharedComposer({
       } catch (err) {
         compareStepSucceededRef.current = false;
         resetPromptQueue();
+        const cancelled = isCompareCancellation(err, compareSignal);
+        let cleanupError: unknown = null;
+        if (run.cleanup) {
+          cleanupError = await run.cleanup.then(
+            () => null,
+            (error: unknown) => error ?? new Error("Model unload failed"),
+          );
+          // The load keeps running when its cancel failed; resyncing before it settles would pin the
+          // outgoing model while the replacement becomes resident.
+          if (cleanupError) {
+            await waitForBackendLoadToSettle();
+          }
+          // A stopped load may have finished or evicted the previous model: adopt the backend's state.
+          await resyncInferenceStatusAfterServerModelChange();
+        }
         // The install already unloaded the previously active model; drop the checkpoint so the UI does
         // not keep pointing at it.
         if (upgradeUnloadedActive) {
           useChatRuntimeStore.getState().clearCheckpoint();
         }
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
+        if (cancelled && !cleanupError) {
+          toast.info("Compare stopped", { id: toastId, duration: 2000 });
+          return;
+        }
+        const failure = cancelled ? cleanupError : err;
+        toast.error(
+          cancelled
+            ? "Compare stopped, but the model load could not be cancelled"
+            : "Compare failed",
+          {
+            id: toastId,
+            description:
+              failure instanceof Error ? failure.message : "Unknown error",
+            duration: cancelled ? 5000 : 4000,
+          },
+        );
       } finally {
+        compareRunsRef.current.release(run);
         releaseCompareModelLifecycle();
         setComparing(false);
+        onComparingChange?.(false);
       }
     } else {
       const liveRuntime = useChatRuntimeStore.getState();
@@ -2014,6 +2186,18 @@ export function SharedComposer({
 
   function stop() {
     if (isDictating) stopDictation();
+    const run = compareRunsRef.current.cancelCurrent();
+    // Aborting the fetch frees only the browser; /unload is what stops the backend load.
+    if (run?.loadingModel && !run.cleanup) {
+      compareRunsRef.current.setCleanup(
+        run,
+        // Scoped to this attempt: never evicts a resident model or another tab's same-named load.
+        unloadModel({
+          model_path: run.loadingModel.modelPath,
+          cancel_load_request_id: run.loadingModel.requestId,
+        }),
+      );
+    }
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
     }
@@ -2058,6 +2242,7 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating &&
+    convertingImages === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
@@ -2117,6 +2302,75 @@ export function SharedComposer({
     { enabled: chatActive },
   );
 
+  const runPromptList = useCallback(
+    (items: string[]) => {
+      const filtered = items.filter((p) => p.trim());
+      if (!filtered.length) return;
+      // `running` lags the 200ms poll, so ask the handles directly like the poll does.
+      const liveRunning =
+        busy || Object.values(handlesRef.current).some((h) => h.isRunning());
+      if (liveRunning || isQueueRunningRef.current) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      // A compare send holds the loading lease while it prepares, before `comparing` is set.
+      if (useChatRuntimeStore.getState().modelLoading) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      if (isDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
+      // send() cancels an in-flight transcription, which would discard it.
+      if (audioUpload.busy) {
+        toast.error("Wait for the transcription to finish before running a list");
+        return;
+      }
+      // Only the first send would carry staged attachments; refuse rather than clear.
+      if (
+        pendingImagesRef.current.length > 0 ||
+        pendingAudioRef.current ||
+        audioDecodingRef.current > 0 ||
+        attachingRef.current > 0
+      ) {
+        toast.error("Remove the staged attachment before running a list", {
+          description: "Only the first prompt in the list would carry it.",
+        });
+        return;
+      }
+      const hasCompareHandles = Boolean(
+        handlesRef.current["model1"] || handlesRef.current["model2"],
+      );
+      const isGeneralizedCompare =
+        hasCompareHandles && Boolean(model1?.id && model2?.id);
+      if (hasCompareHandles && !isGeneralizedCompare) {
+        toast.error("Pick a model in each pane to compare", {
+          description:
+            "Use the model dropdown above each pane, then send your prompt.",
+        });
+        return;
+      }
+      setPromptStorageOpen(false);
+      queueRef.current = filtered;
+      queueIndexRef.current = 0;
+      isQueueRunningRef.current = true;
+      setIsQueueRunning(true);
+      setQueueProgress({ current: 1, total: filtered.length });
+      toast(`Prompt 1 / ${filtered.length}`, {
+        description:
+          filtered[0].length > 80 ? `${filtered[0].slice(0, 80)}…` : filtered[0],
+      });
+      setCurrentText(filtered[0]);
+      setTimeout(() => {
+        sendRef.current?.();
+      }, 100);
+    },
+    [busy, isDictating, audioUpload.busy, handlesRef, model1?.id, model2?.id, setCurrentText],
+  );
+
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
   // the "More" overflow submenu. Core items and "More" itself live outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
@@ -2131,7 +2385,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2144,7 +2398,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
         MCP
         {mcpEnabledForChat ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2166,7 +2420,7 @@ export function SharedComposer({
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => {
                 setCurrentText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
@@ -2175,7 +2429,15 @@ export function SharedComposer({
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
           ))}
-          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          {recentLists.map((l) => (
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
+              <span className="truncate">{l.name}</span>
+              <PromptCountBadge count={l.items.length} />
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 || recentLists.length > 0 ? (
+            <DropdownMenuSeparator />
+          ) : null}
           <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
             All saved prompts…
           </DropdownMenuItem>
@@ -2190,7 +2452,7 @@ export function SharedComposer({
       >
         <Columns2Icon />
         Compare chat
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
     ),
     exportChat: (
@@ -2245,7 +2507,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
         Canvas
         {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ) : null,
@@ -2314,33 +2576,7 @@ export function SharedComposer({
           setCurrentText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
-        onRunList={(items) => {
-          const filtered = items.filter((p) => p.trim());
-          if (!filtered.length) return;
-          const hasCompareHandles = Boolean(
-            handlesRef.current["model1"] || handlesRef.current["model2"],
-          );
-          const isGeneralizedCompare =
-            hasCompareHandles && Boolean(model1?.id && model2?.id);
-          if (hasCompareHandles && !isGeneralizedCompare) {
-            toast.error("Pick a model in each pane to compare", {
-              description:
-                "Use the model dropdown above each pane, then send your prompt.",
-            });
-            return;
-          }
-          setPromptStorageOpen(false);
-          queueRef.current = filtered;
-          queueIndexRef.current = 0;
-          isQueueRunningRef.current = true;
-          setIsQueueRunning(true);
-          setQueueProgress({ current: 1, total: filtered.length });
-          toast(`Prompt 1 / ${filtered.length}`, {
-            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
-          });
-          setCurrentText(filtered[0]);
-          setTimeout(() => { sendRef.current?.(); }, 100);
-        }}
+        onRunList={runPromptList}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
@@ -2457,7 +2693,7 @@ export function SharedComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
+            accept={CHAT_IMAGE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {
@@ -2532,11 +2768,11 @@ export function SharedComposer({
                   }
                 }}
               >
-                <GlobeIcon />
+                <InternetGlyph />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2560,7 +2796,7 @@ export function SharedComposer({
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2580,7 +2816,7 @@ export function SharedComposer({
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
                     <HugeiconsIcon
-                      icon={Tick02Icon}
+                      icon={MenuTickIcon}
                       strokeWidth={2}
                       className="ml-auto"
                     />
@@ -2651,7 +2887,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>

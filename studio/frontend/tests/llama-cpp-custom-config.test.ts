@@ -103,7 +103,7 @@ test("custom source and selection round-trip through storage and API without con
   const records = JSON.parse(store.get(PER_MODEL_CONFIG_STORAGE_KEY)!);
   assert.equal(
     Object.values(records).some(
-      (row: unknown) => (row as { version: number }).version === 7,
+      (row: unknown) => (row as { version: number }).version === 8,
     ),
     true,
   );
@@ -174,7 +174,7 @@ test("custom configuration advances only its own storage tier", () => {
     }),
     true,
   );
-  assert.equal(storedVersion(), 7);
+  assert.equal(storedVersion(), 8);
   const customAndReasoning = resolveInitialConfig("org/custom", "Q4").config;
   assert.equal(customAndReasoning.reasoningBudget, 256);
   assert.equal(
@@ -398,9 +398,12 @@ test("all ordinary load, preflight and estimate producers carry the config; roll
     readSrc("features/chat/shared-composer.tsx"),
     /llamaCppConfigPayload\(ownConfig\.llamaCppConfig\)/,
   );
-  assert.match(
-    readSrc("features/chat/api/chat-adapter.ts"),
-    /llamaCppConfigPayload\(config\.llamaCppConfig\)/,
+  // Both auto-load producers: the preflight and the load, each downgrading custom on diffusion.
+  assert.equal(
+    readSrc("features/chat/api/chat-adapter.ts").match(
+      /llamaCppConfigPayload\(config\.llamaCppConfig, \{ isDiffusion \}\)/g,
+    )?.length,
+    2,
   );
   assert.match(
     readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
@@ -410,4 +413,15 @@ test("all ordinary load, preflight and estimate producers carry the config; roll
     readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
     /loadedLlamaCppConfig: status\.requested_llama_cpp_config/,
   );
+});
+
+test("a diffusion load sends managed in place of a custom config, never omits it", () => {
+  assert.deepEqual(llamaCppConfigPayload(custom, { isDiffusion: true }), {
+    llama_cpp_config: managed,
+  });
+  assert.deepEqual(llamaCppConfigPayload(custom), { llama_cpp_config: custom });
+  assert.deepEqual(llamaCppConfigPayload(managed, { isDiffusion: true }), {
+    llama_cpp_config: managed,
+  });
+  assert.deepEqual(llamaCppConfigPayload(undefined, { isDiffusion: true }), {});
 });
