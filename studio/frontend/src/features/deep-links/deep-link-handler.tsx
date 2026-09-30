@@ -85,9 +85,7 @@ export function DeepLinkHandler({
       if (disposed) return;
 
       const cleanup = await onOpenUrl((urls) => {
-        if (handleUrls(urls, "event")) {
-          receivedLiveIntent = true;
-        }
+        if (handleUrls(urls, "event")) receivedLiveIntent = true;
       });
       if (disposed) {
         cleanup();
@@ -96,9 +94,8 @@ export function DeepLinkHandler({
       unlisten = cleanup;
 
       const currentUrls = await getCurrent();
-      if (currentUrls && !receivedLiveIntent) {
+      if (currentUrls && !receivedLiveIntent)
         handleUrls(currentUrls, "startup");
-      }
     }
 
     void subscribe().catch(() => undefined);

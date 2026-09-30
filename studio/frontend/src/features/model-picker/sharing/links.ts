@@ -13,7 +13,7 @@ import {
   MAX_RUN_CONFIG_URL_LENGTH,
   isRunConfigLink,
   nativeRunAddress,
-} from "./link-address";
+} from "./inbox";
 
 export const DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH = 2_083;
 export type SharedRunConfig = {
@@ -33,14 +33,12 @@ export { isShareableModelId };
 
 function validVariant(value: string): boolean {
   return (
-    value.length > 0 &&
     value.length <= 512 &&
     value
       .split("/")
       .every(
         (part) =>
           part.length <= 255 &&
-          part === part.trim() &&
           variantSegment.test(part) &&
           !part.endsWith(".") &&
           !part.endsWith(" ") &&
@@ -49,15 +47,9 @@ function validVariant(value: string): boolean {
   );
 }
 
-function decodeField(key: SharedConfigKey, value: string): unknown {
-  return SHARED_CONFIG_FIELDS[key].valid(value) ? value : JSON.parse(value);
-}
-
-function configFieldError(key: SharedConfigKey): string {
-  return (
-    SHARED_CONFIG_FIELDS[key].error ??
-    `The setting “${SHARED_CONFIG_FIELDS[key].label}” is invalid.`
-  );
+function fieldError(key: SharedConfigKey): Error {
+  const field = SHARED_CONFIG_FIELDS[key];
+  return new Error(field.error ?? `The setting “${field.label}” is invalid.`);
 }
 
 function linkQuery(raw: string, url: URL, native: boolean): string {
@@ -88,57 +80,38 @@ function readParameter(
   key: string,
   value: string,
 ): void {
-  switch (key) {
-    case "v": {
-      if (value !== "1") {
-        throw new Error(
-          "This run configuration link uses an unsupported version.",
-        );
-      }
-      return;
+  if (key === "v") {
+    if (value !== "1") {
+      throw new Error(
+        "This run configuration link uses an unsupported version.",
+      );
     }
-    case "model": {
-      if (!isShareableModelId(value)) {
-        throw new Error("Use a Hugging Face model ID such as owner/model.");
-      }
-      result.model = value;
-      return;
+  } else if (key === "model") {
+    if (!isShareableModelId(value)) {
+      throw new Error("Use a Hugging Face model ID such as owner/model.");
     }
-    case "ggufVariant": {
-      if (!validVariant(value)) {
-        throw new Error("The GGUF variant is invalid.");
-      }
-      result.ggufVariant = value;
-      return;
+    result.model = value;
+  } else if (key === "ggufVariant") {
+    if (!validVariant(value)) {
+      throw new Error("The GGUF variant is invalid.");
     }
-    default:
-      readConfigField(result.config, key, value);
-  }
-}
-
-function readConfigField(
-  config: Partial<PerModelConfig>,
-  key: string,
-  value: string,
-): void {
-  if (!isSharedConfigKey(key)) {
+    result.ggufVariant = value;
+  } else if (isSharedConfigKey(key)) {
+    const { valid } = SHARED_CONFIG_FIELDS[key];
+    let decoded: unknown = value;
+    try {
+      decoded = valid(value) ? value : JSON.parse(value);
+    } catch {
+      throw fieldError(key);
+    }
+    if (!valid(decoded)) {
+      throw fieldError(key);
+    }
+    Object.assign(result.config, { [key]: decoded });
+  } else {
     throw new Error(
       "This run configuration link contains an unsupported setting.",
     );
-  }
-  let decoded: unknown;
-  try {
-    decoded = decodeField(key, value);
-  } catch {
-    throw new Error(configFieldError(key));
-  }
-  validateConfigField(key, decoded);
-  Object.assign(config, { [key]: decoded });
-}
-
-function validateConfigField(key: SharedConfigKey, value: unknown): void {
-  if (!SHARED_CONFIG_FIELDS[key].valid(value)) {
-    throw new Error(configFieldError(key));
   }
 }
 
@@ -185,20 +158,11 @@ export function parseRunConfigLink(raw: string): RunConfigLinkResult {
     };
   }
   const url = new URL(raw);
-  const native = url.protocol === "unsloth:";
   try {
-    return {
-      kind: "valid",
-      value: parseParameters(linkQuery(raw, url, native)),
-    };
+    const query = linkQuery(raw, url, url.protocol === "unsloth:");
+    return { kind: "valid", value: parseParameters(query) };
   } catch (error) {
-    return {
-      kind: "invalid",
-      error:
-        error instanceof Error
-          ? error.message
-          : "Invalid run configuration link.",
-    };
+    return { kind: "invalid", error: (error as Error).message };
   }
 }
 
@@ -213,7 +177,9 @@ function encodeParameters(value: SharedRunConfig): URLSearchParams {
   for (const key of SHARED_CONFIG_KEYS) {
     const field = value.config[key];
     if (field !== undefined) {
-      validateConfigField(key, field);
+      if (!SHARED_CONFIG_FIELDS[key].valid(field)) {
+        throw fieldError(key);
+      }
       params.set(
         key,
         typeof field === "string" ? field : JSON.stringify(field),
@@ -249,12 +215,8 @@ export function createRunConfigLink(
       ? `unsloth://run?${params}`
       : browserLink(params, browserUrl);
   const parsed = parseRunConfigLink(link);
-  if (parsed.kind !== "valid") {
-    throw new Error(
-      parsed.kind === "invalid"
-        ? parsed.error
-        : "Invalid run configuration link.",
-    );
+  if (parsed.kind === "invalid") {
+    throw new Error(parsed.error);
   }
   return link;
 }

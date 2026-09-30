@@ -7,7 +7,6 @@ import type { ModelPickTarget } from "../src/features/model-picker/components/mo
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
 import type * as Controls from "../src/features/model-picker/sharing/config-controls.tsx";
 import type * as ConfigUi from "../src/features/model-picker/sharing/config-ui.tsx";
-import * as events from "../src/features/model-picker/sharing/editor-events.ts";
 import type * as LinkEditor from "../src/features/model-picker/sharing/link-editor.tsx";
 import type * as LinkHandler from "../src/features/model-picker/sharing/link-handler.tsx";
 import type * as ShareDialog from "../src/features/model-picker/sharing/share-dialog.tsx";
@@ -139,13 +138,13 @@ const { SharedRunConfigReview } = loadConfigUi().module;
 const review = (
   config: Partial<PerModelConfig> | null,
   props: Partial<Parameters<typeof SharedRunConfigReview>[0]> = {},
+  selection: { model?: string; ggufVariant?: string } = {},
 ) => {
   const draftConfig = { ...D, ...config };
-  const currentConfig = draftConfig;
   return SharedRunConfigReview({
-    config,
+    imported: config && { changes: config, ...selection },
     draftConfig,
-    currentConfig,
+    currentConfig: draftConfig,
     ...props,
   });
 };
@@ -477,7 +476,8 @@ const controlProps = {
 test("Share opens and closes its dialog without touching the pending import", () => {
   const inbox = pendingImport();
   const { module, render } = loadConfigUi(inbox);
-  const props = { ...controlProps, hydrated: true };
+  const draftKey = modelConfigDraftKey(hubTarget.id, hubTarget.ggufVariant);
+  const props = { ...controlProps, draftKey, hydrated: true };
   const tree = () =>
     elements(render(() => module.SharedRunConfigActions(props)));
   assert.equal(find(tree(), "ShareRunConfigDialog"), undefined);
@@ -495,6 +495,7 @@ test("closing an editor before its sharing UI loads cancels the import, while ef
       toast: { info: (_: string, notice: never) => notices.push(notice) },
     },
     "./inbox": { runConfigInbox: inbox },
+    "./target": { isRunConfigVariantUnresolved: () => false },
   });
   const props = { ...controlProps, isDiffusion: false };
   module.SharedRunConfigControls({ ...props, canImport: false });
@@ -532,6 +533,7 @@ test("edit cancellation includes contained controls and excludes portaled dialog
   const editor = new NodeFake();
   editor.child = new NodeFake();
   const currentTarget = editor as unknown as Node;
+  const events = load<typeof Controls>("config-controls.tsx").module;
   for (const [target, expected] of [
     [editor.child, true],
     [new NodeFake(), false],
@@ -612,7 +614,7 @@ test("review identifies a linked repository or quant and explains possible downl
       ["owner/Model-GGUF", "Q8_0", "owner/Model-GGUF · Q8_0", hub],
       [u, "Q8_0", "Q8_0", quant],
     ] as const) {
-      const tree = review(config, { model, ggufVariant });
+      const tree = review(config, {}, { model, ggufVariant });
       assert.ok(summaryText(tree).endsWith(summary));
       assert.ok(text(tree).includes(note));
       assert.doesNotMatch(text(tree), /Link settings already match/);

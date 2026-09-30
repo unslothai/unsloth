@@ -62,25 +62,8 @@ function linkPreview(value: SharedRunConfig, destination: string) {
       error: "",
     };
   } catch (cause) {
-    return {
-      link: "",
-      error:
-        cause instanceof Error ? cause.message : "Could not create this link.",
-    };
+    return { link: "", error: (cause as Error).message };
   }
-}
-
-function configDetail(
-  key: SharedConfigKey,
-  config: PerModelConfig,
-  error: string | null,
-) {
-  if (error !== null) {
-    return key === "llamaExtraArgs"
-      ? `Excluded: ${error} Edit Extra Arguments in Run settings to share them.`
-      : error;
-  }
-  return formatSharedConfigValue(key, config);
 }
 
 export function ShareRunConfigDialog({
@@ -113,11 +96,13 @@ export function ShareRunConfigDialog({
                 ? null
                 : (SHARED_CONFIG_FIELDS[key].error ??
                   "This value cannot be shared.");
-          return {
-            key,
-            valid: error === null,
-            detail: configDetail(key, config, error),
-          };
+          const detail =
+            error === null
+              ? formatSharedConfigValue(key, config)
+              : key === "llamaExtraArgs"
+                ? `Excluded: ${error} Edit Extra Arguments in Run settings to share them.`
+                : error;
+          return { key, valid: error === null, detail };
         },
       ),
     [config],
@@ -261,15 +246,14 @@ export function ShareRunConfigDialog({
                   SHARED_CONFIG_FIELDS[key].label,
                   selected.has(key),
                   (checked) =>
-                    setSelected((current) => {
-                      const next = new Set(current);
-                      if (checked) {
-                        next.add(key);
-                      } else {
-                        next.delete(key);
-                      }
-                      return next;
-                    }),
+                    setSelected(
+                      (current) =>
+                        new Set(
+                          checked
+                            ? [...current, key]
+                            : [...current].filter((item) => item !== key),
+                        ),
+                    ),
                   detail,
                   !valid,
                 ),

@@ -11,19 +11,28 @@ import {
   modelConfigDraftKey,
 } from "../model-config/model-config-draft";
 import { runConfigInbox } from "./inbox";
-import { isRunConfigVariantUnresolved } from "./variant";
+import { isRunConfigVariantUnresolved } from "./target";
 
 const SharedRunConfigActions = lazy(() =>
-  import("./runtime").then((module) => ({
+  import("./config-ui").then((module) => ({
     default: module.SharedRunConfigActions,
   })),
 );
 
 const ConfigReview = lazy(() =>
-  import("./runtime").then((module) => ({
+  import("./config-ui").then((module) => ({
     default: module.SharedRunConfigReview,
   })),
 );
+
+export function isRunConfigEditorChange(event: {
+  currentTarget: Node;
+  target: EventTarget;
+}): boolean {
+  return (
+    event.target instanceof Node && event.currentTarget.contains(event.target)
+  );
+}
 
 export function SharedRunConfigReview({
   target,
@@ -31,12 +40,12 @@ export function SharedRunConfigReview({
 }: ComponentProps<typeof ConfigReview> & { target: ModelPickTarget }) {
   return (
     <>
-      {props.config && (
+      {props.imported && (
         <LazyImportBoundary
           fallback={
             <p role="alert" className="mb-5 text-ui-12 text-muted-foreground">
-              The link settings summary could not load. Reload Unsloth and reopen
-              the link to review it.
+              The link settings summary could not load. Reload Unsloth and
+              reopen the link to review it.
             </p>
           }
         >
@@ -63,7 +72,10 @@ export function SharedRunConfigReview({
 export function SharedRunConfigControls({
   isDiffusion,
   ...props
-}: Omit<ComponentProps<typeof SharedRunConfigActions>, "hydrated"> & {
+}: Omit<
+  ComponentProps<typeof SharedRunConfigActions>,
+  "hydrated" | "draftKey"
+> & {
   isDiffusion: boolean;
 }) {
   const { target, canImport } = props;
@@ -98,6 +110,7 @@ export function SharedRunConfigControls({
       <Suspense fallback={fallback}>
         <SharedRunConfigActions
           {...props}
+          draftKey={key}
           hydrated={isDiffusion || isExtraArgsHydratedForDraft(key)}
         />
       </Suspense>

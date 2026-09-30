@@ -4,12 +4,12 @@
 export {
   SharedRunConfigControls,
   SharedRunConfigReview,
+  isRunConfigEditorChange,
 } from "./config-controls";
 export { SharedRunConfigLinkHandler } from "./link-handler";
 export {
   cancelRunConfigImportForEdit,
   receiveSharedRunConfigUrls,
 } from "./receive-link";
-
-export { isRunConfigEditorChange } from "./editor-events";
-export { isRunConfigVariantUnresolved } from "./variant";
+export type { RunConfigImport } from "./inbox";
+export { isRunConfigVariantUnresolved } from "./target";

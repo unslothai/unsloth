@@ -6,8 +6,7 @@ import { createDeepLinkIntentGate } from "../../src/features/deep-links/deep-lin
 import { parseUnslothDeepLink } from "../../src/features/deep-links/parse-deep-link.ts";
 import type * as Drafts from "../../src/features/model-picker/model-config/model-config-draft.ts";
 import { modelConfigDraftKey } from "../../src/features/model-picker/model-config/model-config-draft.ts";
-import { createRunConfigInbox } from "../../src/features/model-picker/sharing/inbox.ts";
-import * as linkAddress from "../../src/features/model-picker/sharing/link-address.ts";
+import * as inboxModule from "../../src/features/model-picker/sharing/inbox.ts";
 import type * as Receiver from "../../src/features/model-picker/sharing/receive-link.ts";
 import { loadWithStubs } from "./module-stubs.ts";
 import * as links from "./sharing-links.ts";
@@ -35,7 +34,7 @@ export function receiverHarness({
     "markModelConfigDraftEdited" | "modelConfigDraftKey"
   >;
 } = {}) {
-  const inbox = createRunConfigInbox();
+  const inbox = inboxModule.createRunConfigInbox();
   let nextId = 0;
   const receiver = loadWithStubs<typeof Receiver>(
     new URL(
@@ -61,9 +60,8 @@ export function receiverHarness({
         clearModelConfigHandoff: (id: string) => cleared.push(id),
         createModelConfigHandoffRequestId: () => `request-${++nextId}`,
       },
-      "./inbox": { runConfigInbox: inbox },
-      "./link-address": linkAddress,
-      get "./runtime"() {
+      "./inbox": { ...inboxModule, runConfigInbox: inbox },
+      get "./links"() {
         return loadParser();
       },
     },

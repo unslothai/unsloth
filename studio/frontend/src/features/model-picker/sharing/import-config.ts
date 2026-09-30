@@ -8,9 +8,12 @@ import {
   patchModelConfigDraft,
   readModelConfigDraft,
 } from "../model-config/model-config-draft";
-import type { PerModelConfig } from "../model-config/per-model-config";
 import { SHARED_CONFIG_KEYS, mergeSharedRunConfig } from "./fields";
-import { type RunConfigRequest, runConfigInbox } from "./inbox";
+import {
+  type RunConfigImport,
+  type RunConfigRequest,
+  runConfigInbox,
+} from "./inbox";
 
 export function scheduleRunConfigImport({
   canImport,
@@ -25,11 +28,7 @@ export function scheduleRunConfigImport({
   pending: RunConfigRequest | null;
   key: string;
   hydrated: boolean;
-  onImport: (
-    changes: Partial<PerModelConfig>,
-    model?: string,
-    ggufVariant?: string,
-  ) => void;
+  onImport: (imported: RunConfigImport) => void;
 }): (() => void) | undefined {
   if (
     !(canImport && ready && pending) ||
@@ -50,7 +49,7 @@ export function scheduleRunConfigImport({
     if (Object.keys(pending.value.config).length === 0) {
       runConfigInbox.take(pending.id, key);
       if (pending.value.model || ggufVariant) {
-        onImport({}, pending.value.model, ggufVariant);
+        onImport({ changes: {}, model: pending.value.model, ggufVariant });
       }
       return;
     }
@@ -81,7 +80,7 @@ export function scheduleRunConfigImport({
     patchModelConfigDraft(key, (current) =>
       mergeSharedRunConfig(current, patch),
     );
-    onImport(changes, pending.value.model, ggufVariant);
+    onImport({ changes, model: pending.value.model, ggufVariant });
     toast.success("Settings imported from link", {
       id: pending.id,
       description: "Review before loading.",

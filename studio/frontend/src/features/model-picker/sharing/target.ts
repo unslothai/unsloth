@@ -8,6 +8,7 @@ import {
 } from "@/features/chat";
 import { isValidRepoId as isShareableModelId } from "@/features/deep-links";
 import { looksLikeLocalPath } from "@/lib/local-path";
+import type { ModelPickTarget } from "../components/model-selector/types";
 import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
 import {
   ggufVariantsMatch,
@@ -81,13 +82,14 @@ export function resolveRunConfigTarget(
   if (!id || isExternalModelId(id)) {
     return null;
   }
-  const { sameModel, model, lora, isGguf: knownFormat } = knownModel(
-    id,
-    selection,
-  );
+  const {
+    sameModel,
+    model,
+    lora,
+    isGguf: knownFormat,
+  } = knownModel(id, selection);
   const singleFile =
-    isStandaloneGgufPath(id) ||
-    (Boolean(selectedModel) && isOllamaModelId(id));
+    isStandaloneGgufPath(id) || (Boolean(selectedModel) && isOllamaModelId(id));
   const isGguf = singleFile || Boolean(value.model) || knownFormat !== false;
   const ggufVariant =
     isGguf && !singleFile
@@ -118,4 +120,13 @@ export function resolveRunConfigTarget(
         : {}),
     },
   };
+}
+
+export function isRunConfigVariantUnresolved(target: ModelPickTarget): boolean {
+  return (
+    target.meta.source === "hub" &&
+    target.isGguf &&
+    !target.meta.isDownloaded &&
+    (!target.ggufVariant || target.ggufVariant.toLowerCase().endsWith(".gguf"))
+  );
 }

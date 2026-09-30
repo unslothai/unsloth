@@ -96,6 +96,8 @@ export function SharedRunConfigLinkEditor({
     ],
   );
 
+  const model = modelInput.trim();
+  const validModel = isRunConfigModelInput(model);
   const chooseModel =
     canOpen &&
     settingsHydrated &&
@@ -125,14 +127,10 @@ export function SharedRunConfigLinkEditor({
           className="space-y-5"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!isRunConfigModelInput(modelInput.trim())) {
-              return;
+            if (validModel) {
+              runConfigInbox.submit({ ...pending, selectedModel: model });
+              setModelInput("");
             }
-            runConfigInbox.submit({
-              ...pending,
-              selectedModel: modelInput.trim(),
-            });
-            setModelInput("");
           }}
         >
           <div className="space-y-2">
@@ -151,10 +149,7 @@ export function SharedRunConfigLinkEditor({
             />
           </div>
           <div className="flex justify-end">
-            <Button
-              type="submit"
-              disabled={!isRunConfigModelInput(modelInput.trim())}
-            >
+            <Button type="submit" disabled={!validModel}>
               Open run settings
             </Button>
           </div>

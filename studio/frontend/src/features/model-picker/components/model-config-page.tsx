@@ -183,6 +183,7 @@ import {
   vramPercentToFraction,
 } from "../model-config/per-model-config";
 import {
+  type RunConfigImport,
   SharedRunConfigControls,
   SharedRunConfigReview,
   cancelRunConfigImportForEdit,
@@ -2202,24 +2203,15 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
-  const [importedConfig, setImportedConfig] = useState<{
-    changes: Partial<PerModelConfig>;
-    model?: string;
-    ggufVariant?: string;
-  } | null>(null);
-  const handleSharedConfigImport = useCallback(
-    (
-      changes: Partial<PerModelConfig>,
-      model?: string,
-      ggufVariant?: string,
-    ) => {
-      setImportedConfig({ changes, model, ggufVariant });
-      if (Object.keys(changes).length > 0) {
-        setAutoOpenAdvanced(true);
-      }
-    },
-    [],
+  const [importedConfig, setImportedConfig] = useState<RunConfigImport | null>(
+    null,
   );
+  const handleSharedConfigImport = useCallback((imported: RunConfigImport) => {
+    setImportedConfig(imported);
+    if (Object.keys(imported.changes).length > 0) {
+      setAutoOpenAdvanced(true);
+    }
+  }, []);
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
   const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
@@ -3305,11 +3297,9 @@ export function ModelConfigPage({
   return (
     <div
       className="hint-on-hover flex flex-col"
-      onChange={(event) => {
-        if (isRunConfigEditorChange(event)) {
-          handleSharedConfigEdit();
-        }
-      }}
+      onChange={(event) =>
+        isRunConfigEditorChange(event) && handleSharedConfigEdit()
+      }
     >
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
@@ -3341,9 +3331,7 @@ export function ModelConfigPage({
 
       <SharedRunConfigReview
         target={target}
-        config={importedConfig?.changes ?? null}
-        model={importedConfig?.model}
-        ggufVariant={importedConfig?.ggufVariant}
+        imported={importedConfig}
         draftConfig={configState}
         currentConfig={config}
         remember={remember}

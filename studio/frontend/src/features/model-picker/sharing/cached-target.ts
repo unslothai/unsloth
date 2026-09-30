@@ -112,6 +112,22 @@ function findCachedVariant(
   );
 }
 
+function withVariant(
+  target: RunConfigTarget,
+  variant: CachedVariantsResponse["variants"][number],
+  meta: Partial<RunConfigTarget["meta"]>,
+): RunConfigTarget {
+  return {
+    ...target,
+    meta: {
+      ...target.meta,
+      ...meta,
+      ggufVariant: variant.quant,
+      ggufFilename: variant.filename,
+    },
+  };
+}
+
 function resolveLocalTarget(
   target: RunConfigTarget,
   listing: CachedVariantsResponse,
@@ -131,16 +147,7 @@ function resolveLocalTarget(
       "The selected folder does not contain a complete copy of the requested GGUF variant.",
     );
   }
-  return {
-    ...target,
-    meta: {
-      ...target.meta,
-      isGguf: true,
-      isDownloaded: true,
-      ggufVariant: variant.quant,
-      ggufFilename: variant.filename,
-    },
-  };
+  return withVariant(target, variant, { isGguf: true, isDownloaded: true });
 }
 
 export async function resolveCachedRunConfigTarget(
@@ -180,9 +187,7 @@ async function resolveHubRunConfigTarget(
   target: RunConfigTarget,
   options: ResolutionOptions,
 ): Promise<RunConfigTarget> {
-  const readInventory = <K extends "cachedGguf" | "localModels">(
-    source: K,
-  ) => {
+  const readInventory = <K extends "cachedGguf" | "localModels">(source: K) => {
     const current = useDeviceInventoryStore.getState()[source];
     return fetchInventorySource(source, {
       ...options,
@@ -243,16 +248,10 @@ async function resolveHubRunConfigTarget(
     }
     const variant = findCachedVariant(target, listing);
     if (variant) {
-      return {
-        ...target,
-        meta: {
-          ...target.meta,
-          loadId: candidate.loadId,
-          isDownloaded: true,
-          ggufVariant: variant.quant,
-          ggufFilename: variant.filename,
-        },
-      };
+      return withVariant(target, variant, {
+        loadId: candidate.loadId,
+        isDownloaded: true,
+      });
     }
   }
   return resolveHubVariantTarget(target, options);
@@ -297,13 +296,7 @@ async function resolveHubVariantTarget(
       "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
     );
   }
-  return {
-    ...target,
-    meta: {
-      ...target.meta,
-      ggufVariant: variant.quant,
-      ggufFilename: variant.filename,
-      isDownloaded: variant.downloaded === true && !variant.partial,
-    },
-  };
+  return withVariant(target, variant, {
+    isDownloaded: variant.downloaded === true && !variant.partial,
+  });
 }

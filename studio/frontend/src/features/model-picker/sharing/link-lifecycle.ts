@@ -33,6 +33,23 @@ type LinkContext = {
   location: { href: string; pathname: string; searchStr: string };
 };
 
+const newChatId = (pending: RunConfigRequest) =>
+  pending.newChatId === undefined ? pending.id : pending.newChatId;
+
+function isOpenable(
+  context: LinkContext,
+): context is LinkContext & { pending: RunConfigRequest } {
+  const { pending } = context;
+  return Boolean(
+    pending &&
+      !pending.draftKey &&
+      context.canOpen &&
+      context.settingsHydrated &&
+      runConfigInbox.getSnapshot() === pending &&
+      (pending.selectedModel ?? pending.value.model ?? context.currentModel),
+  );
+}
+
 function atRunConfigDestination(
   pending: RunConfigRequest,
   location: LinkContext["location"],
@@ -43,37 +60,24 @@ function atRunConfigDestination(
     !search.has("thread") &&
     !search.has("compare") &&
     !search.has("project") &&
-    search.get("new") ===
-      (pending.newChatId === undefined ? pending.id : pending.newChatId)
+    search.get("new") === newChatId(pending)
   );
 }
 
-export function navigateRunConfig({
-  pending,
-  canOpen,
-  settingsHydrated,
-  currentModel,
-  location,
-  navigation,
-  navigate,
-}: LinkContext & {
-  navigation: { current: RunConfigNavigation | null };
-  navigate: (options: {
-    to: "/chat";
-    search: { new?: string };
-    replace: boolean;
-  }) => Promise<unknown>;
-}): void {
-  if (
-    !pending ||
-    pending.draftKey ||
-    !canOpen ||
-    !settingsHydrated ||
-    runConfigInbox.getSnapshot() !== pending ||
-    !(pending.selectedModel ?? pending.value.model ?? currentModel)
-  ) {
+export function navigateRunConfig(
+  context: LinkContext & {
+    navigation: { current: RunConfigNavigation | null };
+    navigate: (options: {
+      to: "/chat";
+      search: { new?: string };
+      replace: boolean;
+    }) => Promise<unknown>;
+  },
+): void {
+  if (!isOpenable(context)) {
     return;
   }
+  const { pending, location, navigation, navigate } = context;
   const atDestination = atRunConfigDestination(pending, location);
   if (navigation.current?.id === pending.id) {
     if (atDestination) {
@@ -99,12 +103,7 @@ export function navigateRunConfig({
   }
   navigate({
     to: "/chat",
-    search: {
-      new:
-        pending.newChatId === undefined
-          ? pending.id
-          : (pending.newChatId ?? undefined),
-    },
+    search: { new: newChatId(pending) ?? undefined },
     replace: pending.replaceHistory === true,
   }).catch(() => {
     if (runConfigInbox.getSnapshot()?.id !== pending.id) {
@@ -116,32 +115,18 @@ export function navigateRunConfig({
   });
 }
 
-export function openRunConfigTarget({
-  pending,
-  chatSearch,
-  canOpen,
-  settingsHydrated,
-  currentModel,
-  location,
-  routeReady,
-  hfToken,
-  inventoryVersion,
-}: LinkContext & {
-  chatSearch: ChatSearch | null;
-  routeReady: boolean;
-  hfToken?: string;
-  inventoryVersion: number;
-}): (() => void) | undefined {
-  if (
-    !pending ||
-    pending.draftKey ||
-    !canOpen ||
-    !settingsHydrated ||
-    !(pending.selectedModel ?? pending.value.model ?? currentModel) ||
-    runConfigInbox.getSnapshot() !== pending
-  ) {
+export function openRunConfigTarget(
+  context: LinkContext & {
+    chatSearch: ChatSearch | null;
+    routeReady: boolean;
+    hfToken?: string;
+    inventoryVersion: number;
+  },
+): (() => void) | undefined {
+  if (!isOpenable(context)) {
     return;
   }
+  const { pending, chatSearch, location, routeReady, hfToken } = context;
   if (pending.target) {
     if (!routeReady || !atRunConfigDestination(pending, location)) {
       return;
@@ -190,7 +175,7 @@ export function openRunConfigTarget({
   const loadingToast = toast.loading("Resolving shared model…");
   resolveCachedRunConfigTarget(target, {
     hfToken,
-    inventoryVersion,
+    inventoryVersion: context.inventoryVersion,
     signal: controller.signal,
     checkLocalPath: !pending.value.model || Boolean(pending.selectedModel),
   })

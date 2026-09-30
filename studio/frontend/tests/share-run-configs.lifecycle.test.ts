@@ -74,6 +74,8 @@ const handoff = (resolved: Target = target, extra = {}) => [
   { requestId: "first", ...extra, ...resolved, displayName: resolved.id },
 ];
 
+class ResolutionError extends Error {}
+
 function harness(loadParser?: () => typeof links | Promise<typeof links>) {
   const calls: unknown[] = [];
   const session = sessionHarness({ loadParser });
@@ -142,7 +144,7 @@ function harness(loadParser?: () => typeof links | Promise<typeof links>) {
         },
       },
       "./cached-target": {
-        RunConfigResolutionError: class extends Error {},
+        RunConfigResolutionError: ResolutionError,
         resolveCachedRunConfigTarget: (
           lookupTarget: Target,
           options: { signal: AbortSignal; checkLocalPath?: boolean },
@@ -352,6 +354,23 @@ for (const reason of ["login", "settings", "model", "bound", "superseded"]) {
   });
 }
 
+test("failed lookups cancel the import with safe feedback", async () => {
+  for (const [error, shown] of [
+    [
+      new Error("Private backend details"),
+      "Could not resolve the shared model. Reopen the link to try again.",
+    ],
+    [new ResolutionError("Variant unavailable."), "Variant unavailable."],
+  ] as const) {
+    const app = harness();
+    app.lookupFromHub();
+    app.lookups[0].result.reject(error);
+    await settle();
+    assert.deepEqual([app.inbox.getSnapshot(), app.loading.size], [null, 0]);
+    assert.deepEqual([app.errors, app.calls], [[shown], []]);
+  }
+});
+
 test("a chosen model known to be safetensors is refused before any lookup", () => {
   const app = harness();
   app.runtime.models = [{ id: "owner/native", isGguf: false, isLora: false }];
@@ -554,6 +573,11 @@ for (const [desktop, before, after] of [
     await reloaded.receiver.receiveStartupRunConfigUrl();
     assert.equal(reloaded.inbox.getSnapshot(), null);
     assert.equal(app.parserLoads(), 1);
+    if (desktop) {
+      await app.receive(doc);
+      assert.equal(nParallel(doc), 3);
+      assert.notEqual(doc.inbox.getSnapshot()?.id, pending.id);
+    }
     window.location.href = browserRun;
     const reopened = desktop ? reloaded : app.loadDocument();
     await app.receive(reopened);

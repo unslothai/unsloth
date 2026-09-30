@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test";
 import type { GgufVariantDetail } from "../src/features/hub/inventory/api.ts";
 import type * as CachedTarget from "../src/features/model-picker/sharing/cached-target.ts";
 import type * as ImportConfig from "../src/features/model-picker/sharing/import-config.ts";
+import type { RunConfigImport } from "../src/features/model-picker/sharing/inbox.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -395,6 +396,14 @@ test("Hub lookups resolve the exact file or the default, or keep an unloadable r
     meta(picked, "ggufVariant", "ggufFilename", "isDownloaded"),
     ["Q8_0", q8.filename, false],
   );
+  for (const variant of [chosen.filename, undefined]) {
+    const missing = harness({ hubVariants: [q8], defaultVariant: "Q4_K_M" });
+    await assert.rejects(missing.resolve(withVariant(variant)), {
+      constructor: missing.Resolution,
+      message:
+        "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
+    });
+  }
 });
 
 test("cancellation cannot produce a handoff, even mid lookup", async (t) => {
@@ -507,7 +516,8 @@ function importHarness(
   const options = {
     ...{ key, canImport: true, ready: true, hydrated: true },
     pending: inbox.getSnapshot(),
-    onImport: (...args: unknown[]) => imports.push(args),
+    onImport: ({ changes, model, ggufVariant }: RunConfigImport) =>
+      imports.push([changes, model, ggufVariant]),
   };
   const draft = () => drafts.readModelConfigDraft(key);
   const edited = () => drafts.isModelConfigDraftEdited(key);

@@ -11,6 +11,7 @@ import { loadWithStubs } from "./module-stubs.ts";
 export const {
   isKnownNonGgufModel,
   isRunConfigModelInput,
+  isRunConfigVariantUnresolved,
   resolveRunConfigTarget,
 } = loadWithStubs<typeof Target>(
   new URL("../../src/features/model-picker/sharing/target.ts", import.meta.url),
@@ -21,5 +22,3 @@ export const {
     "@/features/deep-links": { isValidRepoId },
   },
 );
-
-export { isRunConfigVariantUnresolved } from "../../src/features/model-picker/sharing/variant.ts";

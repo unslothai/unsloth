@@ -20,7 +20,7 @@ import {
 } from "./receive-link";
 
 const SharedRunConfigLinkEditor = lazy(() =>
-  import("./runtime").then((module) => ({
+  import("./link-editor").then((module) => ({
     default: module.SharedRunConfigLinkEditor,
   })),
 );

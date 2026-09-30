@@ -5,20 +5,19 @@ import { Button } from "@/components/ui/button";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
-import { modelConfigDraftKey } from "../model-config/model-config-draft";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import {
   SHARED_CONFIG_FIELDS,
   SHARED_CONFIG_KEYS,
   formatSharedConfigValue,
 } from "./fields";
-
 import { scheduleRunConfigImport } from "./import-config";
-import { runConfigInbox } from "./inbox";
+import { type RunConfigImport, runConfigInbox } from "./inbox";
 import { ShareRunConfigDialog } from "./share-dialog";
 
 export function SharedRunConfigActions({
   target,
+  draftKey: key,
   config,
   ready,
   hydrated,
@@ -28,26 +27,19 @@ export function SharedRunConfigActions({
   onImport,
 }: {
   target: ModelPickTarget;
+  draftKey: string;
   config: PerModelConfig;
   ready: boolean;
   hydrated: boolean;
   canImport: boolean;
   disabled: boolean;
   className: string;
-  onImport: (
-    changes: Partial<PerModelConfig>,
-    model?: string,
-    ggufVariant?: string,
-  ) => void;
+  onImport: (imported: RunConfigImport) => void;
 }) {
   const [sharing, setSharing] = useState(false);
   const pending = useSyncExternalStore(
     runConfigInbox.subscribe,
     runConfigInbox.getSnapshot,
-  );
-  const key = modelConfigDraftKey(
-    target.configId ?? target.id,
-    target.ggufVariant,
   );
   useEffect(
     () =>
@@ -85,12 +77,8 @@ export function SharedRunConfigActions({
 }
 
 function reviewTitle(changed: boolean, model?: string, ggufVariant?: string) {
-  if (changed) {
-    return "Settings changed by link";
-  }
-  if (model) {
-    return "Model selected by link";
-  }
+  if (changed) return "Settings changed by link";
+  if (model) return "Model selected by link";
   return ggufVariant
     ? "GGUF variant selected by link"
     : "Link settings already match this editor";
@@ -117,25 +105,22 @@ function savedSettingsNote(remember: boolean, hasSavedSettings: boolean) {
 }
 
 export function SharedRunConfigReview({
-  config,
-  model,
-  ggufVariant,
+  imported,
   draftConfig,
   currentConfig,
   remember = false,
   hasSavedSettings = false,
 }: {
-  config: Partial<PerModelConfig> | null;
-  model?: string;
-  ggufVariant?: string;
+  imported: RunConfigImport | null;
   draftConfig: PerModelConfig;
   currentConfig: PerModelConfig;
   remember?: boolean;
   hasSavedSettings?: boolean;
 }) {
-  if (!config) {
+  if (!imported) {
     return null;
   }
+  const { changes: config, model, ggufVariant } = imported;
   const keys = SHARED_CONFIG_KEYS.filter((key) => Object.hasOwn(config, key));
   if (
     keys.some(

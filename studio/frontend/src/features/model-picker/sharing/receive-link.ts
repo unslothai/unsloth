@@ -20,8 +20,7 @@ import {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
 } from "../model-config/model-config-handoff";
-import { runConfigInbox } from "./inbox";
-import { isRunConfigLink, runConfigHash } from "./link-address";
+import { isRunConfigLink, runConfigHash, runConfigInbox } from "./inbox";
 
 const acceptNativeIntent = createDeepLinkIntentGate(2_000);
 const nativeScheme = /^unsloth:/i;
@@ -41,11 +40,10 @@ function readHandledNativeUrl(): string | null {
 }
 
 function saveHandledNativeUrl(): void {
-  if (!handledNativeUrl) {
-    return;
-  }
   try {
-    sessionStorage.setItem(handledNativeUrlKey, handledNativeUrl);
+    if (handledNativeUrl) {
+      sessionStorage.setItem(handledNativeUrlKey, handledNativeUrl);
+    }
   } catch {
     return;
   }
@@ -133,24 +131,18 @@ async function receiveRunConfigUrl(
   runConfigInbox.begin(id);
   awaitingLogin = !hasAuthToken();
   try {
-    const { parseRunConfigLink } = await import("./runtime");
+    const { parseRunConfigLink } = await import("./links");
     if (revision !== intakeRevision) {
       return;
     }
     const parsed = parseRunConfigLink(url);
-    if (parsed.kind !== "valid") {
-      clearPendingImport();
-      if (parsed.kind === "invalid") {
-        toast.error("Could not open shared run settings", {
-          description: parsed.error,
-        });
-      }
+    if (parsed.kind === "valid") {
+      runConfigInbox.submit({ id, value: parsed.value, replaceHistory });
       return;
     }
-    runConfigInbox.submit({
-      id,
-      value: parsed.value,
-      replaceHistory,
+    clearPendingImport();
+    toast.error("Could not open shared run settings", {
+      description: parsed.kind === "invalid" ? parsed.error : undefined,
     });
   } catch {
     if (revision !== intakeRevision) {

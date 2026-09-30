@@ -6,7 +6,7 @@ import test from "node:test";
 import type { DeepLinkHandler as Handler } from "../src/features/deep-links/deep-link-handler.tsx";
 import { createDeepLinkIntentGate } from "../src/features/deep-links/deep-link-intent.ts";
 import { parseUnslothDeepLink } from "../src/features/deep-links/parse-deep-link.ts";
-import { MAX_RUN_CONFIG_URL_LENGTH } from "../src/features/model-picker/sharing/link-address.ts";
+import { MAX_RUN_CONFIG_URL_LENGTH } from "../src/features/model-picker/sharing/inbox.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -258,7 +258,7 @@ test("generation enforces bounded sizes and the same restrictions as receiving a
   for (const config of [
     { nBatch: Number.NaN },
     { llamaExtraArgs: ["--host", "x"] },
-    { reasoningBudgetMessage: "🦥".repeat(2049) },
+    { reasoningBudgetMessage: "\u{1F9A5}".repeat(2049) },
   ]) {
     assert.throws(() => createRunConfigLink({ config }));
   }
@@ -331,7 +331,7 @@ test("only exact argument boundaries and bounded inference values are accepted",
   for (const argv of [
     [],
     ["-t", "-1", "-c", "0", "--seed", "-1", "--top-p", "0.95"],
-    ["--no-warmup", "--flash-attn", "auto", "-ts", "3,1.5,0"],
+    ["--no-warmup", "--flash-attn", "auto", "-ts", "3,1.5,0", "-ngl", "-1"],
     ["-s", "4294967295", "--threads_batch", "4", "--cache_type_k", "q8_0"],
   ]) {
     roundTrips({ config: { llamaExtraArgs: argv } });
