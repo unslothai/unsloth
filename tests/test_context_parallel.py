@@ -318,8 +318,9 @@ def test_fp32_qkv_is_downcast_under_cp(monkeypatch):
     manager = _manager()
     manager.mesh = None
     with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
-        ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+        out = ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
     assert seen[0] == torch.float32 and seen[1] in (torch.bfloat16, torch.float16)
+    assert out.dtype == torch.float32
 
 
 @pytest.mark.parametrize("distributed_type", ["DEEPSPEED", "FSDP"])

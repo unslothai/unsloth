@@ -389,6 +389,7 @@ def run_attention(
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
     # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
     # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
+    cp_out_dtype = Q.dtype if backend == SDPA and get_cp_manager() is not None else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
         or (backend == XFORMERS and _XFORMERS_FP32_UNSUPPORTED)
@@ -606,7 +607,9 @@ def run_attention(
             V_mod.contiguous(),
             **kwargs,
         )
-        return out.transpose(1, 2).contiguous()
+        out = out.transpose(1, 2).contiguous()
+        # o_proj expects the pre-downcast dtype (an fp32 model would otherwise hit a dtype mismatch).
+        return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
 
 __all__ = [
