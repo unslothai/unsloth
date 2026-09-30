@@ -2157,6 +2157,7 @@ class InferenceBackend:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
@@ -2178,6 +2179,7 @@ class InferenceBackend:
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 with self._generation_lock:
+                    self._apply_adapter_state(use_adapter)
                     result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
 
                 text = result.get("text", "") if isinstance(result, dict) else str(result)
