@@ -958,16 +958,32 @@ function pdfFormFieldLines(
     fieldType?: string;
     fieldName?: string;
     fieldValue?: unknown;
+    hidden?: boolean;
+    password?: boolean;
+    options?: { exportValue?: unknown; displayValue?: unknown }[];
   }[],
 ): string[] {
   const fields = new Map<string, string>();
-  for (const { subtype, fieldType, fieldName, fieldValue } of annotations) {
+  for (const {
+    subtype,
+    fieldType,
+    fieldName,
+    fieldValue,
+    hidden,
+    password,
+    options,
+  } of annotations) {
     const value = [fieldValue]
       .flat()
       .filter((part) => typeof part === "string")
+      .map((part) => {
+        const shown = options?.find((option) => option.exportValue === part);
+        return typeof shown?.displayValue === "string" ? shown.displayValue : part;
+      })
       .join(", ");
     const unchecked = fieldType === "Btn" && value === "Off";
-    if (subtype === "Widget" && fieldName && value.trim() && !unchecked) {
+    const unseen = hidden || password;
+    if (subtype === "Widget" && fieldName && value.trim() && !unchecked && !unseen) {
       fields.set(fieldName, value);
     }
   }
@@ -984,10 +1000,13 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
+    // getAnnotations re-reads the text of each page with a link, so only forms pay
+    const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
     const pages = await Promise.all(
       text.map(async (pageText, index) => {
-        const page = await pdf.getPage(index + 1);
-        const fields = pdfFormFieldLines(await page.getAnnotations());
+        const page = hasFields ? await pdf.getPage(index + 1) : null;
+        const annotations = await page?.getAnnotations().catch(() => []);
+        const fields = pdfFormFieldLines(annotations ?? []);
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
