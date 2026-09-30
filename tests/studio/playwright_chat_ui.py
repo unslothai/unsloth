@@ -526,6 +526,9 @@ def exercise_permission_mode_controls(page, shoot):
     expect_mode("Auto-approve")
     expect_server_mode("auto")
     shoot("04-permission-levels")
+    # The stub is for the level checks only. Left in place it intercepts this page for the rest of the run, which
+    # also turns off its HTTP cache, and the later sign-out step wedged on it on Windows.
+    page.unroute("**/api/sandbox/capability*", answer_sandbox_capability)
 
 
 def login_via_api(pw):
