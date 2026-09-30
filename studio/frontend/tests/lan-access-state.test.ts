@@ -136,7 +136,7 @@ test("the port form is capability-gated and keeps its live error region mounted"
   );
   assert.match(
     SECTION_SOURCE,
-    /<\/div>\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
+    /below=\{\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
   );
   assert.doesNotMatch(
     SECTION_SOURCE,

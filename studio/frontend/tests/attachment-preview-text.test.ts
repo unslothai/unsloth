@@ -21,13 +21,17 @@ const {
   attachmentAudioSrc,
   attachmentTextLanguage,
   countAttachmentTextLines,
+  decodeHtmlAttachmentBytes,
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
   getDocxAttachmentError,
+  getPdfAttachmentTextError,
   isAudioAttachment,
+  isTextAttachment,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
@@ -459,6 +463,73 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
   } finally {
     await definePDFJSModule(() => import("unpdf/pdfjs"));
   }
+});
+
+function singlePagePdf(content: string, resources: string, extra: string[]) {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R >>`,
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ...extra,
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = objects.map((object, index) => {
+    const offset = body.length;
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = body.length;
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  body += offsets
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Uint8Array.from(body, (char) => char.charCodeAt(0));
+}
+
+test("a scanned pdf is refused unless the python tool can open it", async () => {
+  const pixels = "\x80".repeat(4);
+  const scan = new File(
+    [
+      singlePagePdf(
+        "q 200 0 0 200 0 0 cm /Im1 Do Q",
+        "<< /XObject << /Im1 5 0 R >> >>",
+        [
+          `<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${pixels.length} >>\nstream\n${pixels}\nendstream`,
+        ],
+      ),
+    ],
+    "scan.pdf",
+    { type: "application/pdf" },
+  );
+  const typed = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (quokka invoice) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        ["<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"],
+      ),
+    ],
+    "typed.pdf",
+    { type: "application/pdf" },
+  );
+
+  const scanText = await extractPdfAttachmentText(scan);
+  const typedText = await extractPdfAttachmentText(typed);
+  assert.equal(scanText, "");
+  assert.equal(typedText, "quokka invoice");
+  assert.equal(
+    (await readAttachmentText(scan, scan.name, scan.type)).text,
+    "",
+  );
+
+  assert.match(
+    getPdfAttachmentTextError(scan.name, scanText, false) ?? "",
+    /^PDF has no readable text: scan\.pdf\./,
+  );
+  assert.equal(getPdfAttachmentTextError(scan.name, scanText, true), null);
+  assert.equal(getPdfAttachmentTextError(typed.name, typedText, false), null);
 });
 
 // The bytes are requested synchronously, so the extractor is reached without
@@ -1000,6 +1071,98 @@ test("a preview is never stricter than the adapter that took the file", async ()
   );
 });
 
+function legacyPage(head: string, body: number[]) {
+  return new Uint8Array([
+    ...new TextEncoder().encode(head),
+    ...body,
+    ...new TextEncoder().encode("</p>"),
+  ]);
+}
+
+const WINDOWS_1252_BODY = [
+  0x43, 0x61, 0x66, 0xe9, 0x20, 0x80, 0x31, 0x32, 0x2c, 0x20, 0x6e, 0x61, 0xef,
+  0x76, 0x65,
+];
+const SHIFT_JIS_BODY = [
+  0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, 0x82, 0xcc, 0x83, 0x79, 0x81, 0x5b, 0x83,
+  0x57,
+];
+
+test("an html attachment is read in the encoding its page declares", async () => {
+  const word = legacyPage(
+    '<html><head><meta http-equiv=Content-Type content="text/html; charset=windows-1252"></head><p>',
+    WINDOWS_1252_BODY,
+  );
+  const japanese = legacyPage('<meta charset="Shift_JIS"><p>', SHIFT_JIS_BODY);
+  for (const [bytes, name, expected] of [
+    [word, "report.htm", "Café €12, naïve"],
+    [japanese, "page.html", "日本語のページ"],
+  ] as const) {
+    const file = new File([bytes], name, { type: "text/html" });
+    const { text } = await readAttachmentText(file, file.name, file.type);
+    assert.ok(text.includes(expected), text);
+    assert.ok(!text.includes("\uFFFD"), text);
+  }
+});
+
+test("decodeHtmlAttachmentBytes reads the charset the way a browser does", () => {
+  const utf8 = new TextEncoder().encode(
+    "<meta charset=windows-1252><p>Café</p>",
+  );
+  assert.equal(
+    decodeHtmlAttachmentBytes(new Uint8Array([0xef, 0xbb, 0xbf, ...utf8])),
+    "<meta charset=windows-1252><p>Café</p>",
+  );
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode("<p>Café</p>")),
+    "<p>Café</p>",
+  );
+  for (const head of [
+    "<!-- <meta charset=Shift_JIS> --><meta charset=windows-1252><p>",
+    '<div title="<meta charset=Shift_JIS>"><meta charset=windows-1252><p>',
+  ]) {
+    assert.equal(
+      decodeHtmlAttachmentBytes(legacyPage(head, WINDOWS_1252_BODY)),
+      `${head}Café €12, naïve</p>`,
+    );
+  }
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      new TextEncoder().encode('<meta charset="utf-16"><p>Café</p>'),
+    ),
+    '<meta charset="utf-16"><p>Café</p>',
+  );
+});
+
+test("a UTF-8 html page keeps its text when its meta names a legacy charset", async () => {
+  const page =
+    '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><p>Café €12 日本語</p>';
+  const file = new File([new TextEncoder().encode(page)], "saved.html", {
+    type: "text/html",
+  });
+  const { text } = await readAttachmentText(file, file.name, file.type);
+  assert.equal(text, page);
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode(page).subarray(0, -6), true),
+    page.slice(0, -5),
+  );
+  const jis = legacyPage('<meta charset="iso-2022-jp"><p>', [
+    0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42,
+  ]);
+  assert.equal(
+    decodeHtmlAttachmentBytes(jis),
+    '<meta charset="iso-2022-jp"><p>日本語</p>',
+  );
+  const sjis = '<meta charset="Shift_JIS"><p>日本語のページです</p>';
+  assert.equal(decodeHtmlAttachmentBytes(new TextEncoder().encode(sjis)), sjis);
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      legacyPage('<meta charset="gbk"><p>', [0xd7, 0xa8, 0xd2, 0xb5]),
+    ),
+    '<meta charset="gbk"><p>专业</p>',
+  );
+});
+
 test("a UTF-16 Markdown file previews as its text in the document viewer", async () => {
   const utf16 = new Uint8Array([0xff, 0xfe, ...Array.from("# Notes", (c) => [c.charCodeAt(0), 0]).flat()]);
   const file = new File([utf16], "notes.md", { type: "text/markdown" });
@@ -1077,4 +1240,113 @@ test("an RTF reader stays bounded", async () => {
   assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
   await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
   await assert.rejects(readRtf("plain text"), /Not an RTF file/);
+});
+
+test("a thumbnail repack inflates only the images its kept paragraphs use", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const picture = (id: string) => `<w:p><w:r><w:drawing><a:blip r:embed="${id}"/></w:drawing></w:r></w:p>`;
+  const image = (id: string) =>
+    `<Relationship Id="${id}" Type="${R}/image" Target="media/${id}.png"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${picture("rId1")}${picture("rId2")}</w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${image("rId1")}${image("rId2")}</Relationships>`,
+    ),
+    "word/media/rId1.png": new Uint8Array([1, 2, 3]),
+    "word/media/rId2.png": new Uint8Array([4, 5, 6]),
+  });
+  const names = (archive: Uint8Array) => Object.keys(unzipSync(archive)).filter((name) => name.endsWith(".png")).sort();
+  assert.deepEqual(names(repackDocxPreviewArchive("a.docx", bytes, 1).archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+  const thumbnail = repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true });
+  assert.equal(thumbnail.truncated, true);
+  assert.deepEqual(names(thumbnail.archive), ["word/media/rId1.png"]);
+  const whole = repackDocxPreviewArchive("a.docx", bytes, 10, { keptImagesOnly: true });
+  assert.deepEqual(names(whole.archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+});
+
+test("a thumbnail repack restores only image parts the kept elements reference", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const rel = (id: string, type: string, target: string) =>
+    `<Relationship Id="${id}" Type="${R}/${type}" Target="${target}"/>`;
+  const body =
+    `<w:p><w:r><w:drawing><a:blip r:embed="rId1"/></w:drawing></w:r></w:p>` +
+    `<!-- <a:blip r:embed="rId2"/> --><w:p><w:r><w:t>r:embed="rId2"</w:t></w:r></w:p>` +
+    `<w:altChunk r:id="rId3"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${body}<w:p/><w:p/></w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rel("rId1", "image", "media/one.png")}${rel("rId2", "image", "media/two.png")}${rel("rId3", "aFChunk", "chunk.mht")}</Relationships>`,
+    ),
+    "word/media/one.png": new Uint8Array([1, 2, 3]),
+    "word/media/two.png": new Uint8Array([4, 5, 6]),
+    // Past the per-part ceiling, so the first pass leaves it out.
+    "word/chunk.mht": new Uint8Array(11 * 1024 * 1024),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 3, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/one.png"));
+  assert.ok(!kept.includes("word/media/two.png"));
+  assert.ok(!kept.includes("word/chunk.mht"));
+});
+
+test("the text adapter claims text/plain documents but not real ones", () => {
+  const cases: [string, string, boolean][] = [
+    ["notes.pdf", "text/plain", true],
+    ["notes.docx", "text/plain", true],
+    ["a.pdf", "application/pdf", false],
+    ["a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", false],
+    ["a.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false],
+    ["a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", false],
+    ["a.pdf", "", false],
+  ];
+  for (const [name, type, text] of cases) assert.equal(isTextAttachment(name, type), text, `${name} (${type || "no type"})`);
+});
+
+test("a thumbnail repack restores images in the notes its kept paragraphs refer to", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
+  const ns = `xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"`;
+  const note = (id: string, image: string) =>
+    `<w:footnote w:id="${id}"><w:p><w:r><w:drawing><a:blip r:embed="${image}"/></w:drawing></w:r></w:p></w:footnote>`;
+  const ref = (id: string) => `<w:p><w:r><w:footnoteReference w:id="${id}"/></w:r></w:p>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(`<Relationships xmlns="${PKG}"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/document.xml": strToU8(`<w:document ${ns}><w:body>${ref("1")}${ref("2")}</w:body></w:document>`),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="f" Type="${R}/footnotes" Target="footnotes.xml"/></Relationships>`,
+    ),
+    "word/footnotes.xml": strToU8(`<w:footnotes ${ns}>${note("1", "rIdA")}${note("2", "rIdB")}</w:footnotes>`),
+    "word/_rels/footnotes.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="rIdA" Type="${R}/image" Target="media/a.png"/><Relationship Id="rIdB" Type="${R}/image" Target="media/b.png"/></Relationships>`,
+    ),
+    "word/media/a.png": new Uint8Array([1]),
+    "word/media/b.png": new Uint8Array([2]),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/a.png"));
+  assert.ok(!kept.includes("word/media/b.png"));
 });
