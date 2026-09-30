@@ -5193,10 +5193,7 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))
-    assert counted["messages"][0] == {
-        "role": "system",
-        "content": "The current date is 2026-08-15.",
-    }
+    assert counted["messages"] == [{"role": "user", "content": "[Current date: 2026-08-15]\n\nhi"}]
 
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
