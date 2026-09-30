@@ -9,7 +9,7 @@ import {
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { File02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -402,7 +402,7 @@ export function ProjectSourceDropzone({
                   className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
                 >
                   <HugeiconsIcon
-                    icon={File02Icon}
+                    icon={FileEmpty02Icon}
                     strokeWidth={1.75}
                     className="size-4 shrink-0 text-muted-foreground"
                   />

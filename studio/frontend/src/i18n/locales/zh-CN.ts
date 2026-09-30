@@ -140,6 +140,13 @@ export const zhCN = {
       close: "关闭查找",
       truncated: "此页面过长，无法搜索全部内容。",
     },
+    zoom: {
+      label: "缩放",
+      zoomOut: "缩小",
+      zoomIn: "放大",
+      reset: "重置",
+      announce: "缩放 {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
