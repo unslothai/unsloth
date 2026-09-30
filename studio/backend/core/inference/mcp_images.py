@@ -342,8 +342,7 @@ def flattened_rgb(image):
         return image.convert("RGB")
     rgba = image.convert("RGBA")
     alpha = rgba.getchannel("A")
-    # White hides light ink (a dark-mode logo, white text) as surely as black hides
-    # dark ink, so mostly-light visible pixels go onto black instead.
+    # Light ink (dark-mode logos, white text) would vanish on white: it goes onto black.
     hist = rgba.convert("L").histogram(alpha)
     light = sum(i * n for i, n in enumerate(hist)) > 128 * sum(hist) > 0
     canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
