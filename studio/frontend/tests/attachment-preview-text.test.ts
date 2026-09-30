@@ -492,6 +492,7 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
             { str: "page two", hasEOL: false },
           ],
         }),
+        getAnnotations: async () => [],
       }),
       destroy: async () => {
         destroyed.push("success");
@@ -527,11 +528,16 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
   }
 });
 
-function singlePagePdf(content: string, resources: string, extra: string[]) {
+function singlePagePdf(
+  content: string,
+  resources: string,
+  extra: string[],
+  pageEntries = "",
+) {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R ${pageEntries}>>`,
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     ...extra,
   ];
@@ -592,6 +598,58 @@ test("a scanned pdf is refused unless the python tool can open it", async () => 
   );
   assert.equal(getPdfAttachmentTextError(scan.name, scanText, true), null);
   assert.equal(getPdfAttachmentTextError(typed.name, typedText, false), null);
+});
+
+test("a filled pdf form keeps the values typed into its fields", async () => {
+  const font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  const field = (name: string, value: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Tx /T (${name}) /V (${value}) /Rect [60 ${y} 190 ${y + 20}] /P 3 0 R >>`;
+  const checkbox = (name: string, state: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Btn /T (${name}) /V /${state} /AS /${state} /AP << /N << /Yes 10 0 R /Off 11 0 R >> >> /Rect [60 ${y} 70 ${y + 10}] /P 3 0 R >>`;
+  const blank = "<< /Length 0 >>\nstream\n\nendstream";
+  const filled = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Name:) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          font,
+          field("name", "Oscar Papa Quebec", 95),
+          field("notes", "", 60),
+          checkbox("agree", "Yes", 30),
+          checkbox("newsletter", "Off", 10),
+          blank,
+          blank,
+        ],
+        "/Annots [6 0 R 7 0 R 8 0 R 9 0 R] ",
+      ),
+    ],
+    "filled.pdf",
+    { type: "application/pdf" },
+  );
+  const fieldsOnly = new File(
+    [
+      singlePagePdf(
+        "",
+        "<< >>",
+        [field("name", "Romeo Sierra", 95)],
+        "/Annots [5 0 R] ",
+      ),
+    ],
+    "fields-only.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(filled),
+    "Name:\nname: Oscar Papa Quebec\nagree: Yes",
+  );
+  const fieldsOnlyText = await extractPdfAttachmentText(fieldsOnly);
+  assert.equal(fieldsOnlyText, "name: Romeo Sierra");
+  assert.equal(
+    getPdfAttachmentTextError(fieldsOnly.name, fieldsOnlyText, false),
+    null,
+  );
 });
 
 // The bytes are requested synchronously, so the extractor is reached without

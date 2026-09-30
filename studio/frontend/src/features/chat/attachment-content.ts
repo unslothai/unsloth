@@ -952,6 +952,28 @@ export function getPdfAttachmentTextError(
     : `PDF has no readable text: ${fileName}. Scanned pages can't be read.`;
 }
 
+function pdfFormFieldLines(
+  annotations: {
+    subtype?: string;
+    fieldType?: string;
+    fieldName?: string;
+    fieldValue?: unknown;
+  }[],
+): string[] {
+  const fields = new Map<string, string>();
+  for (const { subtype, fieldType, fieldName, fieldValue } of annotations) {
+    const value = [fieldValue]
+      .flat()
+      .filter((part) => typeof part === "string")
+      .join(", ");
+    const unchecked = fieldType === "Btn" && value === "Off";
+    if (subtype === "Widget" && fieldName && value.trim() && !unchecked) {
+      fields.set(fieldName, value);
+    }
+  }
+  return [...fields].map(([name, value]) => `${name}: ${value}`);
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
@@ -962,7 +984,14 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
-    return normalizeExtractedText(text.join("\n\n"));
+    const pages = await Promise.all(
+      text.map(async (pageText, index) => {
+        const page = await pdf.getPage(index + 1);
+        const fields = pdfFormFieldLines(await page.getAnnotations());
+        return [pageText, ...fields].filter(Boolean).join("\n");
+      }),
+    );
+    return normalizeExtractedText(pages.join("\n\n"));
   } finally {
     await pdf.destroy();
   }
