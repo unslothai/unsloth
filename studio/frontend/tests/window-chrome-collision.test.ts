@@ -100,3 +100,12 @@ test("dropdown submenus stop at the titlebar and scroll", async () => {
     /data-slot="dropdown-menu-viewport"\s+className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"\s*>\s*\{children\}/,
   );
 });
+
+test("context submenus stop at the titlebar and scroll", async () => {
+  const menu = await readSrcAsync("components/ui/context-menu.tsx");
+  const sub = menu.slice(menu.indexOf("function ContextMenuSubContent"));
+  assert.match(
+    sub,
+    /max-h-\(--radix-context-menu-content-available-height\) overflow-x-hidden overflow-y-auto"/,
+  );
+});
