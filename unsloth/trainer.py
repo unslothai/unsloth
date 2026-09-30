@@ -669,7 +669,12 @@ class UnslothTrainingArguments(TrainingArguments):
     ):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
+        # Not a field of the pristine SFTConfig captured at import.
+        context_parallel_size = kwargs.pop("context_parallel_size", 1)
+        if "context_parallel_size" in getattr(TrainingArguments, "__dataclass_fields__", {}):
+            kwargs["context_parallel_size"] = context_parallel_size
         super().__init__(*args, **kwargs)
+        self.context_parallel_size = context_parallel_size
         self.embedding_learning_rate = embedding_learning_rate
         if self.eval_steps is not None and self.eval_strategy != "steps":
             warnings.warn(

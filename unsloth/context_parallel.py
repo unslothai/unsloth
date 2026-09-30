@@ -6,8 +6,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
-import sys
-from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 import torch
@@ -137,33 +135,6 @@ class ContextParallelManager:
                 yield
         finally:
             _ACTIVE_MANAGER.reset(token)
-
-
-def patch_sft_config():
-    import trl
-
-    base_cls = trl.SFTConfig
-    if hasattr(base_cls, "context_parallel_size"):
-        return
-
-    @dataclass
-    class PatchedSFTConfig(base_cls):  # type: ignore[misc, valid-type]
-        context_parallel_size: int = field(
-            default = 1,
-            metadata = {
-                "help": "Ranks per context parallel group (SDPA ring attention). 1 disables it."
-            },
-        )
-
-    PatchedSFTConfig.__name__ = base_cls.__name__
-    PatchedSFTConfig.__qualname__ = base_cls.__qualname__
-    PatchedSFTConfig.__module__ = base_cls.__module__
-    module = sys.modules.get(base_cls.__module__)
-    if module is not None:
-        setattr(module, base_cls.__name__, PatchedSFTConfig)
-    trl.SFTConfig = PatchedSFTConfig
-    if hasattr(trl, "trainer") and hasattr(trl.trainer, "sft_trainer"):
-        trl.trainer.sft_trainer.SFTConfig = PatchedSFTConfig
 
 
 def patch_sft_trainer() -> None:
