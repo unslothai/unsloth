@@ -347,6 +347,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Volume02Icon } from "@/lib/volume-icons";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -361,7 +362,6 @@ import {
   Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
-  RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
   XIcon,
@@ -7331,7 +7331,7 @@ const MessageError: FC = () => {
               type="button"
               className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
             >
-              <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+              <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
               Retry
             </button>
           </ActionBarPrimitive.Reload>
@@ -8437,7 +8437,7 @@ const AssistantActionBar: FC = () => {
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
-              <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
             </TooltipIconButton>
           </ActionBarPrimitive.Reload>
         )}

@@ -5,7 +5,7 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowExpand01Icon,
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -4321,7 +4321,7 @@ function VideoGenerator({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
