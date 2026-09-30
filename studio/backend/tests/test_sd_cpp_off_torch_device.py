@@ -262,3 +262,107 @@ def test_training_keeps_an_off_torch_images_model():
     import routes.training as training_routes
     source = inspect.getsource(training_routes)
     assert 'getattr(diffusion, "runs_off_torch_device", False) is True' in source
+
+
+def _drive_load_route(monkeypatch, *, predicted, training_active):
+    """Run the real image-load route with every hardware and engine answer stubbed; returns the
+    route calls in order, plus what the route raised."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from core.inference import diffusion, diffusion_compat, diffusion_device
+    from core.inference import gpu_arbiter as arb
+    from hub.services.models import account_access
+    from models.inference import DiffusionLoadRequest
+    from routes import inference as route
+
+    calls: list[str] = []
+    backend = SimpleNamespace(
+        validate_load_request = lambda *_a, **_k: detect_family("z-image"),
+        preflight_base_access = lambda *_a, **_k: None,
+        assert_precision_available = lambda *_a, **_k: None,
+        begin_load = lambda *_a, **_k: calls.append("begin_load") or {},
+    )
+
+    async def _no_ordinal(*_a, **_k):
+        return None
+
+    def _guard():
+        calls.append("training_guard")
+        if training_active:
+            raise HTTPException(status_code = 409, detail = "training")
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
+    monkeypatch.setattr(
+        diffusion_device,
+        "resolve_diffusion_device_target",
+        lambda *_a, **_k: SimpleNamespace(backend = "rocm", device = "cuda"),
+    )
+    monkeypatch.setattr(r, "predict_engine", lambda *_a, **_k: predicted)
+    monkeypatch.setattr(r, "engine_for", lambda *_a: backend)
+    monkeypatch.setattr(
+        r,
+        "select_and_activate_engine",
+        lambda *_a, **_k: calls.append("select_and_activate") or backend,
+    )
+    monkeypatch.setattr(r, "active_engine_name", lambda: predicted)
+    monkeypatch.setattr(r, "begin_load_on", lambda _e, start: start())
+    monkeypatch.setattr(diffusion_compat, "assert_pick_is_not_speech", lambda *_a, **_k: None)
+    monkeypatch.setattr(route, "_guard_diffusion_load_against_training", _guard)
+    monkeypatch.setattr(route, "_selected_gpu_ordinal", _no_ordinal)
+    monkeypatch.setattr(route, "_assert_native_precision_unset", lambda **_k: None)
+    monkeypatch.setattr(route, "_repo_is_in_the_hub_cache", lambda *_a: True)
+    monkeypatch.setattr(account_access, "admit_media_load", lambda _k, fn, *_a: fn())
+    monkeypatch.setattr(account_access, "note_resident_components", lambda *_a, **_k: None)
+
+    request = DiffusionLoadRequest(model_path = "org/image", gguf_filename = "model.gguf")
+    try:
+        asyncio.run(route.load_diffusion_model_gated(request, "tester"))
+    except HTTPException as exc:
+        return calls, exc
+    return calls, None
+
+
+def test_a_load_predicted_for_torch_is_refused_during_training_before_the_engine_switch(
+    monkeypatch,
+):
+    """A refused load must not unload the resident model: activating diffusers would do exactly that."""
+    calls, raised = _drive_load_route(monkeypatch, predicted = ENGINE_DIFFUSERS, training_active = True)
+    assert raised is not None and raised.status_code == 409
+    assert "select_and_activate" not in calls
+
+
+def test_an_off_torch_native_load_is_admitted_during_training(monkeypatch):
+    calls, raised = _drive_load_route(monkeypatch, predicted = ENGINE_SD_CPP, training_active = True)
+    assert raised is None, raised
+    assert "training_guard" not in calls
+    assert calls[-1] == "begin_load"
+
+
+def test_diffusion_training_keeps_an_off_torch_images_model(monkeypatch):
+    import routes.training as training_routes
+    from core.inference import gpu_arbiter
+
+    unloaded: list[str] = []
+    resident = SimpleNamespace(
+        runs_off_torch_device = True,
+        is_loaded = True,
+        unload = lambda: unloaded.append("images"),
+    )
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: resident)
+    monkeypatch.setattr(gpu_arbiter, "release", lambda owner: unloaded.append(f"release:{owner}"))
+    monkeypatch.setattr(
+        "core.inference.video.get_video_backend",
+        lambda: SimpleNamespace(status = lambda: {"loaded": False}, unload = lambda: None),
+    )
+    monkeypatch.setattr("routes.training_vram.summarize_resident_chat", lambda: {"any": False})
+    training_routes._free_gpu_for_diffusion_training()
+    assert "images" not in unloaded
+    assert f"release:{gpu_arbiter.DIFFUSION}" not in unloaded
+
+    resident.runs_off_torch_device = False
+    training_routes._free_gpu_for_diffusion_training()
+    assert "images" in unloaded

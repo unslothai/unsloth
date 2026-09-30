@@ -41144,6 +41144,9 @@ async def load_diffusion_model_gated(
             )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
+        if off_torch is not None and pending_name != ENGINE_SD_CPP:
+            _guard_diffusion_load_against_training()
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
         # makes the identical network-free check, but it runs inside acquire_for -- which evicts
         # chat under the arbiter lock BEFORE the register callback -- and after selection, which
