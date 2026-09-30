@@ -4,7 +4,7 @@
 import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { queueParse } from "./parse-queue";
@@ -226,6 +226,32 @@ function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: 
   return { ready: !enabled || ready === file, release };
 }
 
+/**
+ * One worker per document. unpdf sets globalThis.pdfjsWorker to its own PDF.js build, which PDF.js
+ * then adopts and fails on (version mismatch). Passing a worker skips that lookup.
+ */
+function usePdfWorker(enabled: boolean): InstanceType<typeof pdfjs.PDFWorker> | null {
+  const [worker, setWorker] = useState<InstanceType<typeof pdfjs.PDFWorker> | null>(null);
+  useEffect(() => {
+    // Wait for the parse slot so queued thumbnails don't each start a worker.
+    if (!enabled) return;
+    const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
+    const pdfWorker = pdfjs.PDFWorker.create({ port });
+    // External resource owned by this effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWorker(pdfWorker);
+    return () => {
+      setWorker(null);
+      // Deferred so the Document tears down its loading task first.
+      window.setTimeout(() => {
+        pdfWorker.destroy();
+        port.terminate();
+      }, 0);
+    };
+  }, [enabled]);
+  return worker;
+}
+
 export default function PdfView({
   file,
   scale,
@@ -244,16 +270,18 @@ export default function PdfView({
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
   const slot = useParseSlot(firstPageOnly, file);
+  const worker = usePdfWorker(slot.ready);
+  const options = useMemo(() => (worker ? { ...PDF_OPTIONS, worker } : null), [worker]);
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
-  if (!slot.ready) return <div className="size-full bg-muted/60" />;
+  if (!slot.ready || !options) return <div className="size-full bg-muted/60" />;
   return (
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
-        options={PDF_OPTIONS}
+        options={options}
         onLoadSuccess={(document) => {
           slot.release();
           setPdf(document);
