@@ -19,9 +19,13 @@ on this transformers build (FLA hub kernel, else the torch fallback).
 
 from __future__ import annotations
 
+import sys
+
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
+
+from transformers.activations import ACT2FN
 
 from .seq_comm import SeqAllToAll4D
 
@@ -56,6 +60,22 @@ def _local_conv(mod, rank: int, cp: int):
     return weight, bias
 
 
+def _kernels(mod):
+    # Dense and MoE Qwen3.5 live in different modules. transformers <= 5.5 binds
+    # the kernels on the instance and leaves causal_conv1d_fn None without the
+    # causal-conv1d package; newer builds wrap module-level torch fallbacks.
+    module = sys.modules[type(mod).__module__]
+    conv = getattr(mod, "causal_conv1d_fn", None) or getattr(module, "causal_conv1d_fn", None)
+    chunk = getattr(mod, "chunk_gated_delta_rule", None) or module.torch_chunk_gated_delta_rule
+    return module.apply_mask_to_padding_states, conv, chunk
+
+
+def _torch_causal_conv1d(x, weight, bias, activation):
+    out = F.conv1d(x, weight.unsqueeze(1), bias, padding = weight.shape[-1] - 1, groups = x.shape[1])
+    out = out[..., : x.shape[-1]]
+    return ACT2FN[activation](out) if activation is not None else out
+
+
 def gdn_forward_with_cp(
     self,
     hidden_states,
@@ -63,11 +83,7 @@ def gdn_forward_with_cp(
     attention_mask = None,
     **kwargs,
 ):
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
-        apply_mask_to_padding_states,
-        causal_conv1d_fn,
-        torch_chunk_gated_delta_rule,
-    )
+    apply_mask_to_padding_states, causal_conv1d_fn, chunk_gated_delta_rule = _kernels(self)
 
     group = self._cp_group
     cp = dist.get_world_size(group)
@@ -122,7 +138,10 @@ def gdn_forward_with_cp(
         .contiguous()
     )
     conv_weight, conv_bias = _local_conv(self, rank, cp)
-    mixed = causal_conv1d_fn(mixed, conv_weight, conv_bias, activation = self.activation)
+    if causal_conv1d_fn is None:
+        mixed = _torch_causal_conv1d(mixed, conv_weight, conv_bias, self.activation)
+    else:
+        mixed = causal_conv1d_fn(mixed, conv_weight, conv_bias, activation = self.activation)
     mixed = mixed.transpose(1, 2)
     local_key = local_k * self.head_k_dim
     local_value = local_v * self.head_v_dim
@@ -137,7 +156,7 @@ def gdn_forward_with_cp(
     head_slice = slice(rank * local_v, (rank + 1) * local_v)
     g = -self.A_log[head_slice].float().exp() * F.softplus(a.float() + self.dt_bias[head_slice])
     beta = b.sigmoid()
-    core, _ = torch_chunk_gated_delta_rule(
+    core, _ = chunk_gated_delta_rule(
         query,
         key,
         value,

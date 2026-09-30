@@ -13,12 +13,15 @@
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+from torch.distributed.tensor import DTensor
 
 
 def init_process_group():
@@ -29,6 +32,8 @@ def init_process_group():
 
 
 def local_rank() -> int:
+    if "LOCAL_RANK" in os.environ:
+        return int(os.environ["LOCAL_RANK"])
     return int(dist.get_rank()) if dist.is_initialized() else 0
 
 
@@ -192,8 +197,11 @@ def apply_fsdp_checkpoint(model) -> int:
         checkpoint_wrapper,
     )
 
+    # Dense Qwen3.5 layers are Qwen3_5DecoderLayer; a MoE-only match skipped them.
+    classes = _layer_classes(model)
+
     def is_decoder(module):
-        return type(module).__name__.endswith("Qwen3_5MoeDecoderLayer")
+        return type(module) in classes
 
     n = sum(1 for module in model.modules() if is_decoder(module))
     if n == 0:
@@ -263,6 +271,11 @@ def sft_loss(model, input_ids, labels, cp_group):
     if cp_group is not None:
         cp = dist.get_world_size(cp_group)
         rank = dist.get_rank(cp_group)
+        # Right-pad to a multiple of cp; causal layers leave earlier tokens unchanged.
+        extra = -input_ids.shape[1] % cp
+        if extra:
+            input_ids = F.pad(input_ids, (0, extra), value = 0)
+            shift_labels = F.pad(shift_labels, (0, extra), value = -100)
         local = input_ids.shape[1] // cp
         start = rank * local
         input_ids = input_ids[:, start : start + local].contiguous()
@@ -283,7 +296,12 @@ def sft_loss(model, input_ids, labels, cp_group):
 
 
 def sync_replicated_grads(model, cp_group) -> None:
+    # sft_loss's all_gather backward already sums every rank's loss into each
+    # rank's grad, so SUM here would scale grads by cp. FSDP-sharded (DTensor)
+    # grads were averaged by FSDP's own reduce-scatter.
+    cp = dist.get_world_size(cp_group)
     for param in model.parameters():
-        if param.grad is None:
+        if param.grad is None or isinstance(param.grad, DTensor):
             continue
         dist.all_reduce(param.grad, op = dist.ReduceOp.SUM, group = cp_group)
+        param.grad.div_(cp)
