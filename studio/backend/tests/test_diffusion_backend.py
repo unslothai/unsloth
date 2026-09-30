@@ -12293,6 +12293,8 @@ def test_a_quantised_transformer_too_big_to_onload_whole_streams_instead(
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
     monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    # diffusion.py binds its own reference; without this the host's real pin budget decides.
+    monkeypatch.setattr(dmod, "_torchao_stream_pinnable", lambda plan: True)
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
