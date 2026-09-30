@@ -659,6 +659,13 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
             import structlog as _structlog
             _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
+        try:
+            _refresh_quantised_streaming_capability()
+        except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
+            import structlog as _structlog
+            _structlog.get_logger(__name__).debug(
+                "quantised streaming capability skipped: %s", _qs_exc
+            )
 
     if _post_warm_retired(generation):
         return
@@ -2404,6 +2411,52 @@ def _dense_quant_supported() -> bool:
     return bool(_dense_quant_capability)
 
 
+# Whether group offload can stream torchao weights (diffusers >= 0.40) on a GPU that can run the INT8
+# denoiser. None until resolved off the polled path; the picker offers no streamed tier before then.
+_quantised_streaming_capability: Optional[bool] = None
+
+
+def _refresh_quantised_streaming_capability() -> bool:
+    """Resolve and cache the streaming bit. Imports diffusers; never call from the polled route."""
+    global _quantised_streaming_capability
+    from core.inference.video import h3_streamed_int8_supported
+
+    _quantised_streaming_capability = _probe_quantised_streaming(h3_streamed_int8_supported)
+    return _quantised_streaming_capability
+
+
+def _probe_quantised_streaming(supported: Any) -> bool:
+    """Every visible CUDA card must qualify: a load may be pinned to any of them, and one that
+    resolves to float16 keeps bf16 (the same intersection as ``_probe_dense_quant_schemes``)."""
+    try:
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return bool(supported())
+        from core.inference.diffusion_device import resolve_diffusion_device_target
+
+        return all(
+            bool(supported(resolve_diffusion_device_target(ordinal = ordinal)))
+            for ordinal in range(count)
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe hides the tier
+        return False
+
+
+def _quantised_streaming() -> bool:
+    """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    if _quantised_streaming_capability is None and all(
+        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+    ):
+        try:
+            return _refresh_quantised_streaming_capability()
+        except Exception:  # noqa: BLE001 -- the picker then keeps the tier hidden
+            return False
+    return bool(_quantised_streaming_capability)
+
+
 def _nvfp4_diffusion_enabled() -> bool:
     """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
     try:
@@ -2519,6 +2572,8 @@ def get_system_info(
         # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
+        # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
+        "quantised_streaming": _quantised_streaming(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }

@@ -6515,6 +6515,102 @@ def fix_vllm_pdl_blackwell():
         logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
 
 
+_SDPA_CUDNN_D256_FLAG = "_unsloth_avoids_cudnn_d256_masked_backward"
+_SDPA_CUDNN_D256_WARNED = False
+
+
+def _sdpa_cudnn_d256_sm100_devices():
+    try:
+        import torch
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return frozenset()
+        return frozenset(
+            i
+            for i in range(torch.cuda.device_count())
+            if torch.cuda.get_device_capability(i)[0] == 10
+        )
+    except Exception:
+        return frozenset()
+
+
+def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
+    """True for the calls whose cuDNN backward returns NaN dQ on SM100 (no-grad never reaches it)."""
+    import torch
+
+    if attn_mask is None or not torch.is_grad_enabled():
+        return False
+    if not isinstance(query, torch.Tensor) or not query.is_cuda:
+        return False
+    dtype = query.dtype
+    # CUDA autocast casts fp32 SDPA inputs (e.g. DoRA-promoted Q/K/V) to half before dispatch.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16):
+        return False
+    if query.shape[-1] != 256:
+        return False
+    if not (query.requires_grad or (isinstance(key, torch.Tensor) and key.requires_grad)):
+        return False
+    return query.device.index in sm100_devices
+
+
+def fix_cudnn_sdpa_d256_masked_backward():
+    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100.
+
+    torch 2.14 (cuDNN 9.24) first dispatches such calls to cuDNN, whose backward returns NaN dQ
+    (bf16 / fp16); torch <= 2.13 never picks cuDNN here, so the detour is a no-op
+    there. Gated on the device, not the torch version. UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_CUDNN_SDPA_D256", "0") == "1":
+        return
+    sm100_devices = _sdpa_cudnn_d256_sm100_devices()
+    if not sm100_devices:
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA head_dim 256 fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        *args,
+        **kwargs,
+    ):
+        global _SDPA_CUDNN_D256_WARNED
+        if _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
+            if not torch.compiler.is_compiling():
+                if not _SDPA_CUDNN_D256_WARNED:
+                    _SDPA_CUDNN_D256_WARNED = True
+                    logger.warning(
+                        "Unsloth: head_dim 256 attention with a mask is training on an SM100 GPU; "
+                        "running it without cuDNN attention, whose backward returns NaN gradients "
+                        "there (set UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 to keep cuDNN)."
+                    )
+            with sdpa_kernel(backends):
+                return original(query, key, value, attn_mask, *args, **kwargs)
+        return original(query, key, value, attn_mask, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
+        f"(devices {sorted(sm100_devices)})"
+    )
+
+
 def patch_openspiel_env_async():
     """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
 
@@ -6913,6 +7009,18 @@ def disable_torchcodec_if_broken():
             pass  # a report must never abort the disable fallback above
 
 
+def _audio_av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore")
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None is PyAV's own default (probe the container); spelling it keeps this call
+        # distinguishable from Path.open for the text-encoding lint.
+        return av.open(source, mode = "r", format = None)
+
+
 def _audio_decode_with_av(source, stream_index = None):
     """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Kept identical to studio/backend/utils/datasets/audio_decode.py; a test holds the two together."""
     import av
@@ -6921,7 +7029,7 @@ def _audio_decode_with_av(source, stream_index = None):
     chunks = []
     rate = 0
     resampler = None
-    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+    with _audio_av_open(av, source) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
