@@ -164,7 +164,6 @@ def test_safe_env_homes_windows_python_in_the_workdir(windows, monkeypatch, tmp_
     monkeypatch.setenv("USERPROFILE", r"C:\Users\someone")
     env = tools._build_safe_env(str(tmp_path), shell = shell)
     assert ntpath.join(env["HOMEDRIVE"], env["HOMEPATH"]) == str(tmp_path)
-    # A workdir USERPROFILE would make the shell resolve AppData, and so pip's cache, under the cwd.
     assert "USERPROFILE" not in env and "APPDATA" not in env and "LOCALAPPDATA" not in env
 
 

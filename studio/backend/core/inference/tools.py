@@ -9551,8 +9551,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # and writes outside the workdir.
         env["TEMP"] = temp_dir
         env["TMP"] = temp_dir
-        # Path.home() ignores HOME on Windows and falls back to HOMEDRIVE+HOMEPATH. USERPROFILE is left unset:
-        # the shell resolves AppData under it, so a workdir USERPROFILE sends pip's cache to .\pip in the cwd.
+        # Path.home() ignores HOME on Windows; a workdir USERPROFILE would instead send pip's cache to .\pip in the cwd.
         env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
