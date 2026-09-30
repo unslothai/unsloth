@@ -1466,11 +1466,26 @@ def get_systemone_settings(
     return _systemone_response(request)
 
 
+async def _refresh_decision_models(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+
+    if catalog.parse_connection(payload.model):
+        await refresh_listed_decision_models()
+
+
 @_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
-def update_systemone_settings(
+async def update_systemone_settings(
     payload: SystemOneSettingsPayload,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    await _refresh_decision_models(payload)
+    return await asyncio.to_thread(_save_systemone_settings, payload, request)
+
+
+def _save_systemone_settings(
+    payload: SystemOneSettingsPayload, request: Request
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
@@ -1487,9 +1502,14 @@ def update_systemone_settings(
 
 
 @_owner_settings_router.post("/systemone/validate", status_code = 204)
-def validate_systemone_settings(
+async def validate_systemone_settings(
     payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
 ) -> None:
+    await _refresh_decision_models(payload)
+    await asyncio.to_thread(_validate_systemone_settings, payload)
+
+
+def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)

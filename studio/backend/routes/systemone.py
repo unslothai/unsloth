@@ -262,7 +262,7 @@ async def refresh_listed_decision_models() -> None:
             continue
         key = (row["id"], row["updated_at"])
         cached = catalog.LISTED_DECISION_MODELS.get(key)
-        if cached and time.monotonic() - cached[0] < LISTED_MODELS_TTL:
+        if cached and cached[1] and time.monotonic() - cached[0] < LISTED_MODELS_TTL:
             continue
         try:
             api_key = await asyncio.to_thread(

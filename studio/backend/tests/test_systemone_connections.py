@@ -208,6 +208,30 @@ def test_openrouter_offers_its_decision_models(upstream):
     assert str(upstream.calls[-1].url) == "https://openrouter.ai/api/v1/systemone"
 
 
+def test_an_openrouter_decision_model_saves_without_a_listed_copy(upstream, monkeypatch):
+    upstream.replies[0] = httpx.Response(200, json = OPENROUTER_MODELS)
+    providers_db.create_provider(
+        id = "router",
+        provider_type = "openrouter",
+        display_name = "OpenRouter",
+        base_url = "https://openrouter.ai/api/v1",
+        models = ["openai/gpt-4o"],
+    )
+    credential_secrets.save_provider_api_key("router", "or-key")
+    client = _client()
+    name = "connection:router:typesafe/jev-1.13"
+    assert client.post("/api/settings/systemone/validate", json = {"model": name}).status_code == 204
+    assert client.put("/api/settings/systemone", json = {"model": name}).status_code == 200
+
+    monkeypatch.setattr(catalog, "LISTED_DECISION_MODELS", {})
+    upstream.replies[0] = httpx.Response(503, json = {"error": {"message": "down"}})
+    client.get("/api/settings/systemone/connections")
+    upstream.replies[0] = httpx.Response(200, json = OPENROUTER_MODELS)
+    assert client.put("/api/settings/systemone", json = {"model": name}).status_code == 200
+    chat = client.put("/api/settings/systemone", json = {"model": "connection:router:openai/gpt-4o"})
+    assert chat.status_code == 400
+
+
 def test_an_unreachable_openrouter_lists_no_decision_models(upstream):
     upstream.replies[0] = httpx.Response(401, json = {"error": {"message": "No auth"}})
     providers_db.create_provider(
