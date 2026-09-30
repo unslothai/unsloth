@@ -1131,12 +1131,18 @@ def _h3_auto_precision_ok(target: Any = None) -> bool:
 
 def h3_streamed_int8_supported(target: Any = None) -> bool:
     """Whether this host can run H3's hosted INT8 denoiser streamed: the auto gate (CUDA bf16, so
-    sm_80+ on NVIDIA) and torchao-aware group offload. Never raises."""
+    sm_80+ on NVIDIA), torchao-aware group offload, and a loader that can read the checkpoint
+    (else auto keeps bf16 and the tier's load is refused). Never raises."""
     if not _h3_auto_precision_ok(target):
         return False
     try:
-        from .diffusion_prequant import torchao_group_offload_supported
-        return bool(torchao_group_offload_supported())
+        from .diffusion_prequant import (
+            restricted_prequant_load_supported,
+            torchao_group_offload_supported,
+        )
+        return bool(torchao_group_offload_supported()) and bool(
+            restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME)
+        )
     except Exception:  # noqa: BLE001 -- an unanswerable probe hides the tier
         return False
 

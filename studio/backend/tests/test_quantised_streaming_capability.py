@@ -96,22 +96,27 @@ def test_the_probe_follows_diffusers_group_offload(monkeypatch, attrs, expected)
 
 
 @pytest.mark.parametrize(
-    "device, dtype_name, streaming, expected",
+    "device, dtype_name, streaming, readable, expected",
     [
-        ("cuda", "bfloat16", True, True),
+        ("cuda", "bfloat16", True, True, True),
         # Pre-Ampere NVIDIA resolves to float16, and its INT8 path is not supported.
-        ("cuda", "float16", True, False),
-        ("cuda", "bfloat16", False, False),
-        ("mps", "bfloat16", True, False),
-        ("cpu", "float32", True, False),
+        ("cuda", "float16", True, True, False),
+        ("cuda", "bfloat16", False, True, False),
+        # An unreadable hosted INT8 keeps auto on bf16, whose load the tier cannot hold.
+        ("cuda", "bfloat16", True, False, False),
+        ("mps", "bfloat16", True, True, False),
+        ("cpu", "float32", True, True, False),
     ],
 )
 def test_the_streamed_tier_needs_an_int8_capable_gpu(
-    monkeypatch, device, dtype_name, streaming, expected
+    monkeypatch, device, dtype_name, streaming, readable, expected
 ):
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_prequant, video
 
     monkeypatch.setattr(diffusion_prequant, "torchao_group_offload_supported", lambda: streaming)
+    monkeypatch.setattr(
+        diffusion_prequant, "restricted_prequant_load_supported", lambda *a, **k: readable
+    )
     target = types.SimpleNamespace(device = device, dtype = getattr(torch, dtype_name))
     assert video.h3_streamed_int8_supported(target) is expected
