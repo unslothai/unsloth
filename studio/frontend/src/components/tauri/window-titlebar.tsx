@@ -439,8 +439,8 @@ export function WindowTitlebar({
               style={{ left: cornerLeft }}
             />
           )}
-          {/* One border for edge and corner: it snaps to device pixels where a 1px box blurs.
-              Pinned, it also runs down the page as the sidebar's edge (app-sidebar drops its border-r). */}
+          {/* One border for edge and corner: it snaps to device pixels where a 1px box blurs. Pinned, it
+              is also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). */}
           <div
             className={cn(
               "absolute top-0 right-0 h-[12px] border-t border-sidebar-border",
