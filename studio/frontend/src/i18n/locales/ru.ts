@@ -144,6 +144,13 @@ export const ru = {
       close: "Закрыть поиск",
       truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
     },
+    zoom: {
+      label: "Масштаб",
+      zoomOut: "Уменьшить",
+      zoomIn: "Увеличить",
+      reset: "Сбросить",
+      announce: "Масштаб {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

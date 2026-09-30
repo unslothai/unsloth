@@ -36,7 +36,7 @@ import {
   DownloadSquare01Icon,
   FlimSlateIcon,
   Folder01Icon,
-  Globe02Icon,
+  InternetIcon,
   Image03Icon,
   LibrariesIcon,
   Message01Icon,
@@ -250,7 +250,7 @@ function PaletteContent() {
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}
             keywords={["api", "monitor", "requests"]}
           >
-            <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.api")}</span>
           </CommandItem>
           <CommandItem onSelect={openSettings()} keywords={["preferences"]}>

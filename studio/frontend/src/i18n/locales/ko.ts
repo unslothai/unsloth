@@ -142,6 +142,13 @@ export const ko = {
       close: "찾기 닫기",
       truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
     },
+    zoom: {
+      label: "확대/축소",
+      zoomOut: "축소",
+      zoomIn: "확대",
+      reset: "재설정",
+      announce: "확대/축소 {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

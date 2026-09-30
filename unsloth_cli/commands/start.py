@@ -4803,7 +4803,7 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         window = int(window)
         # An unspecified model defaults to contextWindow 128000 / maxTokens 16384, far larger than a small Unsloth context, so Pi compacts too late and overflows the server. Pin the real window and a sane output cap, mirroring OpenCode.
         provider_model["contextWindow"] = window
-        provider_model["maxTokens"] = min(window // 4, 8192)
+        provider_model["maxTokens"] = opencode_output_limit(window)
     _subdict(config, "providers")[_PI_PROVIDER] = {
         "api": "openai-completions",
         "baseUrl": f"{base}/v1",
@@ -5084,7 +5084,7 @@ def write_pi_subagent_config(
             "apiKey": key,
             "model": model["id"],
             "contextWindow": window,
-            "maxTokens": min(window // 4, 8192),
+            "maxTokens": opencode_output_limit(window),
             "approve": approve,
         },
     )
@@ -5105,7 +5105,7 @@ def write_dsh_patch(base: str, model: dict, path: Path) -> None:
     if window:
         window = int(window)
         model_entry["contextWindow"] = window
-        model_entry["maxTokens"] = min(window // 4, 8192)
+        model_entry["maxTokens"] = opencode_output_limit(window)
     entries = [
         {
             "id": "llm-pi-ai",
