@@ -27,6 +27,7 @@ interface BrowserHistoryState {
   recordVisit: (url: string, title: string) => void;
   recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">) => void;
   removeVisit: (id: string) => void;
+  removeVisits: (ids: ReadonlySet<string>) => void;
   removeDownload: (id: string) => void;
   clearHistory: () => void;
   clearDownloads: () => void;
@@ -53,6 +54,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           downloads: [{ ...item, id: newId(), downloadedAt: Date.now() }, ...state.downloads].slice(0, MAX_DOWNLOADS),
         })),
       removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
+      removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
       removeDownload: (id) => set((state) => ({ downloads: state.downloads.filter((item) => item.id !== id) })),
       clearHistory: () => set({ history: [] }),
       clearDownloads: () => set({ downloads: [] }),
