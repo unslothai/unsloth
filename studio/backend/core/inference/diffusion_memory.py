@@ -1649,6 +1649,33 @@ def _streamed_pin_plan(
     return pin_transformer, pin_encoders
 
 
+def _pin_streamed_weights(module: Any, logger: Any = None) -> int:
+    """Pack a module's CPU weights into chunked page-locked memory before a pinning group offload apply; returns bytes.
+
+    diffusers pins each tensor on its own, and the host allocator rounds each up to a power of two. On LTX-2.3's
+    37 GB DiT that ran at 265 MB/s from a 350 MB/s disk (139 s). An already pinned tensor passes through its
+    ``pin_memory()`` unchanged, so the apply reuses these chunks. 0 leaves every tensor to diffusers."""
+    try:
+        host = {
+            name: p.data for name, p in module.named_parameters() if p.device.type == "cpu"
+        }
+        buffer_host = {
+            name: b
+            for name, b in _named_buffers(module)
+            if getattr(getattr(b, "device", None), "type", None) == "cpu"
+        }
+        pinned = _pin_host_weights(module, host, logger, buffer_host = buffer_host)
+    except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
+        return 0
+    if pinned and logger is not None:
+        logger.info(
+            "diffusion.memory: pinned %.1f GiB of %s host weights for streaming",
+            pinned / 2**30,
+            type(module).__name__,
+        )
+    return pinned
+
+
 def install_group_offload_buffer_restore() -> bool:
     """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
     try:
@@ -1773,6 +1800,8 @@ def _apply_group_offload(
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
         for module in streamed.values():
+            if use_stream and not gkwargs.get("low_cpu_mem_usage", False):
+                _pin_streamed_weights(module, logger)
             apply_group_offloading(module, **gkwargs)
             installed += 1
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
@@ -1792,7 +1821,10 @@ def _apply_group_offload(
             ekwargs["low_cpu_mem_usage"] = not pin_streamed[1]
         transformer_demoted = False
         for name, module in streamed_encoders.items():
+            prepinned = 0
             try:
+                if use_stream and not ekwargs.get("low_cpu_mem_usage", False):
+                    prepinned = _pin_streamed_weights(module, logger)
                 apply_group_offloading(module, **ekwargs)
                 installed += 1
                 _pin_vision_embedding_device(module)
@@ -1831,6 +1863,9 @@ def _apply_group_offload(
                 # the applied VRAM floor reads the whole encoder as streamed while its unhooked layers stay on the card
                 _remove_group_offload_hooks(module)
                 module.to(onload)
+                if prepinned:
+                    # its pinned chunks were copied to the card; hand them back rather than keep them cached
+                    _host_empty_cache()
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
         if installed:
