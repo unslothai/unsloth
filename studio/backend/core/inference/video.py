@@ -904,10 +904,9 @@ def _detect_load_family(
     display_repo_id: Optional[str] = None,
 ) -> Optional[VideoFamily]:
     """Family detection shared by validate_load_request and the load worker: the
-    logical display id (a pinned snapshot dir may be commit-named), the repo id,
-    then the picked filename -- a local directory or generically named repo often
-    carries the family token only in the checkpoint filename, and the worker must
-    resolve the same family the validator accepted."""
+    repo id first, then the picked filename -- a local directory or generically
+    named repo often carries the family token only in the checkpoint filename,
+    and the worker must resolve the same family the validator accepted."""
     if family_override:
         return detect_video_family(repo_id, family_override)
     fam = (
