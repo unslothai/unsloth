@@ -71,7 +71,10 @@ def test_decode_loop_moves_the_mask_to_every_layer(monkeypatch, model_id):
     assert len(mask_moves) >= 7 * model.config.num_hidden_layers
 
 
-@pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs to split the layers")
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2,
+    reason = "needs two GPUs to split the layers",
+)
 @pytest.mark.parametrize(
     "model_id",
     [
