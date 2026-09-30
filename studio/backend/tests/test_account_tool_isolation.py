@@ -163,7 +163,7 @@ def test_full_access_admission_refuses_every_account_in_multi_mode(account, flag
     with pytest.raises(HTTPException) as exc:
         run_as(account, tool_policy.require_tool_access, **flags)
     assert exc.value.status_code == 400
-    assert "full access" in exc.value.detail.lower()
+    assert "bypass permissions" in exc.value.detail.lower()
     assert "more than one account exists" in exc.value.detail
 
 

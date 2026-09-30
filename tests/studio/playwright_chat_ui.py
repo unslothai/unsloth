@@ -498,8 +498,11 @@ def exercise_permission_mode_controls(page, shoot):
     # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
     choose("Auto-approve")
     expect_mode("Auto-approve")
+    # Landed on the install first, or the reload hydrates the previous "off" back.
+    expect_server_mode("auto")
     sandbox_answer["ready"] = False
     reload_and_wait_for_pill()
+    expect_mode("Auto-approve")
     choose("Full access in sandbox")
     setup = page.get_by_role("alertdialog")
     expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
@@ -521,6 +524,7 @@ def exercise_permission_mode_controls(page, shoot):
     # Leave the full chat smoke in the fresh-install default.
     choose("Auto-approve")
     expect_mode("Auto-approve")
+    expect_server_mode("auto")
     shoot("04-permission-levels")
 
 
