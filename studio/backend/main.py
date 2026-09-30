@@ -2414,8 +2414,27 @@ def _refresh_quantised_streaming_capability() -> bool:
     global _quantised_streaming_capability
     from core.inference.video import h3_streamed_int8_supported
 
-    _quantised_streaming_capability = bool(h3_streamed_int8_supported())
+    _quantised_streaming_capability = _probe_quantised_streaming(h3_streamed_int8_supported)
     return _quantised_streaming_capability
+
+
+def _probe_quantised_streaming(supported: Any) -> bool:
+    """Every visible CUDA card must qualify: a load may be pinned to any of them, and one that
+    resolves to float16 keeps bf16 (the same intersection as ``_probe_dense_quant_schemes``)."""
+    try:
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return bool(supported())
+        from core.inference.diffusion_device import resolve_diffusion_device_target
+
+        return all(
+            bool(supported(resolve_diffusion_device_target(ordinal = ordinal)))
+            for ordinal in range(count)
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe hides the tier
+        return False
 
 
 def _quantised_streaming() -> bool:
