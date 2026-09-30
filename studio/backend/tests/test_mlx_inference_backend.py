@@ -8,6 +8,7 @@ import copy
 import json
 import subprocess
 import sys
+import threading
 import types
 from collections import Counter
 from contextlib import contextmanager
@@ -3175,6 +3176,68 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     assert attempts == [(False, None)]
 
 
+def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    attempts, broken, probes = [], [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            if broken and not kwargs["text_only"]:
+                raise ValueError("Model type llama4_text not supported.")
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (2048, 2048, 2048)
+    )
+    text = SimpleNamespace(identifier = "org/text", is_vision = False, is_lora = False)
+
+    def routes(
+        kv_quant,
+        gap = None,
+        is_lora = False,
+        verdict = "full",
+        max_seq_length = 2048,
+    ):
+        attempts.clear()
+        probes.clear()
+        text.is_lora = is_lora
+        monkeypatch.setattr(
+            engine, "row_quantized_prompt_cache_unavailable_reason", lambda: gap, raising = False
+        )
+        monkeypatch.setattr(
+            mlx_inference,
+            "_kv_quant_eligibility",
+            lambda *a, **k: probes.append(a) or (verdict, "no cache", True),
+        )
+        backend = mlx_inference.MLXInferenceBackend()
+        backend.load_model(text, kv_quant = kv_quant, max_seq_length = max_seq_length)
+        return list(attempts), backend._turboquant_refusal
+
+    # The verdict that picked the route is the one the load's policy and fit use.
+    for max_seq_length in (2048, 0):
+        assert routes("4", max_seq_length = max_seq_length) == ([False], "")
+        assert len(probes) == 1
+    assert routes("4", gap = "old mlx-vlm") == ([True], "")
+    assert routes("auto") == ([True], "")
+    assert routes("4", is_lora = True) == ([True], "")
+    # Unquantized, it would only trade mlx-lm for mlx-vlm without batching.
+    assert routes("4", verdict = "partial") == ([False], "")
+    assert routes("4", verdict = "none") == ([False, True], "")
+    assert routes("tq-4", verdict = "none") == ([False], "")
+    # An architecture mlx-vlm lacks keeps the mlx-lm load, with no TurboQuant notice.
+    broken.append(True)
+    assert routes("4") == ([False, True], "")
+
+
 def test_reload_comparison_and_response_carry_the_resolved_setting():
     """A load-time knob must force a reload and reach the client.
 
@@ -5604,6 +5667,8 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
     monkeypatch.setattr(
         mlx_inference, "_kv_quant_eligibility", lambda *a: verdicts.append(a) or FULL
     )
+    # Text loads stay on mlx-lm here; routing through mlx-vlm has its own test.
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: "unavailable")
 
     def load(
         fitted = (24_576, FULL),
@@ -5641,7 +5706,17 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
     backend, info = load(max_seq_length = 0, kv_quant = "4")
     assert (verdicts, probes) == ([], [24_576])
     assert asked == [
-        ("fake/text", None, dict(load_in_4bit = True, retains_history = True, kv_bits = 4, is_vlm = False))
+        (
+            "fake/text",
+            None,
+            dict(
+                load_in_4bit = True,
+                retains_history = True,
+                kv_bits = 4,
+                is_vlm = False,
+                eligibility = None,
+            ),
+        )
     ]
     assert (info["context_length"], info["context_length_fitted"]) == (24_576, 24_576)
     assert (info["mlx_kv_bits"], info["mlx_context_budget"]) == (4, 24_576)
@@ -5690,6 +5765,7 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
                     retains_history = reserved,
                     kv_bits = None,
                     is_vlm = True,
+                    eligibility = None,
                 ),
             )
         ]
@@ -5884,6 +5960,50 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     ), "a row the engine has already retired is not handed back again"
 
 
+def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypatch):
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._tokenizer.bos_token = "<s>"
+    backend._plan_vlm_request = lambda request: SimpleNamespace(
+        prompt = "<s>hi",
+        images = None,
+        max_tokens = 4,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+        stream = None,
+    )
+    session = _open_vision_session([])
+    session.backend, session._adapter_state, session._resumes_rows = backend, None, False
+    added = []
+    session.stream = SimpleNamespace(
+        add = lambda request: added.append(request.prompt) or len(added) - 1
+    )
+
+    def stream_batch(model, processor, batch, defaults):
+        added.extend(request.prompt for request in batch)
+        raise LookupError
+
+    monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    backend._reads_vision, backend._generation_lock = False, threading.Lock()
+    with pytest.raises(LookupError):
+        next(backend._generate_vlm_batch([{}]))
+    for reads_vision in (False, True):
+        backend._reads_vision = reads_vision
+        session.admit({}, reads_vision)
+    # Where the batch adds no special tokens the template's BOS is the only one.
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: False)
+    backend._reads_vision = False
+    session.admit({}, "gemma")
+    # A vision load's single path lets mlx-vlm tokenize, so its rows do too.
+    assert added == ["hi", "hi", "<s>hi", "<s>hi"]
+
+
 def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):
     from core.inference import mlx_inference
 
@@ -5892,6 +6012,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
     monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
     monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: None, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
     backend = _vlm_backend(monkeypatch, markers = None)
     store = mlx_inference.VLMPromptSnapshotStore(max_bytes = 10**9)
     for key in ("m", "m|img"):
@@ -5946,6 +6067,15 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
     session.admit({"images": [object()]}, "old")
     assert not hasattr(added[3], "prompt_cache_state") and len(store) == 0
+
+    # A quantized load puts every row on the factory's cache, the store off or not.
+    backend._kv_quant = {"kv_bits": 4}
+    with pytest.raises(mlx_inference.RowRefused):
+        session.admit({}, "unquantized")
+    session._resumes_rows = True
+    backend._vlm_prompt_cache_store = lambda: None
+    session.admit({"images": [object()]}, "quantized")
+    assert added[4].prompt_cache_state._store is None
 
 
 def _batch_engine(monkeypatch):
@@ -6021,6 +6151,74 @@ def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):
         backend._kv_quant, backend._kv_context_budget = quant, budget
         assert backend.resident_unavailable_reason({}) is not None
         assert backend.batch_unavailable_reason([{}, {}]) is not None
+
+
+def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    engine = _batch_engine(monkeypatch)
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._model, backend._processor, backend._is_vlm = object(), object(), True
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": 4}, 4096
+    backend._turboquant = False
+    backend._vlm_batch_unavailable_reason = lambda requests: None
+    monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
+    capable = lambda: None
+    monkeypatch.setattr(
+        engine, "row_quantized_prompt_cache_unavailable_reason", capable, raising = False
+    )
+    assert backend.resident_unavailable_reason({}) is None
+    assert backend.batch_unavailable_reason([{}, {}]) is not None
+    backend._turboquant = True
+    assert backend.resident_unavailable_reason({}) is None
+    assert backend.batch_unavailable_reason([{}, {}]) is not None
+    monkeypatch.setattr(
+        engine, "row_quantized_prompt_cache_unavailable_reason", lambda: "old mlx-vlm"
+    )
+    assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
+
+
+def test_a_turboquant_vision_batch_quantizes_rows_as_the_single_path_does(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    monkeypatch.setattr(
+        engine, "BatchStream", lambda model, processor, defaults: defaults, raising = False
+    )
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    backend._model = backend._processor = object()
+    backend._kv_quant, backend._turboquant = {"kv_bits": 3.5}, True
+    defaults = mlx_inference._VisionBatchSession(backend, width = 2).stream
+    assert (defaults.kv_bits, defaults.kv_quant_scheme, defaults.quantized_kv_start) == (
+        3.5,
+        "turboquant",
+        0,
+    )
+    backend._kv_quant, backend._turboquant = {"kv_bits": 4}, False
+    assert not hasattr(mlx_inference._VisionBatchSession(backend, width = 2).stream, "kv_bits")
+
+
+def test_a_batched_vision_row_keeps_to_the_context_budget(monkeypatch):
+    from core.inference import context_refusal
+
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._kv_context_budget = 1024
+    plan = lambda: backend._plan_vlm_row(
+        [{"role": "user", "content": "hi"}],
+        None,
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 0,
+        min_p = 0.0,
+        max_new_tokens = 500,
+        repetition_penalty = 1.0,
+    )
+    backend._count_prompt_tokens = lambda *a, **k: 1000
+    assert plan().max_tokens == 24
+    backend._count_prompt_tokens = lambda *a, **k: 1024
+    with pytest.raises(context_refusal.ContextBudgetExceeded):
+        plan()
 
 
 try:
