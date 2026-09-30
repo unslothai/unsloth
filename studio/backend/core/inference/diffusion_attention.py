@@ -29,6 +29,7 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from typing import Any, Optional
@@ -639,6 +640,111 @@ def _attention_dits(pipe: Any) -> list:
     return dits
 
 
+# cuDNN fused SDPA serves a head_dim range that depends on the torch + cuDNN build: head_dim 256 (Ideogram 4) has no
+# cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19 / 9.20) yet runs on 2.14 (cuDNN 9.24). Pinning cuDNN leaves SDPA no
+# fallback, so every forward raises "No available kernel". (device, dtype, head_dim) -> ran; only answers are cached.
+_CUDNN_HEAD_DIM_CACHE: dict[tuple[str, str, int], bool] = {}
+
+
+def _dit_head_dims(pipe: Any) -> set[int]:
+    """The attention head dims of every denoiser DiT: ``config.attention_head_dim``, else any module's ``head_dim``."""
+    dims: set[int] = set()
+    for dit in _attention_dits(pipe):
+        config = getattr(dit, "config", None)
+        value = None
+        try:
+            value = config.get("attention_head_dim") if hasattr(config, "get") else None
+        except Exception:  # noqa: BLE001
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool):
+            dims.add(value)
+            continue
+        if isinstance(value, (list, tuple)) and value and all(isinstance(v, int) for v in value):
+            dims.update(value)
+            continue
+        modules = getattr(dit, "modules", None)
+        if not callable(modules):
+            continue
+        try:
+            for module in modules():
+                hd = getattr(module, "head_dim", None)
+                if isinstance(hd, int) and not isinstance(hd, bool) and hd > 0:
+                    dims.add(hd)
+        except Exception:  # noqa: BLE001
+            continue
+    return dims
+
+
+CUDNN_HEAD_DIM_PROBE_ENV = "UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE"
+
+
+def _run_cudnn_head_dim_probe(device: str, dtype: Any, head_dim: int) -> bool:
+    """True when cuDNN attention serves ``head_dim``; raises when unaskable (import, device, OOM).
+
+    Asks torch's own dispatch check (``can_use_cudnn_attention``, the gate SDPA applies before picking cuDNN), which
+    launches no kernel, so a load that pins cuDNN renders exactly as before. Falls back to running a tiny pinned
+    attention on a torch without that API."""
+    import torch
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.bfloat16
+    q = torch.empty((1, 2, 8, int(head_dim)), device = device, dtype = dtype)
+    try:
+        from torch.backends.cuda import SDPAParams, can_use_cudnn_attention
+    except ImportError:
+        SDPAParams = can_use_cudnn_attention = None
+    if SDPAParams is not None and can_use_cudnn_attention is not None:
+        try:
+            params = SDPAParams(q, q, q, None, 0.0, False, False)
+        except TypeError:  # torch < 2.5 has no enable_gqa argument
+            params = SDPAParams(q, q, q, None, 0.0, False)
+        return bool(can_use_cudnn_attention(params, False))
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    try:
+        with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+            torch.nn.functional.scaled_dot_product_attention(q, q, q)
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception:  # noqa: BLE001 - "No available kernel" is the answer
+        return False
+    return True
+
+
+def _cudnn_runs_head_dim(target: Any, head_dim: int) -> Optional[bool]:
+    """Whether cuDNN attention runs at ``head_dim`` on ``target``; None when unaskable (not cached)."""
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return None
+    device = _indexed_cuda_device(device)
+    dtype = getattr(target, "dtype", None)
+    key = (device, str(dtype), int(head_dim))
+    cached = _CUDNN_HEAD_DIM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        ran = _run_cudnn_head_dim_probe(device, dtype, head_dim)
+    except Exception:  # noqa: BLE001 - no torch, no device, allocator trouble: no answer about the kernel
+        return None
+    return _CUDNN_HEAD_DIM_CACHE.setdefault(key, bool(ran))
+
+
+def _cudnn_serves_pipe(pipe: Any, target: Any, logger: Any = None) -> bool:
+    """False only when cuDNN attention demonstrably has no kernel for one of the DiTs' head dims.
+
+    Kill switch: ``UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE=0`` pins cuDNN without asking, as before."""
+    if (os.environ.get(CUDNN_HEAD_DIM_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return True
+    missing = sorted(d for d in _dit_head_dims(pipe) if _cudnn_runs_head_dim(target, d) is False)
+    if missing and logger is not None:
+        logger.warning(
+            "diffusion.attention: cuDNN attention has no kernel for head_dim %s with this torch/cuDNN build; "
+            "keeping the default SDPA dispatch",
+            ",".join(str(d) for d in missing),
+        )
+    return not missing
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -674,6 +780,8 @@ def apply_attention_backend(
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
         if backend == "sage" and target is not None and _sage_kernel_runs(target, logger) is False:
+            backend = None
+        if backend == "_native_cudnn" and target is not None and not _cudnn_serves_pipe(pipe, target, logger):
             backend = None
     if backend is not None:
         engaged = False
