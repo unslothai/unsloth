@@ -66,8 +66,7 @@ print("@@@" + json.dumps(results))
 """
 
 
-# post_patch_model twice on one deepseek_v41 model (from_pretrained, then get_peft_model), then a
-# positional gradient_checkpointing_enable: the newest wrapper (offloading) must be the one bound.
+# Two post_patch_model calls then a positional enable: the newest (offloading) wrapper must bind.
 _CHILD_REPATCH = r"""
 import json
 import unsloth  # noqa: F401
