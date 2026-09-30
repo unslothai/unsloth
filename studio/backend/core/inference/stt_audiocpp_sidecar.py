@@ -656,6 +656,9 @@ class AudioCppSttSidecar:
                 data = post({k: v for k, v in fields.items() if k != "language"})
             payload = json.loads(data.decode("utf-8"))
         except AudioCppRequestCancelledError as exc:
+            # The server keeps decoding the abandoned clip and would queue the next request behind it;
+            # stop it, as speech generation does (the caller holds self._lock).
+            self._release_locked()
             raise SttTranscriptionCancelledError("Transcription cancelled.") from exc
         except AudioCppRequestError as exc:
             if 400 <= exc.status < 500:

@@ -55,6 +55,8 @@ FAKE_SERVER = textwrap.dedent(
                 for part in msg.get_payload():
                     name = part.get_param("name", header="content-disposition")
                     fields[name] = part.get_filename() or part.get_payload(decode=True).decode()
+                if fields.get("language") == "slow":
+                    time.sleep(30)
                 return self.reply(200, json.dumps({"text": json.dumps(fields, sort_keys=True)}).encode())
             self.reply(404, b"{}")
 
@@ -147,6 +149,27 @@ def test_transcription_multipart_carries_model_language_and_file(fake_binary, tm
         side._server = server
         fields = json.loads(side._post_transcription(b"RIFF....WAVE", "en", None))
         assert fields == {"file": "dictation.wav", "language": "en", "model": server.model_id}
+    finally:
+        server.stop()
+
+
+def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
+    from core.inference.stt_audiocpp_sidecar import (
+        AudioCppSttSidecar,
+        SttTranscriptionCancelledError,
+    )
+    server = srv.AudioCppServer.start(
+        lookup("audiocpp-canary-180m-flash"), str(tmp_path / "m.gguf")
+    )
+    try:
+        side = AudioCppSttSidecar()
+        side._server = server
+        cancel = threading.Event()
+        threading.Timer(0.3, cancel.set).start()
+        with side._lock, pytest.raises(SttTranscriptionCancelledError):
+            side._post_transcription(b"RIFF....WAVE", "slow", cancel)
+        # The child still decoding the abandoned clip is gone, so the next load starts a fresh one.
+        assert side._server is None and not server.alive()
     finally:
         server.stop()
 
