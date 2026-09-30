@@ -15,7 +15,12 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import { useLocale, useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { ShieldAlertIcon, XIcon } from "lucide-react";
+import {
+  ShieldAlertIcon,
+  Trash2Icon,
+  TriangleAlertIcon,
+  XIcon,
+} from "lucide-react";
 import {
   type RefObject,
   useCallback,
@@ -25,6 +30,17 @@ import {
   useState,
 } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  CANVAS_CONSOLE_ENTRIES_TRACKED,
+  type CanvasConsoleEntry,
+  type CanvasConsoleState,
+  appendCanvasEntry,
+  buildCanvasFixPrompt,
+  canvasErrors,
+  canvasStack,
+  emptyCanvasConsole,
+  parseCanvasReport,
+} from "./canvas-console";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
@@ -49,6 +65,7 @@ const GRANT_CANNOT_FIX_SCHEME: Record<string, string> = { "worker-src": "data" }
 type BlockedState = { code: string; uris: string[]; hosts: string[] };
 
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
+const NO_OUTPUT: CanvasConsoleState = emptyCanvasConsole("");
 
 // Reports from before a swap belong to the old canvas, so start over rather than append. The
 // cap is checked BEFORE the duplicate scan, so past it a canvas posting unique URIs cannot
@@ -106,12 +123,23 @@ export function ArtifactHtmlFrame({
   className,
   fill = false,
   actionFocusTargetRef,
+  consoleOpen = false,
+  reloadNonce = 0,
+  onConsoleOpenChange,
+  onOutputCountChange,
+  onFixWithModel,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
   actionFocusTargetRef?: RefObject<HTMLElement | null>;
+  consoleOpen?: boolean;
+  reloadNonce?: number;
+  onConsoleOpenChange?: (open: boolean) => void;
+  onOutputCountChange?: (counts: { errors: number; total: number }) => void;
+  // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
+  onFixWithModel?: (prompt: string) => void;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -140,17 +168,93 @@ export function ArtifactHtmlFrame({
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
   const [dismissedCode, setDismissedCode] = useState<string | null>(null);
   const dismissedForCanvas = dismissedCode === code;
+  const [output, setOutput] = useState<CanvasConsoleState>(() =>
+    emptyCanvasConsole(code),
+  );
+  const outputForCanvas = output.code === code ? output : NO_OUTPUT;
+  const errors = useMemo(() => canvasErrors(outputForCanvas), [outputForCanvas]);
+  const [errorsDismissedCode, setErrorsDismissedCode] = useState<
+    string | null
+  >(null);
+  const pendingEntries = useRef<CanvasConsoleEntry[]>([]);
+  const pendingDropped = useRef(false);
+  const flushHandle = useRef<number | null>(null);
+  const queueEntry = useCallback(
+    (entry: CanvasConsoleEntry) => {
+      // The canvas can post here directly, past the shell's cap, and a hidden tab never flushes.
+      pendingEntries.current.push(entry);
+      if (pendingEntries.current.length > CANVAS_CONSOLE_ENTRIES_TRACKED) {
+        const oldestLog = pendingEntries.current.findIndex(
+          (queued) => queued.kind === "console",
+        );
+        pendingEntries.current.splice(oldestLog < 0 ? 0 : oldestLog, 1);
+        pendingDropped.current = true;
+      }
+      if (flushHandle.current !== null) return;
+      flushHandle.current = window.requestAnimationFrame(() => {
+        flushHandle.current = null;
+        const batch = pendingEntries.current;
+        const dropped = pendingDropped.current;
+        pendingEntries.current = [];
+        pendingDropped.current = false;
+        setOutput((current) => {
+          const next = batch.reduce(
+            (state, queued) => appendCanvasEntry(state, code, queued),
+            current,
+          );
+          return dropped ? { ...next, capped: true } : next;
+        });
+      });
+    },
+    [code],
+  );
+  useEffect(
+    () => () => {
+      if (flushHandle.current !== null) {
+        window.cancelAnimationFrame(flushHandle.current);
+      }
+    },
+    [],
+  );
+  useEffect(() => {
+    onOutputCountChange?.({
+      errors: errors.length,
+      total: outputForCanvas.entries.length,
+    });
+  }, [errors.length, outputForCanvas.entries.length, onOutputCountChange]);
+  // Batched reports passed the stamp check under the old load, so a new load drops the queue.
+  const dropPendingEntries = useCallback(() => {
+    if (flushHandle.current !== null) {
+      window.cancelAnimationFrame(flushHandle.current);
+      flushHandle.current = null;
+    }
+    pendingEntries.current = [];
+    pendingDropped.current = false;
+  }, []);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
-  // Identifies this load to the frame, which stamps its blocked reports with it.
+  // Everything that reruns the document (code, reload counter, network policy) must be in this key.
   const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
+  const loadVersion = `${codeVersion}${reloadNonce > 0 ? `.${reloadNonce}` : ""}${
+    networkAllowed ? ".net" : ""
+  }`;
+  const loadedOnce = useRef(false);
+  useEffect(() => {
+    if (!loadedOnce.current) {
+      loadedOnce.current = true;
+      return;
+    }
+    dropPendingEntries();
+    setOutput(emptyCanvasConsole(code));
+    setErrorsDismissedCode(null);
+  }, [loadVersion, code, dropPendingEntries]);
   const src = useMemo(() => {
-    const query = new URLSearchParams({ v: codeVersion });
+    const query = new URLSearchParams({ v: loadVersion });
     // Never put the auth token in the URL: in-frame code can read location.href.
     if (networkAllowed) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [networkAllowed, codeVersion]);
+  }, [networkAllowed, loadVersion]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
@@ -174,7 +278,7 @@ export function ArtifactHtmlFrame({
       if (event.data?.type === "unsloth:artifact-blocked") {
         // event.source survives the swap navigation, so without the frame's stamp a report from the
         // outgoing canvas would be tagged with the incoming code and prompt a needless grant.
-        if (event.data.v !== codeVersion) return;
+        if (event.data.v !== loadVersion) return;
         const uri = event.data.blockedURI;
         // A report carries the full URL, and the canvas can post these directly rather than going
         // through the CSP. The entry cap bounds how many are kept but not their size, so a handful
@@ -195,6 +299,16 @@ export function ArtifactHtmlFrame({
         setBlocked((current) => appendBlocked(current, code, uri, host));
         return;
       }
+      if (
+        event.data?.type === "unsloth:artifact-error" ||
+        event.data?.type === "unsloth:artifact-console"
+      ) {
+        if (event.data.v !== loadVersion) return;
+        const entry = parseCanvasReport(event.data);
+        if (!entry) return;
+        queueEntry(entry);
+        return;
+      }
       if (typeof event.data?.chatArtifactHeight !== "number") return;
       setHeight(
         Math.min(
@@ -205,9 +319,8 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // `code`/`codeVersion` are listed so the handler always closes over the canvas on screen,
     // rather than relying on postArtifactHtml changing.
-  }, [postArtifactHtml, code, codeVersion]);
+  }, [postArtifactHtml, code, loadVersion, queueEntry]);
 
   const showBlockedBanner =
     !networkAllowed && !dismissedForCanvas && blockedForCanvas.uris.length > 0;
@@ -222,6 +335,23 @@ export function ArtifactHtmlFrame({
     (actionFocusTargetRef?.current ?? iframeRef.current)?.focus({
       preventScroll: true,
     });
+  };
+  const showErrorBanner = errorsDismissedCode !== code && errors.length > 0;
+  const firstError = errors[0];
+  const errorTitle =
+    errors.length === 1
+      ? t("settings.chat.artifacts.errorTitle")
+      : t("settings.chat.artifacts.errorTitlePlural", {
+          count: errors.length,
+        });
+  const locationLabel = (entry: CanvasConsoleEntry) => {
+    if (entry.line <= 0) return "";
+    return entry.column > 0
+      ? t("settings.chat.artifacts.errorLocation", {
+          line: entry.line,
+          column: entry.column,
+        })
+      : t("settings.chat.artifacts.errorLine", { line: entry.line });
   };
 
   return (
@@ -311,6 +441,146 @@ export function ArtifactHtmlFrame({
             </AlertDescription>
           </Alert>
         </div>
+      ) : null}
+      {showErrorBanner && firstError && !showBlockedBanner ? (
+        <div className="absolute inset-x-0 top-0 p-2">
+          <Alert
+            role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
+            aria-label={errorTitle}
+            className="border-destructive/40 bg-background/95 shadow-md backdrop-blur"
+          >
+            <TriangleAlertIcon className="text-destructive" />
+            <AlertAction>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => {
+                  focusAfterAction();
+                  setErrorsDismissedCode(code);
+                }}
+              >
+                <XIcon />
+              </Button>
+            </AlertAction>
+            <AlertTitle role="alert">{errorTitle}</AlertTitle>
+            <AlertDescription>
+              <p
+                className="line-clamp-2 break-words font-mono text-ui-11p5"
+                title={firstError.text}
+              >
+                {firstError.text}
+                {locationLabel(firstError) ? ` (${locationLabel(firstError)})` : ""}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                {onFixWithModel ? (
+                  <Button
+                    size="sm"
+                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
+                    title={t("settings.chat.artifacts.errorHint")}
+                  >
+                    {t("settings.chat.artifacts.errorBannerAction")}
+                  </Button>
+                ) : null}
+                {onConsoleOpenChange ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onConsoleOpenChange(!consoleOpen)}
+                  >
+                    {t(
+                      consoleOpen
+                        ? "settings.chat.artifacts.errorConsoleHideAction"
+                        : "settings.chat.artifacts.errorConsoleAction",
+                    )}
+                  </Button>
+                ) : null}
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+      {consoleOpen ? (
+        <section
+          aria-label={t("settings.chat.artifacts.consoleTitle")}
+          dir={locale === "ar" ? "rtl" : "ltr"}
+          className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
+        >
+          <div
+            className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2.5 py-1.5"
+          >
+            <span className="text-xs text-muted-foreground">
+              {t(
+                outputForCanvas.entries.length === 1
+                  ? "settings.chat.artifacts.consoleMessageCount"
+                  : "settings.chat.artifacts.consoleMessageCountPlural",
+                { count: outputForCanvas.entries.length },
+              )}
+            </span>
+            <span className="flex-1" />
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={t("settings.chat.artifacts.consoleClear")}
+              onClick={() => {
+                dropPendingEntries();
+                setOutput(emptyCanvasConsole(code));
+              }}
+            >
+              <Trash2Icon />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={t("settings.chat.artifacts.consoleClose")}
+              onClick={() => onConsoleOpenChange?.(false)}
+            >
+              <XIcon />
+            </Button>
+          </div>
+          <ol className="min-h-0 flex-1 overflow-auto pb-2 font-mono">
+            {outputForCanvas.capped ? (
+              <li className="border-b border-border/40 px-2.5 py-2 text-muted-foreground">
+                {t("settings.chat.artifacts.consoleCapped", {
+                  count: CANVAS_CONSOLE_ENTRIES_TRACKED,
+                })}
+              </li>
+            ) : null}
+            {outputForCanvas.entries.length === 0 ? (
+              <li className="px-2.5 py-2 text-muted-foreground">
+                {t("settings.chat.artifacts.consoleEmpty")}
+              </li>
+            ) : (
+              outputForCanvas.entries.map((entry, index) => (
+                <li
+                  key={index}
+                  className={cn(
+                    "border-b border-border/40 px-2.5 py-2 leading-relaxed",
+                    entry.level === "error" && "text-destructive",
+                    entry.level === "warn" &&
+                      "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  <p className="whitespace-pre-wrap break-words">
+                    {entry.kind === "console" && entry.level !== "log" ? (
+                      <span className="mr-1.5 uppercase text-muted-foreground">
+                        {entry.level}
+                      </span>
+                    ) : null}
+                    {entry.text}
+                    {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
+                  </p>
+                  {canvasStack(entry) ? (
+                    <pre className="mt-2 overflow-x-auto border-l border-border pl-2.5 leading-relaxed text-muted-foreground">
+                      {canvasStack(entry)}
+                    </pre>
+                  ) : null}
+                </li>
+              ))
+            )}
+          </ol>
+        </section>
       ) : null}
     </div>
   );

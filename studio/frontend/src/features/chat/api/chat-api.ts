@@ -355,15 +355,18 @@ export async function countChatInputTokens(payload: {
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   if (!preparedToken.proceed)
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
+  options?.signal?.throwIfAborted();
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
