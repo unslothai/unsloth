@@ -87,3 +87,16 @@ test("popovers stop at the titlebar and scroll", async () => {
     /max-h-\(--radix-popover-content-available-height\) overflow-y-auto/,
   );
 });
+
+test("dropdown submenus stop at the titlebar and scroll", async () => {
+  const menu = await readSrcAsync("components/ui/dropdown-menu.tsx");
+  const sub = menu.slice(menu.indexOf("function DropdownMenuSubContent"));
+  assert.match(
+    sub,
+    /max-h-\(--radix-dropdown-menu-content-available-height\)[^"]*flex flex-col overflow-hidden/,
+  );
+  assert.match(
+    sub,
+    /data-slot="dropdown-menu-viewport"\s+className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"\s*>\s*\{children\}/,
+  );
+});
