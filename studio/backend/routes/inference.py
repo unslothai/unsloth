@@ -3886,7 +3886,11 @@ from core.inference.providers import (
     provider_runs_local_tools,
     validate_provider_base_url,
 )
-from core.inference.external_provider import ExternalProviderClient, _is_openai_family_cloud
+from core.inference.external_provider import (
+    ExternalProviderClient,
+    _is_openai_family_cloud,
+    caches_at_the_last_block,
+)
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
     is_ui_control_sse_line,
@@ -25259,7 +25263,10 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
-        thread_id = getattr(payload, "thread_id", None),
+        # a thread's date note would sit on the cache breakpoint and move off it next turn.
+        thread_id = None
+        if caches_at_the_last_block(provider_type, model, payload.enable_prompt_caching)
+        else getattr(payload, "thread_id", None),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -25304,6 +25311,7 @@ async def _proxy_to_external_provider(
             compaction_threshold = payload.compaction_threshold,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
+            thread_id = payload.thread_id,
         )
         # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
         managed_finish = _TurnFinish()
