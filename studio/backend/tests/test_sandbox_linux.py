@@ -115,12 +115,14 @@ def test_identity_is_synthesised_rather_than_bound_from_the_host(prepared):
     assert entries[0].split(":")[5] == prepared.argv[prepared.argv.index("HOME") + 1]
 
 
-def test_a_workdir_that_would_corrupt_the_passwd_entry_is_not_its_home(tmp_path):
-    identity_dir, passwd, _ = sandbox_linux._identity_files(str(tmp_path / "a:b"))
+@pytest.mark.parametrize("name", ("a:b", "a\nb"))
+def test_a_workdir_that_would_corrupt_the_passwd_entry_is_not_its_home(tmp_path, name):
+    identity_dir, passwd, _ = sandbox_linux._identity_files(str(tmp_path / name))
     try:
         with open(passwd, encoding = "utf-8") as stream:
-            fields = stream.read().rstrip("\n").split(":")
-        assert len(fields) == 7 and fields[5] == "/nonexistent"
+            entries = stream.read().splitlines()
+        fields = entries[0].split(":")
+        assert len(entries) == 1 and len(fields) == 7 and fields[5] == "/nonexistent"
     finally:
         shutil.rmtree(identity_dir)
 
@@ -198,7 +200,8 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     secrets = []
     for root in roots:
         (root / "security").mkdir(parents = True)
-        (root / "security" / "java.security").write_text("", encoding = "utf-8")
+        marker = "default.policy" if root == fedora / "lib" else "java.security"
+        (root / "security" / marker).write_text("", encoding = "utf-8")
         (root / "net.properties").write_text("", encoding = "utf-8")
         (root / "management").mkdir()
         secrets += [root / "management" / "jmxremote.password", root / "keystore.p12"]
@@ -212,17 +215,24 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     secrets += [service / "security" / "token", service / "app.properties"]
     for secret in secrets:
         secret.write_text("SECRET", encoding = "utf-8")
-    # Bind-source symlinks could expose host secrets.
+    # Bind-source symlinks could expose host secrets; each target carries a marker.
+    (outside / "java.security").write_text("", encoding = "utf-8")
     linked = etc / "java-8-openjdk"
     linked.mkdir()
     (linked / "security").symlink_to(outside)
     (linked / "net.properties").symlink_to(outside / "private-key")
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "security").mkdir(parents = True)
+    (elsewhere / "security" / "java.security").write_text("", encoding = "utf-8")
     secrets.append(elsewhere / "security" / "credential")
     secrets[-1].write_text("SECRET", encoding = "utf-8")
     linked_top = etc / "java-17-openjdk"
     linked_top.symlink_to(elsewhere)
+    linked_marker = etc / "java-11-openjdk"
+    (linked_marker / "security").mkdir(parents = True)
+    (linked_marker / "security" / "java.security").symlink_to(outside / "java.security")
+    linked_file = etc / "java-21-openjdk" / "linked.properties"
+    linked_file.symlink_to(outside / "private-key")
     monkeypatch.setattr(sandbox_linux, "_ETC_JAVA_GLOB", str(etc / "java*"))
     workdir = tmp_path / "session"
     workdir.mkdir()
@@ -236,8 +246,8 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
             assert (str(path), str(path)) in read_only
         for flag in ("--bind", "--bind-try", "--ro-bind", "--ro-bind-try"):
             for source, _ in _pairs(launch.argv, flag):
-                assert not sandbox_linux._within(source, str(linked)), source
-                assert not sandbox_linux._within(source, str(linked_top)), source
+                for link in (linked, linked_top, linked_marker, linked_file):
+                    assert not sandbox_linux._within(source, str(link)), source
                 for secret in secrets:
                     assert not sandbox_linux._within(str(secret), source), (secret, source)
     finally:
@@ -273,6 +283,11 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     completed = run(payload)
     assert completed.returncode == 0, completed.stderr
     assert "Error loading java.security" not in completed.stderr
+    # Distro JDKs reach cacerts through /etc links.
+    keytool = os.path.join(os.path.dirname(os.path.realpath(java)), "keytool")
+    if os.access(keytool, os.X_OK):
+        completed = run((keytool, "-list", "-cacerts", "-storepass", "changeit"))
+        assert completed.returncode == 0, completed.stdout + completed.stderr
     # Java reads user.home from getpwuid(), not $HOME.
     properties = run((java, "-XshowSettings:properties", "-version")).stderr
     assert f"user.home = {tmp_path}" in properties, properties

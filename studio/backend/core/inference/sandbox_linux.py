@@ -134,6 +134,8 @@ _ETC_FILES = (
 )
 # Distro JDKs link their configuration into /etc/java*.
 _ETC_JAVA_GLOB = "/etc/java*"
+# conf/security holds java.security; Fedora's separate lib/security holds default.policy.
+_ETC_JAVA_SECURITY_MARKERS = ("java.security", "default.policy")
 # Files beside security/; exclude management/ and its JMX credentials.
 _ETC_JAVA_FILES = ("*.properties", "*.cfg")
 # Bound only when it passes _trusted_system_file.
@@ -153,6 +155,7 @@ _NETWORK_FILES = (
     "/etc/pki/tls/cert.pem",
     "/etc/pki/tls/openssl.cnf",
     "/etc/pki/ca-trust",
+    "/etc/pki/java/cacerts",
     "/etc/ca-certificates",
     "/etc/ca-certificates.conf",
     "/etc/crypto-policies",
@@ -186,13 +189,12 @@ def _etc_java_binds() -> tuple[str, ...]:
         for root, dirs, files in os.walk(top):
             dirs.sort()
             security = os.path.join(root, "security")
-            # The glob also matches non-JDK trees; every JDK security/ holds java.security.
-            marker = os.path.join(security, "java.security")
+            # The glob also matches non-JDK trees.
+            markers = (os.path.join(security, name) for name in _ETC_JAVA_SECURITY_MARKERS)
             if (
                 "security" in dirs
                 and not os.path.islink(security)
-                and os.path.isfile(marker)
-                and not os.path.islink(marker)
+                and any(os.path.isfile(m) and not os.path.islink(m) for m in markers)
             ):
                 dirs.remove("security")
                 binds.append(security)
