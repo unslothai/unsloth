@@ -16935,6 +16935,9 @@ async def load_model_gated(
                 _extra_slots.append(extra)
             if extra is not None:
                 _loading_slot = (extra, request.model_path)
+                extra.llama._llama_update_in_progress = getattr(
+                    _llama_cpp_backend, "_llama_update_in_progress", False
+                )
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
@@ -17018,15 +17021,6 @@ async def load_model_gated(
 
 async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
-    slot = await _pick_load_slot(request)
-    if slot is not None:
-        slot.llama._llama_update_in_progress = getattr(
-            _llama_cpp_backend, "_llama_update_in_progress", False
-        )
-    return slot
-
-
-async def _pick_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     from core.inference.npu_backend import is_npu_model_path
 
     # The NPU backend is one per process and replaces the primary, so it never takes a slot.
