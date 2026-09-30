@@ -209,7 +209,7 @@ def _stub_install_io(monkeypatch, version = "audio.cpp test\nbackends: cpu"):
     monkeypatch.setattr(M, "_download", _fake_download)
     monkeypatch.setattr(M, "smoke_test_staged_server", lambda server, **kw: version)
     monkeypatch.setattr(M, "detect_accelerator", lambda: "cpu")
-    monkeypatch.setattr(M, "_linux_nccl_available", lambda: True)
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: True)
 
 
 def _install(
@@ -436,18 +436,21 @@ def test_main_auto_detected_gpu_without_a_bundle_installs_the_cpu_build(
     )
 
 
-def test_auto_cuda_without_nccl_installs_the_cpu_build_and_reruns_offline(
+def test_auto_cuda_without_a_cuda_runtime_installs_the_cpu_build_and_reruns_offline(
     monkeypatch, tmp_path, pins
 ):
     release = _release(tmp_path, CPU_ZIP)
     _pin_release(pins, release)
     asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
     _stub_install_io(monkeypatch)
-    monkeypatch.setattr(M, "_linux_nccl_available", lambda: False)
+    seen = []
+    monkeypatch.setattr(
+        M, "_linux_cuda_runtime_available", lambda major: seen.append(major) or False
+    )
     monkeypatch.setattr(M, "resolve", resolve)
     monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
     assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
-    assert asked == ["cpu"]
+    assert asked == ["cuda", "cpu"]
     record = json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
     assert (record["backend"], record["accelerator_request"], record["detected_accelerator"]) == (
         "cpu",
@@ -456,30 +459,70 @@ def test_auto_cuda_without_nccl_installs_the_cpu_build_and_reruns_offline(
     )
     monkeypatch.setattr(M, "resolve", lambda *a: pytest.fail("a matching rerun must not look up"))
     assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    # torch's CUDA runtime arrived: the CPU fallback is no longer a match, so the GPU build is looked up.
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: True)
+    looked = []
+    monkeypatch.setattr(
+        M, "resolve", lambda accel, token: looked.append(accel) or (FORK, release, CPU_ZIP)
+    )
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    assert looked == ["cuda"]
 
 
-def test_explicit_cuda_is_not_downgraded_for_missing_nccl(monkeypatch):
-    monkeypatch.setattr(M, "_linux_nccl_available", lambda: False)
+def test_explicit_cuda_is_not_downgraded_for_a_missing_cuda_runtime(monkeypatch):
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: False)
     asked = []
     monkeypatch.setattr(
-        M, "resolve", lambda accel, token: asked.append(accel) or (FORK, None, None)
+        M,
+        "resolve",
+        lambda accel, token: asked.append(accel)
+        or (FORK, {"assets": []}, "a-bin-ubuntu-x64-cuda13.tar.gz"),
     )
     M.resolve_for_request("cuda", None, None)
     assert asked == ["cuda"]
 
 
-def test_nccl_probe(monkeypatch, tmp_path):
+def test_cuda_runtime_probe_needs_the_bundle_major(monkeypatch, tmp_path):
     monkeypatch.setattr(M.sys, "platform", "linux")
     monkeypatch.setattr(M, "_cuda_runtime_dirs", lambda backend: [str(tmp_path)])
-    import ctypes.util
-
-    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
-    assert M._linux_nccl_available() is False
-    (tmp_path / "libnccl.so.2").write_bytes(b"")
-    assert M._linux_nccl_available() is True
-    monkeypatch.setattr(M.sys, "platform", "win32")
+    monkeypatch.setattr(M, "_ldconfig_libs", lambda: set())
+    assert M._linux_cuda_runtime_available(13) is False
+    for name in ("libcudart.so.13", "libcublas.so.13", "libcufft.so.12"):
+        (tmp_path / name).write_bytes(b"")
+    assert M._linux_cuda_runtime_available(13) is True
+    assert M._linux_cuda_runtime_available(12) is False
+    assert M._linux_cuda_runtime_available(None) is False
     monkeypatch.setattr(M, "_cuda_runtime_dirs", lambda backend: [])
-    assert M._linux_nccl_available() is True
+    monkeypatch.setattr(
+        M, "_ldconfig_libs", lambda: {"libcudart.so.12", "libcublas.so.12", "libcufft.so.11"}
+    )
+    assert M._linux_cuda_runtime_available(12) is True
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    assert M._linux_cuda_runtime_available(None) is True
+
+
+@pytest.mark.parametrize(
+    "names, driver, prefer, want",
+    [
+        (("cuda12", "cuda13"), (13, 1), 13, "cuda13"),
+        (("cuda12", "cuda13"), (12, 4), None, "cuda12"),
+        (("cuda12", "cuda13"), (13, 1), 12, "cuda12"),
+        (("cuda12.8", "cuda12.8-colab"), (12, 8), None, "cuda12.8"),
+    ],
+)
+def test_cuda_lines_with_and_without_a_minor(names, driver, prefer, want):
+    assets = [f"audio-T-bin-ubuntu-x64-{n}.tar.gz" for n in names]
+    got = M.resolve_release_asset(
+        assets,
+        system = "Linux",
+        machine = "x86_64",
+        accelerator = "cuda",
+        driver_cuda = driver,
+        prefer_cuda_major = prefer,
+    )
+    assert got == f"audio-T-bin-ubuntu-x64-{want}.tar.gz"
+    win = ["audio-T-bin-windows-x64-cuda13.zip", "audio-T-cudart-windows-x64-cuda13.zip"]
+    assert M.cudart_asset_for(win, win[0]) == win[1]
 
 
 def test_main_explicit_gpu_request_is_never_downgraded(monkeypatch, tmp_path, pins):

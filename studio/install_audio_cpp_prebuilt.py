@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fnmatch
 import glob
 import json
 import os
@@ -121,7 +122,8 @@ _ARCH_TOKENS = {
     "arm64": "arm64",
     "aarch64": "arm64",
 }
-_CUDA_LINE = re.compile(r"-cuda(\d+)\.(\d+)")
+# "-cuda12.8" (upstream, Etherll) or "-cuda12" (unslothai/audio.cpp: one bundle per major line).
+_CUDA_LINE = re.compile(r"-cuda(\d+)(?:\.(\d+))?(?=[-.]|$)")
 
 
 def _repo() -> str:
@@ -331,7 +333,7 @@ def resolve_release_asset(
             match = _CUDA_LINE.search("-" + backend_of(n))
             if not match:
                 continue
-            line = (int(match.group(1)), int(match.group(2)))
+            line = (int(match.group(1)), int(match.group(2) or 0))
             if driver_cuda is not None and line > driver_cuda:
                 continue
             candidates.append((line, n))
@@ -359,7 +361,7 @@ def cudart_asset_for(asset_names: Sequence[str], bundle: str) -> Optional[str]:
     match = _CUDA_LINE.search(bundle)
     if not match or "-windows-" not in bundle:
         return None
-    line = f"cuda{match.group(1)}.{match.group(2)}"
+    line = match.group(0)[1:]
     for name in asset_names:
         if "-cudart-windows-" in name and name.endswith(f"-{line}.zip"):
             return name
@@ -469,14 +471,18 @@ def resolve_for_request(
     cover (an older driver, Linux arm64) falls back to the CPU build, which still runs every model;
     an explicit request is never downgraded."""
     accel = detected if requested == "auto" and detected else requested
-    if requested == "auto" and accel == "cuda" and not _linux_nccl_available():
-        # A no-torch Studio venv: the Linux CUDA bundle cannot start without NCCL.
-        print(
-            "audio.cpp: no NCCL for the CUDA build (Studio without torch); installing the CPU build",
-            flush = True,
-        )
-        accel = "cpu"
     repo, release, chosen = resolve(accel, token)
+    if requested == "auto" and accel == "cuda" and chosen:
+        major = _cuda_major(chosen)
+        if not _linux_cuda_runtime_available(major):
+            # The Linux CUDA bundles load cudart / cuBLAS from torch's nvidia-* wheels, as the
+            # llama.cpp ones do; a Studio without torch (or with another CUDA line) runs the CPU build.
+            print(
+                f"audio.cpp: no CUDA {major} runtime (cudart, cuBLAS) for {chosen}; installing the CPU build",
+                flush = True,
+            )
+            accel = "cpu"
+            repo, release, chosen = resolve(accel, token)
     if (release is None or not chosen) and requested == "auto" and accel != "cpu":
         print(f"audio.cpp: no {accel} bundle for this host; installing the CPU build", flush = True)
         accel = "cpu"
@@ -682,6 +688,14 @@ def _pinned_install_matches(
         return None
     if requested == "auto" and record.get("detected_accelerator") != detected:
         return None
+    if (
+        requested == "auto"
+        and detected == "cuda"
+        and record.get("accelerator") == "cpu"
+        and _linux_cuda_runtime_available(torch_cuda_major())
+    ):
+        # Installed as the CPU fallback; torch's CUDA runtime is here now, so look up the GPU build.
+        return None
     return _intact_install(target, record)
 
 
@@ -740,16 +754,39 @@ def _cuda_runtime_dirs(backend: str) -> list[str]:
         return []
 
 
-def _linux_nccl_available() -> bool:
-    """The Linux CUDA bundles ship cuBLAS, cudart and cuFFT but load ``libnccl.so.2`` from torch's
-    nvidia-nccl wheel (or the system). Always true off Linux."""
+def _cuda_major(asset: str) -> Optional[int]:
+    match = _CUDA_LINE.search(asset)
+    return int(match.group(1)) if match else None
+
+
+def _ldconfig_libs() -> set[str]:
+    try:
+        out = subprocess.run(["ldconfig", "-p"], capture_output = True, text = True, timeout = 10).stdout
+    except Exception:  # noqa: BLE001 - no ldconfig: only the wheel dirs count
+        return set()
+    return {line.split()[0] for line in out.splitlines()[1:] if line.strip()}
+
+
+def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
+    """Whether the CUDA libraries a line-``major`` Linux bundle links but does not ship (cudart,
+    cuBLAS, cuFFT) are in torch's nvidia-* wheels or on the system loader path. True off Linux,
+    where the bundle (or its cudart archive) carries them."""
     if not sys.platform.startswith("linux"):
         return True
-    if any(any(Path(d).glob("libnccl.so*")) for d in _cuda_runtime_dirs("cuda")):
-        return True
-    import ctypes.util
+    if major is None:
+        return False
+    dirs = [Path(d) for d in _cuda_runtime_dirs("cuda")]
+    system = _ldconfig_libs()
 
-    return ctypes.util.find_library("nccl") is not None
+    def present(pattern: str) -> bool:
+        if any(any(d.glob(pattern)) for d in dirs):
+            return True
+        return any(fnmatch.fnmatch(name, pattern) for name in system)
+
+    return all(
+        present(pattern)
+        for pattern in (f"libcudart.so.{major}", f"libcublas.so.{major}", "libcufft.so.*")
+    )
 
 
 def _run_staged(server: Path, arg: str, env: dict, timeout: float) -> subprocess.CompletedProcess:
