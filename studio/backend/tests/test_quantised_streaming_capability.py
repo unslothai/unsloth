@@ -41,7 +41,7 @@ def test_the_polled_reader_answers_from_the_cache_without_importing(monkeypatch,
         monkeypatch.setitem(sys.modules, name, None)
     reader = _src("_quantised_streaming")
     assert "import" not in reader
-    namespace: dict = {"_quantised_streaming_capability": cached}
+    namespace: dict = {"_quantised_streaming_capability": cached, "sys": sys}
     exec(reader, namespace)  # noqa: S102 -- the real body
     assert namespace["_quantised_streaming"]() is expected
 
@@ -51,12 +51,29 @@ def test_the_refresh_caches_the_prequant_verdict(monkeypatch, supported):
     fake = types.ModuleType("core.inference.video")
     fake.h3_streamed_int8_supported = lambda: supported
     monkeypatch.setitem(sys.modules, "core.inference.video", fake)
-    namespace: dict = {"_quantised_streaming_capability": None}
+    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys}
     exec(_src("_refresh_quantised_streaming_capability"), namespace)  # noqa: S102
     exec(_src("_quantised_streaming"), namespace)  # noqa: S102
     assert namespace["_refresh_quantised_streaming_capability"]() is supported
     assert namespace["_quantised_streaming_capability"] is supported
     assert namespace["_quantised_streaming"]() is supported
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+def test_a_cold_warm_resolves_it_once_a_load_has_loaded_the_stack(monkeypatch, loaded):
+    """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 skips the warm refresh; a later load must still publish the bit."""
+    names = ("torch", "diffusers", "torchao", "core.inference.video")
+    for name in names:
+        if loaded:
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        else:
+            monkeypatch.delitem(sys.modules, name, raising = False)
+    calls: list = []
+    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys}
+    exec(_src("_quantised_streaming"), namespace)  # noqa: S102
+    namespace["_refresh_quantised_streaming_capability"] = lambda: calls.append(1) or True
+    assert namespace["_quantised_streaming"]() is loaded
+    assert calls == ([1] if loaded else [])
 
 
 def test_the_post_warm_worker_resolves_it_behind_the_torch_guard():
