@@ -19,10 +19,7 @@ RESOURCE_PROVENANCE_KEY = "resource_provenance"
 _ATTESTED = "attested"
 _INCOMPLETE = "incomplete"
 _MODEL_LOAD_UNQUANTIZED = "unquantized"
-# Prequantized modes are `prequantized_{widths}bit`, where `widths` are the snapshot's
-# declared bit widths, sorted ascending, de-duplicated, and joined by `_`
-# (e.g. `prequantized_8bit`, `prequantized_4_8bit`). `_MODEL_LOAD_PREQUANTIZED_4BIT` is
-# exactly the `{4}` case, so existing v1 markers stay valid without a version bump.
+# `prequantized_{sorted unique widths joined by _}bit`; the {4} case keeps v1 markers valid.
 _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
 _PREQUANTIZED_MODE_RE = re.compile(r"prequantized_(?:1[0-6]|[1-9])(?:_(?:1[0-6]|[1-9])){0,7}bit")
@@ -176,8 +173,7 @@ def _prequantized_mode_widths(mode: Any) -> Optional[frozenset[int]]:
     widths = [
         int(part) for part in mode.removeprefix("prequantized_").removesuffix("bit").split("_")
     ]
-    # The regex alone accepts any order/duplicates; only the strictly increasing sequence
-    # `_prequantized_mode` itself would have produced is a canonical, attestable mode.
+    # Only the canonical (strictly increasing) spelling `_prequantized_mode` writes attests.
     if any(widths[index] >= widths[index + 1] for index in range(len(widths) - 1)):
         return None
     return frozenset(widths)
@@ -625,8 +621,6 @@ def _attested_model_load_mode(snapshot: str, model: Any, load_in_4bit: bool) -> 
     if widths is None:
         return None
     if widths:
-        # A snapshot that declares any width attests as prequantized regardless of the
-        # load_in_4bit toggle: the weights on disk are what actually loaded, not the flag.
         return _prequantized_mode(widths)
     if not load_in_4bit:
         return _MODEL_LOAD_UNQUANTIZED
@@ -839,9 +833,6 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     if stored_load_mode is None and isinstance(marker, dict):
         stored_load_mode = marker.get("model_load_mode")
     load_in_4bit = bool(config.get("load_in_4bit"))
-
-    # A stored mode that parses as a canonical prequantized width wins regardless of the
-    # load_in_4bit toggle: it is what the run actually attested, not what the toggle says.
     expected_widths = _prequantized_mode_widths(stored_load_mode)
     if expected_widths is not None:
         model_load_mode = _prequantized_mode(expected_widths)
@@ -871,8 +862,7 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
         config.get("model_snapshot_path"),
         model_repo_id,
     )
-    # Legacy unquantized markers keep resuming without a snapshot width check, exactly as
-    # today; prequantized and runtime modes both pin an exact expected width set.
+    # Legacy `unquantized` markers never checked widths; keep them resumable.
     if (
         model_snapshot is not None
         and model_load_mode != _MODEL_LOAD_UNQUANTIZED

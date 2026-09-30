@@ -596,10 +596,6 @@ def test_mlx_mixed_quantization_widths_attest_prequantized_4_8bit_snapshot(tmp_p
 
 
 def test_mlx_top_level_8bit_quantization_attests_regardless_of_the_4bit_toggle(tmp_path):
-    """The toggle-off row from the issue: an 8-bit MLX snapshot loaded with the 4-bit
-    toggle off used to attest as ``unquantized``, discarding the real width and leaving
-    the run unable to resume once that width no longer matched what was on disk.
-    """
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
@@ -640,8 +636,6 @@ def test_prequantized_8bit_pin_refuses_resume_once_the_snapshot_declares_4bit(tm
     }
     assert validate_exact_model_pin(config) == str(model_snapshot.resolve())
 
-    # The cache re-quantizes the same snapshot path to 4-bit: the pin no longer matches
-    # what is actually on disk, so the resume must refuse rather than silently swap widths.
     (model_snapshot / "config.json").write_text(
         json.dumps({"quantization": {"bits": 4}}),
         encoding = "utf-8",
@@ -651,10 +645,6 @@ def test_prequantized_8bit_pin_refuses_resume_once_the_snapshot_declares_4bit(tm
 
 
 def test_legacy_unquantized_marker_resumes_even_if_the_snapshot_now_declares_8bit(tmp_path):
-    """Back-compat: a v1 marker written before this change never checked the snapshot's
-    declared width for an ``unquantized`` pin, and that stays true so old runs keep
-    resuming.
-    """
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps({"quantization": {"bits": 8}}),
@@ -689,8 +679,6 @@ def test_legacy_unquantized_marker_resumes_even_if_the_snapshot_now_declares_8bi
 def test_non_canonical_stored_load_mode_refuses_resume(
     tmp_path, stored_mode, canonical_mode, quantization
 ):
-    # The snapshot declares the widths a lax parse would read out of `stored_mode`, so
-    # only the canonical-form check can refuse it; the canonical spelling still resumes.
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps({"quantization": quantization}),
