@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import structlog
 from loggers import get_logger
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from hub.utils.hf_tokens import HfTokenArg
 from storage.studio_db import get_connection
 from utils.training_runs import (
@@ -143,6 +144,65 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     return None
 
 
+def parse_adapter_features(
+    adapter_path: str, probe_weights: bool = True
+) -> Optional[Dict[str, Optional[bool]]]:
+    """Adapter feature flags (PEFT or MLX config) for the export UI; None without a config.
+
+    ``full_state`` is tri-state: no config marker proves absence (PEFT saves embedding state only
+    as weight keys), so a negative needs the weight-header probe and stays None without it.
+    """
+    cfg_path = os.path.join(adapter_path, "adapter_config.json")
+    try:
+        with open(cfg_path, "r", encoding = "utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+
+    def _flag(value):
+        return isinstance(value, bool) and value
+
+    def _filled(value):
+        return isinstance(value, (dict, list)) and len(value) > 0
+
+    full_state: Optional[bool] = _filled(cfg.get("full_state_modules")) or _filled(
+        cfg.get("modules_to_save")
+    )
+    if not full_state:
+        full_state = None
+        if probe_weights:
+            for weights, is_adapter_key in (
+                (
+                    os.path.join(adapter_path, "adapter_model.safetensors"),
+                    lambda key: ".lora_" in key,
+                ),
+                (
+                    os.path.join(adapter_path, "adapters.safetensors"),
+                    lambda key: key.endswith((".lora_a", ".lora_b", ".m")),
+                ),
+            ):
+                if not os.path.exists(weights):
+                    continue
+                try:
+                    from safetensors import safe_open
+                    with safe_open(weights, framework = "numpy") as f:
+                        full_state = any(not is_adapter_key(key) for key in f.keys())
+                except Exception:
+                    full_state = None
+                break
+    return {
+        "dora": _flag(cfg.get("use_dora")) or str(cfg.get("fine_tune_type", "")).lower() == "dora",
+        "full_state": full_state,
+        "moe_target_parameters": _filled(cfg.get("target_parameters")),
+        "non_uniform": _filled(cfg.get("rank_pattern"))
+        or _filled(cfg.get("alpha_pattern"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_ranks"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_scales")),
+    }
+
+
 # Both probe every outputs folder, so an unreadable one is skipped, not fatal to the scan.
 def _has_own_model(path: Path) -> bool:
     try:
@@ -215,6 +275,9 @@ def scan_checkpoints(
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
+                    metadata["adapter_features"] = parse_adapter_features(
+                        str(meta_dir), probe_weights = False
+                    )
                 elif own_entry(config_file):
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")

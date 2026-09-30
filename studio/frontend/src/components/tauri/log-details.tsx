@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isFollowingTail } from "@/components/tauri/log-follow";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 
-import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useLayoutEffect, useRef } from "react";
 
@@ -82,7 +82,7 @@ export function LogDetails({
         <span className="group-open:hidden">Show {label}</span>
         <span className="hidden group-open:inline">Hide {label}</span>
         <HugeiconsIcon
-          icon={ChevronDownIcon}
+          icon={ChevronDownStandardIcon}
           aria-hidden="true"
           strokeWidth={1.5}
           className="size-[calc(13px*var(--ui-space-scale,1))] shrink-0 transition-transform group-open:rotate-180"

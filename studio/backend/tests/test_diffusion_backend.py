@@ -1290,6 +1290,46 @@ def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, mon
     assert len(engaged) == 1
 
 
+def test_deferred_speed_refreshes_the_cuda_graph_entry(fake_runtime, tmp_path, monkeypatch):
+    # The load records "speed tier does not capture" for the deferred tier; once the 3rd generation arms graphs the
+    # resolved entry must say so too, or the badge contradicts speed_optims.
+    from core.inference import diffusion as dmod
+
+    graphs_on = {"value": True}
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {
+            "compiled": k.get("speed_mode") == "default",
+            "cuda_graph": k.get("speed_mode") == "default" and graphs_on["value"],
+        },
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    assert backend.status()["resolved"]["cuda_graph"]["value"] == "off"
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    status = backend.status()
+    assert "cuda_graph" in status["speed_optims"]
+    assert status["resolved"]["cuda_graph"]["value"] == "on"
+    assert "captured" in status["resolved"]["cuda_graph"]["reason"]
+
+    # Control: a deferred profile that arms no graphs keeps the entry off with the recorded reason.
+    backend.unload()
+    graphs_on["value"] = False
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    for p in ("a", "b", "c"):
+        backend.generate(prompt = p)
+    status = backend.status()
+    assert "cuda_graph" not in status["speed_optims"]
+    assert status["resolved"]["cuda_graph"]["value"] == "off"
+    backend.unload()
+
+
 def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
     # Speed=Auto with Attention pinned must keep that choice when the 3rd generation engages.
     from core.inference import diffusion as dmod

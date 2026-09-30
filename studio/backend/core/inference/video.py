@@ -90,6 +90,7 @@ from .diffusion_memory import (
     DEFAULT_BASE_OVERHEAD_MIB,
     DEFAULT_GROUP_BLOCKS,
     MEMORY_MODE_AUTO,
+    MEMORY_MODE_FAST,
     OFFLOAD_GROUP,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
@@ -109,6 +110,7 @@ from .diffusion_memory import (
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
+    safetensors_prefix_mib,
     settled_snapshot_device_memory,
     start_background_pins,
     stop_background_pins,
@@ -168,6 +170,7 @@ from .diffusion_precision import (
     quantize_text_encoders,
     te_quant_needs_resident_weights,
     te_quant_supported,
+    te_quant_unsupported_reason,
     torchao_quantize_importable,
 )
 from .video_families import (
@@ -340,6 +343,17 @@ def _ltx23_prequant_pick(
     from .video_ltx2 import ltx23_prequant_eligible
 
     return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
+
+
+def _memory_mode_resolved(memory_mode: Any, plan: Any, offload_policy: str) -> tuple:
+    """A ``fast`` that had to offload is a fallback valued at the engaged policy ("FAST -> GROUP", not "FAST -> FAST")."""
+    if plan.requested_mode == MEMORY_MODE_FAST and offload_policy != OFFLOAD_NONE:
+        return (memory_mode, offload_policy, "; ".join(plan.reasons), RESOLVED_FELL_BACK)
+    return (
+        memory_mode,
+        plan.requested_mode,
+        f"planned '{plan.offload_policy}' offload ({_video_plan_label(plan)}) from the family size table",
+    )
 
 
 def _ltx23_prequant_serves(
@@ -558,10 +572,7 @@ def _assert_video_precision_for_target(
             "quantisations"
         )
     elif te_effective is not None and not te_quant_supported(target, te_effective):
-        te_reason = (
-            "this device does not have the tensor cores that backend needs (a CUDA GPU in "
-            "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
-        )
+        te_reason = te_quant_unsupported_reason(te_effective)
     elif te_quant_needs_resident_weights(te_effective) and forces_offload:
         # Same fence on the encoder: the loader reports those modes unsupported once offload is active, and by then the
         # resident model is gone. Layerwise fp8 is a dtype cast.
@@ -5275,6 +5286,12 @@ class VideoBackend:
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
             else:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
+                if fam.name == "ltx-2" and transformer_mib is not None:
+                    # The file also bundles VAE / audio VAE / vocoder, already priced as companions. The connectors under
+                    # this prefix stay in: the table undercounts them (~2.9 of 6 GB), and dropping them plans below the peak.
+                    dit_mib = safetensors_prefix_mib(str(checkpoint_path), "model.diffusion_model.")
+                    if dit_mib is not None:
+                        transformer_mib = min(transformer_mib, dit_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
         # Price the plan at the hosted fp8 DiT: the bf16 file size would plan an offload and skip the seed.
@@ -5487,6 +5504,10 @@ class VideoBackend:
         raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.
+        from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
+
+        if is_ltx2_pipeline_class(fam.pipeline_class):
+            ensure_ltx2_pipelines_importable(logger)
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across
         # roots.
@@ -6172,12 +6193,7 @@ class VideoBackend:
 
             resolved = build_resolved_record(
                 {
-                    "memory_mode": (
-                        memory_mode,
-                        plan.requested_mode,
-                        f"planned '{plan.offload_policy}' offload ({_video_plan_label(plan)}) from the "
-                        "family size table",
-                    ),
+                    "memory_mode": _memory_mode_resolved(memory_mode, plan, offload_policy),
                     "speed_mode": (
                         speed_mode,
                         effective_speed,
@@ -6742,12 +6758,19 @@ class VideoBackend:
         # cache_dir for the same reason as the token: load_components forwards extra kwargs through ComponentSpec.load
         # into each from_pretrained, and without it those ~145 GB of Hub-pinned components resolve against the
         # import-time HF_HUB_CACHE snapshot rather than Unsloth's live cache folder, which the user can move.
+        # Offline by repo id, load_components only warns and returns processor=None (diffusion_offline_source).
+        from .diffusion_offline_source import offline_component_sources
+
+        offline_sources = offline_component_sources(
+            pipe, local_files_only = local_files_only, cache_dir = hub_cache_dir()
+        )
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,
             cache_dir = hub_cache_dir(),
             local_files_only = local_files_only,
             **({"token": hf_token} if hf_token else {}),
+            **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
         )
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both copies are resident for the
         # whole decode. Pre-casting the decoder removes the pair without changing a single output value. The encoder
