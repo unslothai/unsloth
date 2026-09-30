@@ -365,6 +365,37 @@ def _header_without_unconstructible_fields(
     return header
 
 
+def _plain_tensor_names(raw: dict) -> Optional[list]:
+    """The header's tensor names when none needs torchao to rebuild, else None.
+
+    ``[]`` for a header with no ``tensor_names`` at all (nothing to rebuild). An unparseable entry
+    is None: the torchao path then reports it, rather than this guessing it is plain.
+    """
+    if "tensor_names" not in raw:
+        return []
+    try:
+        names = json.loads(raw["tensor_names"])
+        for name in names:
+            if json.loads(raw.get(name) or "{}").get("_type") != "Tensor":
+                return None
+    except Exception:  # noqa: BLE001
+        return None
+    return list(names)
+
+
+def _plain_state_dict(tensors: dict, names: list, *, path: str) -> dict:
+    """torchao's unflatten for an all-plain header, with the same leftover check as that path."""
+    if names:
+        listed = set(names)
+        leftover = sorted(k for k in tensors if k not in listed)
+        if leftover:
+            raise ValueError(
+                f"{path} has {len(leftover)} tensor(s) its header does not account for "
+                f"(e.g. {leftover[0]!r}); the checkpoint is incomplete or was edited"
+            )
+    return dict(tensors)
+
+
 def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
     """Read ``path`` into the SAME dict shape the pickle path returns.
 
@@ -385,17 +416,24 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
                 f"(no {UNSLOTH_FORMAT_KEY!r} in its header)"
             )
         metadata = json.loads(raw.get(UNSLOTH_METADATA_KEY) or "{}")
-        # torchao's writer records the reconstruction recipe in the header. Without it there are
-        # only plain tensors here, and the Windows ROCm install must not be asked for torchao just
-        # to copy them out of the file.
-        if "tensor_names" not in raw:
-            from safetensors.torch import load_file
-            return {
-                "format": str(fmt),
-                "state_dict": load_file(path, device = device),
-                "metadata": metadata,
-            }
         tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+
+    # Lifted out BEFORE unflatten: torchao would rsplit these on "." and fail, and they are plain
+    # tensors that never needed it. Keyed off the prefix rather than the header list, so a file
+    # written by a build that recorded one and not the other still reads; the list is the order.
+    roots = {
+        key[len(UNSLOTH_ROOT_PREFIX) :]: tensors.pop(key)
+        for key in [k for k in tensors if k.startswith(UNSLOTH_ROOT_PREFIX)]
+    }
+
+    plain_names = _plain_tensor_names(raw)
+    if plain_names is not None:
+        # Every published text encoder is this shape: torchao's writer still emits ``tensor_names``,
+        # but each entry is ``{"_type": "Tensor"}``, which its unflatten passes through untouched. A
+        # torch without ``torch.distributed`` (Windows ROCm) cannot import torchao at all (#11638).
+        state_dict = _plain_state_dict(tensors, plain_names, path = path)
+        state_dict.update(roots)
+        return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 
     helpers = _torchao_helpers()
     if helpers is None:
@@ -406,14 +444,6 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
         )
 
     _, unflatten = helpers
-
-    # Lifted out BEFORE unflatten: torchao would rsplit these on "." and fail, and they are plain
-    # tensors that never needed it. Keyed off the prefix rather than the header list, so a file
-    # written by a build that recorded one and not the other still reads; the list is the order.
-    roots = {
-        key[len(UNSLOTH_ROOT_PREFIX) :]: tensors.pop(key)
-        for key in [k for k in tensors if k.startswith(UNSLOTH_ROOT_PREFIX)]
-    }
 
     # A newer torchao can record a field an older one's constructor does not take, which is how a
     # published int8 checkpoint stopped loading. Dropped here when it is inert; see the helper.

@@ -452,6 +452,86 @@ def test_a_plain_safetensors_prequant_loads_without_torchao(tmp_path, monkeypatc
         assert torch.equal(loaded["state_dict"][key], value)
 
 
+def _hosted_te_header(names: list) -> dict:
+    """The header shape of unsloth/Qwen-Image-2.1-FP8's text encoder: torchao's writer keeps
+    ``tensor_names`` even when every entry is a plain ``Tensor``."""
+    header = {name: json.dumps({"_type": "Tensor"}) for name in names}
+    header["tensor_names"] = json.dumps(names)
+    header[ps.UNSLOTH_FORMAT_KEY] = "unsloth_prequant_text_encoder_state_dict_v1"
+    header[ps.UNSLOTH_METADATA_KEY] = json.dumps({"scheme": "fp8", "te_class": "X"})
+    return header
+
+
+def test_the_hosted_te_header_shape_loads_without_torchao(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+
+    state = {
+        "model.layers.0.mlp.down_proj.weight": torch.ones(2, 2).to(torch.float8_e4m3fn),
+        "model.layers.0.input_layernorm.weight": torch.ones(2, dtype = torch.bfloat16),
+    }
+    path = str(tmp_path / "Qwen-Image-2.1-text_encoder-FP8.safetensors")
+    safetensors_torch.save_file(state, path, metadata = _hosted_te_header(sorted(state)))
+
+    loaded = ps.load_prequant_safetensors(path)
+    assert loaded["metadata"]["te_class"] == "X"
+    assert set(loaded["state_dict"]) == set(state)
+    for key, value in state.items():
+        assert loaded["state_dict"][key].dtype == value.dtype
+        assert torch.equal(loaded["state_dict"][key].float(), value.float())
+
+    # A tensor the header never lists is still refused, as on the torchao path.
+    extra = dict(state, **{"model.stray.weight": torch.zeros(2)})
+    stray = str(tmp_path / "stray.safetensors")
+    safetensors_torch.save_file(extra, stray, metadata = _hosted_te_header(sorted(state)))
+    with pytest.raises(ValueError, match = "does not account for"):
+        ps.load_prequant_safetensors(stray)
+
+
+def test_the_plain_path_matches_torchao_on_a_writer_built_file(tmp_path, monkeypatch):
+    """Built by our own writer (the builder that published the artifact), read with and without
+    torchao: same keys, dtypes and values, root-level tensors included."""
+    _real_libs()
+    import torch
+
+    state = {
+        "enc.layer.weight": torch.ones(4, 4).to(torch.float8_e4m3fn),
+        "enc.layer.bias": torch.zeros(4, dtype = torch.bfloat16),
+        "pad_token": torch.arange(3.0),
+    }
+    path = str(tmp_path / "te.safetensors")
+    ps.save_prequant_safetensors(path, fmt = "fp8", state_dict = state, metadata = {"scheme": "fp8"})
+
+    with_torchao = ps.load_prequant_safetensors(path)["state_dict"]
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+    without = ps.load_prequant_safetensors(path)["state_dict"]
+    assert set(without) == set(with_torchao) == set(state)
+    for key in state:
+        assert without[key].dtype == with_torchao[key].dtype
+        assert torch.equal(without[key].float(), with_torchao[key].float())
+
+
+def test_a_torchao_subclass_checkpoint_still_needs_torchao(tmp_path, monkeypatch):
+    """Only an all-plain header skips torchao; a quantized subclass entry keeps the requirement."""
+    torch = pytest.importorskip("torch")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+
+    header = _hosted_te_header(["enc.layer.weight"])
+    header["enc.layer.weight"] = json.dumps(
+        {"_type": "Float8Tensor", "_data": {}, "_tensor_data_names": ["qdata", "scale"]}
+    )
+    path = str(tmp_path / "dit.safetensors")
+    safetensors_torch.save_file(
+        {"enc.layer._weight_qdata": torch.ones(2, 2), "enc.layer._weight_scale": torch.ones(2)},
+        path,
+        metadata = header,
+    )
+    with pytest.raises(RuntimeError, match = "torchao"):
+        ps.load_prequant_safetensors(path)
+
+
 # ── root-level plain tensors ─────────────────────────────────────────────────
 
 
