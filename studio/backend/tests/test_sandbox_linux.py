@@ -205,7 +205,7 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     (etc / "java-21-openjdk" / "jvm-amd64.cfg").write_text("", encoding = "utf-8")
     outside = tmp_path / "outside"
     outside.mkdir()
-    secrets.append(outside / "id_rsa")
+    secrets.append(outside / "private-key")
     # A non-JDK tree the glob also matches.
     service = etc / "java-service"
     (service / "security").mkdir(parents = True)
@@ -216,10 +216,10 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     linked = etc / "java-8-openjdk"
     linked.mkdir()
     (linked / "security").symlink_to(outside)
-    (linked / "net.properties").symlink_to(outside / "id_rsa")
+    (linked / "net.properties").symlink_to(outside / "private-key")
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "security").mkdir(parents = True)
-    secrets.append(elsewhere / "security" / "id_ed25519")
+    secrets.append(elsewhere / "security" / "credential")
     secrets[-1].write_text("SECRET", encoding = "utf-8")
     linked_top = etc / "java-17-openjdk"
     linked_top.symlink_to(elsewhere)
