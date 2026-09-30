@@ -233,7 +233,7 @@ function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: 
 function usePdfWorker(enabled: boolean): InstanceType<typeof pdfjs.PDFWorker> | null {
   const [worker, setWorker] = useState<InstanceType<typeof pdfjs.PDFWorker> | null>(null);
   useEffect(() => {
-    // Wait for the parse slot so queued thumbnails don't each start a worker.
+    // Queued thumbnails and failed loads hold no worker.
     if (!enabled) return;
     const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
     const pdfWorker = pdfjs.PDFWorker.create({ port });
@@ -270,7 +270,7 @@ export default function PdfView({
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
   const slot = useParseSlot(firstPageOnly, file);
-  const worker = usePdfWorker(slot.ready);
+  const worker = usePdfWorker(slot.ready && failed !== file);
   const options = useMemo(() => (worker ? { ...PDF_OPTIONS, worker } : null), [worker]);
 
   if (failed === file) {
