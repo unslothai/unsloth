@@ -729,11 +729,20 @@ def _cudnn_runs_head_dim(target: Any, head_dim: int) -> Optional[bool]:
     return _CUDNN_HEAD_DIM_CACHE.setdefault(key, bool(ran))
 
 
-def _cudnn_serves_pipe(pipe: Any, target: Any, logger: Any = None) -> bool:
+def _cudnn_serves_pipe(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+) -> bool:
     """False only when cuDNN attention demonstrably has no kernel for one of the DiTs' head dims.
 
     Kill switch: ``UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE=0`` pins cuDNN without asking, as before."""
-    if (os.environ.get(CUDNN_HEAD_DIM_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+    if (os.environ.get(CUDNN_HEAD_DIM_PROBE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return True
     missing = sorted(d for d in _dit_head_dims(pipe) if _cudnn_runs_head_dim(target, d) is False)
     if missing and logger is not None:
@@ -781,7 +790,11 @@ def apply_attention_backend(
         _ensure_attention_backend_installed(backend, logger)
         if backend == "sage" and target is not None and _sage_kernel_runs(target, logger) is False:
             backend = None
-        if backend == "_native_cudnn" and target is not None and not _cudnn_serves_pipe(pipe, target, logger):
+        if (
+            backend == "_native_cudnn"
+            and target is not None
+            and not _cudnn_serves_pipe(pipe, target, logger)
+        ):
             backend = None
     if backend is not None:
         engaged = False

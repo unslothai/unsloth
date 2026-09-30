@@ -424,7 +424,12 @@ def test_regional_compile_of_a_dense_h3_arms_the_unbacked_temb(monkeypatch):
 class _Q21Block(torch.nn.Module):
     """The shape of diffusers' QwenImage21 prefill: ``cache_write_slice is not None`` guards the prefix KV write."""
 
-    def forward(self, hidden_states, kv_cache_mode = None, cache_write_slice = None):
+    def forward(
+        self,
+        hidden_states,
+        kv_cache_mode = None,
+        cache_write_slice = None,
+    ):
         if kv_cache_mode == "extract" and cache_write_slice is not None:
             return hidden_states[:, cache_write_slice].clone() * 2
         return hidden_states * 3
@@ -492,8 +497,11 @@ def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
     active = dt.install_slice_identity_fix()
     try:
         # Only a torch whose stock identity test reads the slice's bounds (2.13+) is patched.
-        assert active == (stock is None and callable(getattr(SliceVariable, "get_real_python_backed_value", None))
-                          and dt._SLICE_STATE.get("original") is not None)
+        assert active == (
+            stock is None
+            and callable(getattr(SliceVariable, "get_real_python_backed_value", None))
+            and dt._SLICE_STATE.get("original") is not None
+        )
     finally:
         dt.uninstall_slice_identity_fix()
     assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock

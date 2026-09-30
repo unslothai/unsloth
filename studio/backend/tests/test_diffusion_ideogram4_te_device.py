@@ -47,7 +47,9 @@ def _load_with_stubs(monkeypatch):
     fake_diffusers = types.SimpleNamespace(
         Ideogram4Pipeline = _Pipe,
         AutoencoderKLFlux2 = types.SimpleNamespace(from_pretrained = lambda *a, **k: "vae"),
-        FlowMatchEulerDiscreteScheduler = types.SimpleNamespace(from_pretrained = lambda *a, **k: "sched"),
+        FlowMatchEulerDiscreteScheduler = types.SimpleNamespace(
+            from_pretrained = lambda *a, **k: "sched"
+        ),
     )
     monkeypatch.setitem(__import__("sys").modules, "diffusers", fake_diffusers)
     return ide.load_ideogram4_pipeline("unsloth/ideogram-4-fp8", torch.bfloat16)
