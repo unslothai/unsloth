@@ -128,6 +128,7 @@ class Int4PackedLinear(nn.Linear):
                 self.__dict__.get("_int4_dtype") or torch.bfloat16,
             )
             qs.layout = self.__dict__.get("_int4_layout")
+            qs.training = self.training
             self.__dict__["_int4_quant_state"] = qs
             packed.quant_state = qs
         elif getattr(packed, "quant_state", None) is not qs:
@@ -152,8 +153,20 @@ class Int4PackedLinear(nn.Linear):
         from ..kernels.int4_packed import int4_matmul
 
         qs = self.quant_state
-        out = int4_matmul(x.to(qs.dtype), self._parameters["weight_packed"], qs)
+        # Train mode (incl. GC's no-grad first pass): exact dequant + matmul, same math as the recompute.
+        out = int4_matmul(
+            x.to(qs.dtype), self._parameters["weight_packed"], qs, fast = not self.training
+        )
         return out if bias is None else out + bias.to(out.dtype)
+
+    def train(self, mode = True):
+        qs = self.__dict__.get("_int4_quant_state")
+        if qs is not None:
+            qs.training = bool(mode)
+            if mode:
+                # Free the fused kernel's per-layer scale cache (1/8 of the packed weight); training never uses it.
+                qs._fast = None
+        return super().train(mode)
 
     def dequantize_weight(self, dtype = None):
         from ..kernels.int4_packed import int4_dequantize

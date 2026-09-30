@@ -2094,13 +2094,6 @@ def get_chat_template(
     if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
 
-    # The spliced ShareGPT values land inside Jinja literals, so escape them.
-    new_chat_template = chat_template\
-        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
-        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
-        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
-        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
-
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper: that import path pulls Torch/GPU-specific
         # modules in before MLX training.
@@ -2112,14 +2105,22 @@ def get_chat_template(
 
     # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
+        role, content, user, assistant = (
+            "'" + _escape_jinja_literal(mapping[key]) + "'"
+            for key in ("role", "content", "user", "assistant")
+        )
         chat_template = \
-            "{% if 'role' in messages[0] %}" + \
-            chat_template + \
-            "{% else %}" + \
-            new_chat_template + \
-            "{% endif %}"
-    else:
-        chat_template = new_chat_template
+            "{%- if 'role' not in messages[0] -%}" + \
+            "{%- set sharegpt = namespace(messages = []) -%}" + \
+            "{%- for message in messages -%}" + \
+            "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
+            ".get(message[" + role + "], message[" + role + "]) -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + " + \
+            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
+            "{%- endfor -%}" + \
+            "{%- set messages = sharegpt.messages -%}" + \
+            "{%- endif %}" + \
+            chat_template
 
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
