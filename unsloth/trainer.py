@@ -1430,6 +1430,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
+        # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
+        if is_context_parallel and getattr(config_arg, "eval_packing", None):
+            setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
             reason = "custom data collator"
