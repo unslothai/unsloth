@@ -700,21 +700,51 @@ def test_victims_that_cannot_make_room_are_left_loaded(backends):
 
 
 def test_a_routed_request_holds_its_slot_until_it_ends(backends):
+    _, extra = backends
+    ended = asyncio.Event()
+    seen = {}
+
+    async def request():
+        await inf._route_to_extra_slot("org/B-GGUF")
+        await ended.wait()
+
+    async def main():
+        task = asyncio.create_task(request())
+        await asyncio.sleep(0)
+        seen["refs"] = extra.refs
+        seen["victims"] = inf._eviction_victims(None, 5000)
+        seen["claimed"] = inf._claim_victim(extra)
+        ended.set()
+        await task
+
+    asyncio.run(main())
+    assert seen == {"refs": 1, "victims": [], "claimed": False}
+    assert extra.refs == 0 and inf._eviction_victims(None, 5000) == [extra]
+
+
+def test_a_chat_run_holds_its_slot_after_its_post_has_answered(backends):
+    # A durable chat run's task starts inside POST /chat-runs, which answers 202 before the run routes
+    # and preprocesses; the slot must stay held through that window, not end with the POST.
     import core.inference.llama_keepwarm as keepwarm
 
     _, extra = backends
-    scope = {}
+    seen = {}
 
-    async def request():
-        keepwarm.set_current_response_scope(scope)
+    async def run():
+        await asyncio.sleep(0)
         await inf._route_to_extra_slot("org/B-GGUF")
+        await asyncio.sleep(0)
+        seen["refs"] = extra.refs
+        seen["victims"] = inf._eviction_victims(None, 5000)
 
-    asyncio.run(request())
-    assert extra.refs == 1
-    assert inf._eviction_victims(None, 5000) == [] and not inf._claim_victim(extra)
-    keepwarm._run_end_callbacks(scope)
-    assert extra.refs == 0 and inf._eviction_victims(None, 5000) == [extra]
-    asyncio.run(request())
+    async def post_chat_run():
+        keepwarm.set_current_response_scope({})
+        task = asyncio.create_task(run())
+        keepwarm.set_current_response_scope(None)
+        await task
+
+    asyncio.run(post_chat_run())
+    assert seen == {"refs": 1, "victims": []}
     assert extra.refs == 0
 
 

@@ -8484,15 +8484,18 @@ async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]
 
 
 def _reserve_slot(slot: _ExtraSlot) -> bool:
-    """Hold ``slot`` against eviction until the current request ends; False once it is gone."""
-    from core.inference.llama_keepwarm import on_request_end
-
+    """Hold ``slot`` against eviction until the task that routed ends; False once it is gone.
+    The task, not the request: a durable chat run inherits the POST that queued it, which has
+    already answered 202 by the time the run routes."""
     with _slot_lock:
         if slot not in _extra_slots:
             return False
         slot.refs += 1
-    if not on_request_end(lambda: _release_slot(slot)):
+    task = asyncio.current_task()
+    if task is None:
         _release_slot(slot)
+    else:
+        task.add_done_callback(lambda _task: _release_slot(slot))
     return True
 
 
