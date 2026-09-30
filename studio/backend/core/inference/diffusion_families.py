@@ -1407,9 +1407,13 @@ def _safe_relative_parts(text: str) -> Optional[tuple[str, ...]]:
     return relative.parts
 
 
-def _local_weights_are_complete(component: Path) -> bool:
+def _local_weights_are_complete(component: Path, library_name: str) -> bool:
     # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
     for stems, ext in _LOCAL_PIPELINE_WEIGHT_FORMATS:
+        # Transformers never reads diffusion_pytorch_model*, so a stale index of that name (LTX-2's
+        # text_encoder ships both shard sets) cannot veto its own weights.
+        if library_name == "transformers":
+            stems = tuple(s for s in stems if s != "diffusion_pytorch_model")
         indexes = [component / f"{s}.{ext}.index.json" for s in stems]
         index = next((path for path in indexes if path.exists()), None)
         if index is not None:
@@ -1434,7 +1438,11 @@ def _local_metadata_component_is_complete(component: Path, class_name: str) -> O
     for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
         if not any(token in identity for token in tokens):
             continue
-        if not any(_json_dict(component / name) is not None for name in config_names):
+        # Configs can exceed the manifest cap: LTX-2's Gemma3 tokenizer_config.json is 1.1 MB.
+        if not any(
+            _json_dict(component / name, _MAX_PIPELINE_WEIGHT_INDEX_BYTES) is not None
+            for name in config_names
+        ):
             return False
         if tokens[0] not in ("tokenizer", "processor") or "byt5tokenizer" in identity:
             return True
@@ -1455,7 +1463,7 @@ def _local_pipeline_component_is_complete(
     if metadata_complete is not None:
         return metadata_complete
     return _json_dict(component / "config.json") is not None and (
-        config_only_model_components or _local_weights_are_complete(component)
+        config_only_model_components or _local_weights_are_complete(component, library_name)
     )
 
 

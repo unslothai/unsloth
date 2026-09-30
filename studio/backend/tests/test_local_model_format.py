@@ -686,6 +686,37 @@ def test_local_pipeline_completeness_ignores_an_unused_bin_index(tmp_path):
     assert _complete(tmp_path) is False
 
 
+def test_local_pipeline_completeness_accepts_a_tokenizer_config_over_the_manifest_cap(tmp_path):
+    # LTX-2's Gemma3 tokenizer_config.json is 1,155,387 bytes.
+    _pipeline_manifest(tmp_path, tokenizer = ["transformers", "GemmaTokenizerFast"])
+    _write(
+        tmp_path / "tokenizer" / "tokenizer_config.json",
+        json.dumps({"added_tokens_decoder": "x" * (2 << 20)}),
+    )
+    _touch(tmp_path / "tokenizer" / "tokenizer.json")
+    assert _complete(tmp_path) is True
+
+
+def test_local_pipeline_completeness_ignores_a_diffusers_index_on_a_transformers_encoder(tmp_path):
+    # LTX-2's text_encoder ships both shard sets; transformers reads only model*.
+    _pipeline_manifest(tmp_path, text_encoder = ["transformers", "Gemma3ForConditionalGeneration"])
+    encoder = tmp_path / "text_encoder"
+    _write(encoder / "config.json")
+    _touch(encoder / "model-00001-of-00001.safetensors")
+    _write(
+        encoder / "model.safetensors.index.json",
+        json.dumps({"weight_map": {"a": "model-00001-of-00001.safetensors"}}),
+    )
+    _write(
+        encoder / "diffusion_pytorch_model.safetensors.index.json",
+        json.dumps({"weight_map": {"a": "diffusion_pytorch_model-00001-of-00001.safetensors"}}),
+    )
+    assert _complete(tmp_path) is True
+
+    (encoder / "model-00001-of-00001.safetensors").unlink()
+    assert _complete(tmp_path) is False
+
+
 def test_local_pipeline_completeness_ignores_list_valued_pipeline_config(tmp_path):
     _pipeline_manifest(tmp_path, text_encoder_select_layers = [2, 5, 8, 11])
     assert _complete(tmp_path) is True
