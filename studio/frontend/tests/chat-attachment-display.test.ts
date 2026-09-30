@@ -35,6 +35,7 @@ test("each file kind is read off the name, with a decisive MIME type first", () 
     ["Untitled document.docx", "", "word"],
     ["notes.odt", "", "word"],
     ["Draft", "application/vnd.google-apps.document", "word"],
+    ["Template", "application/vnd.oasis.opendocument.text-template", "word"],
     ["book.epub", "", "document"],
     ["results.csv", "text/csv", "spreadsheet"],
     ["deck.pptx", "", "presentation"],
