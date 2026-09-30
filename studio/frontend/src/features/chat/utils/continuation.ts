@@ -284,17 +284,6 @@ export function readContinuationSource(
   return { partial, reasoning: ordered ? thoughts.join("\n") : "" };
 }
 
-/** Reasoning continuation is supported only for local GGUF models (llama.cpp b9200+). */
-export function resumesThought({
-  isExternal,
-  isGguf,
-}: {
-  isExternal: boolean;
-  isGguf: boolean | undefined;
-}): boolean {
-  return !isExternal && isGguf === true;
-}
-
 /** Seed the adapter buffer, leaving <think> open when there is no answer yet. */
 export function continuationSeed(partial: string, thought: string): string {
   if (!thought) {
@@ -373,8 +362,8 @@ export type ContinuationRequest = {
   /** The partial answer to resume, exactly as it was rendered. Empty when the turn stopped
    *  mid-thought. */
   partial: string;
-  /** The thought before the partial, from `readContinuationSource`. Carried only where
-   *  `resumesThought` holds. */
+  /** The thought before the partial, from `readContinuationSource`. Carried only to
+   *  llama-server. */
   reasoning?: string;
   /** How long that thought took, in seconds, so the resumed turn keeps its timer. */
   reasoningDuration?: number;

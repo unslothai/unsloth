@@ -11,7 +11,6 @@ import {
   isContinuableContent,
   readContinuationRequest,
   readContinuationSource,
-  resumesThought,
 } from "../src/features/chat/utils/continuation.ts";
 import { parseAssistantContent } from "../src/features/chat/utils/parse-assistant-content.ts";
 import { createReasoningDurationTracker } from "../src/features/chat/utils/reasoning-duration.ts";
@@ -60,13 +59,6 @@ test("a thought-only turn is continuable only where a thought resumes", () => {
     }),
     false,
   );
-});
-
-test("only a local GGUF resumes a thought", () => {
-  assert.equal(resumesThought({ isExternal: false, isGguf: true }), true);
-  assert.equal(resumesThought({ isExternal: false, isGguf: false }), false);
-  assert.equal(resumesThought({ isExternal: false, isGguf: undefined }), false);
-  assert.equal(resumesThought({ isExternal: true, isGguf: true }), false);
 });
 
 test("a thought-only request is read, and its duration only travels with a thought", () => {

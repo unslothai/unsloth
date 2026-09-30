@@ -151,6 +151,7 @@ import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
+import { isServedByLlamaCpp } from "@/features/model-picker";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -175,7 +176,6 @@ import {
   readContinuationSource,
   readIncompleteInfo,
   readTextThoughtSignature,
-  resumesThought,
   claimAutoContinue,
   forgetAutoContinue,
   recordAutoContinue,
@@ -7393,11 +7393,13 @@ function useContinuation() {
   const researchActive = useThreadResearchActive();
   const status = useAuiState(({ message }) => message.status);
   const metadata = useAuiState(({ message }) => message.metadata);
-  // Only local GGUF models support reasoning continuation.
+  // Only llama-server can resume a thought.
   const thoughtResumable = useChatRuntimeStore((s) =>
-    resumesThought({
-      isExternal: parseExternalModelId(s.params.checkpoint) !== null,
-      isGguf: s.models.find((m) => m.id === s.params.checkpoint)?.isGguf,
+    isServedByLlamaCpp({
+      loadedIsGguf: s.loadedIsGguf,
+      activeGgufVariant: s.activeGgufVariant,
+      activeNativePathToken: s.activeNativePathToken,
+      checkpoint: s.params.checkpoint,
     }),
   );
   const partial = useAuiState(

@@ -312,7 +312,6 @@ import {
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
-  resumesThought,
 } from "../utils/continuation";
 import {
   claimLiveGenerationRun,
@@ -5024,14 +5023,14 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      // Carry reasoning only to backends that can resume it.
+      // Carry reasoning only to llama-server, the one backend that can resume it.
       const resumedThought =
         continuation &&
-        resumesThought({
-          isExternal: isExternalRequest,
-          isGguf: runtime.models.find(
-            (model) => model.id === runtime.params.checkpoint,
-          )?.isGguf,
+        isServedByLlamaCpp({
+          loadedIsGguf: runtime.loadedIsGguf,
+          activeGgufVariant: runtime.activeGgufVariant,
+          activeNativePathToken: runtime.activeNativePathToken,
+          checkpoint: params.checkpoint,
         })
           ? (continuation.reasoning ?? "")
           : "";
