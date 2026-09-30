@@ -229,9 +229,9 @@ def test_auto_install_rejects_unpinned_versions(torch_version: str, message: str
         _run_auto_install(torch_version, "13.0", capsys)
 
 
-@pytest.mark.parametrize("torch_version", ["2.13.0rc1", "2.13.0a0+git1234", "2.14.0rc2+cu130"])
-def test_auto_install_rejects_prerelease_torch213_plus(torch_version: str, capsys):
-    with pytest.raises(RuntimeError, match = "pre-release"):
+@pytest.mark.parametrize("torch_version", ["2.13.0rc1", "2.13.0a0+git1234", "2.14.0rc2+cu130", "2.13.0+git1234", "2.14.0+cu130.custom"])
+def test_auto_install_rejects_nonstable_torch213_plus(torch_version: str, capsys):
+    with pytest.raises(RuntimeError, match = "pre-release or custom build"):
         _run_auto_install(torch_version, "13.0", capsys)
 
 

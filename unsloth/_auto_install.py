@@ -39,8 +39,8 @@ elif v  < V('2.12.0'): raise RuntimeError(f"Torch = {v} not supported!")
 elif v  < V('2.12.1'): x = 'cu{}{}-torch2120'
 elif v  < V('2.12.2'): x = 'cu{}{}-torch2121'
 elif v  < V('2.13.0'): raise RuntimeError(f"Torch = {v} not supported!")
-# torch2130 / torch2140 pin the stable release, so a pre-release or source build would be replaced.
-elif re.match(r"[0-9\.]{3,}(?:\+|$)", torch.__version__) is None: raise RuntimeError(f"Torch = {torch.__version__} is a pre-release; install a stable torch!")
+# torch2130 / torch2140 pin the stable release, so a pre-release, source or custom build would be replaced.
+elif re.fullmatch(r"[0-9\.]{3,}(?:\+cu[0-9]+)?", torch.__version__) is None: raise RuntimeError(f"Torch = {torch.__version__} is a pre-release or custom build; install a stable torch!")
 elif v  < V('2.13.1'): x = 'cu{}{}-torch2130'
 elif v  < V('2.14.0'): raise RuntimeError(f"Torch = {v} not supported!")
 elif v  < V('2.14.1'): x = 'cu{}{}-torch2140'
