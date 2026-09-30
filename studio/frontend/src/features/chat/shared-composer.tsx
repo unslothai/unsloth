@@ -24,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -88,7 +89,6 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   Columns2Icon,
-  GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -121,10 +121,17 @@ import {
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
-import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
+import {
+  listPromptEntries,
+  listPromptLists,
+  type PromptEntry,
+  type PromptListEntry,
+} from "./api/prompts-api";
+import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
@@ -153,9 +160,16 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
+  getInferenceStatus,
   loadModel,
+  unloadModel,
   validateModel,
 } from "./api/chat-api";
+import {
+  CompareRunOwnership,
+  isCompareCancellation,
+  throwIfCompareCancelled,
+} from "./compare-run-ownership";
 import {
   loadedContextForParams,
   resolveExplicitCtxPin,
@@ -563,11 +577,29 @@ function isPortaledDrop(event: ReactDragEvent): boolean {
   return !target?.closest?.(".chat-composer-surface");
 }
 
+const LOAD_SETTLE_POLL_MS = 1000;
+const LOAD_SETTLE_TIMEOUT_MS = 15 * 60_000;
+
+/** Waits for every load, not the target by name: the backend tracks a local GGUF under a path-free id. */
+async function waitForBackendLoadToSettle(): Promise<void> {
+  const deadline = Date.now() + LOAD_SETTLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const status = await getInferenceStatus();
+      if (status.loading.length === 0) return;
+    } catch {
+      // Keep polling: an unreachable backend has not proven the load ended.
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOAD_SETTLE_POLL_MS));
+  }
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
   model2,
   onExitCompare,
+  onComparingChange,
   model1ThreadId,
   model2ThreadId,
   sendUnavailableReason,
@@ -577,6 +609,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  onComparingChange?: (comparing: boolean) => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
   sendUnavailableReason?: string;
@@ -616,6 +649,10 @@ export function SharedComposer({
     },
     [],
   );
+  // Audio files still being read into base64, which pendingAudio cannot see yet.
+  const audioDecodingRef = useRef(0);
+  // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
+  const attachingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -627,15 +664,30 @@ export function SharedComposer({
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Clear, don't keep: a stale list row would run its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
+    }
+    try {
+      const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
+      setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
+    } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -647,6 +699,9 @@ export function SharedComposer({
   const prevRunningRef = useRef(false);
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
+  const compareRunsRef = useRef(
+    new CompareRunOwnership<{ modelPath: string; requestId: string }>(),
+  );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingFixPrompt = useChatArtifactsStore(
@@ -1051,7 +1106,7 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback(
+  const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
       if (!input?.length) return;
       // Compare takes audio, so an audio-only 3GP must not be read off its
@@ -1071,10 +1126,18 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
-            setPendingAudioStore(base64, file.name);
-          });
+          audioDecodingRef.current += 1;
+          fileToBase64(file)
+            .then((base64) => {
+              setPendingAudio({ name: file.name, base64, contentType: file.type });
+              setPendingAudioStore(base64, file.name);
+            })
+            .catch(() => {
+              toast.error("Could not read that audio file.");
+            })
+            .finally(() => {
+              audioDecodingRef.current -= 1;
+            });
           continue;
         }
         // video_base64 targets the single loaded GGUF, so at most one side of a compare could answer. Say
@@ -1121,30 +1184,46 @@ export function SharedComposer({
     [setPendingAudioStore, attachUnavailableReason],
   );
 
+  const trackAttaching = useCallback(async (work: () => Promise<void>) => {
+    attachingRef.current += 1;
+    try {
+      await work();
+    } finally {
+      attachingRef.current -= 1;
+    }
+  }, []);
+
+  const addFiles = useCallback(
+    (input: FileList | readonly File[] | null) =>
+      trackAttaching(() => addFilesUntracked(input)),
+    [trackAttaching, addFilesUntracked],
+  );
+
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
         event,
-        async (pasted) => {
-          // Classify before the check, so a pasted audio-only 3GP is not read
-          // as unsupported on its extension alone.
-          const files = await classifiedAttachmentFiles(pasted);
-          // Let addFiles report audio size errors.
-          const supported = files.some(
-            (file) =>
-              isAudioAttachmentFile(file) ||
-              (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
-          );
-          if (!supported) throw new Error("Unsupported compare attachment");
-          await addFiles(files);
-        },
+        (pasted) =>
+          trackAttaching(async () => {
+            // Classify before the check, so a pasted audio-only 3GP is not read
+            // as unsupported on its extension alone.
+            const files = await classifiedAttachmentFiles(pasted);
+            // Let addFiles report audio size errors.
+            const supported = files.some(
+              (file) =>
+                isAudioAttachmentFile(file) ||
+                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+            );
+            if (!supported) throw new Error("Unsupported compare attachment");
+            await addFilesUntracked(files);
+          }),
         () =>
           toast.error("Could not paste files.", {
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
     },
-    [addFiles],
+    [trackAttaching, addFilesUntracked],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1381,6 +1460,8 @@ export function SharedComposer({
       }
       audioUpload.cancel();
       clearSubmittedDraft();
+      const run = compareRunsRef.current.begin();
+      const compareSignal = run.controller.signal;
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
@@ -1401,6 +1482,7 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        throwIfCompareCancelled(compareSignal);
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // This pane's effective config: an explicit selection config, else the remembered store config
@@ -1620,7 +1702,8 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
-        });
+        }, { signal: compareSignal });
+        throwIfCompareCancelled(compareSignal);
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -1666,9 +1749,12 @@ export function SharedComposer({
             );
           }
         }
+        throwIfCompareCancelled(compareSignal);
         applyCompareStopDecision();
+        const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
           model_path: sel.id,
+          load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
@@ -1714,7 +1800,17 @@ export function SharedComposer({
                 ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
+        }, {
+          signal: compareSignal,
+          onRequestStart: () => {
+            compareRunsRef.current.setLoadingModel(run, {
+              modelPath: sel.id,
+              requestId: loadRequestId,
+            });
+          },
         });
+        compareRunsRef.current.setLoadingModel(run, null);
+        throwIfCompareCancelled(compareSignal);
         // Keep a compare pane's per-model speculative choice load-local: persist the global preference
         // only when it came from global settings.
         if (ownConfig.speculativeType == null) {
@@ -1918,6 +2014,7 @@ export function SharedComposer({
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);
+      onComparingChange?.(true);
       try {
         if (handle1 && model1?.id) {
           toast("Loading Model 1…", {
@@ -1926,6 +2023,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const status1 = await ensureModelLoaded(model1);
+          throwIfCompareCancelled(compareSignal);
           releaseCompareModelLifecycle();
           toast("Generating with Model 1…", {
             id: toastId,
@@ -1935,6 +2033,7 @@ export function SharedComposer({
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         if (handle2 && model2?.id) {
@@ -1949,6 +2048,7 @@ export function SharedComposer({
             if (!currentStopDecision.proceed) {
               throw new Error("Second comparison model load cancelled.");
             }
+            throwIfCompareCancelled(compareSignal);
             compareStopDecision = currentStopDecision;
             toast("Loading Model 2…", {
               id: toastId,
@@ -1957,6 +2057,7 @@ export function SharedComposer({
             });
           }
           const status2 = await ensureModelLoaded(model2);
+          throwIfCompareCancelled(compareSignal);
           releaseCompareModelLifecycle();
           toast("Generating with Model 2…", {
             id: toastId,
@@ -1966,6 +2067,7 @@ export function SharedComposer({
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         compareStepSucceededRef.current = true;
@@ -1973,19 +2075,47 @@ export function SharedComposer({
       } catch (err) {
         compareStepSucceededRef.current = false;
         resetPromptQueue();
+        const cancelled = isCompareCancellation(err, compareSignal);
+        let cleanupError: unknown = null;
+        if (run.cleanup) {
+          cleanupError = await run.cleanup.then(
+            () => null,
+            (error: unknown) => error ?? new Error("Model unload failed"),
+          );
+          // The load keeps running when its cancel failed; resyncing before it settles would pin the
+          // outgoing model while the replacement becomes resident.
+          if (cleanupError) {
+            await waitForBackendLoadToSettle();
+          }
+          // A stopped load may have finished or evicted the previous model: adopt the backend's state.
+          await resyncInferenceStatusAfterServerModelChange();
+        }
         // The install already unloaded the previously active model; drop the checkpoint so the UI does
         // not keep pointing at it.
         if (upgradeUnloadedActive) {
           useChatRuntimeStore.getState().clearCheckpoint();
         }
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
+        if (cancelled && !cleanupError) {
+          toast.info("Compare stopped", { id: toastId, duration: 2000 });
+          return;
+        }
+        const failure = cancelled ? cleanupError : err;
+        toast.error(
+          cancelled
+            ? "Compare stopped, but the model load could not be cancelled"
+            : "Compare failed",
+          {
+            id: toastId,
+            description:
+              failure instanceof Error ? failure.message : "Unknown error",
+            duration: cancelled ? 5000 : 4000,
+          },
+        );
       } finally {
+        compareRunsRef.current.release(run);
         releaseCompareModelLifecycle();
         setComparing(false);
+        onComparingChange?.(false);
       }
     } else {
       const liveRuntime = useChatRuntimeStore.getState();
@@ -2035,6 +2165,18 @@ export function SharedComposer({
 
   function stop() {
     if (isDictating) stopDictation();
+    const run = compareRunsRef.current.cancelCurrent();
+    // Aborting the fetch frees only the browser; /unload is what stops the backend load.
+    if (run?.loadingModel && !run.cleanup) {
+      compareRunsRef.current.setCleanup(
+        run,
+        // Scoped to this attempt: never evicts a resident model or another tab's same-named load.
+        unloadModel({
+          model_path: run.loadingModel.modelPath,
+          cancel_load_request_id: run.loadingModel.requestId,
+        }),
+      );
+    }
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
     }
@@ -2139,6 +2281,75 @@ export function SharedComposer({
     { enabled: chatActive },
   );
 
+  const runPromptList = useCallback(
+    (items: string[]) => {
+      const filtered = items.filter((p) => p.trim());
+      if (!filtered.length) return;
+      // `running` lags the 200ms poll, so ask the handles directly like the poll does.
+      const liveRunning =
+        busy || Object.values(handlesRef.current).some((h) => h.isRunning());
+      if (liveRunning || isQueueRunningRef.current) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      // A compare send holds the loading lease while it prepares, before `comparing` is set.
+      if (useChatRuntimeStore.getState().modelLoading) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      if (isDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
+      // send() cancels an in-flight transcription, which would discard it.
+      if (audioUpload.busy) {
+        toast.error("Wait for the transcription to finish before running a list");
+        return;
+      }
+      // Only the first send would carry staged attachments; refuse rather than clear.
+      if (
+        pendingImagesRef.current.length > 0 ||
+        pendingAudioRef.current ||
+        audioDecodingRef.current > 0 ||
+        attachingRef.current > 0
+      ) {
+        toast.error("Remove the staged attachment before running a list", {
+          description: "Only the first prompt in the list would carry it.",
+        });
+        return;
+      }
+      const hasCompareHandles = Boolean(
+        handlesRef.current["model1"] || handlesRef.current["model2"],
+      );
+      const isGeneralizedCompare =
+        hasCompareHandles && Boolean(model1?.id && model2?.id);
+      if (hasCompareHandles && !isGeneralizedCompare) {
+        toast.error("Pick a model in each pane to compare", {
+          description:
+            "Use the model dropdown above each pane, then send your prompt.",
+        });
+        return;
+      }
+      setPromptStorageOpen(false);
+      queueRef.current = filtered;
+      queueIndexRef.current = 0;
+      isQueueRunningRef.current = true;
+      setIsQueueRunning(true);
+      setQueueProgress({ current: 1, total: filtered.length });
+      toast(`Prompt 1 / ${filtered.length}`, {
+        description:
+          filtered[0].length > 80 ? `${filtered[0].slice(0, 80)}…` : filtered[0],
+      });
+      setCurrentText(filtered[0]);
+      setTimeout(() => {
+        sendRef.current?.();
+      }, 100);
+    },
+    [busy, isDictating, audioUpload.busy, handlesRef, model1?.id, model2?.id, setCurrentText],
+  );
+
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
   // the "More" overflow submenu. Core items and "More" itself live outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
@@ -2188,7 +2399,7 @@ export function SharedComposer({
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => {
                 setCurrentText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
@@ -2197,7 +2408,15 @@ export function SharedComposer({
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
           ))}
-          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          {recentLists.map((l) => (
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
+              <span className="truncate">{l.name}</span>
+              <PromptCountBadge count={l.items.length} />
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 || recentLists.length > 0 ? (
+            <DropdownMenuSeparator />
+          ) : null}
           <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
             All saved prompts…
           </DropdownMenuItem>
@@ -2336,33 +2555,7 @@ export function SharedComposer({
           setCurrentText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
-        onRunList={(items) => {
-          const filtered = items.filter((p) => p.trim());
-          if (!filtered.length) return;
-          const hasCompareHandles = Boolean(
-            handlesRef.current["model1"] || handlesRef.current["model2"],
-          );
-          const isGeneralizedCompare =
-            hasCompareHandles && Boolean(model1?.id && model2?.id);
-          if (hasCompareHandles && !isGeneralizedCompare) {
-            toast.error("Pick a model in each pane to compare", {
-              description:
-                "Use the model dropdown above each pane, then send your prompt.",
-            });
-            return;
-          }
-          setPromptStorageOpen(false);
-          queueRef.current = filtered;
-          queueIndexRef.current = 0;
-          isQueueRunningRef.current = true;
-          setIsQueueRunning(true);
-          setQueueProgress({ current: 1, total: filtered.length });
-          toast(`Prompt 1 / ${filtered.length}`, {
-            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
-          });
-          setCurrentText(filtered[0]);
-          setTimeout(() => { sendRef.current?.(); }, 100);
-        }}
+        onRunList={runPromptList}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
@@ -2554,7 +2747,7 @@ export function SharedComposer({
                   }
                 }}
               >
-                <GlobeIcon />
+                <InternetGlyph />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
@@ -2673,7 +2866,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>

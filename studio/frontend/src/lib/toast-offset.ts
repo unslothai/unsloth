@@ -19,7 +19,7 @@ export function chatSettingsInsetMinColumn(uiSpaceScale = 1): number {
   );
 }
 
-const HEADER_ROUTES = new Set(["/chat", "/images", "/video"]);
+const HEADER_ROUTES = new Set(["/chat", "/images", "/video", "/audio"]);
 
 export type ToastOffset = {
   top: number;

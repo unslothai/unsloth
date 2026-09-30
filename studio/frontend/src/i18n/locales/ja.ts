@@ -144,6 +144,13 @@ export const ja = {
       close: "検索を閉じる",
       truncated: "このページは長すぎるため、全体を検索できません。",
     },
+    zoom: {
+      label: "ズーム",
+      zoomOut: "縮小",
+      zoomIn: "拡大",
+      reset: "リセット",
+      announce: "ズーム {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -204,6 +211,14 @@ export const ja = {
       help: "ヘルプ",
       logOut: "ログアウト",
       shutdown: "シャットダウン",
+    },
+    commandPalette: {
+      placeholder: "コマンドを入力または検索...",
+      noResults: "結果が見つかりません。",
+      navigation: "ナビゲーション",
+      actions: "アクション",
+      chat: "チャット",
+      searchChats: "チャットを検索...",
     },
     notFound: {
       title: "ページが見つかりません",
@@ -480,6 +495,10 @@ export const ja = {
         openKeyboardShortcuts: {
           label: "キーボードショートカット",
           description: "このショートカット一覧を開きます",
+        },
+        openCommandPalette: {
+          label: "コマンドパレット",
+          description: "コマンドパレットを開く",
         },
         searchChats: {
           label: "チャットを検索",

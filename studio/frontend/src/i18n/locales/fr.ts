@@ -145,6 +145,13 @@ export const fr = {
       close: "Fermer la recherche",
       truncated: "Cette page est trop longue pour être parcourue en entier.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Zoom arrière",
+      zoomIn: "Zoom avant",
+      reset: "Réinitialiser",
+      announce: "Zoom {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -205,6 +212,14 @@ export const fr = {
       help: "Aide",
       logOut: "Se déconnecter",
       shutdown: "Arrêter",
+    },
+    commandPalette: {
+      placeholder: "Saisissez une commande ou recherchez...",
+      noResults: "Aucun résultat trouvé.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Rechercher des chats...",
     },
     notFound: {
       title: "Page introuvable",
@@ -482,6 +497,10 @@ export const fr = {
         openKeyboardShortcuts: {
           label: "Raccourcis clavier",
           description: "Ouvrir cette liste de raccourcis",
+        },
+        openCommandPalette: {
+          label: "Palette de commandes",
+          description: "Ouvrir la palette de commandes",
         },
         searchChats: {
           label: "Rechercher dans les discussions",

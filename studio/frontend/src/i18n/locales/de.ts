@@ -145,6 +145,13 @@ export const de = {
       close: "Suche schließen",
       truncated: "Diese Seite ist zu lang, um vollständig durchsucht zu werden.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Verkleinern",
+      zoomIn: "Vergrößern",
+      reset: "Zurücksetzen",
+      announce: "Zoom {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -205,6 +212,14 @@ export const de = {
       help: "Hilfe",
       logOut: "Abmelden",
       shutdown: "Herunterfahren",
+    },
+    commandPalette: {
+      placeholder: "Befehl eingeben oder suchen...",
+      noResults: "Keine Ergebnisse gefunden.",
+      navigation: "Navigation",
+      actions: "Aktionen",
+      chat: "Chat",
+      searchChats: "Chats durchsuchen...",
     },
     notFound: {
       title: "Seite nicht gefunden",
@@ -482,6 +497,10 @@ export const de = {
         openKeyboardShortcuts: {
           label: "Tastenkürzel",
           description: "Diese Kürzelliste öffnen",
+        },
+        openCommandPalette: {
+          label: "Befehlspalette",
+          description: "Die Befehlspalette öffnen",
         },
         searchChats: {
           label: "Chats durchsuchen",
