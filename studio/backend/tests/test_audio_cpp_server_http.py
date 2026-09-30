@@ -18,7 +18,7 @@ from core.inference.audio_cpp_models import lookup
 
 FAKE_SERVER = textwrap.dedent(
     r"""
-    import cgi, io, json, sys, time, wave
+    import email, io, json, sys, time, wave
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     cfg = json.load(open(sys.argv[sys.argv.index("--config") + 1], encoding="utf-8"))
@@ -50,9 +50,11 @@ FAKE_SERVER = textwrap.dedent(
                     time.sleep(30)
                 return self.reply(200, wav(), "audio/wav")
             if self.path == "/v1/audio/transcriptions":
-                env = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers["Content-Type"], "CONTENT_LENGTH": str(len(body))}
-                form = cgi.FieldStorage(fp=io.BytesIO(body), environ=env)
-                fields = {k: (form[k].filename or form[k].value if k == "file" else form[k].value) for k in form.keys()}
+                msg = email.message_from_bytes(b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + body)
+                fields = {}
+                for part in msg.get_payload():
+                    name = part.get_param("name", header="content-disposition")
+                    fields[name] = part.get_filename() or part.get_payload(decode=True).decode()
                 return self.reply(200, json.dumps({"text": json.dumps(fields, sort_keys=True)}).encode())
             self.reply(404, b"{}")
 
@@ -80,14 +82,6 @@ def fake_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "model_runtime_problem", lambda model, binary = None: None)
     monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cpu")
     return binary
-
-
-@pytest.fixture(scope = "module")
-def cgi_available():
-    try:
-        import cgi  # noqa: F401
-    except ImportError:
-        pytest.skip("the fake server parses multipart with cgi, removed in Python 3.13")
 
 
 def test_ready_only_when_our_model_id_is_listed(fake_binary, tmp_path, monkeypatch):
@@ -143,9 +137,7 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
         server.stop()
 
 
-def test_transcription_multipart_carries_model_language_and_file(
-    fake_binary, tmp_path, cgi_available
-):
+def test_transcription_multipart_carries_model_language_and_file(fake_binary, tmp_path):
     from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar
 
     model = lookup("audiocpp-canary-180m-flash")
