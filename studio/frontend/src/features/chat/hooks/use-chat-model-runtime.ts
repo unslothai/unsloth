@@ -631,15 +631,21 @@ function publishLoadedModels(
   );
 }
 
+function stopQueuedRuns(decision: StopRunningChatsDecision, scoped: boolean): void {
+  if (scoped) {
+    requestPromptQueueStop(decision.promptQueueThreadIds);
+    return;
+  }
+  cancelPreStreamRunReservations(decision.preStreamRunTokens);
+  requestLocalPromptQueueStop(decision.promptQueueThreadIds);
+}
+
 function unloadKeptModel(keptId: string): Promise<boolean> {
   return confirmStopRunningChatsIfNeeded("Unloading this model", "unload", keptId).then(
     async (decision) => {
       if (!decision.proceed) return false;
-      requestPromptQueueStop(decision.promptQueueThreadIds);
-      await unloadModel({
-        model_path: keptId,
-        force_cancel_active: decision.forceCancelActive,
-      });
+      stopQueuedRuns(decision, true);
+      await unloadModel({ model_path: keptId, force_cancel_active: decision.forceCancelActive });
       return true;
     },
   );
@@ -1058,7 +1064,10 @@ export function useChatModelRuntime() {
           // /unload then leaves the resident model untouched, so derive the UI
           // checkpoint from the backend rather than clearing it optimistically.
           if (!preserveCheckpoint) {
-            if (!useChatRuntimeStore.getState().keepModelsLoaded) clearCheckpoint();
+            // Kept models stay loaded, unless this run already unloaded the selected one (a reload).
+            if (!useChatRuntimeStore.getState().keepModelsLoaded || run.residentModelUnloaded) {
+              clearCheckpoint();
+            }
             await refresh();
           }
           return true;
@@ -1097,7 +1106,7 @@ export function useChatModelRuntime() {
             await run.settledPromise;
             if (run.loadAttemptPath && run.forceCancelActive && !run.residentModelUnloaded) {
               try {
-                const status = await getInferenceStatus();
+                const status = await getInferenceStatus(undefined, run.rollbackCheckpoint ?? undefined);
                 if ((status.loading?.length ?? 0) === 0) {
                   run.residentModelUnloaded = !residentModelMatchesPick(status, {
                     id: run.rollbackCheckpoint ?? "",
@@ -1314,7 +1323,10 @@ export function useChatModelRuntime() {
                 }
                 if (activeRunBeforeCredentials.residentModelUnloaded) {
                   try {
-                    const status = await getInferenceStatus();
+                    const status = await getInferenceStatus(
+                      undefined,
+                      activeRunBeforeCredentials.rollbackCheckpoint ?? undefined,
+                    );
                     if (modelSelectionIntentEpoch !== loadIntentId) return;
                     if (
                       (status.loading?.length ?? 0) === 0 &&
@@ -1379,7 +1391,10 @@ export function useChatModelRuntime() {
             // rollback checkpoint. Confirm that resident before snapshotting its effective config;
             // a failed compensation leaves the same checkpoint in the store but no resident.
             try {
-              const status = await getInferenceStatus();
+              const status = await getInferenceStatus(
+                undefined,
+                activeRunBeforeCredentials.rollbackCheckpoint ?? undefined,
+              );
               if (
                 (status.loading?.length ?? 0) === 0 &&
                 residentModelMatchesPick(status, {
@@ -1766,38 +1781,27 @@ export function useChatModelRuntime() {
       let stopDecision: Awaited<
         ReturnType<typeof confirmStopRunningChatsIfNeeded>
       >;
-      const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
+      const { keepModelsLoaded, loadedModels: loadedNow, params: paramsNow } =
+        useChatRuntimeStore.getState();
       const keepsOthers = keepModelsLoaded && !forceReload;
       const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
-      const replacesOneOfSeveral =
-        !keepModelsLoaded &&
-        !forceReload &&
-        !isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) &&
-        useChatRuntimeStore.getState().loadedModels.length > 1;
       // Replacing or reloading one of several touches only its own slot, so only its chats stop.
       const touchesOnlySelected =
-        replacesOneOfSeveral ||
-        (forceReload &&
-          !isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) &&
-          useChatRuntimeStore.getState().loadedModels.length > 1);
+        !keepsOthers && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
+      const replacesOneOfSeveral = touchesOnlySelected && !forceReload;
       try {
-        stopDecision =
-          keepsOthers
-            ? {
-                proceed: true,
-                forceCancelActive: false,
-                promptQueueThreadIds: [],
-                preStreamRunTokens: [],
-              }
-            : await confirmStopRunningChatsIfNeeded(
-                forceReload
-                  ? "Applying these settings"
-                  : "Loading a different model",
-                "reload",
-                touchesOnlySelected
-                  ? (useChatRuntimeStore.getState().params.checkpoint ?? undefined)
-                  : undefined,
-              );
+        stopDecision = keepsOthers
+          ? {
+              proceed: true,
+              forceCancelActive: false,
+              promptQueueThreadIds: [],
+              preStreamRunTokens: [],
+            }
+          : await confirmStopRunningChatsIfNeeded(
+              forceReload ? "Applying these settings" : "Loading a different model",
+              "reload",
+              touchesOnlySelected ? (paramsNow.checkpoint ?? undefined) : undefined,
+            );
       } catch (error) {
         releasePreflightLifecycleLease();
         throw error;
@@ -2406,12 +2410,7 @@ export function useChatModelRuntime() {
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
 
-            if (keepsOthers || touchesOnlySelected) {
-              requestPromptQueueStop(stopDecision.promptQueueThreadIds);
-            } else {
-              cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-              requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
-            }
+            stopQueuedRuns(stopDecision, keepsOthers || touchesOnlySelected);
             // A settings reload is in place, so a failed one must roll back even with others kept.
             if (currentCheckpoint && !keepsOthers) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
@@ -2622,7 +2621,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
-              alongside: keepModelsLoaded || replacesOneOfSeveral,
+              alongside: keepModelsLoaded || touchesOnlySelected,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -3016,7 +3015,7 @@ export function useChatModelRuntime() {
                   // unloaded the live server.
                   cpu_fallback: rollbackState.loadedCpuFallback,
                   n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
-                  alongside: keepModelsLoaded || replacesOneOfSeveral,
+                  alongside: keepModelsLoaded || touchesOnlySelected,
                   tensor_split: rollbackState.loadedSplitRatio ?? undefined,
                   gpu_ids: rollbackState.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
@@ -3755,12 +3754,7 @@ export function useChatModelRuntime() {
       if (!stopDecision.proceed) return false;
 
       async function performUnload(): Promise<void> {
-        if (scope) {
-          requestPromptQueueStop(stopDecision.promptQueueThreadIds);
-        } else {
-          cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-          requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
-        }
+        stopQueuedRuns(stopDecision, Boolean(scope));
         await unloadModel({
           model_path: params.checkpoint,
           force_cancel_active: stopDecision.forceCancelActive,
@@ -3806,10 +3800,7 @@ export function useChatModelRuntime() {
       "unload",
     );
     if (!decision.proceed) return false;
-    if (!selectedLocal) {
-      cancelPreStreamRunReservations(decision.preStreamRunTokens);
-      requestLocalPromptQueueStop(decision.promptQueueThreadIds);
-    }
+    if (!selectedLocal) stopQueuedRuns(decision, false);
     // Others first: the selected model's eject refreshes, which would adopt one still loaded.
     const results = await Promise.allSettled(
       others.map((id) =>

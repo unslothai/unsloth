@@ -212,7 +212,7 @@ const contracts: Contract[] = [
     match: [["discardExternal", /pendingExternalReplacement = null;\s*pendingReplacementRollback = null;/]] },
   { name: "forced cancellation reconciles resident status before preserving rollback",
     match: [["forcedCancel", /run\.forceCancelActive/],
-      ["forcedCancel", /await getInferenceStatus\(\)/], ["forcedCancel", /residentModelMatchesPick\(status/],
+      ["forcedCancel", /await getInferenceStatus\(undefined, run\.rollbackCheckpoint \?\? undefined\)/], ["forcedCancel", /residentModelMatchesPick\(status/],
       ["forcedCancel", /status\.loading\?\.length/]] },
   { name: "approved Hub credentials inherit a settled run rollback before replacement",
     match: [["selection", /!activeRunBeforeCredentials\.loadAttemptPath/],
@@ -228,10 +228,10 @@ const contracts: Contract[] = [
   { name: "declining Hub credentials reconciles an unloaded predecessor after it settles",
     match: [["credentialDecline", /activeRunBeforeCredentials\.settledPromise\.then\(async\s*\(\)\s*=>/],
       ["credentialDecline", /if \(activeRunBeforeCredentials\.residentModelUnloaded\)/],
-      ["credentialDecline", /await getInferenceStatus\(\)/], ["credentialDecline", /status\.loading\?\.length[\s\S]*?!status\.active_model[\s\S]*?clearCheckpoint\(\)/]] },
+      ["credentialDecline", /await getInferenceStatus\(\s*undefined,\s*activeRunBeforeCredentials\.rollbackCheckpoint \?\? undefined,\s*\)/], ["credentialDecline", /status\.loading\?\.length[\s\S]*?!status\.active_model[\s\S]*?clearCheckpoint\(\)/]] },
   { name: "approved Hub credentials resnapshot a successfully compensated resident",
     match: [["successfulCredentialRefresh", /activeRunBeforeCredentials\.residentModelUnloaded/],
-      ["successfulCredentialRefresh", /await getInferenceStatus\(\)/],
+      ["successfulCredentialRefresh", /await getInferenceStatus\(\s*undefined,\s*activeRunBeforeCredentials\.rollbackCheckpoint \?\? undefined,\s*\)/],
       ["successfulCredentialRefresh", /residentModelMatchesPick\(status/], ["successfulCredentialRefresh", /previousConfigForReplacement = currentRuntimePerModelConfig\(\{\s*includeMaxSeqLength: true/]] },
 ];
 for (const { name, match = [], absent = [], order = [] } of contracts) {

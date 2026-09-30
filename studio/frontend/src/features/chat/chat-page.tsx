@@ -3646,22 +3646,13 @@ export function ChatPage({
   );
   const handleEject = useCallback(
     (modelId?: string) => {
-      void (async () => {
-        const ejectedSelected =
-          !modelId || modelId === inferenceParams.checkpoint;
-        if ((await ejectModel(modelId)) && ejectedSelected) {
-          resetArtifacts();
-        }
-      })();
+      const ejectedSelected = !modelId || modelId === inferenceParams.checkpoint;
+      void ejectModel(modelId).then((ok) => ok && ejectedSelected && resetArtifacts());
     },
     [ejectModel, inferenceParams.checkpoint, resetArtifacts],
   );
   const handleEjectAll = useCallback(() => {
-    void (async () => {
-      if (await ejectAllModels()) {
-        resetArtifacts();
-      }
-    })();
+    void ejectAllModels().then((ok) => ok && resetArtifacts());
   }, [ejectAllModels, resetArtifacts]);
 
   // Pins the picker open so a stray click cannot dismiss the step under it. Tour steps only: the
