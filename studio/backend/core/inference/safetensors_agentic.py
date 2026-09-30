@@ -369,7 +369,7 @@ def _reprompt_intent_text(
     Forward-looking phrases inside ``<think>`` / ``[THINK]`` are private
     planning, not a user-visible promise to call a tool. Match GGUF's behavior:
     classify visible content when present and fall back to reasoning only for a
-    reasoning-only stall.
+    reasoning-only stall. ``visible_only`` drops that fallback and returns "" instead.
     """
     prefilled_reasoning = ""
     if reasoning_prefilled:
@@ -1216,6 +1216,7 @@ def run_safetensors_tool_loop(
                     and not any(record.executed for record in tool_controller.history)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
+                    # Markup stripped first: a call fenced inside <tool_call> is not an answer.
                     and not _has_answer_artifact(
                         strip_tool_markup(
                             _reprompt_intent_text(

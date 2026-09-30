@@ -3292,21 +3292,42 @@ class TestLoopRePrompt:
         contents = [e for e in events if e["type"] == "content"]
         assert contents and contents[-1]["text"].strip() == "4"
 
-    def test_finished_code_answer_is_not_reprompted(self):
-        answer = (
-            "I'll write a small Python function that reverses a string.\n"
-            "```python\ndef reverse(s):\n    return s[::-1]\n```\n"
-        )
+    @pytest.mark.parametrize(
+        "reasoning, answer, reasoning_prefilled",
+        [
+            pytest.param(
+                "",
+                "I'll write a small Python function that reverses a string.\n"
+                "```python\ndef reverse(s):\n    return s[::-1]\n```\n",
+                False,
+                id = "plain",
+            ),
+            pytest.param(
+                "",
+                "Let me run this:\n```python\nprint(1)\n```\n",
+                False,
+                id = "run_intent_with_code",
+            ),
+            pytest.param(
+                "Plan it.</think>",
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_then_answer",
+            ),
+        ],
+    )
+    def test_finished_code_answer_is_not_reprompted(self, reasoning, answer, reasoning_prefilled):
         loop, exec_fn = _make_loop(
-            turns = [[answer], ["No tool is needed. Here it is again."]],
+            turns = [[reasoning + answer], ["No tool is needed. Here it is again."]],
             nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
         )
         events = _collect_events(loop)
         statuses = [e["text"] for e in events if e["type"] == "status"]
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert NUDGE_TOOL_CALLS_STATUS not in statuses
         assert exec_fn.calls == []
-        assert contents[-1] == answer
+        assert contents[-1] == reasoning + answer
 
     @pytest.mark.parametrize(
         "chunk, reasoning_prefilled",
@@ -3362,7 +3383,7 @@ class TestLoopRePrompt:
         events = _collect_events(loop)
         statuses = [e["text"] for e in events if e["type"] == "status"]
         assert NUDGE_TOOL_CALLS_STATUS in statuses
-        assert exec_fn.calls
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
 
     def test_max_reprompts_capped(self):
         # Model keeps stalling with intent -- after MAX_ACT_REPROMPTS re-prompts
