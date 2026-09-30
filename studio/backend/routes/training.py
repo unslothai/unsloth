@@ -1893,7 +1893,6 @@ async def start_training(
                 # reports unloaded while the native engine still holds state.
                 diffusion = get_active_diffusion_engine()
                 if getattr(diffusion, "runs_off_torch_device", False) is True:
-                    # Native on a card torch cannot see (UNSLOTH_DIFFUSION_SD_CPP_DEVICE): nothing to free.
                     logger.info("Keeping the Images model: it runs outside torch's GPUs")
                 else:
                     if diffusion.is_loaded:

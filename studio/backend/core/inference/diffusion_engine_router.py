@@ -144,7 +144,6 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
                 raw,
             )
             return None
-    # An unanswered probe is not an absent card, and the user named this one explicitly.
     return OffTorchDevice(vendor = vendor, index = index, accelerator = accelerator)
 
 
