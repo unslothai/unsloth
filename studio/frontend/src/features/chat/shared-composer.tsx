@@ -24,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -88,7 +89,6 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   Columns2Icon,
-  GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -2748,7 +2748,7 @@ export function SharedComposer({
                   }
                 }}
               >
-                <GlobeIcon />
+                <InternetGlyph />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
@@ -2867,7 +2867,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>

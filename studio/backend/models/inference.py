@@ -3908,6 +3908,19 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
+class AnthropicResponseServerToolUseBlock(BaseModel):
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicResponseWebSearchToolResultBlock(BaseModel):
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str
+    content: Union[list[dict], dict]
+
+
 class AnthropicResponseThinkingBlock(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
@@ -3919,6 +3932,8 @@ class AnthropicResponseThinkingBlock(BaseModel):
 AnthropicResponseBlock = Union[
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
+    AnthropicResponseServerToolUseBlock,
+    AnthropicResponseWebSearchToolResultBlock,
     AnthropicResponseThinkingBlock,
 ]
 

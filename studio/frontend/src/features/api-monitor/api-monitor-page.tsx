@@ -34,11 +34,11 @@ import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Delete02Icon,
-  Globe02Icon,
+  InternetIcon,
   PauseIcon,
   PlayIcon,
   PowerSocket01Icon,
-  RefreshIcon,
+  Refresh01Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -774,7 +774,7 @@ export function ApiMonitorPage(): ReactElement {
             className="h-9 gap-1.5 rounded-full"
           >
             <HugeiconsIcon
-              icon={RefreshIcon}
+              icon={Refresh01Icon}
               strokeWidth={1.75}
               className={cn("size-4", refreshing && "animate-spin")}
             />
@@ -825,7 +825,7 @@ export function ApiMonitorPage(): ReactElement {
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
             <HugeiconsIcon
-              icon={Globe02Icon}
+              icon={InternetIcon}
               strokeWidth={1.75}
               className="size-4"
             />

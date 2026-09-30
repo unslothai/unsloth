@@ -50,6 +50,7 @@ _CONTROL_KEYS = (
     "_diffusionFrame",
     "_reasoningDurationMs",
     "_mcp_provenance",
+    "quote_cut",
 )
 
 # A stripped frame is only worth relaying if it still says something in the provider's own vocabulary.
