@@ -747,3 +747,26 @@ def test_deleting_the_umbrella_repo_prunes_the_farm_of_the_cache_it_was_in(tmp_p
     asyncio.run(deletion.delete_cached_model_response(AUDIO_CPP_REPO, cache_path = str(repo_folder)))
     # The Hub row sends the repo folder; the farm sits beside that folder's hub root.
     assert pruned == [other_root.resolve()]
+
+
+@pytest.mark.parametrize(
+    "state", ["idle", "stt_loading", "stt_loaded", "speech_loading", "speech_active"]
+)
+def test_umbrella_repo_delete_guard_covers_loading(monkeypatch, state):
+    from core.inference import orchestrator, stt_audiocpp_sidecar
+    from hub.services.models import deletion
+
+    side = stt_audiocpp_sidecar.AudioCppSttSidecar()
+    side._loading = state == "stt_loading"
+    if state == "stt_loaded":
+        side._model_id = "audiocpp-moonshine-tiny"
+        side._server = SimpleNamespace(alive = lambda: True)
+    speech = lookup("audiocpp-kokoro-82m").id
+    backend = SimpleNamespace(
+        active_model_name = speech if state == "speech_active" else None,
+        loading_models = {speech} if state == "speech_loading" else set(),
+    )
+    monkeypatch.setattr(stt_audiocpp_sidecar, "get_audio_cpp_stt_sidecar", lambda: side)
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+    assert deletion._audio_cpp_blocks_delete(AUDIO_CPP_REPO) is (state != "idle")
+    assert deletion._audio_cpp_blocks_delete("someone/other-repo") is False

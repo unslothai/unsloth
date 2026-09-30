@@ -945,8 +945,8 @@ async def delete_cached_model_response(
 
 
 def _audio_cpp_blocks_delete(repo_id: str) -> bool:
-    """Whether an audio.cpp model from this umbrella repo is resident. Its id is a subfolder of the
-    repo, so the id comparisons of the other guards never match it."""
+    """Whether an audio.cpp model from this umbrella repo is resident or loading. Its id is a subfolder
+    of the repo, so the id comparisons of the other guards never match it."""
     from utils.hidden_models import is_audio_cpp_repo_id
 
     if not is_audio_cpp_repo_id(repo_id):
@@ -957,7 +957,14 @@ def _audio_cpp_blocks_delete(repo_id: str) -> bool:
 
     backend = peek_inference_backend()
     active = getattr(backend, "active_model_name", None) if backend is not None else None
-    return bool(is_audio_cpp_model(active) or get_audio_cpp_stt_sidecar().loaded_model)
+    loading = tuple(getattr(backend, "loading_models", ()) or ()) if backend is not None else ()
+    sidecar = get_audio_cpp_stt_sidecar()
+    return bool(
+        is_audio_cpp_model(active)
+        or any(is_audio_cpp_model(name) for name in loading)
+        or sidecar.loaded_model
+        or sidecar.is_loading()
+    )
 
 
 def _delete_cached_model_blocking(
