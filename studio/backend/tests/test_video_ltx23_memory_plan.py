@@ -5,6 +5,7 @@
 
 import json
 import struct
+import sys
 import types
 
 import pytest
@@ -160,6 +161,11 @@ def _plan_inputs_for_single_file_load(monkeypatch, tmp_path, speed_mode, free_mi
     monkeypatch.setattr(vid, "file_size_mib", lambda _p: LTX23_FILE_MIB)
     monkeypatch.setattr(vid, "settled_snapshot_device_memory", lambda _t: _b200(free_mib))
     monkeypatch.setattr(te_prequant, "te_prequant_budget_scale", lambda *a, **k: 1.0)
+    # The plan is drawn before any diffusers class is touched; CPU CI installs no diffusers.
+    diffusers = types.ModuleType("diffusers")
+    diffusers.__version__ = "0.40.0"
+    diffusers.LTX2Pipeline = type("LTX2Pipeline", (), {})
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     seen: list = []
     real = plan_diffusion_memory
 
