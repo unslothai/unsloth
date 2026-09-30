@@ -1129,3 +1129,22 @@ def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():
     # Integrated (total 0, shared RAM): the free reading is left alone, not zeroed.
     assert _net_of_held_vram([(0, 60_000, 0)], held) == [(0, 60_000, 0)]
     assert _net_of_held_vram([(0, 60_000, 0)], {}) == [(0, 60_000, 0)]
+
+
+def test_a_model_that_fits_one_card_takes_one_no_other_model_runs_on():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    gpus = [(0, 170_000), (1, 150_000), (2, 20_000)]
+    total = {0: 180_000, 1: 180_000, 2: 180_000}
+    pick = lambda **kw: LlamaCppBackend._select_gpus(
+        10 * 1024**3, gpus, usable_fraction = 0.9, total_by_idx = total, **kw
+    )
+    # Alone, the most free card, as before.
+    assert pick() == ([0], False)
+    # Card 0 serves another model: the next card that holds it alone.
+    assert pick(shared = frozenset({0})) == ([1], False)
+    # Every card that could hold it is shared: still the most free one, never a split.
+    assert pick(shared = frozenset({0, 1})) == ([0], False)
+    assert LlamaCppBackend._select_gpus_split_aware(
+        10 * 1024**3, gpus, usable_fraction = 0.9, total_by_idx = total, shared = frozenset({0})
+    ) == ([1], False)

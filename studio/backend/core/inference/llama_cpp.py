@@ -16101,8 +16101,12 @@ class LlamaCppBackend:
         total_by_idx: Optional[dict[int, int]] = None,
         per_device_overhead_bytes: int = 0,
         min_gpus: int = 1,
+        shared: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
+
+        ``shared``: GPUs another loaded model runs on. A model that fits one card alone
+        takes a card outside it when one fits, so two models don't share compute.
 
         ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
         tensor/multi-GPU request spread instead of collapsing to one card.
@@ -16153,6 +16157,9 @@ class LlamaCppBackend:
 
         # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
         if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
+            for idx, free_mib in ranked:
+                if idx not in shared and _usable(idx, free_mib) >= model_size_mib:
+                    return [idx], False
             return [ranked[0][0]], False
 
         # Try N GPUs (most-free first); each past the first adds per-device overhead.
@@ -16185,6 +16192,7 @@ class LlamaCppBackend:
         per_device_overhead_bytes: int = 0,
         min_gpus: int = 1,
         split_extra_bytes: int = 0,
+        shared: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -16204,6 +16212,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = min_gpus,
+            shared = shared,
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -16224,6 +16233,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = 1,
+            shared = shared,
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -24485,6 +24495,7 @@ class LlamaCppBackend:
                 _ctx_capped_for_vram = False
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
+                _shared_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -24589,7 +24600,9 @@ class LlamaCppBackend:
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
-                    _gpu_mem = _net_of_held_vram(_gpu_mem, self._other_planned_vram_mib())
+                    _held_by_others = self._other_planned_vram_mib()
+                    _shared_gpus = frozenset(_held_by_others)
+                    _gpu_mem = _net_of_held_vram(_gpu_mem, _held_by_others)
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -26054,6 +26067,7 @@ class LlamaCppBackend:
                                 + _cc_bytes(effective_ctx),
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
+                                shared = _shared_gpus,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed and --fit on will offload; say why.
@@ -26143,6 +26157,27 @@ class LlamaCppBackend:
                                 ),
                             )
                             _ctx_before_fit = effective_ctx
+                            if _shared_gpus and _auto_min_gpus == 1 and effective_ctx > 0:
+                                # A card no other model runs on, when it holds this one at the full
+                                # context: sharing a card splits its compute between the models.
+                                _alone_mib = (
+                                    _subset_model_size(1)
+                                    + _kv_bytes(effective_ctx)
+                                    + _mtp_bytes(effective_ctx)
+                                    + _cc_bytes(effective_ctx, 1)
+                                ) / (1024 * 1024)
+                                _unshared = next(
+                                    (
+                                        g
+                                        for g in ranked
+                                        if g[0] not in _shared_gpus
+                                        and _gpu_usable(g, pin_fraction) >= _alone_mib
+                                    ),
+                                    None,
+                                )
+                                if _unshared is not None:
+                                    ranked.remove(_unshared)
+                                    ranked.insert(0, _unshared)
                             for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
@@ -26258,6 +26293,7 @@ class LlamaCppBackend:
                             total_by_idx = total_by_idx,
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
+                            shared = _shared_gpus,
                         )
                         if use_fit and not explicit_ctx:
                             # Without KV metadata, llama.cpp owns the fit. Keep the
