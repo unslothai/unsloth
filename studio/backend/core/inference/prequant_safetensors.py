@@ -135,6 +135,58 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
+def plain_safetensors_supported() -> bool:
+    """The layerwise-cast encoder format stores plain tensors, without torchao subclasses."""
+    try:
+        from safetensors import safe_open  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def load_plain_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
+    """Read a plain-tensor prequant checkpoint without importing torchao.
+
+    Refuse subclass metadata and unaccounted tensors before reading weights. The
+    caller still validates the component, scheme, base model and state-dict keys.
+    """
+    from safetensors import safe_open
+
+    with safe_open(path, framework = "pt", device = device) as handle:
+        raw = handle.metadata() or {}
+        fmt = raw.get(UNSLOTH_FORMAT_KEY)
+        if not fmt:
+            raise ValueError(f"{path} is not an Unsloth pre-quant checkpoint")
+        metadata = json.loads(raw.get(UNSLOTH_METADATA_KEY) or "{}")
+        names = json.loads(raw.get("tensor_names") or "null")
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{path} has invalid pre-quant metadata")
+        if (
+            not isinstance(names, list)
+            or not all(isinstance(name, str) and name for name in names)
+            or len(names) != len(set(names))
+        ):
+            raise ValueError(f"{path} has invalid tensor_names")
+        keys = set(handle.keys())
+        roots = {key for key in keys if key.startswith(UNSLOTH_ROOT_PREFIX)}
+        root_names = {key[len(UNSLOTH_ROOT_PREFIX) :] for key in roots}
+        if (
+            any(not name or "." in name for name in root_names)
+            or root_names.intersection(names)
+            or set(names).intersection(roots)
+            or set(names) != keys - roots
+        ):
+            raise ValueError(f"{path} has tensors its header does not account for")
+        for name in names:
+            if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
+                raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
+        state_dict = {name: handle.get_tensor(name) for name in names}
+        state_dict.update(
+            (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
+        )
+    return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
+
+
 def _first(value: Any) -> Any:
     """Both torchao helpers return a 2-tuple whose first element is the dict we want.
 

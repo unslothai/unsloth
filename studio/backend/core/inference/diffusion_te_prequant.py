@@ -212,15 +212,14 @@ def te_candidate_is_readable(name: Optional[str]) -> bool:
     NOT the transformer's ``restricted_prequant_load_supported``: this state dict is plain
     tensors, read under a bare ``weights_only`` load with no constructor allowlist, so a ``.pt``
     is always readable and asking the DiT's question would refuse one on every install whose
-    torchao lacks some DiT scheme's constructors. Only the safetensors container has a
-    requirement, and a plan that drops the dense encoder for an artifact this install cannot open
-    leaves the load with neither.
+    torchao lacks some DiT scheme's constructors. The safetensors container needs only
+    safetensors, not torchao. Check that dependency before planning without dense shards.
     """
     if not name:
         return False
-    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+    from .prequant_safetensors import is_safetensors_checkpoint, plain_safetensors_supported
 
-    return safetensors_prequant_supported() if is_safetensors_checkpoint(name) else True
+    return plain_safetensors_supported() if is_safetensors_checkpoint(name) else True
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:
@@ -419,15 +418,15 @@ def load_prequant_text_encoder(
 
         import torch
 
-        from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
+        from .prequant_safetensors import is_safetensors_checkpoint, load_plain_prequant_safetensors
 
         # The layerwise-fp8 state dict is plain tensors, so weights_only=True suffices and no pickle code runs even for
         # a local path. A future torchao-subclass scheme needs a format bump AND the DiT module's allowlist.
-        # A ``.safetensors`` artifact is read through the shared reader instead, which returns the same dict shape, so
+        # A ``.safetensors`` artifact is read through the plain-tensor reader instead, which returns the same dict shape, so
         # ``_validate_checkpoint`` and everything after it are unchanged. Dispatch is on the extension the resolver
         # asked the Hub for, never on sniffing the bytes.
         if is_safetensors_checkpoint(path):
-            ckpt = load_prequant_safetensors(path)
+            ckpt = load_plain_prequant_safetensors(path)
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
         if not _validate_checkpoint(ckpt, scheme, component, base, logger):
