@@ -8370,7 +8370,11 @@ const ContinueResponseButtonForLastMessage: FC = () => {
   const { messageId, reason, completed, canResume, startContinuation } =
     useContinuation();
   const editing = useChatRuntimeStore((s) => s.editingMessageId === messageId);
-  if (!completed || reason || !canResume || editing) {
+  // The sibling carries no citations, and a continuation restarts their [N] numbering.
+  const cited = useAuiState(({ message }) =>
+    message.content.some((part) => part.type === "source"),
+  );
+  if (!completed || reason || !canResume || editing || cited) {
     return null;
   }
   return (

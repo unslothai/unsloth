@@ -197,10 +197,11 @@ test("Continue response sits after Edit response and yields to the Resume bar", 
     thread,
     /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*<ContinueResponseButton \/>\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload/,
   );
-  // A stopped reply already offers Resume; a reply being edited continues from the saved text.
+  // A stopped reply already offers Resume; a reply being edited continues from the saved text;
+  // a cited reply would lose its sources in the sibling.
   assert.match(
     thread,
-    /if \(!completed \|\| reason \|\| !canResume \|\| editing\) \{\n\s*return null;/,
+    /if \(!completed \|\| reason \|\| !canResume \|\| editing \|\| cited\) \{\n\s*return null;/,
   );
   // Both controls start the same run.
   assert.equal(thread.match(/\[CONTINUATION_RUN_CONFIG_KEY\]/g)?.length, 1);
