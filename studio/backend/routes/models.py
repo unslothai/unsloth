@@ -2765,7 +2765,10 @@ async def discard_remote_code_download(
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in model_slots.backends())):
+        for llama_backend in (
+            get_llama_cpp_backend(),
+            *(slot.llama for slot in list(model_slots.slots)),
+        ):
             if llama_backend.is_loaded and llama_backend.model_identifier:
                 if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
                     return {"deleted": False, "reason": "loaded"}
@@ -2777,7 +2780,7 @@ async def discard_remote_code_download(
         from core.inference import model_slots
         for inference_backend in (
             peek_inference_backend(),
-            *(o for _, o in model_slots.backends()),
+            *(slot.orchestrator for slot in list(model_slots.slots)),
         ):
             if inference_backend is not None and inference_backend.active_model_name:
                 if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
@@ -3313,14 +3316,14 @@ async def delete_finetuned_model(
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        kept = model_slots.backends()
+        kept = list(model_slots.slots)
         filling = model_slots.filling_model()
         if filling and _loaded_model_matches_deleted_path(filling, target_path):
             raise HTTPException(
                 status_code = 409,
                 detail = "Cannot delete a model while it is loading",
             )
-        for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in kept)):
+        for llama_backend in (get_llama_cpp_backend(), *(slot.llama for slot in kept)):
             if (
                 (llama_backend.is_active or llama_backend.is_loaded)
                 and llama_backend.model_identifier
@@ -3347,7 +3350,7 @@ async def delete_finetuned_model(
         # Peek: building an orchestrator to learn there is none reaches get_device() (a torch import).
         from core.inference.orchestrator import peek_inference_backend
 
-        for inference_backend in (peek_inference_backend(), *(o for _, o in kept)):
+        for inference_backend in (peek_inference_backend(), *(slot.orchestrator for slot in kept)):
             if inference_backend is None:
                 continue
             loading_models = getattr(inference_backend, "loading_models", set())

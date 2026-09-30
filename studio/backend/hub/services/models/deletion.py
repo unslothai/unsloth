@@ -625,7 +625,7 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        backends = [get_llama_cpp_backend(), *(llama for llama, _ in model_slots.backends())]
+        backends = [get_llama_cpp_backend(), *(slot.llama for slot in list(model_slots.slots))]
         filling = model_slots.filling_model()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
@@ -652,7 +652,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
         from core.inference import model_slots
 
         primary = peek_inference_backend()
-        kept = [orch for _, orch in model_slots.backends()]
+        kept = [slot.orchestrator for slot in list(model_slots.slots)]
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
@@ -712,16 +712,15 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        kept = model_slots.backends()
+        kept = list(model_slots.slots)
         kept_loading = model_slots.any_loading()
     except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
         logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
     else:
         if (backend.is_loaded or backend.is_active) and backend.model_identifier:
             return "Unload the model before clearing the model cache"
-        for llama, orchestrator in kept:
-            if (llama.is_loaded or llama.is_active) or orchestrator.active_model_name:
-                return "Unload the model before clearing the model cache"
+        if any(model_slots.in_use(slot) or slot.llama.is_loaded for slot in kept):
+            return "Unload the model before clearing the model cache"
         if kept_loading:
             return "A model load is using the cache; wait for it to finish"
 
