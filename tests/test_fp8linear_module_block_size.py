@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""FP8Linear keeps its block size on the module; the patched forward must honour it (32x32 DeepSeek-V4.1-Flash
-blocks), not assume 128x128 because neither the weight nor the scale carries a block_size attribute."""
+"""Patched FP8Linear forward must honour the module's block_size, not assume 128x128."""
 
 import pytest
 import torch
@@ -13,7 +12,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _make_layer(out_features, in_features, block, scale_fmt):
-    from unsloth.kernels import fp8  # installs the patched forward
+    from unsloth.kernels import fp8
 
     if fp8.FP8Linear is None:
         pytest.skip("this transformers has no FP8Linear")
@@ -26,7 +25,7 @@ def _make_layer(out_features, in_features, block, scale_fmt):
     layer = layer.cuda()
     torch.manual_seed(0)
     weight = (torch.randn(out_features, in_features, device = "cuda") * 0.5).to(torch.float8_e4m3fn)
-    # Power-of-two per-block scales so the float and ue8m0 formats hold the same values.
+    # Power-of-two scales so float and ue8m0 formats hold the same values.
     grid = (-(-out_features // block[0]), -(-in_features // block[1]))
     scale = torch.exp2(torch.randint(-9, -4, grid, device = "cuda").float())
     layer.weight = torch.nn.Parameter(weight, requires_grad = False)
@@ -57,8 +56,7 @@ def test_fp8linear_uses_module_block_size(block, scale_fmt):
     out = layer(X)
     assert out.shape == (3, 64, out_features) and out.dtype == torch.bfloat16
     ref, W = _reference(X.detach(), weight, scale, block)
-    # The kernel quantizes activations to fp8 per block, so allow that rounding (a wrong block
-    # size gives errors of order 1 or a shape error).
+    # Tolerates fp8 activation rounding; a wrong block size errors at order 1.
     rel = (out.float() - ref).norm() / ref.norm()
     assert rel < 0.05, rel.item()
 
