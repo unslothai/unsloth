@@ -421,6 +421,7 @@ def apply_speed_optims(
     offload_active: bool = False,
     cuda_graph_default: bool = True,
     cache_engaged: Optional[bool] = None,
+    denoiser_offloaded: Optional[bool] = None,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
@@ -428,6 +429,7 @@ def apply_speed_optims(
 
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
     so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
+    ``denoiser_offloaded`` (None = ``offload_active``) limits the CUDA-graph refusal to a moved denoiser.
 
     ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
     True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
@@ -560,7 +562,9 @@ def apply_speed_optims(
                 target,
                 family = family,
                 pipe = pipe,
-                offload_active = offload_active,
+                offload_active = offload_active
+                if denoiser_offloaded is None
+                else bool(denoiser_offloaded),
                 cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
                 speed_mode = mode,
                 family_default = cuda_graph_default,

@@ -93,6 +93,26 @@ function resolveTrainingMethodLearningRate(
     : LR_DEFAULT_FULL;
 }
 
+// Re-checked at exit: modality or streaming learned inside CPT still vetoes a saved true.
+function completionsAllowedOnExit(
+  state: Pick<
+    TrainingConfigState,
+    | "datasetStreaming"
+    | "isEmbeddingModel"
+    | "isVisionModel"
+    | "isAudioModel"
+    | "isDatasetImage"
+    | "isDatasetAudio"
+  >,
+): boolean {
+  if (state.datasetStreaming || state.isEmbeddingModel) return false;
+  if (state.isVisionModel && state.isDatasetImage === true) return false;
+  if (state.isAudioModel && (!state.isVisionModel || state.isDatasetAudio)) {
+    return false;
+  }
+  return true;
+}
+
 export function buildTrainingMethodPatch(
   state: Pick<
     TrainingConfigState,
@@ -103,6 +123,15 @@ export function buildTrainingMethodPatch(
     | "loraRank"
     | "loraAlpha"
     | "loraVariant"
+    | "trainOnCompletions"
+    | "datasetStreaming"
+    | "selectedModel"
+    | "modelDefaultsAppliedFor"
+    | "isEmbeddingModel"
+    | "isVisionModel"
+    | "isAudioModel"
+    | "isDatasetImage"
+    | "isDatasetAudio"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -120,18 +149,29 @@ export function buildTrainingMethodPatch(
     provenance.loraRankBeforeCpt = state.loraRank;
     provenance.loraAlphaBeforeCpt = state.loraAlpha;
     provenance.loraVariantBeforeCpt = state.loraVariant;
+    provenance.trainOnCompletionsBeforeCpt =
+      state.modelDefaultsAppliedFor === state.selectedModel
+        ? state.trainOnCompletions
+        : null;
     Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
     Object.assign(patch, getRestoreFromCptPatch(provenance));
     if (provenance.datasetFormatBeforeCpt !== null) {
       patch.datasetFormat = provenance.datasetFormatBeforeCpt;
+      if (
+        provenance.trainOnCompletionsBeforeCpt &&
+        completionsAllowedOnExit(state)
+      ) {
+        patch.trainOnCompletions = true;
+      }
     }
     provenance.datasetFormatBeforeCpt = null;
     provenance.targetModulesBeforeCpt = null;
     provenance.loraRankBeforeCpt = null;
     provenance.loraAlphaBeforeCpt = null;
     provenance.loraVariantBeforeCpt = null;
+    provenance.trainOnCompletionsBeforeCpt = null;
   }
 
   const learningRate = resolveTrainingMethodLearningRate(
