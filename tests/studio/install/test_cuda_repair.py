@@ -1969,7 +1969,9 @@ class TestEvictXformersMismatch:
             patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
         ):
             assert (
-                stack_mod._evict_xformers_built_for_another_torch(scope = "linux torch repair")
+                stack_mod._evict_xformers_built_for_another_torch(
+                    scope = "linux torch repair", family_only = True
+                )
                 is True
             )
         uninstall.assert_called_once_with("xformers")
@@ -1987,6 +1989,35 @@ class TestEvictXformersMismatch:
         ):
             assert stack_mod._evict_xformers_built_for_another_torch() is False
         uninstall.assert_not_called()
+
+    def test_a_same_family_build_is_kept_on_the_linux_path(self):
+        # PyPI's 0.0.35 is built for 2.10.0+cu128 and loads under 2.11.0+cu130 (stable ABI).
+        with (
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+cu130"),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution") as uninstall,
+        ):
+            assert (
+                stack_mod._evict_xformers_built_for_another_torch(
+                    scope = "linux torch repair", family_only = True
+                )
+                is False
+            )
+        uninstall.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "label, family",
+        [
+            ("2.10.0+cu128", "cuda"),
+            ("2.11.0+rocm7.13.0", "rocm"),
+            ("2.10.0+xpu", "xpu"),
+            ("2.10.0+cpu", "cpu"),
+            ("2.10.0", ""),
+            ("2.10.0a0+git1234", ""),
+        ],
+    )
+    def test_the_build_family_is_read_from_the_local_tag(self, label, family):
+        assert stack_mod._torch_build_family(label) == family
 
     def test_a_blocked_removal_is_reported_not_claimed(self, capsys):
         with (
@@ -2007,7 +2038,10 @@ class TestEvictXformersMismatch:
         step = step.split("# 13w.", 1)[0]
         guard = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
         after = step.split(guard, 1)[1]
-        call = '\n        _evict_xformers_built_for_another_torch(scope = "linux torch repair")\n'
+        call = (
+            '\n        _evict_xformers_built_for_another_torch(scope = "linux torch repair", '
+            "family_only = True)\n"
+        )
         assert call in after, "the check must sit outside the torch-moved guard"
 
 

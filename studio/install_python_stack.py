@@ -7349,18 +7349,36 @@ def _install_wheelhouse_optionals() -> None:
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
-def _evict_xformers_built_for_another_torch(scope: str = "windows on arm") -> bool:
+def _torch_build_family(label: str) -> str:
+    """cuda / rocm / xpu / cpu from a torch.__version__ local tag, "" when it names none."""
+    tag = label.partition("+")[2].strip().lower()
+    for prefix, family in (("cu", "cuda"), ("rocm", "rocm"), ("xpu", "xpu"), ("cpu", "cpu")):
+        if tag.startswith(prefix):
+            return family
+    return ""
+
+
+def _evict_xformers_built_for_another_torch(
+    scope: str = "windows on arm", family_only: bool = False
+) -> bool:
     """Remove a resident xFormers whose extension was built against another torch. True iff removed.
 
     xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
-    and a package install never uninstalls what an earlier run left behind. Any repair that can
-    move torch -- including the Linux ROCm repair -- needs the same check, not just the
-    Windows-on-ARM wheelhouse.
+    and a package install never uninstalls what an earlier run left behind. family_only keeps a
+    build whose accelerator family matches: PyPI's 0.0.35 (built for 2.10.0+cu128) loads its
+    extension under 2.11.0+cu130 (stable ABI since 0.0.34), but never under a ROCm torch (#11639).
     """
     built_for = _resident_xformers_build_torch()
     resident = str(_probe_installed_torch_version() or "")
     if not (built_for and resident and built_for != resident):
         return False
+    if family_only:
+        built_family, resident_family = (
+            _torch_build_family(built_for),
+            _torch_build_family(resident),
+        )
+        if not (built_family and resident_family and built_family != resident_family):
+            return False
     if not _uninstall_distribution("xformers"):
         _safe_print(
             f"   [WARN] {scope}: xFormers was built for torch {built_for}, not {resident}, "
@@ -12118,9 +12136,9 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
-        # Both checks: a family-only move (2.10.0+cu128 -> 2.10.0+rocm7.1) still satisfies
-        # xformers' torch==2.10.0 requirement, and an earlier run may have moved torch already.
-        _evict_xformers_built_for_another_torch(scope = "linux torch repair")
+        # The requirement check cannot see a family move (torch==2.10.0 accepts 2.10.0+rocm7.1),
+        # and an earlier run may have made it, so this runs whether or not torch moved here.
+        _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
