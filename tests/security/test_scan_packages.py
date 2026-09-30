@@ -235,8 +235,6 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
     ],
 )
 def test_direct_source_specs_never_reach_pip(tmp_path, monkeypatch, spec):
-    """pip prepares VCS / URL / local specs itself, running their build backend
-    before anything is scanned, so they must be refused before pip runs."""
     calls = []
     monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: calls.append(a))
     for with_deps in (False, True):
