@@ -6284,6 +6284,101 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
 
 
+_GPU_DEVICE_TOKEN_RE = re.compile(r"(CUDA|ROCm)(\d+)$", re.IGNORECASE)
+# One group per companion: llama.cpp is last-wins within a group, so only its last flag counts.
+_COMPANION_DEVICE_FLAG_GROUPS = (
+    frozenset({"--mmproj-device", "-mmdev"}),
+    frozenset({"--spec-draft-device", "-devd", "--device-draft"}),
+)
+
+
+def _widen_pin_ids_for_companion_devices(
+    cmd: List[str],
+    pin_ids: list[int],
+    inherited_ids: Optional[list[int]],
+    *,
+    may_widen: bool = True,
+) -> tuple[list[int], str]:
+    """Fit a pinned GPU mask to the companion devices the argv names (#11810).
+
+    Companion ``CUDA<n>`` / ``ROCm<n>`` tokens use the unpinned numbering (position in
+    ``inherited_ids``, else the physical index). Cards they name are appended after the
+    pinned ones, the winning flag is renumbered to the child's mask, and a main
+    ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
+    the parent cannot see are left alone. ``may_widen`` False (explicit gpu_ids) only
+    renumbers within the pin. Returns the mask and a log note, empty when unchanged.
+    """
+    if not pin_ids:
+        return list(pin_ids), ""
+    main_ids = [int(i) for i in pin_ids]
+    # A main --device past the pinned positions would resolve to a widened companion card.
+    for token in str(_extra_args_main_device(cmd) or "").split(","):
+        match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+        if match and int(match.group(2)) >= len(main_ids):
+            return list(main_ids), ""
+    # (value index, prefix before "=" or None, [(token, physical id or None)])
+    sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
+    prefix_word = None
+    last_of_group: dict[int, int] = {}
+    for i, raw in enumerate(cmd):
+        for group, flags in enumerate(_COMPANION_DEVICE_FLAG_GROUPS):
+            if _flag_name(str(raw)) in flags:
+                last_of_group[group] = i
+    for i in sorted(last_of_group.values()):
+        raw = str(cmd[i])
+        head, eq, inline = raw.partition("=")
+        if eq:
+            at, value, lead = i, inline, head + "="
+        elif i + 1 < len(cmd):
+            at, value, lead = i + 1, str(cmd[i + 1]), None
+        else:
+            continue
+        tokens: list[tuple[str, Optional[int]]] = []
+        for token in value.split(","):
+            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            physical = None
+            if match:
+                prefix_word = prefix_word or match.group(1)
+                n = int(match.group(2))
+                if inherited_ids is None:
+                    physical = n
+                elif n < len(inherited_ids):
+                    physical = int(inherited_ids[n])
+                if not may_widen and physical not in main_ids:
+                    physical = None
+            tokens.append((token, physical))
+        if any(physical is not None for _, physical in tokens):
+            sites.append((at, lead, tokens))
+    if not sites:
+        return list(main_ids), ""
+    widened = list(main_ids)
+    for _, _, tokens in sites:
+        for _, physical in tokens:
+            if physical is not None and physical not in widened:
+                widened.append(physical)
+    changed = False
+    for at, lead, tokens in sites:
+        rewritten = []
+        for token, physical in tokens:
+            if physical is None:
+                rewritten.append(token)
+                continue
+            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            rewritten.append(f"{match.group(1)}{widened.index(physical)}")
+        value = ",".join(rewritten)
+        new = f"{lead}{value}" if lead is not None else value
+        if new != cmd[at]:
+            cmd[at] = new
+            changed = True
+    if len(widened) > len(main_ids) and _extra_args_main_device(cmd) is None:
+        # Pinned cards lead the mask, so the main model's devices are the first positions.
+        cmd.extend(["--device", ",".join(f"{prefix_word}{k}" for k in range(len(main_ids)))])
+        changed = True
+    if not changed and widened == main_ids:
+        return list(main_ids), ""
+    return widened, f"{main_ids} -> {widened}"
+
+
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return a GPU draft-device override; cpu/none do not conflict with a pin."""
     last_dev = _extra_args_draft_device(extra_args)
@@ -29124,6 +29219,9 @@ class LlamaCppBackend:
                 # own devices, the child aborting on a pin it cannot see. The
                 # draft-device forms count too: parsed with no drafter loaded.
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
+                # companion flags fitted to the child's mask, refitted by the arch-crash retry
+                _companion_fit_mask: Optional[list[int]] = None
+                _companion_added_device: Optional[list[str]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
 
@@ -29231,6 +29329,31 @@ class LlamaCppBackend:
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
+                    # Companion flags use the unpinned numbering (#11810). Skipped for a
+                    # uuid/MIG mask (CUDA<n> is ambiguous) and an inherited LLAMA_ARG_DEVICE
+                    # (the appended --device would override it).
+                    _companion_widen = ""
+                    if not self._visibility_mask_is_unmappable() and not (
+                        _extra_args_main_device(cmd) is None
+                        and str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+                    ):
+                        _had_main_device = _extra_args_main_device(cmd) is not None
+                        _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
+                            cmd,
+                            _pin_ids,
+                            self._resolve_visible_physical_ids(),
+                            may_widen = not gpu_ids,
+                        )
+                        if _companion_widen:
+                            _companion_fit_mask = list(_pin_ids)
+                            if not _had_main_device and _extra_args_main_device(cmd) is not None:
+                                _companion_added_device = list(cmd[-2:])
+                    if _companion_widen:
+                        logger.info(
+                            "Companion device flags name GPUs by their unpinned "
+                            "numbering; fitted the pinned mask to them: %s",
+                            _companion_widen,
+                        )
                     self._emit_child_gpu_visibility(
                         env,
                         LlamaCppBackend._child_visibility_for(_pin_ids),
@@ -30470,10 +30593,36 @@ class LlamaCppBackend:
                                 "weights outgrow; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
+                        _retry_mask = list(_remaining)
+                        if _companion_fit_mask is not None:
+                            # tokens are positions in the crashed launch's mask
+                            if _companion_added_device is not None:
+                                for _k in range(len(cmd) - 1, 0, -1):
+                                    if cmd[_k - 1 : _k + 1] == _companion_added_device:
+                                        del cmd[_k - 1 : _k + 1]
+                                        break
+                            _had_main_device = _extra_args_main_device(cmd) is not None
+                            _retry_mask, _refit = _widen_pin_ids_for_companion_devices(
+                                cmd,
+                                list(_remaining),
+                                list(_companion_fit_mask),
+                                may_widen = not gpu_ids,
+                            )
+                            _companion_added_device = (
+                                list(cmd[-2:])
+                                if not _had_main_device and _extra_args_main_device(cmd) is not None
+                                else None
+                            )
+                            _companion_fit_mask = list(_retry_mask)
+                            if _refit:
+                                logger.info(
+                                    "Refitted companion device flags to the retry's mask: %s",
+                                    _refit,
+                                )
                         self._emit_child_gpu_visibility(
-                            env, ",".join(str(i) for i in _remaining), prefer_rocr = True
+                            env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
-                        _child_gpu_physical_ids = tuple(int(i) for i in _remaining)
+                        _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
                         # Same for the inherited env twins of the flags dropped
                         # below: the new mask re-indexes the survivors under them.
                         self._clear_split_placement_env(env)
