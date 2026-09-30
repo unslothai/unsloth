@@ -256,6 +256,7 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import { toast } from "@/lib/toast";
@@ -1005,7 +1006,53 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Mouse hover previews the flyout; a press pins or unpins it. Touch and keyboard pin it.
+  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
+  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
+  const moreOpen = moreHoverOpen || morePinnedOpen;
+  const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const moreContentRef = useRef<HTMLDivElement | null>(null);
+  // A hover preview must not move focus in or out of the composer.
+  const moreChosen = useRef(false);
+  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearMoreCloseTimer = useCallback(() => {
+    if (!moreCloseTimer.current) return;
+    clearTimeout(moreCloseTimer.current);
+    moreCloseTimer.current = null;
+  }, []);
+  const openMorePreview = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
+      clearMoreCloseTimer();
+      setMoreHoverOpen(true);
+    },
+    [clearMoreCloseTimer],
+  );
+  // Grace period for crossing the gap to the flyout.
+  const closeMorePreviewSoon = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
+      clearMoreCloseTimer();
+      moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
+    },
+    [clearMoreCloseTimer],
+  );
+  const setMoreOpen = useCallback(
+    (next: boolean) => {
+      clearMoreCloseTimer();
+      if (next) moreChosen.current = true;
+      setMorePinnedOpen(next);
+      if (!next) setMoreHoverOpen(false);
+    },
+    [clearMoreCloseTimer],
+  );
+  useEffect(() => clearMoreCloseTimer, [clearMoreCloseTimer]);
+  // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
+  const moreContentFocusProps = {
+    onOpenAutoFocus: (event: Event) => {
+      if (!moreChosen.current) event.preventDefault();
+    },
+  } as Record<string, unknown>;
   const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
   const moreFocusReturning = useRef(false);
   const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
@@ -5256,7 +5303,10 @@ export function AppSidebar() {
               })}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
-                <SidebarMenuItem>
+                <SidebarMenuItem
+                  onPointerEnter={openMorePreview}
+                  onPointerLeave={closeMorePreviewSoon}
+                >
                   <DropdownMenu
                     open={moreOpen}
                     onOpenChange={setMoreOpen}
@@ -5270,10 +5320,21 @@ export function AppSidebar() {
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
+                            ref={moreTriggerRef}
                             // More is a container, not a destination: no active style just because the current page
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
+                            // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
+                            onPointerDown={(event) => {
+                              if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
+                              event.preventDefault();
+                              // An open preview never mounts again, so focus it as a click-open would.
+                              if (!morePinnedOpen && moreHoverOpen) {
+                                moreContentRef.current?.focus({ preventScroll: true });
+                              }
+                              setMoreOpen(!morePinnedOpen);
+                            }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
@@ -5298,11 +5359,25 @@ export function AppSidebar() {
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent
+                      ref={moreContentRef}
                       side="right"
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onCloseAutoFocus={() => {
+                      onPointerEnter={openMorePreview}
+                      onPointerLeave={closeMorePreviewSoon}
+                      // The trigger handles its own presses.
+                      onPointerDownOutside={(event) => {
+                        if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+                      }}
+                      {...moreContentFocusProps}
+                      onCloseAutoFocus={(event) => {
+                        const chosen = moreChosen.current;
+                        moreChosen.current = false;
+                        if (!chosen) {
+                          event.preventDefault();
+                          return;
+                        }
                         moreFocusReturning.current = true;
                         queueMicrotask(() => {
                           moreFocusReturning.current = false;
