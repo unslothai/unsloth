@@ -8354,6 +8354,19 @@ class DiffusionBackend:
             att["reason"] = (
                 "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
             )
+        # The load recorded "speed tier does not capture" for the deferred tier; the profile that just engaged may
+        # have armed graphs, so re-derive the entry the same way the load does or the badge keeps saying "off".
+        graph = (state.resolved or {}).get("cuda_graph")
+        if isinstance(graph, dict):
+            graph["value"] = "on" if speed_applied.get("cuda_graph") else "off"
+            graph["reason"] = (
+                "denoiser step captured per input shape, replayed bit-identically"
+                if speed_applied.get("cuda_graph")
+                else str(
+                    getattr(state.pipe, "_unsloth_cuda_graph_reason", None)
+                    or "speed tier does not capture"
+                )
+            )
         logger.info(
             "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s)",
             ",".join(state.speed_optims) or "none",
