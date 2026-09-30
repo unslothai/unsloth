@@ -97,6 +97,16 @@ _PROBE = textwrap.dedent(
                     None if not torch.isfinite(a).all() else float((a - r).norm() / r.norm())
                     for a, r in zip(got, ref)
                 ]
+    # fp32 Q/K/V (DoRA promotes them) under bf16 autocast: SDPA casts to bf16 before dispatch.
+    for name, fn in (("eager", sdpa), ("compiled", compiled)):
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            got = grads(fn, 256, True, torch.float32)
+        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
+            ref = grads(sdpa, 256, True, torch.float32)
+        out[f"{name}-autocast-fp32-D256-mask1"] = [
+            None if not torch.isfinite(a).all() else float((a - r).norm() / r.norm())
+            for a, r in zip(got, ref)
+        ]
     with torch.no_grad():
         q = torch.randn(1, 2, 8, 256, device = "cuda", dtype = torch.bfloat16)
         m = torch.ones(8, 8, device = "cuda", dtype = torch.bool)

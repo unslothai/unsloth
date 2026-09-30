@@ -6541,7 +6541,11 @@ def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
         return False
     if not isinstance(query, torch.Tensor) or not query.is_cuda:
         return False
-    if query.dtype not in (torch.float16, torch.bfloat16):
+    dtype = query.dtype
+    # CUDA autocast casts fp32 SDPA inputs (e.g. DoRA-promoted Q/K/V) to half before dispatch.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16):
         return False
     if query.shape[-1] != 256:
         return False
