@@ -676,8 +676,10 @@ export function applyActiveModelStatusToStore(
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. placementAndContextFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines.
+    // case while advancing their loaded baselines. Never from a custom load: its status echoes
+    // the INI's placement and ctx-size, which would then ride into the next managed load.
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         placementOrContextChanged) &&
