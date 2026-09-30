@@ -69,6 +69,7 @@ export {
   type PerModelConfig,
   PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
+  adoptCachedRepoConfig,
   adoptLegacyConfigKey,
   isServedByLlamaCpp,
   contextPinPatch,

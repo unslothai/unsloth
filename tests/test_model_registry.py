@@ -268,3 +268,13 @@ def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, make_er
     monkeypatch.setattr(sys.modules[__name__], "HfApi", lambda: _FakeApi(error))
     with pytest.raises(pytest.skip.Exception):
         _test_model_uploaded(["unsloth/Qwen2.5-7B"])
+
+
+def test_qwen_2_5_coder_registered_without_dynamic_quants():
+    from unsloth.registry._qwen import Qwen_2_5_CoderMeta
+    from unsloth.registry.registry import _register_models
+
+    MODEL_REGISTRY.clear()
+    _register_models(Qwen_2_5_CoderMeta)
+    assert "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit" in MODEL_REGISTRY
+    assert not [k for k in MODEL_REGISTRY if "Coder" in k and k.endswith("unsloth-bnb-4bit")]

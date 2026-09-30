@@ -47,12 +47,6 @@ import {
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
 import {
-  type ManagedProviderUrlSettings,
-  loadManagedProviderUrls,
-  updateManagedProviderUrls,
-} from "../api/managed-provider-urls";
-import { isSettingsRouteAbsent } from "../api/settings-route-absent";
-import {
   type PreviewSharingSettings,
   loadPreviewSharing,
   rotatePreviewLinks,
@@ -67,6 +61,11 @@ import {
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
+import {
+  LIBRARY_CHATS_PREFS_STORAGE_KEY,
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
+} from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -77,6 +76,7 @@ import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { HubSettingsSection } from "../components/hub-settings-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -101,6 +101,9 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
+  LIBRARY_CHATS_PREFS_STORAGE_KEY,
   // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
@@ -222,16 +225,6 @@ export function GeneralTab() {
     null,
   );
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
-  const [managedProviderUrls, setManagedProviderUrls] =
-    useState<ManagedProviderUrlSettings | null>(null);
-  const [managedProviderUrlsError, setManagedProviderUrlsError] = useState<
-    string | null
-  >(null);
-  const [isSavingManagedProviderUrls, setIsSavingManagedProviderUrls] =
-    useState(false);
-  // A backend that does not serve the route has no such setting to show.
-  const [managedProviderUrlsAbsent, setManagedProviderUrlsAbsent] =
-    useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
   const launchAtLoginSetting = useDesktopBooleanSetting({
@@ -351,32 +344,6 @@ export function GeneralTab() {
     };
   }, [t, isOwner]);
 
-  useEffect(() => {
-    if (!isOwner) return;
-    let cancelled = false;
-    void loadManagedProviderUrls()
-      .then((settings) => {
-        if (cancelled) return;
-        setManagedProviderUrls(settings);
-        setManagedProviderUrlsError(null);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        if (isSettingsRouteAbsent(error)) {
-          setManagedProviderUrlsAbsent(true);
-          return;
-        }
-        setManagedProviderUrlsError(
-          error instanceof Error
-            ? error.message
-            : t("settings.general.managedProviderUrls.loadError"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [t, isOwner]);
-
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
     setHelperPrecacheError(null);
@@ -410,23 +377,6 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingPreviewSharing(false);
-    }
-  };
-
-  const saveManagedProviderUrls = async (allowed: boolean) => {
-    setIsSavingManagedProviderUrls(true);
-    setManagedProviderUrlsError(null);
-    try {
-      const settings = await updateManagedProviderUrls(allowed);
-      setManagedProviderUrls(settings);
-    } catch (error) {
-      setManagedProviderUrlsError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.managedProviderUrls.saveError"),
-      );
-    } finally {
-      setIsSavingManagedProviderUrls(false);
     }
   };
 
@@ -476,7 +426,7 @@ export function GeneralTab() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.general.title")}
@@ -501,64 +451,8 @@ export function GeneralTab() {
         <SettingsRow
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
-        >
-          <div className="flex min-w-0 flex-col items-end gap-1.5">
-            <div className="flex max-w-full items-center gap-2">
-              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
-                <Input
-                  type={showToken ? "text" : "password"}
-                  name="hf-token"
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  placeholder="hf_…"
-                  value={draftToken}
-                  onChange={(e) => setDraftToken(e.target.value)}
-                  onBlur={commitToken}
-                  className={cn(
-                    "h-8 w-full font-mono text-xs",
-                    tokenValidated ? "pr-14" : "pr-8",
-                  )}
-                />
-                {tokenValidated ? (
-                  // Decorative: pointer-events-none lets clicks reach the input underneath.
-                  <span
-                    className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
-                    role="img"
-                    aria-label={t("settings.general.tokenValidated")}
-                  >
-                    <Check className="size-4" strokeWidth={2.5} />
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setShowToken((s) => !s)}
-                  className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-                  aria-label={
-                    showToken
-                      ? t("settings.general.hideToken")
-                      : t("settings.general.showToken")
-                  }
-                  tabIndex={-1}
-                >
-                  {showToken ? (
-                    <EyeOff className="size-3.5" />
-                  ) : (
-                    <Eye className="size-3.5" />
-                  )}
-                </button>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8"
-                disabled={!draftToken && !hfToken}
-                onClick={clearHfToken}
-              >
-                {t("settings.general.clearToken")}
-              </Button>
-            </div>
-            {hfTokenPersistenceError ? (
+          below={
+            hfTokenPersistenceError ? (
               <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {hfTokenPersistenceError}
               </p>
@@ -570,7 +464,63 @@ export function GeneralTab() {
               <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {tokenValidation.error}
               </p>
-            ) : null}
+            ) : null
+          }
+        >
+          <div className="flex max-w-full items-center gap-2">
+            <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
+              <Input
+                type={showToken ? "text" : "password"}
+                name="hf-token"
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder="hf_…"
+                value={draftToken}
+                onChange={(e) => setDraftToken(e.target.value)}
+                onBlur={commitToken}
+                className={cn(
+                  "h-8 w-full font-mono text-xs",
+                  tokenValidated ? "pr-14" : "pr-8",
+                )}
+              />
+              {tokenValidated ? (
+                // Decorative: pointer-events-none lets clicks reach the input underneath.
+                <span
+                  className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                  role="img"
+                  aria-label={t("settings.general.tokenValidated")}
+                >
+                  <Check className="size-4" strokeWidth={2.5} />
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setShowToken((s) => !s)}
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={
+                  showToken
+                    ? t("settings.general.hideToken")
+                    : t("settings.general.showToken")
+                }
+                tabIndex={-1}
+              >
+                {showToken ? (
+                  <EyeOff className="size-3.5" />
+                ) : (
+                  <Eye className="size-3.5" />
+                )}
+              </button>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={!draftToken && !hfToken}
+              onClick={clearHfToken}
+            >
+              {t("settings.general.clearToken")}
+            </Button>
           </div>
         </SettingsRow>
         {/* The desktop owner authenticates via desktop auto-auth with a generated
@@ -609,42 +559,42 @@ export function GeneralTab() {
           <SettingsRow
             label={t("settings.general.startup.launchAtLogin")}
             description={t("settings.general.startup.launchAtLoginDescription")}
-          >
-            <div className="flex flex-col items-end gap-1">
-              <Switch
-                checked={launchAtLoginSetting.value ?? false}
-                disabled={
-                  launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-                }
-                onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-              />
-              {launchAtLoginSetting.error ? (
+            below={
+              launchAtLoginSetting.error ? (
                 <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                   {launchAtLoginSetting.error}
                 </span>
-              ) : null}
-            </div>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
           </SettingsRow>
 
           {closeToTraySetting.supported ? (
             <SettingsRow
               label={t("settings.general.startup.closeToTray")}
               description={t("settings.general.startup.closeToTrayDescription")}
-            >
-              <div className="flex flex-col items-end gap-1">
-                <Switch
-                  checked={closeToTraySetting.value ?? false}
-                  disabled={
-                    closeToTraySetting.value === null || closeToTraySetting.saving
-                  }
-                  onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-                />
-                {closeToTraySetting.error ? (
+              below={
+                closeToTraySetting.error ? (
                   <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                     {closeToTraySetting.error}
                   </span>
-                ) : null}
-              </div>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
             </SettingsRow>
           ) : null}
         </SettingsSection>
@@ -695,19 +645,19 @@ export function GeneralTab() {
         <SettingsRow
           label={t("settings.general.previewSharing.enableLabel")}
           description={t("settings.general.previewSharing.enableDescription")}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={previewSharing?.enabled ?? false}
-              disabled={!previewSharing || isSavingPreviewSharing}
-              onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
-            />
-            {previewSharingError ? (
+          below={
+            previewSharingError ? (
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {previewSharingError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            checked={previewSharing?.enabled ?? false}
+            disabled={!previewSharing || isSavingPreviewSharing}
+            onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
+          />
         </SettingsRow>
         <SettingsRow
           destructive={true}
@@ -725,44 +675,9 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {managedProviderUrlsAbsent ? null : (
-        <SettingsSection
-          title={t("settings.general.managedProviderUrls.sectionTitle")}
-        >
-          <SettingsRow
-            label={t("settings.general.managedProviderUrls.enableLabel")}
-            description={t(
-              "settings.general.managedProviderUrls.enableDescription",
-            )}
-          >
-            <div className="flex flex-col items-end gap-1">
-              <Switch
-                checked={managedProviderUrls?.allowed ?? false}
-                disabled={
-                  !managedProviderUrls ||
-                  isSavingManagedProviderUrls ||
-                  managedProviderUrls.lockedByEnvironment
-                }
-                onCheckedChange={(allowed) =>
-                  void saveManagedProviderUrls(allowed)
-                }
-              />
-              {managedProviderUrls?.lockedByEnvironment ? (
-                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
-                  {t("settings.general.managedProviderUrls.lockedByEnvironment")}
-                </span>
-              ) : null}
-              {managedProviderUrlsError ? (
-                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                  {managedProviderUrlsError}
-                </span>
-              ) : null}
-            </div>
-          </SettingsRow>
-        </SettingsSection>
-      )}
-
       <DocumentsRagSection />
+
+      <HubSettingsSection />
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
@@ -776,38 +691,38 @@ export function GeneralTab() {
               uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
             ),
           })}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                <Input
-                  type="number"
-                  min={uploadLimit?.minUploadSizeMb ?? 1}
-                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
-                  step={1}
-                  value={draftUploadLimit}
-                  aria-label={t("settings.general.uploads.maxUploadSize")}
-                  onChange={(event) => setDraftUploadLimit(event.target.value)}
-                  className="h-8 w-24"
-                />
-                <span className="text-xs font-medium text-muted-foreground">
-                  MB
-                </span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isSavingUploadLimit}
-                onClick={() => void saveUploadLimit()}
-              >
-                {isSavingUploadLimit ? t("common.saving") : t("common.save")}
-              </Button>
-            </div>
-            {uploadLimitError ? (
+          below={
+            uploadLimitError ? (
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {uploadLimitError}
               </span>
-            ) : null}
+            ) : null
+          }
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min={uploadLimit?.minUploadSizeMb ?? 1}
+                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                step={1}
+                value={draftUploadLimit}
+                aria-label={t("settings.general.uploads.maxUploadSize")}
+                onChange={(event) => setDraftUploadLimit(event.target.value)}
+                className="h-8 w-24"
+              />
+              <span className="text-xs font-medium text-muted-foreground">
+                MB
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isSavingUploadLimit}
+              onClick={() => void saveUploadLimit()}
+            >
+              {isSavingUploadLimit ? t("common.saving") : t("common.save")}
+            </Button>
           </div>
         </SettingsRow>
       </SettingsSection>
@@ -819,18 +734,8 @@ export function GeneralTab() {
           description={t(
             "settings.general.helperLlm.preloadOnStartupDescription",
           )}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={helperPrecache?.enabled ?? false}
-              disabled={
-                !helperPrecache ||
-                isSavingHelperPrecache ||
-                helperPrecache.disabledByEnv
-              }
-              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
-            />
-            {helperPrecache?.disabledByEnv ? (
+          below={
+            helperPrecache?.disabledByEnv ? (
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
                 {t("settings.general.helperLlm.disabledByEnv")}
               </span>
@@ -838,8 +743,18 @@ export function GeneralTab() {
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {helperPrecacheError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            checked={helperPrecache?.enabled ?? false}
+            disabled={
+              !helperPrecache ||
+              isSavingHelperPrecache ||
+              helperPrecache.disabledByEnv
+            }
+            onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+          />
         </SettingsRow>
       </SettingsSection>
         </>

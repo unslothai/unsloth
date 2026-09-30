@@ -156,11 +156,20 @@ CORE_FACTORIES = {
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
+    "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    "routes.skills:PUT:/{name}": Factory(
+        "skill",
+        {"description": EDITED, "instructions": "Instructions"},
+        fragment = EDITED,
+        absent = SENTINEL,
+    ),
+    "routes.skills:DELETE:/{name}": Factory("skill", success = 204, absent = SENTINEL),
 }
 
 
 from . import (  # noqa: E402  domain tables import Factory and register their seeders first
     factories_chat,
+    factories_library,
     factories_media,
     factories_providers,
     factories_rag,
@@ -170,6 +179,7 @@ from . import (  # noqa: E402  domain tables import Factory and register their s
 
 DOMAINS = (
     factories_chat,
+    factories_library,
     factories_media,
     factories_providers,
     factories_rag,

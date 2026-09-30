@@ -7,13 +7,15 @@
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
  *  request can never fit into, hence its own reason. `empty` is a clean finish that produced
- *  nothing, which is a failure to report rather than an answer. */
+ *  nothing, which is a failure to report rather than an answer. `quote_cut` flags a
+ *  possible mid-quote stop. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
   | "interrupted"
   | "context_window"
-  | "empty";
+  | "empty"
+  | "quote_cut";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
@@ -37,6 +39,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "interrupted",
   "context_window",
   "empty",
+  "quote_cut",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -96,6 +99,7 @@ const STATUS_REASON: Record<
   // reason, losing the explanation on reload. `context_window` maps here for the same
   // reason. Not `error` either, which would paint a red box over the bar.
   empty: "length",
+  quote_cut: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -115,6 +119,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
   empty: "The model returned an empty response",
+  quote_cut: "This response may have ended early",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -128,6 +133,9 @@ const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   context_window: "Start a new chat, or shorten this one, to keep going",
   // There is no partial to resume from, so the way out is another attempt.
   empty: "Try again, or pick a different model",
+  // Detection is heuristic, and continuation may repeat the cut.
+  quote_cut:
+    "The model may have emitted a special token while quoting it. Write special tokens with a space inside, like < |im_end|> or < end_of_turn>, ask the model to do the same, and try again",
 };
 
 /** What to do about a turn that stopped early, or `null` when resuming is the answer. */
@@ -1030,6 +1038,26 @@ export function createAutoContinueLeaseKeeper({
   };
 }
 
+/** Assistant messages whose run this page started. Only these auto-continue: `spent` resets on
+ *  reload, so a saved cut would otherwise re-run every time its chat is opened. */
+const startedThisSession = new Set<string>();
+
+/** Called by the chat adapter as each run starts, continuations included. */
+export function noteRunStartedThisSession(
+  messageId: string | null | undefined,
+): void {
+  if (messageId) {
+    startedThisSession.add(messageId);
+  }
+}
+
+/** Whether this page started the run that produced `messageId`. */
+export function runStartedThisSession(
+  messageId: string | null | undefined,
+): boolean {
+  return Boolean(messageId) && startedThisSession.has(messageId as string);
+}
+
 /** Whether THIS message is the one to continue automatically. `shouldAutoContinue` answers about
  *  the turn and keeps saying yes after a message has been claimed, since the budget is per
  *  turn while the claim is per message, so rendering off the turn's answer alone showed a
@@ -1040,7 +1068,7 @@ export function shouldAutoContinueMessage(
   key: string | null | undefined,
   options: Parameters<typeof shouldAutoContinue>[2] = {},
 ): boolean {
-  if (wasAutoContinued(messageId)) {
+  if (!runStartedThisSession(messageId) || wasAutoContinued(messageId)) {
     return false;
   }
   return shouldAutoContinue(reason, key, options);
@@ -1052,6 +1080,7 @@ export function shouldAutoContinueMessage(
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
+    startedThisSession.clear();
     tab.reset();
   } else {
     spent.delete(key);

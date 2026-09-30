@@ -40,6 +40,8 @@ from routes.inference import (
 
 import importlib  # noqa: E402
 import types  # noqa: E402
+
+import pytest  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
 
@@ -144,6 +146,14 @@ _MESSAGE_SHAPE_TPL = (
     "<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if ns.think %}<think>\n{% else %}<think></think>{% endif %}{% endif %}"
+)
+# Qwen override shape: an inline ``<|think_off|>`` in any message closes the block.
+_THINK_OFF_TAG_TPL = (
+    "{% set ns = namespace(off = false) %}"
+    "{% for m in messages %}{% if '<|think_off|>' in m['content'] %}{% set ns.off = true %}"
+    "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n"
+    "{% if ns.off %}<think>\n\n</think>\n\n{% else %}<think>\n{% endif %}{% endif %}"
 )
 # Kimi shape: renders history into the prompt but opens no block of its own.
 _HISTORY_ONLY_TPL = (
@@ -622,6 +632,7 @@ def _sf_route_message(
     is_vision = False,
     is_mlx = False,
     features = None,
+    model_info = None,
     **body,
 ):
     """POST a non-streaming safetensors chat completion and return the assistant message."""
@@ -643,6 +654,7 @@ def _sf_route_message(
                 "chat_template_info": {"template": template},
                 "is_vision": is_vision,
                 "is_mlx": is_mlx,
+                **(model_info or {}),
             }
         }
 
@@ -740,6 +752,39 @@ def test_route_keeps_literal_think_text_on_an_mlx_image_turn(monkeypatch):
     )
     assert message["content"] == answer
     assert not message["reasoning_content"]
+
+
+_THINK_OFF_MESSAGES = [
+    {"role": "system", "content": "You are helpful. <|think_off|>"},
+    {"role": "user", "content": "What is the capital of France?"},
+]
+
+
+@pytest.mark.parametrize(
+    "reason, content, reasoning",
+    [
+        (None, "Paris.", ""),
+        # A refused override is not what renders, so the shipped template's open block decides.
+        ("it could not render a conversation", "", "Paris."),
+    ],
+)
+def test_route_probes_the_applied_mlx_override_not_the_shipped_template(
+    monkeypatch, reason, content, reasoning
+):
+    """An override closing the block on an inline tag must not be read through the shipped one."""
+    message = _sf_route_message(
+        monkeypatch,
+        _THINK_TPL,
+        ["Paris."],
+        is_mlx = True,
+        model_info = {
+            "chat_template_override_requested": _THINK_OFF_TAG_TPL,
+            "chat_template_override_reason": reason,
+        },
+        messages = _THINK_OFF_MESSAGES,
+    )
+    assert (message["content"] or "") == content
+    assert (message["reasoning_content"] or "") == reasoning
 
 
 def test_route_carries_the_effort_field_into_the_gate(monkeypatch):

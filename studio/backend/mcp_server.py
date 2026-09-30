@@ -210,7 +210,7 @@ def create_studio_mcp() -> FastMCP:
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
-        # Omit an unset load_in_4bit so the route can pick 16-bit for a full fine-tune.
+        # Omit an unset load_in_4bit so the backend can pick 16-bit for a full fine-tune.
         optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
             checkpoint_path = checkpoint_path,

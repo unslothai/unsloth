@@ -163,6 +163,7 @@ export function buildCachedInventoryRow(
     audio_type?: string | null;
     single_file?: boolean;
     companion?: boolean;
+    companion_prefetch?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
@@ -220,6 +221,7 @@ export function buildCachedInventoryRow(
     audioType: row.audio_type ?? null,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
+    companionPrefetch: row.companion_prefetch ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
@@ -298,6 +300,7 @@ export function buildLocalInventoryRows(
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
         partialResumable: model.partial_resumable === true,
+        companionPrefetch: model.companion_prefetch === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,

@@ -172,7 +172,8 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   // The spacer stands in for one of those buttons while the navbar renders
   // its own trigger, so it holds the same fixed width.
   assert.match(titlebar, /aria-hidden="true" className="size-\[30px\] shrink-0"/);
-  assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
+  // The window controls are Windows caption buttons: the band's full height, 46px wide.
+  assert.match(titlebar, /inline-flex h-full w-\[46px\] shrink-0/);
   // The padding and gaps around them still scale, so the drag region has to
   // start further out or it covers the last button.
   // max(), because the buttons are fixed: the slot may grow with the padding
@@ -398,26 +399,22 @@ test("a sidebar row's inset scales on both sides", () => {
 test("a scaled media rail leaves the preview its minimum", () => {
   // At 200% a shrink-0 rail passed the 50rem split it sits in, clipping the
   // preview. The header column shrinks the same way, so the dividers line up.
-  for (const [file, width, split] of [
-    ["features/images/images-page.tsx", "408px", "@[50rem]"],
-    ["features/audio/audio-page.tsx", "408px", "@[50rem]"],
-    ["features/video/video-page.tsx", "400px", "lg"],
-  ] as const) {
+  // The width is the draggable --media-rail-width, falling back to the old fixed one.
+  const rail = "var(--media-rail-width,calc(408px*var(--ui-space-scale,1)))";
+  for (const file of [
+    "features/images/images-page.tsx",
+    "features/audio/audio-page.tsx",
+    "features/video/video-page.tsx",
+  ]) {
     const source = readSrc(file);
     assert.ok(
-      source.includes(
-        `${split}:w-[min(calc(${width}*var(--ui-space-scale,1)),calc(100%-13rem))]`,
-      ),
+      source.includes(`@[50rem]:w-[min(${rail},calc(100%-13rem))]`),
       `${file} rail can outgrow its split`,
     );
-    if (split !== "lg") {
-      assert.ok(
-        source.includes(
-          `grid-cols-[minmax(0,calc(${width}*var(--ui-space-scale,1)))_minmax(13rem,1fr)]`,
-        ),
-        `${file} header column drifts from its rail`,
-      );
-    }
+    assert.ok(
+      source.includes(`grid-cols-[minmax(0,${rail})_minmax(13rem,1fr)]`),
+      `${file} header column drifts from its rail`,
+    );
   }
 });
 
@@ -468,7 +465,7 @@ test("composite settings controls shrink inside their row", () => {
   // wrapper can shrink.
   assert.ok(
     readSrc("features/settings/tabs/general-tab.tsx").includes(
-      '<div className="flex min-w-0 flex-col items-end gap-1.5">\n            <div className="flex max-w-full items-center gap-2">\n              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">',
+      '<div className="flex max-w-full items-center gap-2">\n            <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">',
     ),
   );
   assert.ok(

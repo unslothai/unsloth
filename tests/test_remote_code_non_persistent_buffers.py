@@ -40,7 +40,13 @@ def _remote_module():
     if name in sys.modules:
         return sys.modules[name]
     module = types.ModuleType(name)
-    sys.modules.setdefault("transformers_modules", types.ModuleType("transformers_modules"))
+    # The real package, never a bare stand-in: one without __path__ breaks the relative imports of
+    # every remote module transformers loads later in this process.
+    from transformers.dynamic_module_utils import create_dynamic_module
+
+    create_dynamic_module("transformers_modules")
+    import transformers_modules  # noqa: F401
+
     sys.modules[name] = module
 
     class TinyRemoteConfig(PretrainedConfig):

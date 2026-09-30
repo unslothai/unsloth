@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  ProviderApiType,
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
@@ -15,6 +16,7 @@ export interface ExternalProviderConfig {
   name: string;
   /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
+  apiType?: ProviderApiType;
   /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
   /** Cached available model ids from the provider's /models response. */
@@ -40,6 +42,8 @@ export interface ExternalProviderConfig {
   promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
+  /** llama.cpp only, this browser only: reload models on connect and reconnect. */
+  autoReloadModels?: boolean;
   /** Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the create dialog
    *  and is the TTL the auto-create-per-thread path POSTs. OpenAI's hard default is 20. */
   openaiContainerTtlMinutes?: number;
@@ -518,6 +522,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     providerType,
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
+    apiType: raw.apiType === "responses" ? "responses" : "chat_completions",
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
@@ -542,6 +547,8 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? raw.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&
