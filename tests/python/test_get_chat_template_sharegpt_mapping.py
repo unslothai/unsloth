@@ -61,6 +61,28 @@ def test_sharegpt_mapping_renders_like_role_content(name, add_generation_prompt)
     assert _render(mapped, role_content, add_generation_prompt) == expected
 
 
+def test_sharegpt_mapping_keeps_extra_message_keys():
+    thinking = {"thinking": "Let me think."}
+    conversation = CONVERSATION[:3]
+    sharegpt = [
+        dict(
+            {"from": SHAREGPT_ROLES[role], "value": text},
+            **(thinking if role == "assistant" else {}),
+        )
+        for role, text in conversation
+    ]
+    role_content = [
+        dict({"role": role, "content": text}, **(thinking if role == "assistant" else {}))
+        for role, text in conversation
+    ]
+
+    expected = _render(get_chat_template(_tokenizer(), "gpt-oss"), role_content, False)
+    mapped = get_chat_template(_tokenizer(), "gpt-oss", mapping = SHAREGPT)
+
+    assert "Let me think." in expected
+    assert _render(mapped, sharegpt, False) == expected
+
+
 def test_custom_template_reading_sharegpt_keys_keeps_working():
     template = (
         "{{ bos_token }}{% for message in messages %}"

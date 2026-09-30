@@ -2116,8 +2116,7 @@ def get_chat_template(
             "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
             ".get(message[" + role + "], message[" + role + "]) -%}" + \
             "{%- set sharegpt.messages = sharegpt.messages + " + \
-            "[{" + role + " : message[" + role + "], " + content + " : message[" + content + "], " + \
-            "'role' : role, 'content' : message[" + content + "]}] -%}" + \
+            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
             "{%- endfor -%}" + \
             "{%- set messages = sharegpt.messages -%}" + \
             "{%- endif %}" + \
