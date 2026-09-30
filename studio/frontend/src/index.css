@@ -374,9 +374,9 @@
 	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
 	   --picker-control-pad. Height matches the h-9 it replaces at 16px. */
 	--picker-control-h: calc(1.125rem * var(--ui-space-scale, 1) + 1.125rem * var(--ui-font-scale, 1));
-	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. It
-	   also stops the "Trending" label clipping, so it tracks the scale. */
-	--picker-control-pad: calc(0.75rem * var(--ui-space-scale, 1));
+	/* Extra width for Search Hub and the two dropdowns. Sized so the
+	   Safetensors filter (dot and label) fits, so it tracks the scale. */
+	--picker-control-pad: calc(1.5rem * var(--ui-space-scale, 1));
 	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
 	   side, i.e. px-3 to px-4 on the tabs. */
 	--picker-tab-pad: calc(0.5rem * var(--ui-space-scale, 1));
