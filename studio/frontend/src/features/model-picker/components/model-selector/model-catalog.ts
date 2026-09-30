@@ -9,6 +9,7 @@ import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.
 import {
   AUDIO_CPP_MODELS,
   type AudioCppTask,
+  audioCppDisplayName,
 } from "../../../audio/audio-cpp-catalog.ts";
 import {
   type GgufFitClass,
@@ -172,37 +173,23 @@ const bf16Single = (
   ...extra,
 });
 
-// An audio.cpp package. Its weights are a GGUF, but one only audiocpp_server reads: format "gguf"
-// would send the Audio page down the llama.cpp path with a gguf_variant, so it is typed as a
-// pipeline that takes no dense quant. The size is the package download.
-const audioCpp = (repoId: string, approxSizeGb: number): ModelArtifact => ({
-  repoId,
-  format: "bf16",
-  loadKind: "pipeline",
-  label: "audio.cpp",
-  approxSizeGb,
-  keywords: ["audio.cpp", "audiocpp"],
-  denseQuantable: false,
-});
-
-const AUDIO_CPP_DESCRIPTIONS: Record<AudioCppTask, string> = {
-  tts: "Text-to-speech · audio.cpp",
-  music: "Text-to-music · audio.cpp",
-  asr: "Speech-to-text · audio.cpp",
+const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
+  tts: "Text-to-speech",
+  music: "Text-to-music",
+  asr: "Speech-to-text",
 };
 
-// One group per curated audio.cpp model. Music lives in Speak like MiniMax Music 3, since both
-// load into the main audio slot; ASR maps to the audiocpp dictation sidecar.
-const audioCppGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
+// Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
+// quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
+// Music lives in Speak like MiniMax Music 3, since both load into the main audio slot.
+const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
   AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
     canonicalId: model.id,
-    displayName: model.displayName,
-    description: AUDIO_CPP_DESCRIPTIONS[model.task],
+    displayName: audioCppDisplayName(model.id),
+    description: AUDIO_GGUF_DESCRIPTIONS[model.task],
     scope: "audio",
     task: model.task === "asr" ? "stt" : "tts",
-    artifacts: [
-      audioCpp(model.id, Math.round((model.sizeBytes / 1024 ** 3) * 100) / 100),
-    ],
+    artifacts: [gguf(model.id)],
   }));
 
 // Sizes are steady resident estimates (GB) used only for routing; missing = never auto-pick
@@ -668,7 +655,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  ...audioCppGroups(["tts", "music"]),
+  ...audioGgufGroups(["tts", "music"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.
@@ -738,7 +725,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     task: "stt",
     artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
-  ...audioCppGroups(["asr"]),
+  ...audioGgufGroups(["asr"]),
 ];
 
 

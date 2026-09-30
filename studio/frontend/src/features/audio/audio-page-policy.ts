@@ -9,13 +9,14 @@ import {
   AUDIO_CPP_MUSIC_MIN_SECONDS,
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
+  audioCppDisplayName,
   audioCppModelFor,
-  isAudioCppModelId,
 } from "./audio-cpp-catalog.ts";
 
-/** Why the installed audio.cpp runtime cannot run this speech or music model, or null when it can
- *  or cannot be told (no status yet, or a server that predates the runtime block). Mirrors the
- *  backend's model_runtime_problem so a pick is refused before its load returns 501. */
+/** Why the installed audio runtime cannot run this recommended speech or music model, or null
+ *  when it can or cannot be told (no status yet, a server that predates the runtime block, or a
+ *  repo the backend judges at load). Mirrors the backend's model_runtime_problem so a pick is
+ *  refused before its load returns 501. */
 export function audioCppRuntimeProblem(
   id: string | null | undefined,
   runtime: AudioCppRuntimeStatus | null | undefined,
@@ -23,15 +24,31 @@ export function audioCppRuntimeProblem(
   const model = audioCppModelFor(id);
   if (!model || model.task === "asr" || !runtime) return null;
   if (!runtime.available) {
-    return "The audio.cpp runtime is not installed. Run `unsloth studio update` to install it.";
+    return "The audio runtime is not installed. Run `unsloth studio update` to install it.";
   }
   if (model.needsEspeak && !runtime.espeak) {
     return (
-      `${model.displayName} needs an audio.cpp build with eSpeak-ng, and the installed runtime ` +
-      "has none. Run `unsloth studio update` to install the Unsloth audio.cpp bundle."
+      `${audioCppDisplayName(model.id)} needs an audio runtime built with eSpeak-ng, and the ` +
+      "installed one has none. Run `unsloth studio update` to install the Unsloth bundle."
     );
   }
   return null;
+}
+
+/** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
+ *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
+const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
+
+/** Whether the loaded music model refuses to generate without a description. */
+export function musicNeedsDescription(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return (
+    audioType === "minimax_music3" ||
+    (audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE &&
+      DESCRIBED_MUSIC_FAMILIES.has(audioFamily ?? ""))
+  );
 }
 
 export type AudioBusy =
@@ -106,7 +123,14 @@ const TTS_AUDIO_TYPES = new Set([
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
 ]);
-const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+// The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
+const GGUF_TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "bicodec",
+  "dac",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
   "moss_tts_local",
@@ -138,7 +162,7 @@ export function nativeAudioInstructionsKind(
   if (audioType === "moss_tts_local") {
     return "style";
   }
-  // Forwarded as the audio.cpp instruction; families without one ignore it.
+  // Forwarded as the runtime's instruction; families without one ignore it.
   if (audioType === AUDIO_CPP_TTS_AUDIO_TYPE) {
     return "voice";
   }
@@ -151,8 +175,8 @@ export function nativeAudioInstructionsKind(
   return null;
 }
 
-/** The music length range the loaded model honours. audio.cpp clamps tighter than MiniMax
- *  Music 3; both take the same 25 frames per second. */
+/** The music length range the loaded model honours. The GGUF runtime clamps tighter than the
+ *  MiniMax Music 3 pipeline; both take the same 25 frames per second. */
 export function musicDurationRange(requiresCuda: boolean): {
   min: number;
   max: number;
@@ -162,7 +186,7 @@ export function musicDurationRange(requiresCuda: boolean): {
     : { min: AUDIO_CPP_MUSIC_MIN_SECONDS, max: AUDIO_CPP_MUSIC_MAX_SECONDS };
 }
 
-/** Whether temperature and token length reach the model. audio.cpp speech keeps each
+/** Whether temperature and token length reach the model. GGUF runtime speech keeps each
  *  family's own sampling and lets the server bound the length, so both would be ignored. */
 export function audioSamplingControlsApply(audioType?: string | null): boolean {
   return audioType !== AUDIO_CPP_TTS_AUDIO_TYPE;
@@ -344,8 +368,6 @@ export function isGgufTtsTarget({
    * name heuristics, blind to a GGUF repo whose ids do not spell it. */
   isGguf?: boolean | null;
 }): boolean {
-  // An audio.cpp id spells "-GGUF" twice, but audiocpp_server reads it, never llama.cpp.
-  if (isAudioCppModelId(repoId) || isAudioCppModelId(loadId)) return false;
   const endsWithGguf = (value: string | null | undefined): boolean =>
     Boolean(value?.toLowerCase().endsWith(".gguf"));
   return Boolean(

@@ -14,7 +14,28 @@ import wave
 import pytest
 
 from core.inference import audio_cpp_server as srv
-from core.inference.audio_cpp_models import lookup
+from core.inference.audio_cpp_models import AudioCppModel, AudioCppVariant, RepoFile
+
+
+def _model(folder: str, family: str, task: str) -> AudioCppModel:
+    main = RepoFile(f"{folder}/{folder.lower()}-q8_0.gguf", 1)
+    variant = AudioCppVariant("Q8_0", (main,), main.path)
+    return AudioCppModel(
+        id = f"audio-cpp/audio.cpp-gguf/{folder}",
+        repo_id = "audio-cpp/audio.cpp-gguf",
+        folder = folder,
+        display_name = folder,
+        family = family,
+        task = task,
+        server_task = task,
+        variant = variant,
+        variants = (variant,),
+        default_variant = "Q8_0",
+    )
+
+
+CANARY = _model("Canary-180M-Flash-GGUF", "canary_asr", "asr")
+KOKORO = _model("Kokoro-82M-GGUF", "kokoro_tts", "tts")
 
 FAKE_SERVER = textwrap.dedent(
     r"""
@@ -88,7 +109,7 @@ def fake_binary(tmp_path, monkeypatch):
 
 def test_ready_only_when_our_model_id_is_listed(fake_binary, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "_SERVER_START_TIMEOUT_SECONDS", 4.0)
-    model = lookup("audiocpp-canary-180m-flash")
+    model = CANARY
     server = srv.AudioCppServer.start(model, str(tmp_path / "m.gguf"))
     try:
         assert server.alive() and server._probe()
@@ -107,7 +128,7 @@ def test_readiness_ignores_an_ambient_http_proxy(fake_binary, tmp_path, monkeypa
         monkeypatch.setenv(name, "http://127.0.0.1:9")
     for name in ("NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising = False)
-    server = srv.AudioCppServer.start(lookup("audiocpp-kokoro-82m"), str(tmp_path / "m.gguf"))
+    server = srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf"))
     try:
         assert server._probe()
     finally:
@@ -115,7 +136,7 @@ def test_readiness_ignores_an_ambient_http_proxy(fake_binary, tmp_path, monkeypa
 
 
 def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
-    server = srv.AudioCppServer.start(lookup("audiocpp-kokoro-82m"), str(tmp_path / "m.gguf"))
+    server = srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf"))
     try:
         cancel = threading.Event()
         threading.Timer(0.3, cancel.set).start()
@@ -142,7 +163,7 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
 def test_transcription_multipart_carries_model_language_and_file(fake_binary, tmp_path):
     from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar
 
-    model = lookup("audiocpp-canary-180m-flash")
+    model = CANARY
     server = srv.AudioCppServer.start(model, str(tmp_path / "m.gguf"))
     try:
         side = AudioCppSttSidecar()
@@ -158,9 +179,7 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
         AudioCppSttSidecar,
         SttTranscriptionCancelledError,
     )
-    server = srv.AudioCppServer.start(
-        lookup("audiocpp-canary-180m-flash"), str(tmp_path / "m.gguf")
-    )
+    server = srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
     try:
         side = AudioCppSttSidecar()
         side._server = server
@@ -184,7 +203,7 @@ def test_threads_budget_reaches_the_command_line(fake_binary, tmp_path, monkeypa
 
     monkeypatch.setattr(srv.subprocess, "Popen", spy)
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "3")
-    server = srv.AudioCppServer.start(lookup("audiocpp-kokoro-82m"), str(tmp_path / "m.gguf"))
+    server = srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf"))
     server.stop()
     assert seen["command"][-2:] == ["--threads", "3"]
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "zero")

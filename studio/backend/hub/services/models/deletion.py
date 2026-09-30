@@ -260,6 +260,28 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     return aliased if len(aliased) == 1 else {wanted}
 
 
+def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(own files, protected files)`` of an audio.cpp package mix being deleted.
+
+    A package mix (MiniMax Music 3, YuE2) is several GGUFs plus configs, some of them shared with
+    other mixes, so the quant key alone neither finds all of its files nor knows which a sibling
+    still needs. Own files are the mix's whole file list; protected files are every file of the
+    other mixes still fully on disk. Both empty for any other repo.
+    """
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:  # noqa: BLE001 - no audio.cpp support, no package layout
+        return frozenset(), frozenset()
+    names = [name for _snap, _blob, name in _repo_file_matches(target_repo, lambda name: True)]
+    packages = package_variant_files(names)
+    if not packages:
+        return frozenset(), frozenset()
+    wanted = (variant or "").strip().lower()
+    own = next((files for key, files in packages.items() if key.lower() == wanted), ())
+    protected = {path for key, files in packages.items() if key.lower() != wanted for path in files}
+    return frozenset(own), frozenset(protected)
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -278,11 +300,18 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        matched = _repo_file_matches(
-            target_repo,
-            lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
-            and gguf_variant_key(name).lower() in keys,
-        )
+        package_files, protected = _audio_cpp_package_scope(target_repo, variant)
+        matched = [
+            match
+            for match in _repo_file_matches(
+                target_repo,
+                lambda name, keys = wanted_keys: name in package_files
+                or (_is_main_gguf_filename(name) and gguf_variant_key(name).lower() in keys),
+            )
+            # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
+            # depth decoder) stays.
+            if match[2] not in protected
+        ]
 
         for snap, _blob, name in matched:
             try:
@@ -878,7 +907,7 @@ async def delete_cached_model_response(
         ):
             return "Unload the model before deleting"
         if _audio_cpp_blocks_delete(repo_id):
-            return "Unload the audio.cpp model before deleting"
+            return "Unload the audio model before deleting"
         return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
 
     try:
@@ -926,18 +955,17 @@ async def delete_cached_model_response(
             cache_path,
             only_if_orphan = only_if_orphan,
         )
-        from utils.hidden_models import is_audio_cpp_repo_id
+        # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
+        # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
+        from core.inference.audio_cpp_files import prune_link_farm
+        from hub.utils.hf_cache_state import scoped_delete_root
 
-        if is_audio_cpp_repo_id(repo_id):
-            # The link farm hardlinks the deleted blobs; without this they keep their disk space.
-            from core.inference.audio_cpp_files import prune_link_farm
-            from hub.utils.hf_cache_state import scoped_delete_root
+        # The farm beside the hub root the repo was deleted from: cache_path names the repo folder,
+        # which need not be in the active cache.
+        await asyncio.to_thread(prune_link_farm, scoped_delete_root("model", repo_id, cache_path))
+        from core.inference.audio_cpp_models import forget
 
-            # The farm beside the hub root the repo was deleted from: cache_path names the repo folder,
-            # which need not be in the active cache.
-            await asyncio.to_thread(
-                prune_link_farm, scoped_delete_root("model", repo_id, cache_path)
-            )
+        forget()
         return result
     finally:
         downloads.registry.end_delete(repo_key, variant)
@@ -945,25 +973,27 @@ async def delete_cached_model_response(
 
 
 def _audio_cpp_blocks_delete(repo_id: str) -> bool:
-    """Whether an audio.cpp model from this umbrella repo is resident or loading. Its id is a subfolder
-    of the repo, so the id comparisons of the other guards never match it."""
-    from utils.hidden_models import is_audio_cpp_repo_id
-
-    if not is_audio_cpp_repo_id(repo_id):
-        return False
-    from core.inference.audio_cpp_models import is_audio_cpp_model
+    """Whether an audio.cpp model from this repo is resident or loading. An umbrella id names a
+    subfolder of the repo, so the id comparisons of the other guards never match it."""
+    from core.inference.audio_cpp_models import repo_of
     from core.inference.orchestrator import peek_inference_backend
     from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+
+    wanted = (repo_id or "").strip().lower()
+
+    def holds(name) -> bool:
+        repo = repo_of(name) if isinstance(name, str) else None
+        return bool(repo and repo.lower() == wanted)
 
     backend = peek_inference_backend()
     active = getattr(backend, "active_model_name", None) if backend is not None else None
     loading = tuple(getattr(backend, "loading_models", ()) or ()) if backend is not None else ()
     sidecar = get_audio_cpp_stt_sidecar()
-    return bool(
-        is_audio_cpp_model(active)
-        or any(is_audio_cpp_model(name) for name in loading)
-        or sidecar.loaded_model
-        or sidecar.is_loading()
+    return (
+        holds(active)
+        or any(holds(name) for name in loading)
+        or holds(sidecar.loaded_model)
+        or holds(sidecar.loading_model)
     )
 
 

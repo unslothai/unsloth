@@ -109,11 +109,12 @@ const TTS_PREVIEW_TEXT =
   "Hello from Unsloth! This is a preview of the selected voice.";
 
 /** Source repository shown under a model row. Curated Whisper models download
- * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */
+ * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py).
+ * A package of the shared GGUF repo is already named after its folder, so its
+ * row shows the name alone. */
 function sttModelSource(model: SttModel): string {
-  return isCuratedSttModel(model) &&
-    !MTMD_STT_MODELS.has(model) &&
-    !AUDIO_CPP_STT_MODELS.has(model)
+  if (AUDIO_CPP_STT_MODELS.has(model)) return sttModelName(model);
+  return isCuratedSttModel(model) && !MTMD_STT_MODELS.has(model)
     ? `unslothai/whisper-${model}-GGUF`
     : getSttModelRepo(model);
 }

@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Curated audio.cpp models, mirrored from the backend's audio_cpp_models.py. audio.cpp publishes
-// every package as a subfolder of one Hub repo, so a Studio id is that repo plus the subfolder
-// ("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"). Three segments never collide with an owner/name
-// repo. Speech-to-text entries are also addressed by a short key, which is what the dictation
-// settings store. Free of app imports so the node test runner can load it directly.
+// Recommended audio GGUF models that the backend serves through its audio runtime. They are
+// ordinary GGUF repos to the rest of the app (variants, fit, downloads); this list only seeds the
+// Audio pickers and dictation settings. Any other repo the backend recognises from the GGUF header
+// works too. Packages in the shared repo are addressed as the repo plus the top-level folder
+// ("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"). Free of app imports so the node test runner can
+// load it directly.
 
 export const AUDIO_CPP_REPO = "audio-cpp/audio.cpp-gguf";
 
-/** The audio_type the backend reports for a loaded audio.cpp speech or music model. */
+/** The audio_type the backend reports for these speech and music models. */
 export const AUDIO_CPP_TTS_AUDIO_TYPE = "audiocpp_tts";
 export const AUDIO_CPP_MUSIC_AUDIO_TYPE = "audiocpp_music";
 export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
@@ -20,16 +21,12 @@ export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
 export type AudioCppTask = "tts" | "music" | "asr";
 
 export interface AudioCppModel {
-  /** Studio id: `${AUDIO_CPP_REPO}/<folder>`. */
+  /** Hub repo id, or `${AUDIO_CPP_REPO}/<folder>` for a package in the shared repo. */
   id: string;
-  key: string;
-  displayName: string;
   task: AudioCppTask;
-  /** Download size, matching the backend's size_bytes. */
-  sizeBytes: number;
   /** ASR only: the primary language codes the model transcribes. Absent = multilingual. */
   languages?: readonly string[];
-  /** Phonemizes with eSpeak-ng, which upstream audio.cpp bundles are built without (backend
+  /** Phonemizes with eSpeak-ng, which upstream runtime bundles are built without (backend
    *  needs_espeak). */
   needsEspeak?: boolean;
 }
@@ -44,130 +41,132 @@ export interface AudioCppRuntimeStatus {
 
 const MB = 1024 * 1024;
 
-const m = <const K extends string, const T extends AudioCppTask>(
-  folder: string,
-  key: K,
-  displayName: string,
-  task: T,
-  sizeMb: number,
-  languages?: readonly string[],
-) => ({
-  id: `${AUDIO_CPP_REPO}/${folder}`,
-  key,
-  displayName,
-  task,
-  sizeBytes: Math.trunc(sizeMb * MB),
-  ...(languages ? { languages } : {}),
-});
-
-const espeak = <const T extends object>(model: T) => ({ ...model, needsEspeak: true as const });
-
+const folder = (name: string) => `${AUDIO_CPP_REPO}/${name}`;
 const ENGLISH = ["en"] as const;
 
-export const AUDIO_CPP_MODELS = [
+export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   // Text to speech.
-  espeak(m("Kokoro-82M-GGUF", "audiocpp-kokoro-82m", "Kokoro 82M", "tts", 180.8)),
-  espeak(m("KittenTTS-GGUF", "audiocpp-kitten-tts-mini", "KittenTTS Mini 0.8", "tts", 288.2)),
-  espeak(m("Piper-TTS-GGUF", "audiocpp-piper-en-us-lessac", "Piper (en-US Lessac)", "tts", 59.8)),
-  espeak(m("Inflect-Micro-v2-GGUF", "audiocpp-inflect-micro-v2", "Inflect Micro v2", "tts", 68.7)),
-  m("PocketTTS-GGUF/english", "audiocpp-pocket-tts-en", "PocketTTS (English)", "tts", 280.0),
-  m("MOSS-TTS-Nano-100M-GGUF", "audiocpp-moss-tts-nano", "MOSS-TTS Nano 100M", "tts", 184.4),
-  m("Supertonic-3-GGUF", "audiocpp-supertonic-3", "Supertonic 3", "tts", 298.3),
-  m("Chatterbox-Turbo-GGUF", "audiocpp-chatterbox-turbo", "Chatterbox Turbo", "tts", 666.7),
-  m("VoxCPM2-GGUF", "audiocpp-voxcpm2", "VoxCPM2 2B", "tts", 2818.1),
-  m(
-    "Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF",
-    "audiocpp-qwen3-tts-1.7b-customvoice",
-    "Qwen3-TTS 1.7B CustomVoice",
-    "tts",
-    2686.5,
-  ),
-  m(
-    "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF",
-    "audiocpp-qwen3-tts-1.7b-voicedesign",
-    "Qwen3-TTS 1.7B VoiceDesign",
-    "tts",
-    2686.5,
-  ),
+  { id: folder("Kokoro-82M-GGUF"), task: "tts", needsEspeak: true },
+  { id: folder("KittenTTS-GGUF"), task: "tts", needsEspeak: true },
+  { id: folder("Piper-TTS-GGUF"), task: "tts", needsEspeak: true },
+  { id: folder("Inflect-Micro-v2-GGUF"), task: "tts", needsEspeak: true },
+  { id: folder("PocketTTS-GGUF"), task: "tts" },
+  { id: folder("MOSS-TTS-Nano-100M-GGUF"), task: "tts" },
+  { id: folder("Supertonic-3-GGUF"), task: "tts" },
+  { id: folder("Chatterbox-Turbo-GGUF"), task: "tts" },
+  { id: folder("VoxCPM2-GGUF"), task: "tts" },
+  { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
+  { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
   // Music generation.
-  m("ACE-Step1.5-GGUF/turbo", "audiocpp-ace-step-1.5-turbo", "ACE-Step 1.5 Turbo", "music", 5898.9),
-  m("ACE-Step1.5-GGUF/base", "audiocpp-ace-step-1.5-base", "ACE-Step 1.5 Base", "music", 5898.9),
-  m(
-    "Stable-Audio-3-Small-Music-GGUF",
-    "audiocpp-stable-audio-3-small-music",
-    "Stable Audio 3 Small (Music)",
-    "music",
-    1605.6,
-  ),
+  { id: "audio-cpp/MiniMax-Music3-GGUF", task: "music" },
+  { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
+  { id: folder("ACE-Step1.5-GGUF"), task: "music" },
+  { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
   // Speech to text.
-  m("Qwen3-ASR-0.6B-GGUF", "audiocpp-qwen3-asr-0.6b", "Qwen3-ASR 0.6B", "asr", 1097.9),
-  m("Qwen3-ASR-1.7B-GGUF", "audiocpp-qwen3-asr-1.7b", "Qwen3-ASR 1.7B", "asr", 2358.4),
-  m(
-    "Parakeet-TDT-0.6B-v3-GGUF",
-    "audiocpp-parakeet-tdt-0.6b-v3",
-    "Parakeet TDT 0.6B v3",
-    "asr",
-    873.3,
-  ),
-  m("Canary-180M-Flash-GGUF", "audiocpp-canary-180m-flash", "Canary 180M Flash", "asr", 237.9, [
-    "en",
-    "de",
-    "es",
-    "fr",
-  ]),
-  m(
-    "Moonshine-Streaming-GGUF/tiny",
-    "audiocpp-moonshine-tiny",
-    "Moonshine Tiny",
-    "asr",
-    57.6,
-    ENGLISH,
-  ),
-  m(
-    "Moonshine-Streaming-GGUF/small",
-    "audiocpp-moonshine-small",
-    "Moonshine Small",
-    "asr",
-    286.7,
-    ENGLISH,
-  ),
-  m(
-    "Nemotron-3.5-ASR-Streaming-0.6B-GGUF",
-    "audiocpp-nemotron-3.5-asr-0.6b",
-    "Nemotron 3.5 ASR 0.6B",
-    "asr",
-    887.5,
-    ENGLISH,
-  ),
-] as const satisfies readonly AudioCppModel[];
+  { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },
+  { id: folder("Qwen3-ASR-1.7B-GGUF"), task: "asr" },
+  { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
+  { id: folder("Canary-180M-Flash-GGUF"), task: "asr", languages: ["en", "de", "es", "fr"] },
+  { id: folder("Moonshine-Streaming-GGUF"), task: "asr", languages: ENGLISH },
+  { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
+];
 
-export type AudioCppSttKey = Extract<
-  (typeof AUDIO_CPP_MODELS)[number],
-  { task: "asr" }
->["key"];
+/** The dictation keys Settings > Voice saved before these models were plain GGUF repos. The
+ *  backend still accepts them and maps each to its folder id (and variant). */
+export interface AudioCppDictationModel {
+  key: string;
+  id: string;
+  /** The folder's sub-package when it ships several (Moonshine sizes). */
+  variant?: string;
+  /** Default download size, shown beside the name. */
+  sizeBytes: number;
+}
+
+const dictation = <const K extends string>(
+  key: K,
+  name: string,
+  sizeMb: number,
+  variant?: string,
+): AudioCppDictationModel & { key: K } => ({
+  key,
+  id: folder(name),
+  sizeBytes: Math.trunc(sizeMb * MB),
+  ...(variant ? { variant } : {}),
+});
+
+export const AUDIO_CPP_DICTATION_MODELS = [
+  dictation("audiocpp-qwen3-asr-0.6b", "Qwen3-ASR-0.6B-GGUF", 1097.9),
+  dictation("audiocpp-qwen3-asr-1.7b", "Qwen3-ASR-1.7B-GGUF", 2358.4),
+  dictation("audiocpp-parakeet-tdt-0.6b-v3", "Parakeet-TDT-0.6B-v3-GGUF", 873.3),
+  dictation("audiocpp-canary-180m-flash", "Canary-180M-Flash-GGUF", 237.9),
+  dictation("audiocpp-moonshine-tiny", "Moonshine-Streaming-GGUF", 57.6, "tiny"),
+  dictation("audiocpp-moonshine-small", "Moonshine-Streaming-GGUF", 286.7, "small"),
+  dictation(
+    "audiocpp-nemotron-3.5-asr-0.6b",
+    "Nemotron-3.5-ASR-Streaming-0.6B-GGUF",
+    887.5,
+  ),
+] as const satisfies readonly AudioCppDictationModel[];
+
+export type AudioCppSttKey = (typeof AUDIO_CPP_DICTATION_MODELS)[number]["key"];
+
+export const AUDIO_CPP_STT_KEYS: readonly AudioCppSttKey[] = AUDIO_CPP_DICTATION_MODELS.map(
+  (model) => model.key,
+);
+
+function normalizedId(id: string | null | undefined): string {
+  return id?.trim().toLowerCase().replace(/\/+$/, "") ?? "";
+}
 
 const BY_ID = new Map<string, AudioCppModel>(
   AUDIO_CPP_MODELS.map((model) => [model.id.toLowerCase(), model]),
 );
-const BY_KEY = new Map<string, AudioCppModel>(
-  AUDIO_CPP_MODELS.map((model) => [model.key, model]),
+const DICTATION_BY_KEY = new Map<string, AudioCppDictationModel>(
+  AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model]),
 );
 
-/** Whether `id` is a curated audio.cpp Studio id. Its folder names end in "-GGUF", but only
- *  audiocpp_server reads them: every llama.cpp GGUF heuristic has to skip these. */
-export function isAudioCppModelId(id: string | null | undefined): boolean {
-  const text = id?.trim().toLowerCase().replace(/\/+$/, "");
-  return Boolean(text && BY_ID.has(text));
+/** Whether `id` names a package folder of the shared repo (three segments or more). */
+export function isAudioCppFolderId(id: string | null | undefined): boolean {
+  const text = normalizedId(id);
+  return (
+    text.startsWith(`${AUDIO_CPP_REPO.toLowerCase()}/`) &&
+    text.length > AUDIO_CPP_REPO.length + 1
+  );
 }
 
-/** The curated model for a Studio id or short key, else null. */
-export function audioCppModelFor(
-  identifier: string | null | undefined,
-): AudioCppModel | null {
-  const text = identifier?.trim();
-  if (!text) return null;
+/** The name a row shows: the package folder for the shared repo, else the repo name, as the
+ *  Hub spells it ("Kokoro-82M-GGUF", "MiniMax-Music3-GGUF"). */
+export function audioCppDisplayName(id: string): string {
+  const trimmed = id.trim().replace(/\/+$/, "");
+  if (isAudioCppFolderId(trimmed)) {
+    return trimmed.slice(AUDIO_CPP_REPO.length + 1).split("/")[0] || trimmed;
+  }
+  return trimmed.split("/").pop() || trimmed;
+}
+
+/** The recommended model for a Studio id, else null. */
+export function audioCppModelFor(id: string | null | undefined): AudioCppModel | null {
+  return BY_ID.get(normalizedId(id)) ?? null;
+}
+
+/** The dictation model a saved Settings > Voice key names, else null. */
+export function audioCppDictationModelFor(
+  key: string | null | undefined,
+): AudioCppDictationModel | null {
+  const text = key?.trim();
+  return text ? (DICTATION_BY_KEY.get(text) ?? null) : null;
+}
+
+/** Whether a GGUF row is one the backend runs on its audio runtime rather than llama-server, as
+ *  far as the picker can tell: a recommended id, a package folder, or a reported audio type. */
+export function isAudioRuntimeGguf(
+  id: string | null | undefined,
+  audioType?: string | null,
+): boolean {
   return (
-    BY_KEY.get(text) ?? BY_ID.get(text.toLowerCase().replace(/\/+$/, "")) ?? null
+    AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "") ||
+    audioCppModelFor(id) !== null ||
+    isAudioCppFolderId(id)
   );
 }
 
@@ -175,13 +174,8 @@ export function audioCppModelsForTask(task: AudioCppTask): AudioCppModel[] {
   return AUDIO_CPP_MODELS.filter((model) => model.task === task);
 }
 
-export const AUDIO_CPP_STT_KEYS = AUDIO_CPP_MODELS.filter(
-  (model): model is Extract<(typeof AUDIO_CPP_MODELS)[number], { task: "asr" }> =>
-    model.task === "asr",
-).map((model) => model.key);
-
-/** Music length the backend generates, whatever max_tokens asks for (audio_cpp_backend.py). The
- *  frame rate is the MiniMax Music 3 convention the Audio page already sends. */
+/** Music length the backend generates, whatever max_tokens asks for. The frame rate is the
+ *  MiniMax Music 3 convention the Audio page already sends. */
 export const AUDIO_CPP_MUSIC_MIN_SECONDS = 5;
 export const AUDIO_CPP_MUSIC_MAX_SECONDS = 240;
 

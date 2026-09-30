@@ -380,6 +380,10 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "context_length_fitted": model_info.get("context_length_fitted"),
         "context_unbounded_when_batched": model_info.get("context_unbounded_when_batched"),
         "mlx_context_budget": model_info.get("mlx_context_budget"),
+        # audio.cpp GGUFs: the loader family, its per-model request options and the variant loaded.
+        "audio_family": model_info.get("audio_family"),
+        "audio_options": model_info.get("audio_options"),
+        "gguf_variant": model_info.get("gguf_variant"),
     }
 
 
@@ -2019,7 +2023,13 @@ class InferenceOrchestrator:
                 sub_config["anonymous_hf_access"] = True
             if audio_codec_path is not None:
                 sub_config["audio_codec_path"] = audio_codec_path
-            if audio_device_forces_cpu(audio_device) and is_native_audio_model(model_name):
+            audio_cpp_model = getattr(config, "audio_cpp", None) is not None
+            if audio_cpp_model:
+                # The worker picks its backend from this: a Hub id alone does not say audio.cpp.
+                sub_config["audio_cpp"] = True
+            if audio_device_forces_cpu(audio_device) and (
+                audio_cpp_model or is_native_audio_model(model_name)
+            ):
                 # Choosing a card for a load that takes none harms it twice: several GPUs are rejected as unsupported
                 # sharding, and required_gb becomes expected_free_gb, so the settle wait raises on a busy card.
                 resolved_gpu_ids, gpu_selection = None, {"selection_mode": "cpu_audio"}
@@ -3137,6 +3147,7 @@ class InferenceOrchestrator:
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         seed: Optional[int] = None,
+        audio_options: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
         waits for the full audio response."""
@@ -3206,6 +3217,8 @@ class InferenceOrchestrator:
                     cmd["language"] = language
                 if seed is not None:
                     cmd["seed"] = int(seed)
+                if audio_options:
+                    cmd["audio_options"] = dict(audio_options)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One ``audiocpp_server`` child process serving one curated audio.cpp model.
+"""One ``audiocpp_server`` child process serving one audio.cpp model.
 
 Shared by the dictation sidecar (speech to text) and the audio worker (speech and
 music), which each own an instance. The server is bound to 127.0.0.1 on an
@@ -160,7 +160,7 @@ def ensure_binary() -> str:
     binary = find_audio_cpp_server_binary()
     if binary is None:
         raise AudioCppUnavailableError(
-            "The audio.cpp runtime is not installed. Run `unsloth studio update` to install it."
+            "The audio runtime is not installed. Run `unsloth studio update` to install it."
         )
     return binary
 
@@ -183,13 +183,15 @@ def binary_has_espeak(binary: Optional[str]) -> bool:
 
 def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) -> Optional[str]:
     """Why ``model`` cannot run on the installed runtime, or None when it can."""
+    if model.unsupported:
+        return model.unsupported
     binary = binary if binary is not None else find_audio_cpp_server_binary()
     if binary is None:
-        return "The audio.cpp runtime is not installed. Run `unsloth studio update` to install it."
+        return "The audio runtime is not installed. Run `unsloth studio update` to install it."
     if model.needs_espeak and not binary_has_espeak(binary):
         return (
-            f"{model.display_name} needs an audio.cpp build with eSpeak-ng, and the installed runtime "
-            "has none. Run `unsloth studio update` to install the Unsloth audio.cpp bundle."
+            f"{model.display_name} needs an audio runtime built with eSpeak-ng, and the installed one "
+            "has none. Run `unsloth studio update` to install the Unsloth audio runtime."
         )
     from core.inference.audio_cpp_files import served_path_problem
 
@@ -399,7 +401,7 @@ class AudioCppServer:
             # A corrupt, quarantined or wrong-architecture binary: report it like any other runtime failure.
             shutil.rmtree(config_dir, ignore_errors = True)
             raise AudioCppUnavailableError(
-                f"The audio.cpp runtime could not be started: {exc}"
+                f"The audio runtime could not be started: {exc}"
             ) from exc
         adopt_pid(process.pid)
         if on_process is not None:
@@ -430,19 +432,19 @@ class AudioCppServer:
         deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
-                raise AudioCppStartCancelledError("audio.cpp model loading was cancelled.")
+                raise AudioCppStartCancelledError("Audio model loading was cancelled.")
             if not self.alive():
                 tail = self.log_tail()
                 logger.warning("audiocpp_server exited during startup: %s", tail)
                 raise AudioCppUnavailableError(
-                    "The audio.cpp runtime exited before becoming ready; the model file may be "
+                    "The audio runtime exited before becoming ready; the model file may be "
                     "incomplete or unsupported by this build."
                     + (f" Last output: {tail[-400:]}" if tail else "")
                 )
             if self._probe():
                 return
             time.sleep(0.25)
-        raise AudioCppUnavailableError("The audio.cpp runtime did not start in time.")
+        raise AudioCppUnavailableError("The audio runtime did not start in time.")
 
     def _get_json(self, path: str) -> Optional[dict]:
         # http.client, not urllib: urlopen routes loopback through an ambient HTTP_PROXY.
@@ -522,10 +524,10 @@ class AudioCppServer:
                 raise AudioCppRequestCancelledError("Request cancelled.") from exc
             if not self.alive():
                 raise AudioCppUnavailableError(
-                    "The audio.cpp runtime stopped while serving the request."
+                    "The audio runtime stopped while serving the request."
                     + (f" Last output: {self.log_tail()[-400:]}" if self.log_tail() else "")
                 ) from exc
-            raise AudioCppUnavailableError(f"The audio.cpp runtime did not answer: {exc}") from exc
+            raise AudioCppUnavailableError(f"The audio runtime did not answer: {exc}") from exc
         finally:
             done.set()
             connection.close()

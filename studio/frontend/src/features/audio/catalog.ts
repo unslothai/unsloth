@@ -29,8 +29,8 @@ export {
 
 export type AudioTask = "tts" | "stt";
 
-// audio.cpp speech and music load into the main slot like the native PyTorch models, but
-// through audiocpp_server, so they need no remote code and run on every backend it builds for.
+// Recommended GGUF speech and music load into the main slot like the native PyTorch models, but
+// through the GGUF audio runtime, so they need no remote code and run on every backend it builds for.
 const AUDIO_CPP_GENERATION_IDS = AUDIO_CPP_MODELS.filter(
   (model) => model.task !== "asr",
 ).map((model) => model.id.toLowerCase());
@@ -107,7 +107,7 @@ export function isMusicGenerationModel(
   );
 }
 
-/** MiniMax Music 3 needs a CUDA GPU; audio.cpp music runs wherever audiocpp_server does. */
+/** The MiniMax Music 3 pipeline needs a CUDA GPU; GGUF music runs wherever the audio runtime does. */
 export function musicGenerationRequiresCuda(
   repoId?: string | null,
   audioType?: string | null,

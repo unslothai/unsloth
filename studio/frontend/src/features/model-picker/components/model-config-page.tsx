@@ -182,6 +182,7 @@ import {
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
+import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -2297,6 +2298,10 @@ export function ModelConfigPage({
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
+  // Speech, music and ASR GGUFs the backend runs on its audio runtime: no llama-server launches,
+  // so none of its knobs apply. Their own options live under Advanced on the Audio page.
+  const audioRuntimeGguf =
+    target.isGguf && isAudioRuntimeGguf(target.id, target.meta.audioType);
 
   // The one field on this page whose stored value the local config may never have seen:
   // llama_extra_args can be set through the overrides API with no UI involved, so an empty box
@@ -3296,7 +3301,14 @@ export function ModelConfigPage({
       )}
 
       <div className="space-y-5">
-        {memoryEstimateRequest != null && (
+        {audioRuntimeGguf ? (
+          <p className="text-ui-12 leading-snug text-muted-foreground">
+            This model runs on the audio runtime, so llama.cpp settings do not
+            apply. Its generation options are under Advanced on the Audio page
+            once it is loaded.
+          </p>
+        ) : null}
+        {memoryEstimateRequest != null && !audioRuntimeGguf && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
             loading={memoryEstimate.loading}
@@ -3318,7 +3330,7 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
-        {target.isGguf && (
+        {target.isGguf && !audioRuntimeGguf && (
           <>
             <div className="space-y-2">
               <div className={ROW_CLASS}>

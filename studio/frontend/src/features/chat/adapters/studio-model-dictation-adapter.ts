@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
-import type { AudioCppRuntimeStatus } from "@/features/audio/audio-cpp-catalog";
+import {
+  type AudioCppRuntimeStatus,
+  isAudioCppFolderId,
+} from "../../audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -73,12 +76,18 @@ const stopStream = (stream: MediaStream | null) => {
 };
 
 /** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
- *  ids run through llama.cpp, audiocpp ids run through audio.cpp, and a custom HF repo is
- *  safetensors on Transformers. */
+ *  ids run through llama.cpp, the GGUF audio runtime's ids (saved keys, package folders and
+ *  other GGUF repos) run through audiocpp, and a custom HF repo is safetensors on Transformers. */
 export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 export function sttEngineFor(model: string): SttEngine {
-  if (AUDIO_CPP_STT_MODELS.has(model.trim())) return "audiocpp";
+  const id = model.trim();
+  if (
+    AUDIO_CPP_STT_MODELS.has(id) ||
+    isAudioCppFolderId(id) ||
+    (!isCuratedSttModel(id) && /-GGUF\/?$/i.test(id))
+  )
+    return "audiocpp";
   // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
   if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
   return isCuratedSttModel(model) ? "gguf" : "transformers";
@@ -316,12 +325,25 @@ export async function validateSttModel(
   }
 }
 
+/** The quant an audiocpp pick names, as the request field; every other engine takes none. A saved
+ *  dictation key already implies its package, so callers pass nothing for one. */
+function sttVariantBody(
+  engine: SttEngine,
+  ggufVariant: string | null | undefined,
+): { gguf_variant?: string } {
+  return engine === "audiocpp" && ggufVariant
+    ? // biome-ignore lint/style/useNamingConvention: API schema
+      { gguf_variant: ggufVariant }
+    : {};
+}
+
 /** Load a selected model that is already downloaded. */
 export function loadSttModel(
   model: string,
   engine?: SttEngine,
   signal?: AbortSignal,
   device?: SttDevice,
+  ggufVariant?: string | null,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
   const resolvedDevice = device ?? useVoiceSettingsStore.getState().sttDevice;
@@ -335,6 +357,7 @@ export function loadSttModel(
         model,
         engine: resolvedEngine,
         device: resolvedDevice,
+        ...sttVariantBody(resolvedEngine, ggufVariant),
       }),
       signal,
     });
@@ -354,14 +377,20 @@ export async function startSttDownload(
   model: string,
   hfToken?: string,
   engine?: SttEngine,
+  ggufVariant?: string | null,
 ): Promise<void> {
+  const resolvedEngine = engine ?? sttEngineFor(model);
   const response = await authFetch("/api/inference/audio/stt/download", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
-    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
+    body: JSON.stringify({
+      model,
+      engine: resolvedEngine,
+      ...sttVariantBody(resolvedEngine, ggufVariant),
+    }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {

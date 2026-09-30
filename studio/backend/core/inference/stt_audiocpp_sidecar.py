@@ -3,8 +3,8 @@
 
 """audio.cpp speech-to-text sidecar for Unsloth dictation.
 
-Serves the curated audio.cpp ASR models (Qwen3-ASR, Parakeet, Canary, Moonshine,
-Nemotron) through one ``audiocpp_server`` child, with the same lifecycle as the
+Serves any audio.cpp ASR GGUF (Qwen3-ASR, Parakeet, Canary, Moonshine, Nemotron and
+whatever else audio.cpp transcribes) through one ``audiocpp_server`` child, with the same lifecycle as the
 whisper.cpp sidecar: loads on demand, stays warm for the keep-alive window, yields
 to training, and is paused while the managed runtime is being replaced. Audio is
 decoded with PyAV like every other engine and sent as 16 kHz mono WAV, since the
@@ -22,12 +22,15 @@ from typing import Iterator, Optional
 
 from core.inference import audio_cpp_files, audio_cpp_server
 from core.inference.audio_cpp_models import (
-    AUDIO_CPP_REPO,
-    AUDIO_CPP_REVISION,
     DEFAULT_AUDIO_CPP_STT_MODEL,
+    RECOMMENDED_STT_MODELS,
     AudioCppModel,
-    lookup,
-    stt_models,
+    AudioCppModelError,
+    downloaded_models,
+    parse_identifier,
+    require_runnable,
+    resolve,
+    split_variant_ref,
 )
 from core.inference.audio_cpp_server import (
     AudioCppRequestCancelledError,
@@ -68,25 +71,50 @@ class SttEngineUnavailableError(SttUnavailableError):
     """audiocpp_server is not installed or stopped serving; the audio.cpp dictation engine is off."""
 
 
-# Keys the dictation picker lists, in catalog order.
-AUDIO_CPP_STT_MODELS: tuple[str, ...] = tuple(m.key for m in stt_models())
+# Rows the dictation picker recommends, in order; any other audio.cpp ASR GGUF works too.
+AUDIO_CPP_STT_MODELS: tuple[str, ...] = RECOMMENDED_STT_MODELS
 
 
-def resolve_audio_cpp_stt_model(model: Optional[str]) -> AudioCppModel:
-    """The curated ASR model for a key or Studio id. Custom repos are not supported here."""
+def resolve_audio_cpp_stt_model(
+    model: Optional[str],
+    variant: Optional[str] = None,
+    *,
+    network: bool = False,
+    hf_token: Optional[str] = None,
+) -> AudioCppModel:
+    """The audio.cpp ASR model a repo id, umbrella folder id or legacy key names.
+
+    ``network=False`` (loads and transcriptions) resolves from the HF cache, so dictation works
+    offline once downloaded; downloads resolve against the Hub.
+    """
     if model is None or not str(model).strip():
         model = DEFAULT_AUDIO_CPP_STT_MODEL
-    found = lookup(model)
-    if found is None or found.task != "asr":
-        raise SttModelIdError(
-            f"STT model '{model}' is not a curated audio.cpp dictation model. "
-            f"Choose one of: {', '.join(AUDIO_CPP_STT_MODELS)}."
+    base, ref_variant = split_variant_ref(str(model).strip())
+    if parse_identifier(base) is None:
+        raise SttModelIdError(f"STT model '{model}' is not an audio.cpp GGUF repo.")
+    found = resolve(base, variant or ref_variant, hf_token, network = network)
+    if found is None and not network:
+        raise SttModelNotDownloadedError(
+            f"STT model '{base}' is not downloaded. Download it in Settings, then Voice, before loading it."
         )
+    if found is None:
+        raise SttModelIdError(f"STT model '{model}' is not an audio.cpp GGUF repo.")
+    try:
+        require_runnable(found, "asr")
+    except AudioCppModelError as exc:
+        raise SttModelIdError(str(exc)) from exc
     return found
 
 
 def resolve_audio_cpp_stt_model_id(model: Optional[str]) -> str:
-    return resolve_audio_cpp_stt_model(model).key
+    """The row id dictation reports for ``model``: legacy keys become their folder rows."""
+    if model is None or not str(model).strip():
+        return DEFAULT_AUDIO_CPP_STT_MODEL
+    base, _variant = split_variant_ref(str(model).strip())
+    ref = parse_identifier(base)
+    if ref is None:
+        raise SttModelIdError(f"STT model '{model}' is not an audio.cpp GGUF repo.")
+    return ref.id
 
 
 def is_model_downloaded(model: Optional[str]) -> bool:
@@ -94,6 +122,14 @@ def is_model_downloaded(model: Optional[str]) -> bool:
         return audio_cpp_files.is_downloaded(resolve_audio_cpp_stt_model(model))
     except Exception:  # noqa: BLE001 - a probe never fails its caller
         return False
+
+
+def downloaded_model_ids() -> list[str]:
+    """Row ids of the audio.cpp ASR models with a variant in the HF cache, found by header."""
+    try:
+        return list(dict.fromkeys(m.id for m in downloaded_models("asr")))
+    except Exception:  # noqa: BLE001 - status never fails on a cache walk
+        return []
 
 
 # Inference that failed after the server started (a runtime that answers /health and then cannot serve). Recorded on
@@ -141,7 +177,7 @@ def ensure_engine_available() -> str:
 
 
 class _AudioCppDownloadState:
-    """One background single-file download of a curated audio.cpp ASR model."""
+    """One background download of an audio.cpp ASR model's files."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -153,6 +189,8 @@ class _AudioCppDownloadState:
         self._etag: Optional[str] = None
         self._revision: Optional[str] = None
         self._hub_cache: Optional[Path] = None
+        self._repo: Optional[str] = None
+        self._filename: Optional[str] = None
         self._cancelled = False
 
     def status(self) -> dict:
@@ -167,7 +205,8 @@ class _AudioCppDownloadState:
                 "bytes_total": self._total_bytes if downloading else None,
             }
             captured = (
-                self._model_id,
+                self._repo,
+                self._filename,
                 self._etag,
                 self._total_bytes,
                 self._hub_cache,
@@ -188,15 +227,14 @@ class _AudioCppDownloadState:
         return True
 
     @staticmethod
-    def _downloaded_bytes(model_id, etag, total, hub_cache, revision) -> Optional[int]:
+    def _downloaded_bytes(repo, filename, etag, total, hub_cache, revision) -> Optional[int]:
         try:
-            if not model_id or not etag or total is None or hub_cache is None:
+            if not repo or not filename or not etag or total is None or hub_cache is None:
                 return None
-            model = resolve_audio_cpp_stt_model(model_id)
             return _downloaded_file_bytes(
                 hub_cache = hub_cache,
-                repo = AUDIO_CPP_REPO,
-                filename = model.gguf_file,
+                repo = repo,
+                filename = filename,
                 size = total,
                 blob_key = etag,
                 revision = revision,
@@ -209,7 +247,8 @@ class _AudioCppDownloadState:
         model_id: str,
         hf_token: Optional[str] = None,
     ) -> None:
-        model_id = resolve_audio_cpp_stt_model_id(model_id)
+        model_id = str(model_id or DEFAULT_AUDIO_CPP_STT_MODEL).strip()
+        resolve_audio_cpp_stt_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -228,6 +267,8 @@ class _AudioCppDownloadState:
             self._total_bytes = None
             self._etag = None
             self._revision = None
+            self._repo = None
+            self._filename = None
             self._hub_cache = hub_cache
             self._cancelled = False
             self._process = None
@@ -238,16 +279,20 @@ class _AudioCppDownloadState:
             thread.start()
 
     def _run(self, model_id: str, hf_token: Optional[str], hub_cache: Path) -> None:
-        model = resolve_audio_cpp_stt_model(model_id)
-        filename = model.gguf_file
         registry = None
         owner = None
+        repo = None
         try:
+            model = resolve_audio_cpp_stt_model(model_id, network = True, hf_token = hf_token)
+            repo = model.repo_id
+            if not repo:
+                raise RuntimeError("a local model file has nothing to download")
+            filename = model.gguf_file
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             try:
                 meta = get_hf_file_metadata(
-                    hf_hub_url(AUDIO_CPP_REPO, filename, revision = AUDIO_CPP_REVISION),
+                    hf_hub_url(repo, filename),
                     token = normalize_token(hf_token),
                 )
                 total_bytes = int(meta.size or 0)
@@ -262,12 +307,14 @@ class _AudioCppDownloadState:
             with self._lock:
                 if self._cancelled:
                     return
-            registry, owner = _claim_stt_repository(AUDIO_CPP_REPO)
+            registry, owner = _claim_stt_repository(repo)
             with self._lock:
                 if self._cancelled:
                     return
-            _prepare_stt_cache_for_http(AUDIO_CPP_REPO, hub_cache)
+            _prepare_stt_cache_for_http(repo, hub_cache)
             with self._lock:
+                self._repo = repo
+                self._filename = filename
                 self._total_bytes = total_bytes
                 self._etag = etag
                 self._revision = revision
@@ -277,8 +324,9 @@ class _AudioCppDownloadState:
                 terminate_download,
             )
 
+            file_args = [arg for path in model.files for arg in ("--filename", path)]
             process = spawn_download(
-                ["--repo-id", AUDIO_CPP_REPO, "--revision", revision, "--filename", filename],
+                ["--repo-id", repo, "--revision", revision, *file_args],
                 hf_token = normalize_token(hf_token),
                 hub_cache = hub_cache,
             )
@@ -294,6 +342,9 @@ class _AudioCppDownloadState:
             if process.returncode == 0 and not cancelled:
                 if audio_cpp_files.cached_files(model, hub_cache = hub_cache) is None:
                     raise RuntimeError("downloaded file is missing from the captured cache")
+                from core.inference.audio_cpp_models import forget
+
+                forget(model.id)
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:
@@ -303,21 +354,25 @@ class _AudioCppDownloadState:
             logger.warning("audio.cpp STT download failed for %s: %s", model_id, detail)
             with self._lock:
                 self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
+        except SttModelIdError as exc:
+            with self._lock:
+                self._error = str(exc)
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("audio.cpp STT download failed for %s: %s", model_id, exc)
                     self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
         finally:
-            if registry is not None and owner is not None:
-                registry.release_repository_owner(AUDIO_CPP_REPO, owner)
+            if registry is not None and owner is not None and repo is not None:
+                registry.release_repository_owner(repo, owner)
 
 
 _download_state = _AudioCppDownloadState()
 
 
 def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
-    _download_state.start(resolve_audio_cpp_stt_model_id(model), hf_token)
+    model = get_audio_cpp_stt_sidecar().keep_loaded_variant(model)
+    _download_state.start(str(model or DEFAULT_AUDIO_CPP_STT_MODEL).strip(), hf_token)
 
 
 def download_status() -> dict:
@@ -336,11 +391,13 @@ class AudioCppSttSidecar:
         self._load_state_lock = threading.Lock()
         self._server: Optional[AudioCppServer] = None
         self._model_id: Optional[str] = None
+        self._model: Optional[AudioCppModel] = None
         self._forced_cpu = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
         self._loading = False
+        self._loading_model: Optional[str] = None
         self._load_cancel_event: Optional[threading.Event] = None
         self._load_owner_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
@@ -352,9 +409,14 @@ class AudioCppSttSidecar:
         return self._model_id if self._server_alive() else None
 
     @property
+    def loaded_variant(self) -> Optional[str]:
+        model = self._model
+        return model.variant.key if model is not None and self._server_alive() else None
+
+    @property
     def device(self) -> Optional[str]:
         server = self._server
-        return f"audio.cpp ({server.backend})" if server is not None and server.alive() else None
+        return server.backend if server is not None and server.alive() else None
 
     @property
     def _gpu_disabled(self) -> Optional[bool]:
@@ -364,9 +426,34 @@ class AudioCppSttSidecar:
             return None
         return server.backend == "cpu"
 
+    def keep_loaded_variant(self, model: Optional[str]) -> Optional[str]:
+        """``model`` pinned to the variant already loaded for that same row when it names none.
+
+        A variantless id means "this row", not "this row's default": Settings and dictation send the
+        bare row id, and resolving it afresh would swap a loaded Moonshine small for the default
+        tiny. An explicit variant, or another row, is left alone.
+        """
+        loaded = self._model
+        if loaded is None or not self._server_alive() or model is None or not str(model).strip():
+            return model
+        base, variant = split_variant_ref(str(model).strip())
+        if variant is not None:
+            return model
+        ref = parse_identifier(base)
+        # A legacy key or sub-folder id names its own variant (``audiocpp-moonshine-tiny``).
+        if ref is None or ref.variant_hint or ref.id.lower() != loaded.id.lower():
+            return model
+        return loaded.canonical_id
+
     def is_loading(self) -> bool:
         with self._load_state_lock:
             return self._loading
+
+    @property
+    def loading_model(self) -> Optional[str]:
+        """The row id a load in flight is reading, so a delete of its repo can wait for it."""
+        with self._load_state_lock:
+            return self._loading_model if self._loading else None
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -404,6 +491,7 @@ class AudioCppSttSidecar:
         server = self._server
         self._server = None
         self._model_id = None
+        self._model = None
         self._forced_cpu = False
         if server is not None:
             server.stop()
@@ -436,7 +524,7 @@ class AudioCppSttSidecar:
     def _raise_if_update_in_progress(self) -> None:
         if self._update_in_progress:
             raise SttEngineUnavailableError(
-                "The audio.cpp runtime is being updated. Try dictation again shortly."
+                "The audio runtime is being updated. Try dictation again shortly."
             )
 
     @contextmanager
@@ -493,7 +581,7 @@ class AudioCppSttSidecar:
             return audio_cpp_files.materialize(model)
         except FileNotFoundError:
             raise SttModelNotDownloadedError(
-                f"STT model '{model.key}' (audio.cpp) is not downloaded. "
+                f"STT model '{model.display_name}' ({model.variant.key}) is not downloaded. "
                 "Download it in Settings, then Voice, before loading it."
             ) from None
         except AudioCppUnavailableError as exc:
@@ -506,13 +594,13 @@ class AudioCppSttSidecar:
         request_cancel_event: Optional[threading.Event] = None,
         device: Optional[str] = None,
     ) -> None:
-        """Start (or switch) audiocpp_server for the requested curated ASR model."""
+        """Start (or switch) audiocpp_server for the requested audio.cpp ASR model."""
         from core.inference.audio_device import audio_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
-        entry = resolve_audio_cpp_stt_model(model)
+        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -523,11 +611,7 @@ class AudioCppSttSidecar:
                 if device is None and self._server_alive()
                 else audio_device_forces_cpu(device)
             )
-            if (
-                self._server_alive()
-                and self._model_id == entry.key
-                and self._forced_cpu == force_cpu
-            ):
+            if self._server_alive() and self._model == entry and self._forced_cpu == force_cpu:
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(entry)
@@ -538,6 +622,7 @@ class AudioCppSttSidecar:
                 self._load_cancel_event = cancel_event
                 self._load_owner_cancel_event = request_cancel_event
                 self._loading = True
+                self._loading_model = entry.id
             try:
                 if cancel_event.is_set():
                     raise SttLoadCancelledError("audio.cpp STT model loading was cancelled.")
@@ -563,12 +648,14 @@ class AudioCppSttSidecar:
                 except AudioCppUnavailableError as exc:
                     raise SttEngineUnavailableError(str(exc)) from exc
                 self._server = server
-                self._model_id = entry.key
+                self._model_id = entry.id
+                self._model = entry
                 self._forced_cpu = force_cpu
                 self._schedule_idle_unload_locked()
             finally:
                 with self._load_state_lock:
                     self._loading = False
+                    self._loading_model = None
                     self._load_cancel_event = None
                     self._load_owner_cancel_event = None
                     self._starting_process = None
@@ -585,7 +672,7 @@ class AudioCppSttSidecar:
         del fast  # audio.cpp ASR families decode greedily; there is no beam knob to trade.
         self._raise_if_update_in_progress()
         ensure_engine_available()
-        entry = resolve_audio_cpp_stt_model(model)
+        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         lang = normalize_whisper_language(language)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -598,9 +685,9 @@ class AudioCppSttSidecar:
         with self._lock:
             try:
                 if cancel_event is None:
-                    self.load(entry.key)
+                    self.load(entry.canonical_id)
                 else:
-                    self.load(entry.key, request_cancel_event = cancel_event)
+                    self.load(entry.canonical_id, request_cancel_event = cancel_event)
                 text = self._post_transcription(wav_bytes, lang, cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -611,7 +698,7 @@ class AudioCppSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        return {"text": text, "language": lang, "duration": duration, "model": entry.key}
+        return {"text": text, "language": lang, "duration": duration, "model": entry.id}
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()
@@ -623,7 +710,7 @@ class AudioCppSttSidecar:
     ) -> str:
         server = self._server
         if server is None:
-            raise SttEngineUnavailableError("The audio.cpp runtime is not running.")
+            raise SttEngineUnavailableError("The audio runtime is not running.")
         fields = {"model": server.model_id}
         if lang:
             fields["language"] = lang
@@ -665,12 +752,12 @@ class AudioCppSttSidecar:
                 # The server rejected this clip or option (e.g. an unsupported language), not a broken runtime.
                 raise SttAudioDecodeError(exc.detail) from exc
             note_runtime_inference_failure(str(exc))
-            raise SttEngineUnavailableError(f"The audio.cpp runtime failed: {exc.detail}") from exc
+            raise SttEngineUnavailableError(f"The audio runtime failed: {exc.detail}") from exc
         except (AudioCppUnavailableError, ValueError) as exc:
             if cancel_event is None or not cancel_event.is_set():
                 note_runtime_inference_failure(f"{type(exc).__name__}: {exc}")
             raise SttEngineUnavailableError(
-                "The audio.cpp runtime did not answer the request."
+                "The audio runtime did not answer the request."
             ) from exc
         text = payload.get("text") if isinstance(payload, dict) else None
         if not isinstance(text, str):

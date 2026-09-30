@@ -6,14 +6,13 @@
 // directly by the node runner.
 
 import {
-  AUDIO_CPP_MODELS,
+  AUDIO_CPP_DICTATION_MODELS,
   AUDIO_CPP_STT_KEYS,
-  type AudioCppModel,
   type AudioCppSttKey,
+  audioCppDisplayName,
+  audioCppModelFor,
   audioCppSizeLabel,
 } from "../../audio/audio-cpp-catalog.ts";
-
-const AUDIO_CPP_STT = AUDIO_CPP_MODELS.filter((model) => model.task === "asr");
 
 /** Curated dictation models, mirrored by the backend sidecars. Listed in the
  * order the picker shows them: the recommended models lead. */
@@ -41,8 +40,8 @@ export const MTMD_STT_MODELS: ReadonlySet<SttModel> = new Set([
   "qwen3-asr-0.6b",
   "qwen3-asr-1.7b",
 ]);
-/** Models served by the audio.cpp sidecar. Each key maps to one GGUF package in
- * the shared audio.cpp repo. */
+/** Models served by the GGUF audio runtime's sidecar. Each key maps to one
+ * package folder of the shared GGUF repo. */
 export const AUDIO_CPP_STT_MODELS: ReadonlySet<SttModel> = new Set(
   AUDIO_CPP_STT_KEYS,
 );
@@ -51,9 +50,10 @@ export const AUDIO_CPP_STT_MODELS: ReadonlySet<SttModel> = new Set(
  * Canary covers en/de/es/fr. */
 export const STT_MODEL_LANGUAGES: ReadonlyMap<SttModel, readonly string[]> =
   new Map(
-    (AUDIO_CPP_STT as readonly AudioCppModel[]).flatMap((model) =>
-      model.languages ? [[model.key, model.languages] as const] : [],
-    ),
+    AUDIO_CPP_DICTATION_MODELS.flatMap((model) => {
+      const languages = audioCppModelFor(model.id)?.languages;
+      return languages ? [[model.key, languages] as const] : [];
+    }),
   );
 /** Curated models that only transcribe English. */
 export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set(
@@ -74,7 +74,7 @@ export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
   "qwen3-asr-0.6b": "unslothai/Qwen3-ASR-0.6B-GGUF",
   "qwen3-asr-1.7b": "unslothai/Qwen3-ASR-1.7B-GGUF",
   ...(Object.fromEntries(
-    AUDIO_CPP_STT.map((model) => [model.key, model.id]),
+    AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
   ) as Record<AudioCppSttKey, string>),
 };
 export const DEFAULT_STT_MODEL: DefaultSttModel = "qwen3-asr-0.6b";
@@ -108,8 +108,14 @@ export const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
   "large-v3": "Whisper Large v3",
   "qwen3-asr-0.6b": "Qwen3-ASR 0.6B",
   "qwen3-asr-1.7b": "Qwen3-ASR 1.7B",
+  // The name the Hub shows for the package, plus the size where one folder ships two.
   ...(Object.fromEntries(
-    AUDIO_CPP_STT.map((model) => [model.key, `${model.displayName} (audio.cpp)`]),
+    AUDIO_CPP_DICTATION_MODELS.map((model) => [
+      model.key,
+      "variant" in model
+        ? `${audioCppDisplayName(model.id)} (${model.variant})`
+        : audioCppDisplayName(model.id),
+    ]),
   ) as Record<AudioCppSttKey, string>),
 };
 // Whisper sizes are f16 GGML for whisper.cpp; the mtmd entries cover the model
@@ -123,7 +129,10 @@ export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
   "qwen3-asr-0.6b": "1.0 GB",
   "qwen3-asr-1.7b": "2.5 GB",
   ...(Object.fromEntries(
-    AUDIO_CPP_STT.map((model) => [model.key, audioCppSizeLabel(model.sizeBytes)]),
+    AUDIO_CPP_DICTATION_MODELS.map((model) => [
+      model.key,
+      audioCppSizeLabel(model.sizeBytes),
+    ]),
   ) as Record<AudioCppSttKey, string>),
 };
 

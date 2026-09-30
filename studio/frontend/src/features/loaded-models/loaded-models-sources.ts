@@ -6,6 +6,11 @@
 // common row shape. Pure and React-free so node --test can import them; the types
 // come from each feature's own module because the indexes re-export their pages.
 
+import {
+  audioCppDictationModelFor,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../audio/audio-cpp-catalog.ts";
 import type { InferenceStatusResponse } from "@/features/chat/types/api";
 import type { DiffusionStatus } from "@/features/images/api";
 import type { VideoStatus } from "@/features/video/api";
@@ -56,7 +61,8 @@ const STT_ENGINE_LABELS: Record<SttEngine, string> = {
   transformers: "Transformers",
   mtmd: "llama.cpp",
   gguf: "whisper.cpp",
-  audiocpp: "audio.cpp",
+  // The GGUF audio runtime; its engine name stays out of the UI like the model's.
+  audiocpp: "GGUF",
 };
 
 /**
@@ -110,8 +116,12 @@ function joinDetail(...parts: (string | null | undefined)[]): string {
   return kept.join(" · ");
 }
 
-/** Keep a path's last two segments; a repo id is already short. */
+/** Keep a path's last two segments; a repo id is already short. A package folder of the shared
+ *  GGUF audio repo is its folder name, and a saved dictation key the folder it names. */
 export function shortModelLabel(name: string): string {
+  const dictation = audioCppDictationModelFor(name);
+  if (dictation) return audioCppDisplayName(dictation.id);
+  if (isAudioCppFolderId(name)) return audioCppDisplayName(name);
   const normalized = name.replace(/[\\/]+$/, "");
   const segments = normalized.split(/[\\/]+/).filter(Boolean);
   if (segments.length <= 2) return normalized;
@@ -310,7 +320,13 @@ export function describeSttStatus(
       kind: "stt",
       source: "stt",
       name: block.loaded_model,
-      detail: joinDetail(STT_ENGINE_LABELS[engine], block.device),
+      // The audio runtime reports its own name and version as the device, which is not one.
+      detail: joinDetail(
+        STT_ENGINE_LABELS[engine],
+        engine === "audiocpp" && block.device?.startsWith("audio.cpp")
+          ? null
+          : block.device,
+      ),
       sttEngine: engine,
     });
   }

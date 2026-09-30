@@ -16,6 +16,10 @@ const NATIVE_AUDIO_TYPES = new Set([
 
 const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
 
+/** Hub evidence that a GGUF repo is published for the GGUF audio runtime rather than llama.cpp.
+ *  A Hub search row has no header to read, so its name, tags or library say so or nothing does. */
+const AUDIO_RUNTIME_EVIDENCE = /audio[-_.]?cpp/;
+
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -52,9 +56,9 @@ export function nativeAudioCheckpointIsLoadable(
   return !audioType || !NATIVE_AUDIO_TYPES.has(audioType) || exportType === "merged";
 }
 
-/** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD artifacts
- *  are handled by the catalog before this gate, so an uncurated row must identify a
- *  non-GGUF Whisper checkpoint. */
+/** Community ASR runs through the Transformers Whisper sidecar, or through the GGUF audio
+ *  runtime for a GGUF published for it. Curated GGUF/MTMD artifacts are handled by the catalog
+ *  before this gate, so an uncurated row must identify one of those two. */
 export function communityAudioRowIsRunnable({
   isStt,
   isTts,
@@ -80,6 +84,13 @@ export function communityAudioRowIsRunnable({
   const evidence = [id, baseModel ?? "", ...(tags ?? [])].map((value) =>
     value.toLowerCase(),
   );
+  const audioRuntimeGguf =
+    isGguf &&
+    (AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "") ||
+      [...evidence, (libraryName ?? "").toLowerCase()].some((value) =>
+        AUDIO_RUNTIME_EVIDENCE.test(value),
+      ));
+  if (audioRuntimeGguf) return true;
   if (isStt) {
     if (isGguf) return false;
     if (libraryName && libraryName.toLowerCase() !== "transformers")
@@ -180,7 +191,7 @@ export function audioPickIsRoutable({
   if (taskFromGgufArch && isGguf && task === "text-to-speech") {
     const codec = (audioType ?? "").toLowerCase();
     if (codec === "csm" || !codec) return false;
-    return ["snac", "bicodec", "dac"].includes(codec);
+    return ["snac", "bicodec", "dac"].includes(codec) || AUDIO_CPP_AUDIO_TYPES.has(codec);
   }
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity to judge, and the family-name heuristic would

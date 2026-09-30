@@ -1,30 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// audio.cpp models are addressed by virtual three-segment ids (repo + package folder) and, for
-// ASR, by short dictation keys. The frontend catalog mirrors the backend's table, and every
-// surface derives from it: the Audio picker, the native-runtime sets, the dictation engine map.
+// GGUF audio models the backend serves on its audio runtime are ordinary GGUF repos to the app:
+// a real Hub repo id, or a package folder of the shared repo ("<repo>/<Folder>"), named as the Hub
+// names them. A short recommended list seeds the Audio pickers and dictation settings; saved
+// dictation keys from before still resolve.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AUDIO_CPP_DICTATION_MODELS,
   AUDIO_CPP_MODELS,
   AUDIO_CPP_MUSIC_MAX_SECONDS,
   AUDIO_CPP_MUSIC_MIN_SECONDS,
   AUDIO_CPP_REPO,
   AUDIO_CPP_STT_KEYS,
+  audioCppDictationModelFor,
+  audioCppDisplayName,
   audioCppModelFor,
   audioCppSizeLabel,
-  isAudioCppModelId,
+  isAudioCppFolderId,
 } from "../src/features/audio/audio-cpp-catalog.ts";
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
+  audioCppRuntimeProblem,
   audioSamplingControlsApply,
   isGgufTtsTarget,
-  musicDurationRange,
-  audioCppRuntimeProblem,
   isTtsAudioType,
+  musicDurationRange,
+  musicNeedsDescription,
   nativeAudioInstructionsKind,
   resolveSttResidency,
   sttDownloadedArtifacts,
@@ -36,7 +41,9 @@ import {
   sttSidecarKeyFor,
 } from "../src/features/audio/stt-artifacts.ts";
 import {
+  audioPickIsRoutable,
   audioPipelineTagFor,
+  communityAudioRowIsRunnable,
   macTtsHubRowIsRunnable,
 } from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
 import {
@@ -49,6 +56,7 @@ import {
   matchesFormatFilter,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import { hasGgufRepoSuffix } from "../src/features/hub/lib/model-identifiers.ts";
+import { shortModelLabel } from "../src/features/loaded-models/loaded-models-sources.ts";
 import {
   AUDIO_CPP_STT_MODELS,
   DEFAULT_STT_MODEL,
@@ -82,118 +90,91 @@ const {
 } = await import("../src/features/audio/catalog.ts");
 
 const KOKORO = `${AUDIO_CPP_REPO}/Kokoro-82M-GGUF`;
-const ACE_TURBO = `${AUDIO_CPP_REPO}/ACE-Step1.5-GGUF/turbo`;
+const ACE_STEP = `${AUDIO_CPP_REPO}/ACE-Step1.5-GGUF`;
 const QWEN_ASR = `${AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF`;
-const MOONSHINE_TINY = `${AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF/tiny`;
+const MOONSHINE = `${AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF`;
+const MINIMAX_GGUF = "audio-cpp/MiniMax-Music3-GGUF";
+const YUE2 = "audio-cpp/Yue2-3B-GGUF";
 
-type BackendRow = {
-  id: string;
-  key: string;
-  name: string;
-  task: string;
-  sizeBytes: number;
-  needsEspeak: boolean;
-};
+const BRAND = /audio\.cpp|audiocpp/i;
 
-/** The backend table, read from its `_m(...)` rows. */
-function backendRows(): BackendRow[] {
-  const source = readText("../../backend/core/inference/audio_cpp_models.py");
-  const repo = /AUDIO_CPP_REPO = "([^"]+)"/.exec(source)?.[1];
-  assert.equal(repo, AUDIO_CPP_REPO);
-  const rows: BackendRow[] = [];
-  const row =
-    /_m\(\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"[^"]+",\s*"([^"]+)",\s*\[[^\]]*\],\s*([\d.]+)/g;
-  const matches = [...source.matchAll(row)];
-  for (const [index, match] of matches.entries()) {
-    // The rest of this _m(...) call, up to the next row or the end of the table.
-    const start = match.index ?? 0;
-    const end = matches[index + 1]?.index ?? source.indexOf("\n]", start);
-    rows.push({
-      id: `${repo}/${match[1]}`,
-      key: match[2],
-      name: match[3],
-      task: match[4],
-      sizeBytes: Math.trunc(Number(match[5]) * 1024 * 1024),
-      needsEspeak: /needs_espeak\s*=\s*True/.test(source.slice(start, end)),
-    });
-  }
-  return rows;
-}
-
-test("the frontend audio.cpp catalog mirrors the backend table", () => {
-  const backend = backendRows();
-  assert.ok(backend.length > 0, "no backend rows parsed");
-  assert.deepEqual(
-    AUDIO_CPP_MODELS.map((model) => ({
-      id: model.id,
-      key: model.key,
-      name: model.displayName,
-      task: model.task,
-      sizeBytes: model.sizeBytes,
-      needsEspeak: "needsEspeak" in model && model.needsEspeak === true,
-    })),
-    backend,
-  );
-});
-
-test("ids and keys are unique and resolve both ways", () => {
+test("recommended ids are unique and name their Hub repo or package folder", () => {
   const ids = new Set(AUDIO_CPP_MODELS.map((model) => model.id.toLowerCase()));
-  const keys = new Set(AUDIO_CPP_MODELS.map((model) => model.key));
   assert.equal(ids.size, AUDIO_CPP_MODELS.length);
-  assert.equal(keys.size, AUDIO_CPP_MODELS.length);
   for (const model of AUDIO_CPP_MODELS) {
-    // Three segments or more: never an owner/name repo.
-    assert.ok(model.id.split("/").length >= 3, model.id);
     assert.equal(audioCppModelFor(model.id), model);
     assert.equal(audioCppModelFor(model.id.toUpperCase()), model);
     assert.equal(audioCppModelFor(`${model.id}/`), model);
-    assert.equal(audioCppModelFor(model.key), model);
+    // A folder id is the repo plus ONE top-level folder: sub-packages are variants.
+    if (isAudioCppFolderId(model.id)) {
+      assert.equal(model.id.split("/").length, 3, model.id);
+    } else {
+      assert.equal(model.id.split("/").length, 2, model.id);
+    }
+    assert.match(audioCppDisplayName(model.id), /-GGUF$/, model.id);
   }
-  assert.equal(audioCppModelFor(AUDIO_CPP_REPO), null);
+  // MiniMax Music 3 and YuE2 ship as their own repos.
+  assert.equal(audioCppModelFor(MINIMAX_GGUF)?.task, "music");
+  assert.equal(audioCppModelFor(YUE2)?.task, "music");
+  assert.equal(audioCppDisplayName(MINIMAX_GGUF), "MiniMax-Music3-GGUF");
+  assert.equal(audioCppDisplayName(KOKORO), "Kokoro-82M-GGUF");
+  assert.equal(audioCppDisplayName(`${ACE_STEP}/turbo`), "ACE-Step1.5-GGUF");
+  assert.equal(isAudioCppFolderId(AUDIO_CPP_REPO), false);
+  assert.equal(isAudioCppFolderId(`${AUDIO_CPP_REPO}/`), false);
+  assert.equal(isAudioCppFolderId("unslothai/Qwen3-ASR-0.6B-GGUF"), false);
   assert.equal(audioCppModelFor("OpenMOSS-Team/MOSS-TTS-Nano-100M"), null);
   assert.equal(audioCppModelFor(""), null);
   assert.equal(audioCppSizeLabel(57.6 * 1024 * 1024), "58 MB");
   assert.equal(audioCppSizeLabel(2358.4 * 1024 * 1024), "2.3 GB");
 });
 
-test("every audio.cpp model is a curated Audio row, in the right mode", () => {
+test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
   for (const model of AUDIO_CPP_MODELS) {
     const group = groupForRepoId(model.id, AUDIO_CATALOG);
     assert.equal(group?.canonicalId, model.id, model.id);
+    assert.equal(group?.displayName, audioCppDisplayName(model.id));
     assert.equal(group?.task, model.task === "asr" ? "stt" : "tts", model.id);
     assert.equal(audioTaskFor(model.id), model.task === "asr" ? "stt" : "tts");
-    assert.equal(group?.artifacts.length, 1);
-    // A GGUF format would route the pick through llama.cpp with a gguf_variant.
-    assert.notEqual(group?.artifacts[0].format, "gguf");
+    assert.deepEqual(
+      group?.artifacts.map((artifact) => [artifact.format, artifact.loadKind]),
+      [["gguf", "gguf"]],
+    );
+    assert.doesNotMatch(`${group?.displayName} ${group?.description}`, BRAND);
   }
-  // The virtual ids do not steal the owner/name rows they resemble.
-  assert.equal(
-    groupForRepoId("OpenMOSS-Team/MOSS-TTS-Nano-100M", AUDIO_CATALOG)?.canonicalId,
-    "OpenMOSS-Team/MOSS-TTS-Nano-100M",
-  );
+  // The folder ids do not steal the owner/name rows they resemble.
   assert.equal(
     groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.canonicalId,
     "unslothai/Qwen3-ASR-0.6B-GGUF",
   );
   assert.equal(groupForRepoId(AUDIO_CPP_REPO, AUDIO_CATALOG), null);
-});
-
-test("audio.cpp rows are offered on every host class and never as GGUF", () => {
   for (const host of ["unknown", "gguf-only", "accelerated", "dense-quant"] as const) {
     const options = catalogToModelOptions(AUDIO_CATALOG, host);
     for (const model of AUDIO_CPP_MODELS) {
       const option = options.find((candidate) => candidate.id === model.id);
       assert.ok(option, `${host}: ${model.id}`);
-      assert.equal(option.isGguf, false);
-      assert.equal(option.descriptionSuffix, "audio.cpp");
+      assert.equal(option.isGguf, true);
+      assert.equal(option.descriptionSuffix, "GGUF");
     }
   }
-  assert.equal(isGgufTtsTarget({ repoId: KOKORO }), false);
-  assert.equal(isGgufTtsTarget({ repoId: KOKORO, isGguf: true }), false);
-  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft-GGUF" }), true);
 });
 
-test("speech and music load on the native runtime without remote code", () => {
+test("GGUF heuristics treat these rows like any llama.cpp GGUF", () => {
+  for (const model of AUDIO_CPP_MODELS) {
+    assert.equal(isGgufId(model.id), true, model.id);
+    assert.equal(hasGgufRepoSuffix(model.id), true, model.id);
+    assert.equal(matchesFormatFilter(model.id, false, "gguf"), true, model.id);
+    assert.equal(isGgufTtsTarget({ repoId: model.id }), true, model.id);
+  }
+  assert.equal(isGgufTtsTarget({ repoId: KOKORO, isGguf: true }), true);
+  // A loaded GGUF runtime model reads as speech even when the status calls it GGUF.
+  for (const audioType of ["audiocpp_tts", "audiocpp_music"]) {
+    assert.equal(isTtsAudioType(audioType, true), true, audioType);
+    assert.equal(isTtsAudioType(audioType, false), true, audioType);
+  }
+  assert.equal(isTtsAudioType("csm", true), false);
+});
+
+test("speech and music load on the audio runtime without remote code", () => {
   for (const model of AUDIO_CPP_MODELS) {
     if (model.task === "asr") {
       assert.equal(usesNativeAudioRuntime(model.id), false);
@@ -202,14 +183,13 @@ test("speech and music load on the native runtime without remote code", () => {
     assert.equal(usesNativeAudioRuntime(model.id), true, model.id);
     assert.equal(audioModelRequiresRemoteCode(model.id), false, model.id);
     assert.equal(isMusicGenerationModel(model.id), model.task === "music");
-    // Metal builds of audio.cpp run speech and music alike; only MiniMax needs CUDA.
+    // Metal builds run speech and music alike; only the MiniMax pipeline needs CUDA.
     assert.equal(musicGenerationRequiresCuda(model.id), false);
     assert.equal(macTtsCatalogChoiceIsRunnable(model.id), true, model.id);
   }
   for (const audioType of ["audiocpp_tts", "audiocpp_music"]) {
     assert.equal(usesNativeAudioRuntime("someone/model", audioType), true);
     assert.equal(audioModelRequiresRemoteCode("someone/model", audioType), false);
-    assert.equal(isTtsAudioType(audioType), true);
     assert.equal(audioPipelineTagFor(audioType), "text-to-speech");
     assert.equal(
       macTtsHubRowIsRunnable({
@@ -224,91 +204,187 @@ test("speech and music load on the native runtime without remote code", () => {
   }
   assert.equal(isMusicGenerationModel(null, "audiocpp_music"), true);
   assert.equal(isMusicGenerationModel(KOKORO, "audiocpp_tts"), false);
-  assert.equal(isMusicGenerationModel(ACE_TURBO), true);
+  assert.equal(isMusicGenerationModel(ACE_STEP), true);
   assert.equal(nativeAudioInstructionsKind("audiocpp_music"), "music");
-  // Voice design and style families read it; the rest ignore it.
   assert.equal(nativeAudioInstructionsKind("audiocpp_tts"), "voice");
-  // MiniMax keeps its CUDA and Mac gates.
   assert.equal(musicGenerationRequiresCuda("MiniMaxAI/MiniMax-Music3"), true);
-  assert.equal(musicGenerationRequiresCuda(null, "minimax_music3"), true);
+  assert.equal(musicGenerationRequiresCuda(MINIMAX_GGUF), false);
   assert.equal(macTtsCatalogChoiceIsRunnable("MiniMaxAI/MiniMax-Music3"), false);
 });
 
-test("the Audio route accepts the audio.cpp audio types", () => {
-  const route = readSrc("app/routes/audio.tsx");
-  assert.match(route, /\.\.\.AUDIO_CPP_AUDIO_TYPES/);
+test("MiniMax Music 3 and YuE2 need a description beside the lyrics", () => {
+  assert.equal(musicNeedsDescription("minimax_music3"), true);
+  assert.equal(musicNeedsDescription("audiocpp_music", "minimax_music3"), true);
+  assert.equal(musicNeedsDescription("audiocpp_music", "yue2"), true);
+  for (const family of ["ace_step", "stable_audio", null]) {
+    assert.equal(musicNeedsDescription("audiocpp_music", family), false, String(family));
+  }
+  assert.equal(musicNeedsDescription("audiocpp_tts", "yue2"), false);
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    page,
+    /musicModelNeedsDescription\(status\?\.audio_type, status\?\.audio_family\)/,
+  );
+  assert.match(page, /\(musicNeedsDescription && !audioInstructions\.trim\(\)\)/);
 });
 
-test("ASR ids map to their dictation keys on the audiocpp engine", () => {
-  assert.equal(sttEngineForRepoId(QWEN_ASR), "audiocpp");
-  assert.equal(sttEngineForRepoId(MOONSHINE_TINY.toLowerCase()), "audiocpp");
-  assert.equal(sttSidecarKeyFor(QWEN_ASR), "audiocpp-qwen3-asr-0.6b");
-  assert.equal(sttSidecarKeyFor(MOONSHINE_TINY), "audiocpp-moonshine-tiny");
+test("Hub rows published for the audio runtime are runnable on the Audio page", () => {
+  const row = {
+    isGguf: true,
+    id: "mistral-experimental/AudioCPP-Voxtral-Mini-4B-Realtime-2602-GGUF",
+  };
+  assert.equal(communityAudioRowIsRunnable({ ...row, isStt: true, isTts: false }), true);
   assert.equal(
-    sttRepoIdForSidecarKey("audiocpp-qwen3-asr-0.6b", "audiocpp"),
-    QWEN_ASR,
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "someone/Speech-GGUF",
+      tags: ["audio.cpp"],
+    }),
+    true,
   );
-  // A key names one artifact whatever engine the caller assumed.
-  assert.equal(sttRepoIdForSidecarKey("audiocpp-moonshine-tiny"), MOONSHINE_TINY);
-  assert.equal(isKnownSttArtifactRepoId(QWEN_ASR), true);
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "someone/Speech-GGUF",
+      audioType: "audiocpp_tts",
+    }),
+    true,
+  );
+  // Without that evidence a GGUF ASR row still has no engine, and llama.cpp speech keeps its gate.
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: true,
+      isTts: false,
+      isGguf: true,
+      id: "someone/whisper-small-GGUF",
+    }),
+    false,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "someone/Speech-GGUF",
+    }),
+    false,
+  );
+  // A downloaded GGUF classified by header routes from Chat like an Orpheus one.
+  for (const audioType of ["audiocpp_tts", "audiocpp_music"]) {
+    assert.equal(
+      audioPickIsRoutable({
+        id: KOKORO,
+        task: "text-to-speech",
+        isGguf: true,
+        isCurated: false,
+        taskFromGgufArch: true,
+        audioType,
+      }),
+      true,
+      audioType,
+    );
+  }
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /speak: \["text-to-speech", "text-to-audio"\]/);
+});
+
+test("ASR repos and folders run on the audiocpp engine; saved keys still resolve", () => {
+  assert.equal(sttEngineForRepoId(QWEN_ASR), "audiocpp");
+  assert.equal(sttEngineForRepoId(MOONSHINE.toLowerCase()), "audiocpp");
+  assert.equal(sttEngineForRepoId("someone/Speech-ASR-GGUF"), "audiocpp");
+  assert.equal(sttEngineForRepoId("someone/speech-asr", true), "audiocpp");
+  assert.equal(sttEngineForRepoId("openai/whisper-small"), "transformers");
+  // The id is the sidecar key; an old key names its folder whatever engine the caller assumed.
+  assert.equal(sttSidecarKeyFor(QWEN_ASR), QWEN_ASR);
+  assert.equal(sttRepoIdForSidecarKey("audiocpp-qwen3-asr-0.6b", "audiocpp"), QWEN_ASR);
+  assert.equal(sttRepoIdForSidecarKey("audiocpp-moonshine-tiny"), MOONSHINE);
+  assert.equal(sttRepoIdForSidecarKey(QWEN_ASR, "audiocpp"), QWEN_ASR);
+  assert.equal(sttEngineForRepoId("audiocpp-moonshine-small"), "audiocpp");
   assert.equal(isKnownSttArtifactRepoId(KOKORO), false);
-  // The mtmd Qwen3-ASR keeps its own engine and key.
+  // The curated Whisper and Qwen3-ASR GGUFs keep their own engines and keys.
   assert.equal(sttEngineForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF"), "mtmd");
+  assert.equal(sttEngineForRepoId("unslothai/whisper-small-GGUF"), "gguf");
   assert.equal(sttRepoIdForSidecarKey("qwen3-asr-0.6b", "mtmd"), "unslothai/Qwen3-ASR-0.6B-GGUF");
 });
 
-test("audiocpp status blocks feed downloads and residency", () => {
-  const status = {
-    audiocpp: {
-      downloaded_models: ["audiocpp-canary-180m-flash"],
-      loaded_model: "audiocpp-canary-180m-flash",
-    },
-  };
-  assert.deepEqual(sttDownloadedArtifacts(status, sttRepoIdForSidecarKey), [
-    {
-      repoId: `${AUDIO_CPP_REPO}/Canary-180M-Flash-GGUF`,
-      sidecarKey: "audiocpp-canary-180m-flash",
+test("audiocpp status blocks feed downloads and residency, by key or by id", () => {
+  for (const reported of ["audiocpp-canary-180m-flash", `${AUDIO_CPP_REPO}/Canary-180M-Flash-GGUF`]) {
+    const status = {
+      audiocpp: { downloaded_models: [reported], loaded_model: reported },
+    };
+    assert.deepEqual(sttDownloadedArtifacts(status, sttRepoIdForSidecarKey), [
+      {
+        repoId: `${AUDIO_CPP_REPO}/Canary-180M-Flash-GGUF`,
+        sidecarKey: reported,
+        engine: "audiocpp",
+      },
+    ]);
+    assert.deepEqual(resolveSttResidency(status, "audiocpp", true), {
+      model: reported,
       engine: "audiocpp",
-    },
-  ]);
-  assert.deepEqual(resolveSttResidency(status, null, false), {
-    model: "audiocpp-canary-180m-flash",
-    engine: "audiocpp",
-  });
-  assert.deepEqual(resolveSttResidency(status, "audiocpp", true), {
-    model: "audiocpp-canary-180m-flash",
-    engine: "audiocpp",
-  });
-});
-
-test("dictation settings list the audio.cpp ASR keys after the existing models", () => {
-  const keys = AUDIO_CPP_MODELS.filter((model) => model.task === "asr").map(
-    (model) => model.key,
-  );
-  assert.deepEqual(AUDIO_CPP_STT_KEYS, keys);
-  assert.deepEqual(STT_MODELS.slice(-keys.length), keys);
-  assert.equal(STT_MODELS[0], "qwen3-asr-0.6b");
-  assert.equal(DEFAULT_STT_MODEL, "qwen3-asr-0.6b");
-  for (const key of keys) {
-    const model = audioCppModelFor(key);
-    assert.ok(AUDIO_CPP_STT_MODELS.has(key));
-    assert.ok(!MTMD_STT_MODELS.has(key));
-    assert.equal(STT_MODEL_REPOS[key], model?.id);
-    assert.equal(sttModelName(key), `${model?.displayName} (audio.cpp)`);
-    assert.equal(sttModelSize(key), audioCppSizeLabel(model?.sizeBytes ?? 0));
+    });
   }
 });
 
-test("sttEngineFor sends audio.cpp keys to the audiocpp engine", () => {
+test("dictation settings list the saved keys by their Hub name", () => {
+  assert.deepEqual(
+    AUDIO_CPP_STT_KEYS,
+    AUDIO_CPP_DICTATION_MODELS.map((model) => model.key),
+  );
+  assert.deepEqual(STT_MODELS.slice(-AUDIO_CPP_STT_KEYS.length), AUDIO_CPP_STT_KEYS);
+  assert.equal(STT_MODELS[0], "qwen3-asr-0.6b");
+  assert.equal(DEFAULT_STT_MODEL, "qwen3-asr-0.6b");
+  for (const key of AUDIO_CPP_STT_KEYS) {
+    const model = audioCppDictationModelFor(key);
+    assert.ok(model, key);
+    assert.ok(AUDIO_CPP_STT_MODELS.has(key));
+    assert.ok(!MTMD_STT_MODELS.has(key));
+    // Every saved key names a recommended ASR folder.
+    assert.equal(audioCppModelFor(model.id)?.task, "asr", key);
+    assert.equal(STT_MODEL_REPOS[key], model.id);
+    assert.doesNotMatch(sttModelName(key), BRAND);
+    assert.ok(sttModelName(key).startsWith(audioCppDisplayName(model.id)), key);
+    assert.equal(sttModelSize(key), audioCppSizeLabel(model.sizeBytes));
+  }
+  assert.equal(sttModelName("audiocpp-qwen3-asr-0.6b"), "Qwen3-ASR-0.6B-GGUF");
+  assert.equal(sttModelName("audiocpp-moonshine-tiny"), "Moonshine-Streaming-GGUF (tiny)");
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(voiceTab, /if \(AUDIO_CPP_STT_MODELS\.has\(model\)\) return sttModelName\(model\);/);
+});
+
+test("an Audio-page ASR pick sends its quant; other engines and saved keys send none", () => {
   const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
   assert.match(
     adapter,
-    /export function sttEngineFor\(model: string\): SttEngine \{\s*if \(AUDIO_CPP_STT_MODELS\.has\(model\.trim\(\)\)\) return "audiocpp";/,
+    /return engine === "audiocpp" && ggufVariant\s*\?[\s\S]*\{ gguf_variant: ggufVariant \}\s*:\s*\{\};/,
   );
+  assert.equal(adapter.match(/\.\.\.sttVariantBody\(resolvedEngine, ggufVariant\)/g)?.length, 2);
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /sttGgufVariants\.current\.set\(id\.toLowerCase\(\), meta\.ggufVariant\)/);
+  assert.match(
+    page,
+    /engine === "audiocpp"\s*\?\s*\(sttGgufVariants\.current\.get\(repoId\.toLowerCase\(\)\) \?\? null\)/,
+  );
+  assert.equal(
+    page.match(/controller\.signal,\s*undefined,\s*ggufVariant,/g)?.length,
+    2,
+  );
+  // Settings > Voice passes a saved key and no variant.
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(voiceTab, /await startSttDownload\(sttModel, hfApiToken\(hfToken\)\);/);
+});
+
+test("sttEngineFor sends saved keys, folders and GGUF repos to the audiocpp engine", () => {
+  const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
+  assert.match(adapter, /AUDIO_CPP_STT_MODELS\.has\(id\) \|\|\s*isAudioCppFolderId\(id\)/);
   assert.match(adapter, /if \(engine === "audiocpp"\) return status\.audiocpp;/);
 });
 
-test("English-only and partial-language audio.cpp ASR models are gated by language", () => {
+test("English-only and partial-language ASR models are gated by language", () => {
   for (const key of [
     "audiocpp-moonshine-tiny",
     "audiocpp-moonshine-small",
@@ -326,7 +402,6 @@ test("English-only and partial-language audio.cpp ASR models are gated by langua
     assert.equal(isSttModelLanguageCompatible(canary, language), true, language);
   }
   assert.equal(isSttModelLanguageCompatible(canary, "ja-JP"), false);
-  // Multilingual models stay open to every language.
   for (const key of [
     "audiocpp-parakeet-tdt-0.6b-v3",
     "audiocpp-qwen3-asr-0.6b",
@@ -338,85 +413,101 @@ test("English-only and partial-language audio.cpp ASR models are gated by langua
   }
 });
 
-test("audio.cpp music length follows the backend clamp; MiniMax keeps its own", () => {
+test("GGUF music length follows the backend clamp; the MiniMax pipeline keeps its own", () => {
   assert.deepEqual(musicDurationRange(false), {
     min: AUDIO_CPP_MUSIC_MIN_SECONDS,
     max: AUDIO_CPP_MUSIC_MAX_SECONDS,
   });
   assert.equal(AUDIO_CPP_MUSIC_MAX_SECONDS, 240);
   assert.deepEqual(musicDurationRange(true), { min: 1, max: MINIMAX_MUSIC_MAX_SECONDS });
-  const backend = readText("../../backend/core/inference/audio_cpp_backend.py");
-  assert.match(backend, new RegExp(`_MAX_MUSIC_SECONDS = ${AUDIO_CPP_MUSIC_MAX_SECONDS}\\.0`));
-  assert.match(backend, new RegExp(`max\\(${AUDIO_CPP_MUSIC_MIN_SECONDS}\\.0, min\\(_MAX_MUSIC_SECONDS`));
   const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /musicDurationRange\(cudaMusicGeneration\)/);
   assert.match(page, /min=\{musicRange\.min\}\s*max=\{musicRange\.max\}/);
   assert.match(page, /minimaxMusicFramesForSeconds\(musicSeconds\)/);
 });
 
-test("audio.cpp speech hides sampling controls it ignores", () => {
+test("GGUF runtime speech trades sampling controls for the model's own options", () => {
   assert.equal(audioSamplingControlsApply("audiocpp_tts"), false);
   for (const audioType of ["audiocpp_music", "snac", "moss_tts_local", null]) {
     assert.equal(audioSamplingControlsApply(audioType), true, String(audioType));
   }
   const page = readSrc("features/audio/audio-page.tsx");
-  assert.match(page, /\{musicGeneration \|\| samplingControls \? \(\s*<AdvancedDisclosure/);
+  assert.match(
+    page,
+    /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
+  );
   assert.match(page, /!musicGeneration && samplingControls && temperatureEdited/);
-  // Only MiniMax blocks Generate on an empty description.
-  assert.match(page, /\(musicNeedsDescription && !audioInstructions\.trim\(\)\)/);
+  assert.match(page, /parseAudioOptions\(status\?\.audio_options\)/);
+  assert.match(page, /\{ audio_options: requestOptions \}/);
   assert.match(page, /"Voice or style description"/);
 });
 
-test("format heuristics never read audio.cpp ids as llama.cpp GGUF", () => {
-  for (const model of AUDIO_CPP_MODELS) {
-    assert.ok(isAudioCppModelId(model.id));
-    assert.equal(isGgufId(model.id), false, model.id);
-    assert.equal(hasGgufRepoSuffix(model.id), false, model.id);
-    assert.equal(matchesFormatFilter(model.id, false, "gguf"), false, model.id);
-    assert.equal(matchesFormatFilter(model.id, false, "safetensors"), true, model.id);
-  }
-  // Keys and the umbrella repo are not model ids; real GGUF repos are untouched.
-  assert.equal(isAudioCppModelId("audiocpp-kokoro-82m"), false);
-  assert.equal(isAudioCppModelId(AUDIO_CPP_REPO), false);
-  assert.equal(isGgufId("unsloth/orpheus-3b-0.1-ft-GGUF"), true);
-  assert.equal(hasGgufRepoSuffix("unslothai/Qwen3-ASR-0.6B-GGUF"), true);
-  assert.equal(matchesFormatFilter("unsloth/orpheus-3b-0.1-ft-GGUF", false, "gguf"), true);
+test("pickers, toasts, downloads and loaded models show no engine name", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  // Every user-visible string literal on the page, without comments.
+  const withoutComments = page
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const literals = withoutComments.match(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g) ?? [];
+  const branded = literals.filter(
+    (literal) =>
+      /audio\.cpp/i.test(literal) && !/audio-cpp-catalog|audio_cpp_runtime/.test(literal),
+  );
+  assert.deepEqual(branded, []);
+  assert.equal(shortModelLabel(KOKORO), "Kokoro-82M-GGUF");
+  assert.equal(shortModelLabel("audiocpp-qwen3-asr-0.6b"), "Qwen3-ASR-0.6B-GGUF");
+  assert.equal(shortModelLabel(MINIMAX_GGUF), MINIMAX_GGUF);
+  const sources = readSrc("features/loaded-models/loaded-models-sources.ts");
+  assert.match(sources, /audiocpp: "GGUF"/);
+  const panel = readSrc("features/hub/download-manager/download-manager-panel.tsx");
+  assert.match(panel, /isAudioCppFolderId\(repoId\) \? audioCppDisplayName\(repoId\) : repoId/);
+  assert.match(panel, /\{job\.presentation\?\.label \?\? repoLabel\(job\.repoId\)\}/);
 });
-test("audio.cpp speech and music picks are refused when the runtime cannot run them", () => {
+
+test("an Audio GGUF pick downloads its quant as the standard variant job", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /ggufVariant: meta\.ggufVariant,/);
+  const staged = readSrc("features/hub/download-manager/use-staged-download.ts");
+  assert.match(staged, /current\.ggufVariant \?\? scopedVariant\(scopeId\)/);
+  assert.match(staged, /variant: current\.ggufVariant,/);
+});
+
+test("recommended speech and music picks are refused when the runtime cannot run them", () => {
   const full = { available: true, espeak: true, backend: "cuda", release_tag: "v1" };
   const noEspeak = { ...full, espeak: false };
   const missing = { available: false, espeak: false, backend: null, release_tag: null };
   assert.deepEqual(
-    AUDIO_CPP_MODELS.filter((model) => "needsEspeak" in model && model.needsEspeak).map(
-      (model) => model.displayName,
+    AUDIO_CPP_MODELS.filter((model) => model.needsEspeak).map((model) =>
+      audioCppDisplayName(model.id),
     ),
-    ["Kokoro 82M", "KittenTTS Mini 0.8", "Piper (en-US Lessac)", "Inflect Micro v2"],
+    ["Kokoro-82M-GGUF", "KittenTTS-GGUF", "Piper-TTS-GGUF", "Inflect-Micro-v2-GGUF"],
   );
   for (const model of AUDIO_CPP_MODELS) {
-    const espeakOnly = "needsEspeak" in model && model.needsEspeak === true;
-    // No status yet, or a server predating the block: the load decides.
     assert.equal(audioCppRuntimeProblem(model.id, null), null, model.id);
     assert.equal(audioCppRuntimeProblem(model.id, undefined), null, model.id);
     assert.equal(audioCppRuntimeProblem(model.id, full), null, model.id);
     if (model.task === "asr") {
-      // Dictation reports its own availability per engine.
       assert.equal(audioCppRuntimeProblem(model.id, missing), null, model.id);
       continue;
     }
-    assert.match(audioCppRuntimeProblem(model.id, missing) ?? "", /runtime is not installed/);
+    const notInstalled = audioCppRuntimeProblem(model.id, missing) ?? "";
+    assert.match(notInstalled, /audio runtime is not installed/);
+    assert.doesNotMatch(notInstalled, BRAND);
     const problem = audioCppRuntimeProblem(model.id, noEspeak);
-    if (espeakOnly) {
+    if (model.needsEspeak) {
       assert.ok(
-        problem?.startsWith(`${model.displayName} needs an audio.cpp build with eSpeak-ng`),
+        problem?.startsWith(
+          `${audioCppDisplayName(model.id)} needs an audio runtime built with eSpeak-ng`,
+        ),
         model.id,
       );
+      assert.doesNotMatch(problem ?? "", BRAND);
     } else {
       assert.equal(problem, null, model.id);
     }
   }
-  // Only curated audio.cpp ids are gated.
   assert.equal(audioCppRuntimeProblem("OpenMOSS-Team/MOSS-TTS-Nano-100M", missing), null);
   assert.equal(audioCppRuntimeProblem(null, missing), null);
-  // The backend reports the block and the page refuses the pick before any load.
   const route = readText("../../backend/routes/inference.py");
   assert.match(route, /"audio_cpp_runtime": _audio_cpp_runtime_status\(\)/);
   const page = readSrc("features/audio/audio-page.tsx");

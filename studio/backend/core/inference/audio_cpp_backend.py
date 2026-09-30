@@ -4,10 +4,10 @@
 """Worker backend for audio.cpp speech and music models in the main audio slot.
 
 Selected by the inference worker in place of ``NativeAudioBackend`` when the model
-is a curated audio.cpp TTS or music model, so loading, auto-switching, idle
-eviction, cancellation and the Audio page, read-aloud and ``/v1/audio/speech`` all
-work through the machinery every other main-slot audio model uses. The weights run
-in an ``audiocpp_server`` child; this class only downloads, starts, proxies and stops.
+is an audio.cpp TTS or music GGUF, so loading, auto-switching, idle eviction,
+cancellation and the Audio page, read-aloud and ``/v1/audio/speech`` all work
+through the machinery every other main-slot audio model uses. The weights run in
+an ``audiocpp_server`` child; this class only downloads, starts, proxies and stops.
 
 A cancelled request cannot interrupt GPU work already queued inside the server, and
 the server would make the next request wait for it (minutes, for music). So a cancel
@@ -24,7 +24,13 @@ import wave
 from typing import Any, Optional, Tuple
 
 from core.inference import audio_cpp_files
-from core.inference.audio_cpp_models import AudioCppModel, lookup
+from core.inference.audio_cpp_models import (
+    AudioCppModel,
+    AudioCppModelError,
+    require_runnable,
+    resolve,
+    validate_options,
+)
 from core.inference.audio_cpp_server import (
     AudioCppRequestCancelledError,
     AudioCppRequestError,
@@ -69,6 +75,15 @@ def _music_seconds(max_new_tokens: Optional[int]) -> float:
     return max(5.0, min(_MAX_MUSIC_SECONDS, frames / 25.0))
 
 
+def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
+    """What status reports for a loaded audio.cpp model, beyond the common audio fields."""
+    return {
+        "audio_family": model.family,
+        "audio_options": [dict(option) for option in model.options],
+        "gguf_variant": model.variant.key,
+    }
+
+
 class AudioCppBackend:
     """One-model backend proxying to an ``audiocpp_server`` child."""
 
@@ -81,6 +96,7 @@ class AudioCppBackend:
         self.models: dict[str, dict[str, Any]] = {}
         self.active_model_name: Optional[str] = None
         self.loading_models: set[str] = set()
+        self._model: Optional[AudioCppModel] = None
         self._server: Optional[AudioCppServer] = None
         self._server_lock = threading.RLock()
 
@@ -100,14 +116,25 @@ class AudioCppBackend:
     ) -> bool:
         del max_seq_length, dtype, load_in_4bit, trust_remote_code
         model_name = config.identifier
-        model = lookup(model_name)
-        if model is None or model.task not in ("tts", "music"):
-            raise RuntimeError(f"'{model_name}' is not a curated audio.cpp speech or music model.")
+        model = getattr(config, "audio_cpp", None) or resolve(
+            model_name, getattr(config, "gguf_variant", None), hf_token
+        )
+        if model is None:
+            raise RuntimeError(f"'{model_name}' is not an audio.cpp GGUF.")
+        try:
+            require_runnable(model, "tts")
+        except AudioCppModelError as exc:
+            raise RuntimeError(str(exc)) from exc
         if gpu_ids is not None and len(gpu_ids) > 1:
             raise RuntimeError(
-                "audio.cpp models run on a single GPU; multi-GPU sharding is not supported."
+                "Audio GGUF models run on a single GPU; multi-GPU sharding is not supported."
             )
-        if model_name in self.models and self._server is not None and self._server.alive():
+        if (
+            model_name in self.models
+            and self._model == model
+            and self._server is not None
+            and self._server.alive()
+        ):
             self.active_model_name = model_name
             return True
         # Before any download: a runtime that cannot serve this model must fail fast, not after gigabytes.
@@ -120,6 +147,7 @@ class AudioCppBackend:
         try:
             self._ensure_downloaded(model, hf_token)
             self._start_server(model)
+            self._model = model
             self.models = {
                 model_name: {
                     "is_audio": True,
@@ -128,7 +156,7 @@ class AudioCppBackend:
                     "model_path": model.id,
                     # No token window: speech length is bounded by the server, music by duration.
                     "context_length": 0,
-                    "audio_cpp_family": model.family,
+                    **model_info_fields(model),
                     "audio_cpp_backend": self._server.backend if self._server else None,
                 }
             }
@@ -138,20 +166,19 @@ class AudioCppBackend:
             self.loading_models.discard(model_name)
 
     def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> None:
-        if audio_cpp_files.is_downloaded(model):
+        missing = audio_cpp_files.missing_files(model)
+        if not missing:
             return
         from huggingface_hub import hf_hub_download
 
-        from core.inference.audio_cpp_models import AUDIO_CPP_REPO, AUDIO_CPP_REVISION
         from utils.hf_cache_settings import active_hf_hub_cache
 
         cache_dir = str(active_hf_hub_cache())
-        for path, _size in audio_cpp_files.expand_repo_files(model, hf_token):
-            logger.info("audio.cpp: downloading %s", path)
+        for path, _size in missing:
+            logger.info("audio.cpp: downloading %s from %s", path, model.repo_id)
             hf_hub_download(
-                AUDIO_CPP_REPO,
+                model.repo_id,
                 path,
-                revision = AUDIO_CPP_REVISION,
                 token = hf_token or None,
                 cache_dir = cache_dir,
             )
@@ -181,11 +208,7 @@ class AudioCppBackend:
 
     def _running_server(self, model: AudioCppModel, cancel_event) -> AudioCppServer:
         with self._server_lock:
-            if (
-                self._server is None
-                or not self._server.alive()
-                or self._server.model.id != model.id
-            ):
+            if self._server is None or not self._server.alive() or self._server.model != model:
                 logger.info("audio.cpp: (re)starting the server for %s", model.id)
                 self._start_server(model, cancel_event)
             return self._server
@@ -206,19 +229,21 @@ class AudioCppBackend:
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         seed: Optional[int] = None,
+        audio_options: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         del top_k, min_p, repetition_penalty, use_adapter
         if not self.active_model_name or self.active_model_name not in self.models:
             raise RuntimeError("No active audio model")
-        model = lookup(self.active_model_name)
+        model = self._model
         if model is None:
             raise RuntimeError("No active audio model")
         _raise_if_cancelled(cancel_event)
+        options = validate_options(model.options, audio_options)
         server = self._running_server(model, cancel_event)
         try:
             if model.task == "music":
                 wav = self._generate_music(
-                    server, model, text, instructions, max_new_tokens, seed, cancel_event
+                    server, model, text, instructions, max_new_tokens, seed, options, cancel_event
                 )
             else:
                 wav = self._generate_speech(
@@ -230,6 +255,7 @@ class AudioCppBackend:
                     temperature,
                     top_p,
                     seed,
+                    options,
                     cancel_event,
                 )
         except AudioCppRequestCancelledError:
@@ -237,7 +263,7 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            raise RuntimeError(f"audio.cpp could not generate audio: {exc.detail}") from exc
+            raise RuntimeError(f"The audio runtime could not generate audio: {exc.detail}") from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
@@ -257,24 +283,31 @@ class AudioCppBackend:
         temperature: float,
         top_p: float,
         seed: Optional[int],
+        options: dict,
         cancel_event,
     ) -> bytes:
         defaults = dict(model.request_defaults)
         default_options = dict(defaults.pop("options", None) or {})
         body: dict[str, Any] = {"model": server.model_id, "input": text, **defaults}
-        # Sampling stays with each family's own defaults. Studio's generic speech temperature is tuned for the
-        # token-codec models; handed to audio.cpp's families it can keep one from ever emitting its stop token
-        # (MOSS-TTS-Nano samples at 1.5 and runs to its length cap at 0.6).
+        # Sampling stays with each family's own defaults unless the user set it for this model. Studio's
+        # generic speech temperature is tuned for the token-codec models; handed to audio.cpp's families it
+        # can keep one from ever emitting its stop token (MOSS-TTS-Nano samples at 1.5 and runs to its length
+        # cap at 0.6).
         del temperature, top_p
+        chosen = dict(options)
+        voice = chosen.pop("voice", None)
+        if voice:
+            body["voice"] = voice
+        default_options.update(chosen)
         requested: dict[str, Any] = {}
         if instructions and str(instructions).strip():
             # Voice-design and style-capable families read the description as the instruction.
             requested["instruct"] = str(instructions).strip()
         if language and str(language).strip():
             requested["language"] = str(language).strip()
-        options = {**default_options, **requested}
-        if options:
-            body["options"] = options
+        merged = {**default_options, **requested}
+        if merged:
+            body["options"] = merged
         if seed is not None:
             body["seed"] = str(int(seed))
         try:
@@ -289,7 +322,8 @@ class AudioCppBackend:
             # 4xx or a 500 depending on where the family validates it, so both count as a refusal here.
             if not requested or exc.status == 503 or not 400 <= exc.status < 600:
                 raise
-            # The request's own description and language are hints; the package's defaults are not.
+            # The request's own description and language are hints; the package's defaults and the
+            # user's options are not.
             logger.info(
                 "audio.cpp: %s rejected %s (%s); retrying without them",
                 model.family,
@@ -316,20 +350,47 @@ class AudioCppBackend:
         instructions: Optional[str],
         max_new_tokens: Optional[int],
         seed: Optional[int],
+        options: dict,
         cancel_event,
     ) -> bytes:
         # The Audio page's music form sends the description as instructions and the lyrics as text (the MiniMax
-        # convention). A lone prompt with no description is the description.
+        # convention).
         description = str(instructions or "").strip()
         lyrics = str(text or "").strip()
-        if not description:
-            description, lyrics = lyrics, ""
-        request: dict[str, Any] = {
-            "text": description,
-            "duration_seconds": _music_seconds(max_new_tokens),
-        }
-        if lyrics and model.family != "stable_audio":
-            request["lyrics"] = lyrics
+        seconds = _music_seconds(max_new_tokens)
+        request: dict[str, Any] = {}
+        request_options: dict[str, Any] = dict(options)
+        if model.family == "minimax_music3":
+            if not lyrics:
+                raise RuntimeError("MiniMax Music 3 needs lyrics.")
+            # The caption is the input; lyrics and the frame budget are options (the request fields too,
+            # which the task route maps onto the same options).
+            request.update(
+                {"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds}
+            )
+            request_options.update({"lyrics": lyrics, "duration_sec": seconds})
+        elif model.family == "yue2":
+            if not description:
+                raise RuntimeError("YuE2 needs a style description.")
+            request["text"] = lyrics or description
+            request_options["style"] = description
+            if lyrics:
+                request_options["lyrics"] = lyrics
+            # YuE2's length is its semantic token budget at 25 frames per second (default 9000, six
+            # minutes), and its default floor of 200 frames would outlast a short request.
+            frames = int(round(seconds * 25))
+            request_options["semantic_max_tokens"] = frames
+            request_options["semantic_min_tokens"] = min(200, frames)
+        else:
+            # A lone prompt with no description is the description.
+            if not description:
+                description, lyrics = lyrics, ""
+            request["text"] = description
+            request["duration_seconds"] = seconds
+            if lyrics and model.family != "stable_audio":
+                request["lyrics"] = lyrics
+        if request_options:
+            request["options"] = request_options
         if seed is not None:
             request["seed"] = str(int(seed))
         ctype, data = server.post_json(
@@ -347,6 +408,7 @@ class AudioCppBackend:
         self.models.pop(model_name, None)
         if self.active_model_name == model_name:
             self.active_model_name = None
+            self._model = None
         with self._server_lock:
             self._stop_server_locked()
         return True
@@ -362,7 +424,7 @@ def _audio_from_task_response(content_type: str, data: bytes) -> bytes:
     try:
         payload = json.loads(data.decode("utf-8"))
     except ValueError as exc:
-        raise RuntimeError("audio.cpp returned an unreadable music response.") from exc
+        raise RuntimeError("The audio runtime returned an unreadable music response.") from exc
     for candidate in _audio_candidates(payload):
         try:
             decoded = base64.b64decode(candidate, validate = False)
@@ -370,7 +432,7 @@ def _audio_from_task_response(content_type: str, data: bytes) -> bytes:
             continue
         if decoded[:4] == b"RIFF":
             return decoded
-    raise RuntimeError("audio.cpp returned no audio for the music request.")
+    raise RuntimeError("The audio runtime returned no audio for the music request.")
 
 
 def _audio_candidates(node: Any):

@@ -26,10 +26,15 @@ export interface StagedDownloadEntry {
   bytes: number;
   ggufFilename?: string | null;
   checkpoint?: boolean;
+  /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
+   *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
+  ggufVariant?: string | null;
 }
 
 function entryKey(entry: StagedDownloadEntry): string {
-  return `${entry.repoId}|${[...entry.files].sort().join(",")}`;
+  return entry.ggufVariant
+    ? `${entry.repoId}|${entry.ggufVariant}`
+    : `${entry.repoId}|${[...entry.files].sort().join(",")}`;
 }
 
 /** Runs a multi-repo download plan through the shared download manager, then calls `onReady` once every entry is on disk. Staging here rather than inside the load is what puts image and video downloads in the same panel, with the same progress, cancel, resume, disk preflight and manifest verification. */
@@ -48,8 +53,10 @@ export function useStagedDownload({
   const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
   const current = queue?.[0] ?? null;
 
-  // Every entry is scoped, including a GGUF checkpoint: the Hub's snapshot ignore list drops *.gguf, so a plain snapshot job would finish having fetched everything EXCEPT the weights.
-  const activeVariant = current ? scopedVariant(scopeId) : null;
+  // Every other entry is scoped, including a GGUF checkpoint: the Hub's snapshot ignore list drops *.gguf, so a plain snapshot job would finish having fetched everything EXCEPT the weights.
+  const activeVariant = current
+    ? (current.ggufVariant ?? scopedVariant(scopeId))
+    : null;
 
   const advance = useCallback(() => {
     setQueue((rest) => {
@@ -108,17 +115,27 @@ export function useStagedDownload({
     const laterEntry = noticedGeneration.current === generation.current;
     noticedGeneration.current = generation.current;
     void (async () => {
-      const outcome = await downloadManager.requestStart({
-        kind: DOWNLOAD_KIND.MODEL,
-        repoId: current.repoId,
-        variant: activeVariant,
-        inventoryKind: scopedDownloadInventoryKind(current.files),
-        expectedBytes: current.bytes,
-        scopeId,
-        files: current.files,
-        checkpoint: current.checkpoint,
-        skipXetNotice: laterEntry,
-      });
+      const outcome = await downloadManager.requestStart(
+        current.ggufVariant
+          ? {
+              kind: DOWNLOAD_KIND.MODEL,
+              repoId: current.repoId,
+              variant: current.ggufVariant,
+              expectedBytes: current.bytes,
+              skipXetNotice: laterEntry,
+            }
+          : {
+              kind: DOWNLOAD_KIND.MODEL,
+              repoId: current.repoId,
+              variant: activeVariant,
+              inventoryKind: scopedDownloadInventoryKind(current.files),
+              expectedBytes: current.bytes,
+              scopeId,
+              files: current.files,
+              checkpoint: current.checkpoint,
+              skipXetNotice: laterEntry,
+            },
+      );
       if (!active) return;
       if (outcome === "started") return;
       if (inFlight.current === started) inFlight.current = null;

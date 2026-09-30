@@ -30,10 +30,10 @@ def _looks_like_path(identifier: str) -> bool:
     """
     if identifier.lower().endswith(_GGUF_SUFFIX):
         return True
-    # A curated audio.cpp id names a package folder of one Hub repo; three segments, not a path.
+    # An audio.cpp umbrella id names a model folder of one Hub repo; three segments, not a path.
     if identifier.lower().startswith("audio-cpp/audio.cpp-gguf/"):
-        from core.inference.audio_cpp_models import is_audio_cpp_model
-        if is_audio_cpp_model(identifier):
+        from core.inference.audio_cpp_models import parse_identifier
+        if parse_identifier(identifier) is not None:
             return False
     if identifier.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
         return True
