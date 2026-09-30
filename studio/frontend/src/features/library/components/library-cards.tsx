@@ -205,12 +205,12 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        // Two-line name slot keeps the icon in one place on every card.
+        // Two-line name slot keeps the icon in one place on every card; the padding lifts it to the middle.
         <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
           <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
           </p>
-          <div className="flex items-center justify-center">
+          <div className="flex items-center justify-center pb-4">
             <KindIcon item={item} className={cardIconClass(item)} />
           </div>
           <p className="truncate pr-6 text-ui-12 text-muted-foreground">
