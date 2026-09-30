@@ -466,7 +466,17 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     assert "aui.composer().addAttachment(file)" in thread
     assert "onPaste={handleFilePaste}" in shared_composer
     assert "pasteClipboardFiles" in shared_composer
-    assert "addFiles(files)" in shared_composer
+    # The paste handler has to hand the pasted files to the same add path a drop or the file picker
+    # uses. #9788 moved it from addFiles(files) to trackAttaching(... addFilesUntracked(files)) so
+    # the in-flight counter is bumped once rather than twice; either spelling is the contract, but
+    # an untracked add must sit inside trackAttaching or a send can race the paste.
+    paste = shared_composer[shared_composer.index("const handleFilePaste") :]
+    paste = paste[: paste.index("\n  );\n")]
+    assert "pasteClipboardFiles(" in paste
+    added = re.findall(r"\b(addFiles|addFilesUntracked)\(files\)", paste)
+    assert added, "the compare composer's paste handler no longer adds the pasted files"
+    if "addFilesUntracked" in added:
+        assert "trackAttaching(" in paste
     assert capabilities.count('"clipboard-manager:allow-read-image"') == 1
     assert '"clipboard-manager:allow-read-text"' not in capabilities
 
