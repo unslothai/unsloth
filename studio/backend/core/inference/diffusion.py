@@ -128,6 +128,7 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
+    pipeline_host_mib,
     torchao_offload_plan,
     torchao_scheme_streams,
     torchao_streaming_plan,
@@ -3479,6 +3480,10 @@ class DiffusionBackend:
                 # An offloaded quantised rung beats bf16 shards; a later resident rung beats both.
                 offloaded_rung: Optional[str] = None
                 memory = snapshot_device_memory(target)
+                # Like the VRAM override below: the outgoing pipeline's host weights are gone before this one pins.
+                reclaimable_host_mib = pipeline_host_mib(
+                    getattr(getattr(self, "_state", None), "pipe", None)
+                )
                 for rung in rungs:
                     source = denoiser_prequant_source(
                         fam,
@@ -3521,7 +3526,9 @@ class DiffusionBackend:
                         ),
                         device_memory_override = replace(memory, free_mib = memory.total_mib),
                     )
-                    if not torchao_survives_plan(planned, rung):
+                    if not torchao_survives_plan(
+                        planned, rung, reclaimable_host_mib = reclaimable_host_mib
+                    ):
                         logger.info(
                             "diffusion.denoiser_prequant: an artifact-sized plan for %s places the "
                             "denoiser with '%s' offload, which its torchao weights do not survive "

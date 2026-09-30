@@ -949,8 +949,10 @@ def torchao_offload_plan(
     scheme: Optional[str],
     *,
     torchao_version: Any = _UNSET,
+    reclaimable_host_mib: int = 0,
 ) -> Optional[Any]:
-    """Placement a torchao ``scheme`` denoiser survives under ``plan``, or None (sequential offload: never measured)."""
+    """Placement a torchao ``scheme`` denoiser survives under ``plan``, or None (sequential offload: never measured).
+    ``reclaimable_host_mib``: host RAM the outgoing pipeline frees before this one pins."""
     if plan_keeps_transformer_resident(plan):
         return plan
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
@@ -960,14 +962,14 @@ def torchao_offload_plan(
         return None
     if not torchao_scheme_streams(scheme, torchao_version = torchao_version):
         return None
-    if not _torchao_stream_pinnable(plan):
+    if not _torchao_stream_pinnable(plan, reclaimable_host_mib):
         return None
     if policy != OFFLOAD_MODEL:
         return plan
     return torchao_streaming_plan(plan)
 
 
-def _torchao_stream_pinnable(plan: Any) -> bool:
+def _torchao_stream_pinnable(plan: Any, reclaimable_host_mib: int = 0) -> bool:
     """Lazy pinning refuses torchao and the stream-free fallback ran ~35x slower, so require an up-front pin."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no"):
@@ -982,7 +984,37 @@ def _torchao_stream_pinnable(plan: Any) -> bool:
     except Exception:  # noqa: BLE001 - an unsized plan cannot prove the pin fits
         return False
     budget = _pin_budget_mib()
-    return budget is not None and 0 <= denoiser <= budget
+    return budget is not None and 0 <= denoiser <= budget + max(0, int(reclaimable_host_mib))
+
+
+def pipeline_host_mib(pipe: Any) -> int:
+    """Host MiB held by ``pipe``'s components, which an unload hands back."""
+    if pipe is None:
+        return 0
+    total = 0
+    try:
+        components = getattr(pipe, "components", None) or {}
+        for module in components.values():
+            if hasattr(module, "parameters"):
+                total += _module_host_mib_on_cpu(module)
+    except Exception:  # noqa: BLE001 - unsizeable: credit nothing
+        return 0
+    return total
+
+
+def _module_host_mib_on_cpu(module: Any) -> int:
+    try:
+        seen: set[int] = set()
+        nbytes = 0
+        for tensor in (*module.parameters(), *module.buffers()):
+            if id(tensor) in seen or getattr(tensor, "device", None) is None:
+                continue
+            seen.add(id(tensor))
+            if tensor.device.type == "cpu":
+                nbytes += sum(_storage_nbytes(tensor))
+        return nbytes >> 20
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def torchao_survives_plan(
@@ -990,8 +1022,17 @@ def torchao_survives_plan(
     scheme: Optional[str],
     *,
     torchao_version: Any = _UNSET,
+    reclaimable_host_mib: int = 0,
 ) -> bool:
-    return torchao_offload_plan(plan, scheme, torchao_version = torchao_version) is not None
+    return (
+        torchao_offload_plan(
+            plan,
+            scheme,
+            torchao_version = torchao_version,
+            reclaimable_host_mib = reclaimable_host_mib,
+        )
+        is not None
+    )
 
 
 def torchao_scheme_streams(scheme: Optional[str], *, torchao_version: Any = _UNSET) -> bool:

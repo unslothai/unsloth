@@ -777,3 +777,23 @@ def test_failed_group_setup_never_onloads_an_oversized_quantised_transformer(
     else:
         effective, _ = mem.apply_memory_plan(pipe, plan, device = "cuda")
         assert effective == OFFLOAD_MODEL
+
+
+def test_pipeline_host_mib_counts_only_host_resident_weights():
+    torch = pytest.importorskip("torch")
+    cpu = torch.nn.Linear(1024, 1024, bias = False)  # 4 MiB fp32
+    pipe = types.SimpleNamespace(components = {"transformer": cpu, "scheduler": object()})
+    assert mem.pipeline_host_mib(pipe) == 4
+    assert mem.pipeline_host_mib(None) == 0
+    if torch.cuda.is_available():
+        pipe.components["transformer"] = cpu.to("cuda")
+        assert mem.pipeline_host_mib(pipe) == 0
+
+
+def test_reclaimable_host_ram_widens_the_pin_budget(monkeypatch):
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 4_000)
+    plan = types.SimpleNamespace(
+        estimates = {"model_dense_mib": 20_000, "companion_dense_mib": 8_000}
+    )
+    assert not mem._torchao_stream_pinnable(plan)
+    assert mem._torchao_stream_pinnable(plan, 8_000)

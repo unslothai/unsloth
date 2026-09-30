@@ -12145,7 +12145,7 @@ def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
-    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
@@ -12272,7 +12272,7 @@ def test_a_pipeline_pick_quantises_under_streamed_group_offload_on_a_measured_to
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: torchao_version)
-    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("group"))
@@ -12295,9 +12295,9 @@ def test_a_quantised_transformer_too_big_to_onload_whole_streams_instead(
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
-    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
     # diffusion.py binds its own reference; without this the host's real pin budget decides.
-    monkeypatch.setattr(dmod, "_torchao_stream_pinnable", lambda plan: True)
+    monkeypatch.setattr(dmod, "_torchao_stream_pinnable", lambda plan, *_a: True)
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
@@ -13442,7 +13442,7 @@ def test_an_explicit_fp8_under_group_offload_engages_on_a_measured_torchao(
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
-    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
     backend = DiffusionBackend()
     calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch, engages = "fp8")
     status = backend.load_pipeline(
@@ -13467,7 +13467,7 @@ def test_an_explicit_int8_under_offload_stays_native_on_a_measured_torchao(
     from core.inference import diffusion_memory
 
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
-    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
     backend = DiffusionBackend()
     calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
     status = backend.load_pipeline(
