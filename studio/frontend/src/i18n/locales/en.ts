@@ -143,6 +143,13 @@ export const en = {
       close: "Close find",
       truncated: "This page is too long to search in full.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Zoom out",
+      zoomIn: "Zoom in",
+      reset: "Reset",
+      announce: "Zoom {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

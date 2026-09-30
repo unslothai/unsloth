@@ -144,6 +144,13 @@ export const ja = {
       close: "検索を閉じる",
       truncated: "このページは長すぎるため、全体を検索できません。",
     },
+    zoom: {
+      label: "ズーム",
+      zoomOut: "縮小",
+      zoomIn: "拡大",
+      reset: "リセット",
+      announce: "ズーム {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

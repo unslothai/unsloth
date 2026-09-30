@@ -5509,14 +5509,25 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .dark .find-bar-surface {
-	/* #2c2c2c, on the same curve as --card: the bar has to stay above the
-	   cards it floats over at every contrast, not just the default. */
-	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));
+	/* Sidebar menu surface (7%) a step lighter; 8% stays under --border. */
+	background-color: color-mix(in srgb, var(--card), white 8%);
 	box-shadow: 0 4px 20px 6px var(--background);
 }
 
-/* Toasts stack under the open find bar: its top, its h-13, then 8px. */
-:root:has(.find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
+/* Zoom popup: the find bar's corner, drawn in front of the bar when both show. */
+.interface-zoom-position {
+	top: calc(var(--studio-content-top-inset, 0px) + 3.5rem);
+}
+
+/* Nothing notifies JS when these mount, so CSS keeps the portaled bars under them. */
+html:has([aria-modal="true"], [data-blocking-screen]) [data-find-bar-layer],
+html:has([data-blocking-screen]) .interface-zoom-position {
+	display: none;
+}
+
+/* Toasts stack under the open find bar: its top, its h-13, then 8px. Not the zoom popup, which
+   shares the surface class. */
+:root:has([data-find-bar-layer]:not([hidden]) .find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
 	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 }
