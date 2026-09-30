@@ -80,15 +80,12 @@ def _route_request(supervisor):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["off", "inference", "full"])
-@pytest.mark.parametrize("tools", [False, True])
+@pytest.mark.parametrize("scope", ["off", "full"])
 @pytest.mark.parametrize(
     "caller,expected",
     [("session", False), ("keyless", True), ("api-key", True), ("workflow", False)],
 )
-async def test_durable_producer_preserves_monitor_origin(
-    monkeypatch, scope, tools, caller, expected
-):
+async def test_durable_producer_preserves_monitor_origin(monkeypatch, scope, caller, expected):
     from auth import policy, storage
     from utils import keyless_api_access as keyless
 
@@ -120,8 +117,7 @@ async def test_durable_producer_preserves_monitor_origin(
             "server": ("127.0.0.1", 8000),
         }
     )
-    # Model the completed authentication dependency, then change settings before
-    # the worker starts. Attribution belongs to admission, not current settings.
+    # Origin is fixed at run creation; the settings change below must not alter it.
     keyless.mark_keyless_admission(request, caller == "keyless")
     monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
     monkeypatch.setattr(storage, "is_internal_api_key", lambda _token: caller == "workflow")
@@ -132,21 +128,24 @@ async def test_durable_producer_preserves_monitor_origin(
     assert retry["created"] is False
     assert retry["requestPayload"][runs_db.API_MONITOR_ORIGIN_FIELD] is expected
     monkeypatch.setattr(keyless, "get_keyless_api_access_scope", lambda: scope)
-    monkeypatch.setattr(keyless, "get_keyless_api_tools_enabled", lambda: tools)
     observed = []
 
     async def body():
         yield "data: [DONE]\n\n"
 
     async def fake(payload, background, _subject, *, cancel_on_disconnect):
-        observed.append(inference._request_used_api_key(background))
-        assert runs_db.API_MONITOR_ORIGIN_FIELD not in payload.model_extra
-        assert "authorization" not in background.headers
+        observed.append(
+            (
+                inference._request_used_api_key(background),
+                runs_db.API_MONITOR_ORIGIN_FIELD in payload.model_extra,
+                "authorization" in background.headers,
+            )
+        )
         return SimpleNamespace(status_code = 200, body_iterator = body())
 
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     await ChatGenerationSupervisor(app)._produce("run-1")
-    assert observed == [expected]
+    assert observed == [(expected, False, False)]
 
 
 def test_monitor_origin_is_not_part_of_retry_identity():

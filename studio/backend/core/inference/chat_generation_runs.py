@@ -94,16 +94,16 @@ def _background_request(
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
-        "state": {"generation_cancel_event": cancel_event},
+        "state": {
+            "generation_cancel_event": cancel_event,
+            "api_monitor_via_api_key": via_api_key,
+        },
     }
 
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
 
-    request = Request(scope, receive)
-    if isinstance(via_api_key, bool):
-        request.state.api_monitor_via_api_key = via_api_key
-    return request
+    return Request(scope, receive)
 
 
 def _chunk_finish_reason(chunk: dict[str, Any]) -> str | None:
