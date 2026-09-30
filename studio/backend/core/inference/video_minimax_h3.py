@@ -163,7 +163,8 @@ def estimate_h3_diffusers_host_ram_gb(
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
     would have fitted rather than admitting one that will not.
     A streamed denoiser counts twice (pinned staging copy; measured 80.2 GB peak vs 64.5 GB single count)."""
-    if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB:
+    # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
+    if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)

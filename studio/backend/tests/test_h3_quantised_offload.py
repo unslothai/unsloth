@@ -207,6 +207,19 @@ def test_the_host_floor_counts_the_pinned_staging_copy_of_a_streamed_denoiser():
     assert estimate_h3_diffusers_host_ram_gb(33.5) == pytest.approx(150.0, abs = 0.01)
 
 
+def test_a_streamed_load_keeps_its_host_floor_when_free_vram_later_climbs():
+    """Streamed while another tenant held the card; that tenant leaves before the render."""
+    from core.inference.video_minimax_h3 import estimate_h3_diffusers_host_ram_gb
+
+    streamed = estimate_h3_diffusers_host_ram_gb(
+        140.0, text_encoder_gb = 66.7, transformer_gb = 20.3, transformer_streamed = True
+    )
+    assert streamed == pytest.approx(124.3, abs = 0.01)
+    assert (
+        estimate_h3_diffusers_host_ram_gb(140.0, text_encoder_gb = 66.7, transformer_gb = 20.3) == 85.0
+    )
+
+
 def test_the_generate_preflight_reads_the_streamed_fact_off_the_state():
     import inspect
 
