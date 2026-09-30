@@ -282,18 +282,24 @@ class GraphedForward:
         warmup: int = WARMUP_ITERS,
         max_graphs: int = MAX_GRAPHS_PER_MODULE,
         logger: Any = None,
+        call: Any = None,
     ) -> None:
         self.module = module
         # The CLASS forward: the eager callable, whatever is already in the instance slot. A class
         # whose stock forward syncs the host gets its capture-safe rewrite (bit-identical) instead.
+        # ``call`` overrides it (GraphedCompiledCall: the module's whole-module compiled callable).
         safe = None
-        try:
-            from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
-            safe, _ = _capture_safe(type(module))
-        except Exception:  # noqa: BLE001 - the stock forward is still a correct eager callable
-            safe = None
+        if call is None:
+            try:
+                from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
+                safe, _ = _capture_safe(type(module))
+            except Exception:  # noqa: BLE001 - the stock forward is still a correct eager callable
+                safe = None
         self.capture_safe = safe is not None
-        self.orig = (safe if safe is not None else type(module).forward).__get__(module)
+        if call is not None:
+            self.orig = call
+        else:
+            self.orig = (safe if safe is not None else type(module).forward).__get__(module)
         try:
             update_wrapper(self, self.orig)
         except Exception:  # noqa: BLE001
@@ -585,6 +591,38 @@ class GraphedForward:
         return entry
 
 
+class GraphedCompiledCall(GraphedForward):
+    """``GraphedForward`` for a whole-module compiled denoiser (SDXL U-Net): ``Module.__call__`` serves it from
+    ``_compiled_call_impl`` and never reads ``forward``, so the replay sits there and captures the compiled callable."""
+
+    def __init__(self, module: Any, **kwargs: Any) -> None:
+        compiled = getattr(module, "_compiled_call_impl", None)
+        if compiled is None:
+            raise RuntimeError(f"{type(module).__name__} is not whole-module compiled")
+        self.compiled = compiled
+        super().__init__(module, call = compiled, **kwargs)
+
+    def install(self) -> "GraphedCompiledCall":
+        self.module._compiled_call_impl = self
+        return self
+
+    def uninstall(self) -> "GraphedCompiledCall":
+        if getattr(self.module, "_compiled_call_impl", None) is self:
+            self.module._compiled_call_impl = self.compiled
+        return self
+
+
+def _denoiser_modules(pipe: Any) -> list:
+    """What the graph layer arms: every denoiser DiT, else a whole-compile-list U-Net."""
+    from .diffusion_speed import _denoiser_dits, _denoiser_unet
+
+    dits = _denoiser_dits(pipe)
+    if dits:
+        return dits
+    unet = _denoiser_unet(pipe)
+    return [unet] if unet is not None else []
+
+
 def graph_eligible(
     target: Any,
     *,
@@ -623,11 +661,8 @@ def graph_eligible(
     # Lazy: ``diffusion_speed`` imports this module, so a module-level import here is a cycle.
     from .diffusion_speed import _denoiser_dits, _denoiser_unet
 
-    if _denoiser_unet(pipe) is not None:
-        # A whole-compiled U-Net serves from ``_compiled_call_impl``, which a slot swap bypasses.
-        return False, "denoiser is a U-Net"
-
-    if not _denoiser_dits(pipe):
+    # A whole-compiled U-Net serves from ``_compiled_call_impl``: GraphedCompiledCall captures there.
+    if not _denoiser_dits(pipe) and _denoiser_unet(pipe) is None:
         return False, "no denoiser transformer"
 
     try:
@@ -662,12 +697,15 @@ def install_cuda_graphs(
     max_graphs: int = MAX_GRAPHS_PER_MODULE,
 ) -> tuple:
     """Arm one ``GraphedForward`` per denoiser module; the first denoising step captures."""
-    from .diffusion_speed import _denoiser_dits
-
     handles: list = []
-    for module in _denoiser_dits(pipe):
+    for module in _denoiser_modules(pipe):
         try:
-            handles.append(GraphedForward(module, max_graphs = max_graphs, logger = logger).enable())
+            kind = (
+                GraphedCompiledCall
+                if getattr(module, "_compiled_call_impl", None) is not None
+                else GraphedForward
+            )
+            handles.append(kind(module, max_graphs = max_graphs, logger = logger).enable())
         except Exception as exc:  # noqa: BLE001 - a second expert may fail without failing the load
             _warn(logger, f"install on {type(module).__name__}", exc)
 

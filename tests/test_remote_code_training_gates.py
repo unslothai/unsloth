@@ -142,11 +142,18 @@ class _Wrapper(PreTrainedModel):
 
 
 def test_wrapper_refuses_gradient_checkpointing_on_its_own():
-    """The precondition, on this transformers version."""
+    """The precondition, on this transformers version.
+
+    unsloth_zoo (#1448) wraps PreTrainedModel.gradient_checkpointing_enable to grant the
+    same inheritance, so the precondition is read off transformers' own method, which the
+    wrapper keeps as `_unsloth_original`.
+    """
     model = _Wrapper(_Cfg())
     assert model.supports_gradient_checkpointing is False
+    enable = PreTrainedModel.gradient_checkpointing_enable
+    enable = getattr(enable, "_unsloth_original", enable)
     with pytest.raises(ValueError, match = "does not support gradient checkpointing"):
-        model.gradient_checkpointing_enable()
+        enable(model)
 
 
 def test_wrapper_inherits_support_and_every_layer_is_switched_on():

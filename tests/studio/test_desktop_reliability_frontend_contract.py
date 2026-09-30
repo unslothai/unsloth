@@ -308,7 +308,6 @@ def test_media_galleries_save_natively_with_feedback():
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = _ui_source(APP_SIDEBAR)
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
     thread_sidebar = _ui_source(THREAD_SIDEBAR)
@@ -322,12 +321,21 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    for source in (app_sidebar, thread, thread_sidebar, shared_composer, data_tab, projects):
+    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
+    project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
+    for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
         assert "isDownloadCancelled(error)" in source
+    assert "if (!isDownloadCancelled(err)) toast.error(" in chats_library
+    assert "if (!isDownloadCancelled(error)) toast.error(" in project_menu
     assert "const handleExport = useCallback(async () =>" in prompt_storage
     assert prompt_storage.count("await export") >= 12
-    assert "await Promise.all(" not in app_sidebar
-    assert "for (const id of ids)" in app_sidebar
+    # One native save at a time: the Library exports selected chats in a sequential loop.
+    assert "for (const id of threadIds) await exportConversationByFormat(" in chats_library
+    assert "await exportThreads(" in chats_library
+    # Promise.all / allSettled / any over exports would open the dialogs together.
+    assert not re.search(r"Promise\.\w+\((?:(?!;).)*?\bexport\w*\(", chats_library, re.S)
+    assert "await exportThreads(" in project_menu
     assert prompt_storage.count("await downloadBlob(") >= 5
 
     assert "await downloadBlob(zipped," in prompt_storage
@@ -458,7 +466,17 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     assert "aui.composer().addAttachment(file)" in thread
     assert "onPaste={handleFilePaste}" in shared_composer
     assert "pasteClipboardFiles" in shared_composer
-    assert "addFiles(files)" in shared_composer
+    # The paste handler has to hand the pasted files to the same add path a drop or the file picker
+    # uses. #9788 moved it from addFiles(files) to trackAttaching(... addFilesUntracked(files)) so
+    # the in-flight counter is bumped once rather than twice; either spelling is the contract, but
+    # an untracked add must sit inside trackAttaching or a send can race the paste.
+    paste = shared_composer[shared_composer.index("const handleFilePaste") :]
+    paste = paste[: paste.index("\n  );\n")]
+    assert "pasteClipboardFiles(" in paste
+    added = re.findall(r"\b(addFiles|addFilesUntracked)\(files\)", paste)
+    assert added, "the compare composer's paste handler no longer adds the pasted files"
+    if "addFilesUntracked" in added:
+        assert "trackAttaching(" in paste
     assert capabilities.count('"clipboard-manager:allow-read-image"') == 1
     assert '"clipboard-manager:allow-read-text"' not in capabilities
 
@@ -624,25 +642,23 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
-    assert "const contentBorderLeft = pinned" in source
-    assert ': "0px";' in source
+    # The card's corner starts on the sidebar's last column, so its left edge meets the sidebar's.
+    assert "const cornerLeft = `calc(${sidebarWidth} - 1px)`;" in source
 
     # Keep the decoration below z-50 modals and outside the z-[70] header.
     assert 'data-slot="window-titlebar-decoration"' in source
     decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
         'className="pointer-events-none absolute inset-x-0 '
-        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
-    # The border is always visible.
-    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
-    # The backing and corner only appear when pinned.
-    assert decoration.count("{pinned && (") == 2
-    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
-    assert (
-        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in decoration
-    )
+    # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
+    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border",' in decoration
+    assert 'pinned && "rounded-tl-[12px] border-l",' in decoration
+    assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
+    # The sidebar-coloured mask outside the corner only appears when pinned.
+    assert decoration.count("{pinned && (") == 1
+    assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
@@ -2609,8 +2625,9 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Six rows: #11589 added the drop-cue row, scaled like the rest.
-    (APP_SIDEBAR, "", "h", "30px", 6),
+    # Seven rows: #11589 added the drop-cue row, and #12016 a second section header for the
+    # custom sidebar sections, both scaled like the rest.
+    (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The

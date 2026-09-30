@@ -2311,3 +2311,14 @@ def test_a_temp_copy_that_cannot_be_unlinked_does_not_end_the_pass(audited, monk
     # The gate's own cleanup is the same shape, one step earlier: it must answer, not raise.
     stack._PASS_EVIDENCE = {"pass_inputs": {}, "step_results": {}}
     assert stack._requirements_satisfied(audited / "studio.txt", no_deps = False) is False
+
+
+def test_the_mlx_grammar_engine_is_pinned_skippable_and_never_fatal() -> None:
+    """An unpinned --upgrade re-ran on every update, and its SystemExit aborted the install."""
+    assert re.fullmatch(r"llguidance==\d+\.\d+\.\d+", stack._LLGUIDANCE_PIN)
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    step = source[source.index("# 11d.") : source.index("# 12. Patch metadata")]
+    assert "_exact_distribution_spec_is_installed(_LLGUIDANCE_PIN)" in step
+    assert "not _full_deps_requested() and" in step
+    assert "except SystemExit:" in step
+    assert "--upgrade" not in step
