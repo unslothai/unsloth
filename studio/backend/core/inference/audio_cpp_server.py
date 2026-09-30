@@ -241,14 +241,20 @@ def child_env(binary: str) -> dict[str, str]:
     return env
 
 
+# eSpeak-ng keeps its data dir in a fixed buffer (N_PATH_HOME: 160 bytes on POSIX, 230 on Windows), and
+# audio.cpp extracts it ~65 bytes below the child home (.cache/audio.cpp/espeak-data/<id>/espeak-ng-data).
+_MAX_CHILD_HOME_LEN = 150 if sys.platform == "win32" else 85
+
+
 def _child_home_dir() -> Path:
-    """A private scratch home for the child: ``<studio_root>/cache/audiocpp-home``, else a per-user temp dir."""
+    """A private scratch home for the child: ``<studio_root>/cache/audiocpp-home``, else (unusable or
+    too long for eSpeak-ng) a per-user temp dir."""
     try:
         from utils.paths.storage_roots import studio_root
-
         home = studio_root() / "cache" / "audiocpp-home"
-        home.mkdir(parents = True, exist_ok = True)
-        return home
+        if len(str(home)) <= _MAX_CHILD_HOME_LEN:
+            home.mkdir(parents = True, exist_ok = True)
+            return home
     except Exception:  # noqa: BLE001 - an unusable studio root falls back to the temp dir
         pass
     user = str(os.getuid()) if hasattr(os, "getuid") else (os.environ.get("USERNAME") or "user")

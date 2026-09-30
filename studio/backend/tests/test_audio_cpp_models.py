@@ -146,7 +146,12 @@ def test_child_home_is_private_and_per_user(tmp_path, monkeypatch):
     import utils.paths.storage_roots as roots
 
     monkeypatch.setattr(roots, "studio_root", lambda: tmp_path / "studio")
+    monkeypatch.setattr(srv, "_MAX_CHILD_HOME_LEN", len(str(tmp_path)) + 40)
     assert srv._child_home_dir() == tmp_path / "studio" / "cache" / "audiocpp-home"
+    monkeypatch.setattr(srv.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+    # Too long for eSpeak-ng's data-dir buffer: the short per-user temp home instead.
+    monkeypatch.setattr(roots, "studio_root", lambda: tmp_path / ("x" * 60) / "studio")
+    assert srv._child_home_dir().parent == tmp_path / "tmp"
 
     def broken():
         raise OSError("no studio root")
