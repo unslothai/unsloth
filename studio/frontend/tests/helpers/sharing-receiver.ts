@@ -4,6 +4,7 @@
 import * as events from "../../src/features/auth/session-events.ts";
 import { createDeepLinkIntentGate } from "../../src/features/deep-links/deep-link-intent.ts";
 import { parseUnslothDeepLink } from "../../src/features/deep-links/parse-deep-link.ts";
+import type * as Drafts from "../../src/features/model-picker/model-config/model-config-draft.ts";
 import { modelConfigDraftKey } from "../../src/features/model-picker/model-config/model-config-draft.ts";
 import { createRunConfigInbox } from "../../src/features/model-picker/sharing/inbox.ts";
 import * as linkAddress from "../../src/features/model-picker/sharing/link-address.ts";
@@ -21,6 +22,7 @@ export function receiverHarness({
   errors = [],
   notices = [],
   cleared = [],
+  drafts = { markModelConfigDraftEdited: () => undefined, modelConfigDraftKey },
 }: {
   desktop?: boolean;
   signedIn?: () => boolean;
@@ -28,6 +30,10 @@ export function receiverHarness({
   errors?: string[];
   notices?: { message: string; description?: string }[];
   cleared?: string[];
+  drafts?: Pick<
+    typeof Drafts,
+    "markModelConfigDraftEdited" | "modelConfigDraftKey"
+  >;
 } = {}) {
   const inbox = createRunConfigInbox();
   let nextId = 0;
@@ -50,10 +56,7 @@ export function receiverHarness({
         createDeepLinkIntentGate,
         parseUnslothDeepLink,
       },
-      "../model-config/model-config-draft": {
-        markModelConfigDraftEdited: () => undefined,
-        modelConfigDraftKey,
-      },
+      "../model-config/model-config-draft": drafts,
       "../model-config/model-config-handoff": {
         clearModelConfigHandoff: (id: string) => cleared.push(id),
         createModelConfigHandoffRequestId: () => `request-${++nextId}`,

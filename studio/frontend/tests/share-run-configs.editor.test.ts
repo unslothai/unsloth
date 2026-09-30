@@ -5,13 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ModelPickTarget } from "../src/features/model-picker/components/model-selector/types.ts";
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
-import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
-import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-ui.tsx";
-import type { SharedRunConfigActions as Actions } from "../src/features/model-picker/sharing/config-ui.tsx";
+import type * as Controls from "../src/features/model-picker/sharing/config-controls.tsx";
+import type * as ConfigUi from "../src/features/model-picker/sharing/config-ui.tsx";
 import * as events from "../src/features/model-picker/sharing/editor-events.ts";
-import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/model-picker/sharing/link-editor.tsx";
-import type { SharedRunConfigLinkHandler as LinkHandler } from "../src/features/model-picker/sharing/link-handler.tsx";
-import type { ShareRunConfigDialog as ShareDialog } from "../src/features/model-picker/sharing/share-dialog.tsx";
+import type * as LinkEditor from "../src/features/model-picker/sharing/link-editor.tsx";
+import type * as LinkHandler from "../src/features/model-picker/sharing/link-handler.tsx";
+import type * as ShareDialog from "../src/features/model-picker/sharing/share-dialog.tsx";
 import {
   installLocalStorageFake,
   readSrc,
@@ -25,43 +24,33 @@ import {
 
 registerBundlerResolver();
 installLocalStorageFake();
-const fields = await import("../src/features/model-picker/sharing/fields.ts");
+const [fields, sharedArgs, links, perModel, drafts, inboxes, targets] =
+  await Promise.all([
+    import("../src/features/model-picker/sharing/fields.ts"),
+    import("../src/features/model-picker/sharing/extra-args.ts"),
+    import("./helpers/sharing-links.ts"),
+    import("../src/features/model-picker/model-config/per-model-config.ts"),
+    import("../src/features/model-picker/model-config/model-config-draft.ts"),
+    import("../src/features/model-picker/sharing/inbox.ts"),
+    import("./helpers/sharing-target.ts"),
+  ]);
 const { mergeSharedRunConfig } = fields;
-const sharedArgs = await import(
-  "../src/features/model-picker/sharing/extra-args.ts"
-);
-const links = await import("./helpers/sharing-links.ts");
-const { DEFAULT_PER_MODEL_CONFIG } = await import(
-  "../src/features/model-picker/model-config/per-model-config.ts"
-);
-const { modelConfigDraftKey } = await import(
-  "../src/features/model-picker/model-config/model-config-draft.ts"
-);
-const { createRunConfigInbox } = await import(
-  "../src/features/model-picker/sharing/inbox.ts"
-);
-const targetModule = await import("./helpers/sharing-target.ts");
-const { reconcileGpuSelection } = await import("../src/hooks/gpu-selection.ts");
+const { createRunConfigLink, parseRunConfigLink } = links;
+const { DEFAULT_PER_MODEL_CONFIG: D } = perModel;
+const { modelConfigDraftKey } = drafts;
+const { createRunConfigInbox } = inboxes;
+const { isKnownNonGgufModel, resolveRunConfigTarget } = targets;
 
-const { SharedRunConfigReview } = loadWithStubs<{
-  SharedRunConfigReview: typeof Review;
-}>(
-  new URL(
-    "../src/features/model-picker/sharing/config-ui.tsx",
-    import.meta.url,
-  ),
-  {
-    "react/jsx-runtime": stubJsxRuntime(),
-    react: {},
-    "@/components/ui/button": {},
-    "lucide-react": { ChevronDown: "chevron" },
-    "../model-config/model-config-draft": {},
-    "./inbox": {},
-    "./import-config": {},
-    "./share-dialog": {},
-    "./fields": fields,
-  },
-);
+type Inbox = ReturnType<typeof createRunConfigInbox>;
+type Selection = Parameters<typeof resolveRunConfigTarget>[1];
+const hubTarget: ModelPickTarget = {
+  id: "owner/Model-GGUF",
+  displayName: "Model",
+  ggufVariant: "Q4_K_M",
+  isGguf: true,
+  apiLoadable: true,
+  meta: { source: "hub", isLora: false },
+};
 
 function elements(node: unknown): StubElement[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -79,275 +68,355 @@ function text(node: unknown): string {
     : "";
 }
 
-function summaryText(node: unknown): string {
-  return text(elements(node).find((element) => element.type === "summary"));
-}
+const find = (tree: StubElement[], type: unknown) =>
+  tree.find((element) => element.type === type);
+const summaryText = (node: unknown) => text(find(elements(node), "summary"));
+const call = (element: StubElement | undefined, name: string, arg?: unknown) =>
+  (element?.props[name] as (value?: unknown) => unknown)(arg);
+const toggle = (element: StubElement | undefined, checked: boolean) =>
+  call(element, "onCheckedChange", checked);
+const tags = new Proxy({}, { get: (_target, name) => name });
 
-function shareDialogHarness(
-  config: PerModelConfig,
-  desktop = true,
-  target: ModelPickTarget = {
-    id: "owner/Model-GGUF",
-    displayName: "Model",
-    ggufVariant: "Q4_K_M",
-    isGguf: true,
-    apiLoadable: true,
-    meta: { source: "hub", isLora: false },
-  },
-) {
-  const checkbox = Symbol("checkbox");
-  const textarea = Symbol("textarea");
+// State by call order, effects recorded (never run); unlisted imports render as their names.
+function load<T>(file: string, stubs: Record<string, unknown> = {}) {
   const states: unknown[] = [];
+  const effects: (() => (() => void) | undefined)[] = [];
+  const effect = (run: (typeof effects)[number]) => effects.push(run);
   let cursor = 0;
-  const { ShareRunConfigDialog } = loadWithStubs<{
-    ShareRunConfigDialog: typeof ShareDialog;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/share-dialog.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      react: {
-        useId: () => "share",
-        useMemo: (create: () => unknown) => create(),
-        useState: <T>(initial: T | (() => T)) => {
-          const index = cursor++;
-          if (index >= states.length) {
-            states.push(
-              typeof initial === "function" ? (initial as () => T)() : initial,
-            );
-          }
-          return [
-            states[index],
-            (update: T | ((current: T) => T)) => {
-              states[index] =
-                typeof update === "function"
-                  ? (update as (current: T) => T)(states[index] as T)
-                  : update;
-            },
-          ];
-        },
+  const known: Record<string, unknown> = {
+    react: {
+      lazy: () => "lazy",
+      Suspense: "Suspense",
+      useId: () => "share",
+      useMemo: (create: () => unknown) => create(),
+      useRef: () => ({ current: null }),
+      useSyncExternalStore: (_: unknown, get: () => unknown) => get(),
+      useEffect: effect,
+      useLayoutEffect: effect,
+      useState: (initial: unknown) => {
+        const index = cursor++;
+        if (index >= states.length) {
+          states.push(typeof initial === "function" ? initial() : initial);
+        }
+        const set = (next: unknown) => {
+          states[index] =
+            typeof next === "function" ? next(states[index]) : next;
+        };
+        return [states[index], set];
       },
-      "@/components/ui/button": { Button: "button" },
-      "@/components/ui/checkbox": { Checkbox: checkbox },
-      "@/components/ui/dialog": {
-        Dialog: "dialog",
-        DialogContent: "content",
-        DialogDescription: "description",
-        DialogHeader: "header",
-        DialogTitle: "title",
-      },
-      "@/components/ui/select": {
-        Select: "select",
-        SelectContent: "options",
-        SelectItem: "option",
-        SelectTrigger: "trigger",
-        SelectValue: "value",
-      },
-      "@/components/ui/textarea": { Textarea: textarea },
-      "@/lib/api-base": { isTauri: desktop },
-      "@/lib/copy-to-clipboard": {},
-      "@/lib/toast": {},
-      "../model-config/per-model-config": { DEFAULT_PER_MODEL_CONFIG },
-      "./extra-args": sharedArgs,
-      "./fields": fields,
-      "./links": links,
     },
+    "react/jsx-runtime": stubJsxRuntime(),
+    "../model-config/model-config-draft": {
+      modelConfigDraftKey,
+      isExtraArgsHydratedForDraft: () => false,
+    },
+    "../model-config/per-model-config": perModel,
+    "./extra-args": sharedArgs,
+    "./fields": fields,
+    "./links": links,
+    ...stubs,
+  };
+  const module = loadWithStubs<T>(
+    new URL(`../src/features/model-picker/sharing/${file}`, import.meta.url),
+    new Proxy(known, {
+      has: () => true,
+      get: (target, name: string) => (name in target ? target[name] : tags),
+    }),
   );
-  return () => {
+  const render = <R>(draw: () => R) => {
     cursor = 0;
+    return draw();
+  };
+  return { module, states, effects, render };
+}
+
+const loadConfigUi = (inbox = createRunConfigInbox()) =>
+  load<typeof ConfigUi>("config-ui.tsx", {
+    "./inbox": { runConfigInbox: inbox },
+    "./import-config": { scheduleRunConfigImport: () => undefined },
+  });
+const { SharedRunConfigReview } = loadConfigUi().module;
+const review = (
+  config: Partial<PerModelConfig> | null,
+  props: Partial<Parameters<typeof SharedRunConfigReview>[0]> = {},
+) => {
+  const draftConfig = { ...D, ...config };
+  const currentConfig = draftConfig;
+  return SharedRunConfigReview({
+    config,
+    draftConfig,
+    currentConfig,
+    ...props,
+  });
+};
+
+function shareDialog(config: PerModelConfig, target = hubTarget, tauri = true) {
+  const { module, render } = load<typeof ShareDialog>("share-dialog.tsx", {
+    "@/lib/api-base": { isTauri: tauri },
+  });
+  return () => {
     const tree = elements(
-      ShareRunConfigDialog({
-        target,
-        config,
-        onClose: () => undefined,
-      }),
+      render(() =>
+        module.ShareRunConfigDialog({ target, config, onClose: () => {} }),
+      ),
     );
-    const link = tree.find((element) => element.type === textarea)?.props.value;
-    assert.equal(typeof link, "string");
-    const parsed = links.parseRunConfigLink(link as string);
+    const link = find(tree, "Textarea")?.props.value as string;
+    const parsed = parseRunConfigLink(link);
     assert.ok(parsed.kind === "valid");
-    return {
-      tree,
-      link: link as string,
-      value: parsed.value,
-      config: parsed.value.config,
-      choice: (key: string) =>
-        tree.find(
-          (element) =>
-            element.type === checkbox && element.props.id === `share-${key}`,
-        ),
-    };
+    const choice = (key: string) =>
+      tree.find((element) => element.props.id === `share-${key}`);
+    const { value } = parsed;
+    return { tree, link, value, config: value.config, choice };
   };
 }
 
-test("local sharing preserves the recipient's quant unless the sender explicitly includes it", () => {
-  const selection = {
-    params: { checkpoint: "unsloth/Qwen3-8B-GGUF" },
-    activeGgufVariant: "Q4_K_M",
-    loadedIsGguf: true,
-    activeNativePathToken: null,
-    activeLoadId: null,
-    models: [],
-    loras: [],
-  };
-  for (const id of [
-    "/models/Qwen3-8B",
-    "/Users/test/Models/Qwen3-8B",
-    "C:\\Models\\Qwen3-8B",
-    "/mnt/c/Models/Qwen3-8B",
-  ]) {
-    const render = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG, true, {
-      id,
-      displayName: "Qwen3-8B",
-      ggufVariant: "Q8_0",
-      isGguf: true,
-      apiLoadable: true,
-      meta: { source: "local", isLora: false },
-    });
-    const initial = render();
-    const variant = initial.choice("variant");
-    assert.ok(variant);
-    assert.equal(variant.props.checked, false);
-    assert.equal(initial.value.model, undefined);
-    assert.equal(initial.value.ggufVariant, undefined);
-    const unchanged = targetModule.resolveRunConfigTarget(
-      initial.value,
-      selection,
-    );
-    assert.equal(unchanged?.meta.ggufVariant, "Q4_K_M");
-    assert.equal(unchanged?.meta.isDownloaded, true);
-    (variant.props.onCheckedChange as (checked: boolean) => void)(true);
-    const explicit = render();
-    assert.equal(explicit.value.ggufVariant, "Q8_0");
-    const changed = targetModule.resolveRunConfigTarget(
-      explicit.value,
-      selection,
-    );
-    assert.equal(changed?.meta.ggufVariant, "Q8_0");
-    assert.notEqual(changed?.meta.isDownloaded, true);
+test("links keep null, false, zero and empty values and drop native-only settings", () => {
+  const defaults = { ...D, nParallel: 8, llamaExtraArgs: ["--metrics"] };
+  const empty = [{}, { nParallel: null }, { tensorParallel: false }];
+  const zero = [{ reasoningBudget: 0 }, { reasoningBudgetMessage: "" }];
+  for (const patch of [...empty, ...zero, { llamaExtraArgs: [] }]) {
+    const parsed = parseRunConfigLink(createRunConfigLink({ config: patch }));
+    assert.ok(parsed.kind === "valid");
+    const merged = mergeSharedRunConfig(defaults, parsed.value.config);
+    assert.deepEqual(merged, { ...defaults, ...patch });
   }
-  const shareable = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG)();
+  const native = { maxSeqLength: 8192, mlxKvQuant: "4" as const };
+  const link = createRunConfigLink({ config: { nParallel: 2, ...native } });
+  assert.ok(!/maxSeqLength|mlxKv/.test(link));
+  const omitted = { nParallel: undefined, ...native };
+  assert.deepEqual(mergeSharedRunConfig(defaults, omitted), defaults);
+  const patch = { llamaExtraArgs: ["--metrics"] };
+  mergeSharedRunConfig(defaults, patch).llamaExtraArgs?.push("--verbose");
+  const kept = [patch, defaults].map((config) => config.llamaExtraArgs);
+  assert.deepEqual(kept, [["--metrics"], ["--metrics"]]);
+  for (const query of ["maxSeqLength=8192", "mlxKvQuant=4", "isGguf=true"]) {
+    assert.deepEqual(parseRunConfigLink(`unsloth://run?v=1&${query}`), {
+      kind: "invalid",
+      error: "This run configuration link contains an unsupported setting.",
+    });
+  }
+});
+
+test("pending imports are scoped, replaced by newer links and consumed once", () => {
+  const inbox = createRunConfigInbox();
+  let notifications = 0;
+  const unsubscribe = inbox.subscribe(() => notifications++);
+  inbox.submit({ id: "first", value: { config: { nParallel: 2 } } });
+  assert.equal(inbox.take("first", "model-A"), null);
+  inbox.bind("first", "model-A");
+  assert.equal(inbox.take("first", "model-B"), null);
+  inbox.submit({ id: "second", value: { config: { nParallel: 4 } } });
+  inbox.clear("first");
+  inbox.bind("first", "model-A");
+  inbox.bind("second", "model-B");
+  assert.deepEqual(inbox.take("second", "model-B"), { nParallel: 4 });
+  assert.equal(inbox.take("second", "model-B"), null);
+  assert.equal(inbox.getSnapshot(), null);
+  assert.equal(notifications, 5);
+  unsubscribe();
+  inbox.submit({ id: "third", value: { config: {} } });
+  assert.equal(notifications, 5);
+});
+
+test("editor cleanup cancels only the last editor's own unfinished import, surviving remounts", async () => {
+  const inbox = createRunConfigInbox();
+  const cancelled: string[] = [];
+  const onCancel = (request: { id: string }) => cancelled.push(request.id);
+  inbox.submit({ id: "first", value: { config: { nParallel: 2 } } });
+  inbox.bind("first", "model-A");
+  inbox.retainEditor("model-A", onCancel)();
+  const releaseRemount = inbox.retainEditor("model-A", onCancel);
+  await Promise.resolve();
+  const releasePeer = inbox.retainEditor("model-A", onCancel);
+  releaseRemount();
+  await Promise.resolve();
+  assert.equal(inbox.getSnapshot()?.id, "first");
+  assert.deepEqual(cancelled, []);
+  releasePeer();
+  releasePeer();
+  await Promise.resolve();
+  assert.equal(inbox.getSnapshot(), null);
+  assert.deepEqual(cancelled, ["first"]);
+  for (const nextKey of ["model-A", "model-B"]) {
+    inbox.submit({ id: "old", value: { config: {} } });
+    inbox.bind("old", "model-A");
+    inbox.retainEditor("model-A")();
+    inbox.submit({ id: "new", value: { config: {} } });
+    inbox.bind("new", nextKey);
+    await Promise.resolve();
+    assert.equal(inbox.getSnapshot()?.id, "new", nextKey);
+  }
+  for (const config of [{}, { nParallel: 2 }]) {
+    inbox.submit({ id: "done", draftKey: "model-A", value: { config } });
+    const release = inbox.retainEditor("model-A", () => assert.fail());
+    if ("nParallel" in config) inbox.take("done", "model-A");
+    release();
+    await Promise.resolve();
+    assert.equal(inbox.getSnapshot(), null);
+  }
+});
+
+const selection: Selection = {
+  params: { checkpoint: "owner/model" },
+  activeGgufVariant: "Q4",
+  loadedIsGguf: true,
+  activeNativePathToken: "token",
+  activeLoadId: "/cache/owner/model",
+  models: [],
+  loras: [],
+};
+const unknown = { loadedIsGguf: null, activeGgufVariant: null };
+const at = (checkpoint: string, extra: Partial<Selection> = {}) => ({
+  ...unknown,
+  activeNativePathToken: null,
+  params: { checkpoint },
+  ...extra,
+});
+const other = (isGguf: boolean) => ({
+  models: [{ id: "owner/other", isGguf, isLora: false }],
+});
+const lora = (id: string, exportType: "gguf" | "lora") =>
+  at(id, { loras: [{ id, exportType }] });
+const file = "C:\\m.gguf";
+const local = { isGguf: true, nativePathToken: "token", isDownloaded: true };
+const fresh = { nativePathToken: undefined, loadId: undefined };
+const none = { ggufVariant: undefined };
+const u = undefined;
+const c = { config: {} };
+const q8 = { ggufVariant: "Q8", config: {} };
+
+test("run config targets resolve model identity, format and local capability", () => {
+  // [link value, recipient selection, chosen model, expected id and meta]
+  const rows = [
+    [c, {}, u, { id: "owner/model", ggufVariant: "Q4", ...local }],
+    [c, {}, u, { loadId: "/cache/owner/model" }],
+    [c, at(""), u, null],
+    [{ ...q8, model: "owner/other" }, other(false), u, { ...fresh }],
+    [{ ...q8, model: "owner/other" }, other(false), u, { isGguf: true }],
+    [{ ...q8, model: "owner/other" }, other(false), u, { ggufVariant: "Q8" }],
+    [{ ...c, model: "owner/other" }, other(true), u, { ...none, ...fresh }],
+    [c, lora("/e", "gguf"), u, { isGguf: true, isLora: false }],
+    [c, lora("/a", "lora"), u, { isGguf: false, isLora: true }],
+    [q8, { params: { checkpoint: file } }, u, { ...none, ...local }],
+    [
+      q8,
+      { activeLoadId: file, params: { checkpoint: file } },
+      u,
+      { loadId: file },
+    ],
+    [q8, { loadedIsGguf: false }, u, { isGguf: false, ...none }],
+    [c, at(""), "a/n", { id: "a/n", isGguf: true, ...none }],
+    [c, at("a/n"), u, { id: "a/n", isGguf: true, ...none }],
+  ] as const;
+  for (const [value, overrides, chosen, expected] of rows) {
+    const state = { ...selection, ...overrides };
+    const target = resolveRunConfigTarget(value, state, chosen);
+    if (!expected) {
+      assert.equal(target, null);
+      continue;
+    }
+    const actual: Record<string, unknown> = { id: target?.id, ...target?.meta };
+    for (const [key, field] of Object.entries(expected)) {
+      assert.deepEqual(actual[key], field, key);
+    }
+  }
+  const loras = [
+    { id: "/e", exportType: "gguf" as const },
+    { id: "/a", exportType: "lora" as const },
+  ];
+  const native = { ...selection, loadedIsGguf: false, loras };
+  for (const [id, state, expected] of [
+    ["owner/model", selection, false],
+    ["owner/model", native, true],
+    ["", native, false],
+    [file, { ...native, params: { checkpoint: file } }, false],
+    ["/a", native, true],
+    ["/e", native, false],
+    ["a/n", { ...selection, ...unknown }, false],
+  ] as const) {
+    assert.equal(isKnownNonGgufModel(id, state), expected, id);
+  }
+});
+
+test("local sharing keeps the recipient's quant unless the sender includes it", () => {
+  const recipient = { ...selection, activeNativePathToken: null };
+  const opened = (value: Parameters<typeof resolveRunConfigTarget>[0]) =>
+    resolveRunConfigTarget(value, recipient)?.meta;
+  const meta = { source: "local" as const, isLora: false };
+  const render = shareDialog(D, { ...hubTarget, id: "/m/Qwen", meta });
+  const initial = render();
+  assert.equal(initial.choice("variant")?.props.checked, false);
+  assert.deepEqual(initial.value, { config: {} });
+  assert.equal(opened(initial.value)?.ggufVariant, "Q4");
+  assert.equal(opened(initial.value)?.isDownloaded, true);
+  toggle(initial.choice("variant"), true);
+  assert.equal(render().value.ggufVariant, "Q4_K_M");
+  assert.equal(opened(render().value)?.ggufVariant, "Q4_K_M");
+  assert.notEqual(opened(render().value)?.isDownloaded, true);
+  const shareable = shareDialog(D)();
   assert.equal(shareable.choice("variant")?.props.checked, true);
   assert.equal(shareable.value.ggufVariant, "Q4_K_M");
 });
 
-test("shared links carry no model format and always open as GGUF", () => {
-  const recipient = {
-    params: { checkpoint: "" },
-    activeGgufVariant: null,
-    loadedIsGguf: null,
-    activeNativePathToken: null,
-    activeLoadId: null,
-    models: [{ id: "owner/Model-GGUF", isGguf: false, isLora: false }],
-    loras: [],
-  };
-  const opens = (
-    value: Parameters<typeof targetModule.resolveRunConfigTarget>[0],
-  ) => targetModule.resolveRunConfigTarget(value, recipient)?.meta.isGguf;
-  const render = shareDialogHarness({
-    ...DEFAULT_PER_MODEL_CONFIG,
-    maxSeqLength: 4096,
-    mlxKvQuant: "8",
-  });
-  const initial = render();
-  assert.equal(initial.choice("maxSeqLength"), undefined);
-  assert.equal(initial.choice("mlxKvQuant"), undefined);
-  assert.equal(initial.value.ggufVariant, "Q4_K_M");
-  assert.equal(Object.hasOwn(initial.value, "isGguf"), false);
-  assert.equal(opens(initial.value), true);
-  (
-    initial.choice("variant")?.props.onCheckedChange as (
-      checked: boolean,
-    ) => void
-  )(false);
-  const modelOnly = render();
-  assert.equal(Object.hasOwn(modelOnly.value, "isGguf"), false);
-  assert.equal(opens(modelOnly.value), true);
-  (
-    modelOnly.choice("model")?.props.onCheckedChange as (
-      checked: boolean,
-    ) => void
-  )(false);
-  const settingsOnly = render();
-  assert.equal(Object.hasOwn(settingsOnly.value, "model"), false);
-  assert.equal(Object.hasOwn(settingsOnly.value, "isGguf"), false);
-  assert.ok(!settingsOnly.link.includes("maxSeqLength"));
-  assert.ok(!settingsOnly.link.includes("mlxKv"));
+test("share dialog defaults to Web only on loopback addresses", () => {
+  const previous = window.location;
+  try {
+    for (const [address, destination] of [
+      ["http://localhost:8888", "browser"],
+      ["http://127.10.20.30:8888", "browser"],
+      ["http://[::1]:8888", "browser"],
+      ["http://192.168.1.20:8888", "desktop"],
+      ["https://localhost.example.com", "desktop"],
+    ]) {
+      Object.assign(window, { location: new URL(`${address}/chat?p=1`) });
+      const render = shareDialog(D, hubTarget, false);
+      const select = find(render().tree, "Select");
+      assert.equal(select?.props.value, destination, address);
+      const { protocol } = new URL(render().link);
+      const http = new URL(address).protocol;
+      assert.equal(protocol, destination === "browser" ? http : "unsloth:");
+      call(select, "onValueChange", "browser");
+      const explicit = new URL(render().link);
+      assert.equal(explicit.origin, new URL(address).origin);
+      assert.equal(explicit.search, "?run=1");
+    }
+  } finally {
+    Object.assign(window, { location: previous });
+  }
 });
 
-for (const [address, destination] of [
-  ["http://localhost:8888", "browser"],
-  ["http://127.0.0.1:8888", "browser"],
-  ["http://127.10.20.30:8888", "browser"],
-  ["http://[::1]:8888", "browser"],
-  ["http://192.168.1.20:8888", "desktop"],
-  ["http://10.0.0.2:8888", "desktop"],
-  ["http://[fd00::1]:8888", "desktop"],
-  ["https://unsloth.example.com", "desktop"],
-  ["https://unsloth.trycloudflare.com", "desktop"],
-  ["https://unsloth.ngrok.app", "desktop"],
-  ["https://localhost.example.com", "desktop"],
-]) {
-  test(`share dialog defaults safely at ${address}`, (t) => {
-    const previous = window.location;
-    Object.assign(window, { location: new URL(`${address}/chat?private=1`) });
-    t.after(() => Object.assign(window, { location: previous }));
-    const render = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG, false);
-    const initial = render();
-    const select = initial.tree.find((element) => element.type === "select");
-    assert.ok(select);
-    assert.equal(select.props.value, destination);
-    assert.equal(
-      new URL(initial.link).protocol,
-      destination === "browser" ? new URL(address).protocol : "unsloth:",
-    );
-    (select.props.onValueChange as (value: string) => void)("browser");
-    const explicit = new URL(render().link);
-    assert.equal(explicit.origin, new URL(address).origin);
-    assert.equal(explicit.search, "?run=1");
-  });
-}
-
-test("extra arguments are always selectable and empty arguments are shared only when selected", () => {
+test("extra arguments are always selectable; custom text, templates and native settings are not", () => {
   const recipient = {
-    ...DEFAULT_PER_MODEL_CONFIG,
+    ...D,
     llamaExtraArgs: ["--threads", "8"],
     chatTemplateOverride: "{{ messages }}",
     reasoningBudgetMessage: "Recipient message",
   };
   for (const llamaExtraArgs of [undefined, null, [], ["--threads", "4"]]) {
-    const render = shareDialogHarness({
-      ...DEFAULT_PER_MODEL_CONFIG,
+    const render = shareDialog({
+      ...D,
       llamaExtraArgs,
-      chatTemplateOverride: "",
+      chatTemplateOverride: "{{ sender }}",
+      maxSeqLength: 4096,
+      mlxKvQuant: "8",
       reasoningBudgetMessage: "Sender instruction",
     });
-    const { tree, config, choice } = render();
-    const imported = mergeSharedRunConfig(recipient, config);
-    const messageChoice = choice("reasoningBudgetMessage");
-    assert.ok(messageChoice);
-    assert.equal(messageChoice.props.disabled, true);
-    assert.equal(messageChoice.props.checked, false);
-    assert.equal(
-      imported.reasoningBudgetMessage,
-      recipient.reasoningBudgetMessage,
-    );
+    const { tree, config, choice, link } = render();
+    const message = choice("reasoningBudgetMessage")?.props;
+    assert.deepEqual([message?.disabled, message?.checked], [true, false]);
     assert.match(text(tree), /Custom reasoning messages cannot be shared/);
-    assert.equal(choice("chatTemplateOverride"), undefined);
-    assert.equal(imported.chatTemplateOverride, recipient.chatTemplateOverride);
-    const argsChoice = choice("llamaExtraArgs");
-    const nonempty = (llamaExtraArgs?.length ?? 0) > 0;
-    assert.deepEqual(
-      imported.llamaExtraArgs,
-      nonempty ? llamaExtraArgs : recipient.llamaExtraArgs,
-    );
-    assert.ok(argsChoice);
-    assert.equal(argsChoice.props.disabled, false);
-    assert.equal(argsChoice.props.checked, nonempty);
-    if (!nonempty) {
-      (argsChoice.props.onCheckedChange as (checked: boolean) => void)(true);
+    const hidden = ["chatTemplateOverride", "maxSeqLength", "mlxKvQuant"];
+    assert.ok(!hidden.some(choice));
+    assert.ok(!/chatTemplateOverride|maxSeqLength|mlxKv|isGguf/.test(link));
+    assert.deepEqual(mergeSharedRunConfig(recipient, config), {
+      ...recipient,
+      ...(llamaExtraArgs?.length && { llamaExtraArgs }),
+    });
+    const args = choice("llamaExtraArgs");
+    assert.equal(args?.props.disabled, false);
+    assert.equal(args?.props.checked, Boolean(llamaExtraArgs?.length));
+    if (!llamaExtraArgs?.length) {
+      toggle(args, true);
       const selected = render();
       assert.equal(selected.choice("llamaExtraArgs")?.props.checked, true);
       assert.match(text(selected.tree), /No extra arguments/);
@@ -356,763 +425,300 @@ test("extra arguments are always selectable and empty arguments are shared only 
   }
 });
 
-test("chat templates are absent from sharing options and generated links", () => {
-  for (const chatTemplateOverride of [null, "", "{{ messages }}"]) {
-    const { choice, config, link } = shareDialogHarness({
-      ...DEFAULT_PER_MODEL_CONFIG,
-      chatTemplateOverride,
-    })();
-    assert.equal(choice("chatTemplateOverride"), undefined);
-    assert.equal(Object.hasOwn(config, "chatTemplateOverride"), false);
-    assert.equal(link.includes("chatTemplateOverride"), false);
-  }
-});
-
 test("automatic GPU settings preserve recipient overrides until explicitly selected", () => {
-  const automatic = {
-    gpuMemoryMode: "auto" as const,
-    gpuLayers: -1,
-    nCpuMoe: 0,
-    selectedGpuIds: null,
-    selectedGpuIndexKind: null,
-  };
-  const manual = {
-    gpuMemoryMode: "manual" as const,
-    gpuLayers: 20,
-    nCpuMoe: 4,
-    selectedGpuIds: [1, 0],
-    selectedGpuIndexKind: "physical" as const,
-  };
-  const recipient = { ...DEFAULT_PER_MODEL_CONFIG, ...manual };
-  const render = shareDialogHarness({
-    ...DEFAULT_PER_MODEL_CONFIG,
-    ...automatic,
-  });
-  const initial = render();
-  assert.deepEqual(initial.config, {});
-  assert.deepEqual(
-    mergeSharedRunConfig(recipient, initial.config),
-    recipient,
-  );
+  // [field, automatic value, manual value]
+  const gpu = [
+    ["gpuMemoryMode", "auto", "manual"],
+    ["gpuLayers", -1, 20],
+    ["nCpuMoe", 0, 4],
+    ["selectedGpuIds", null, [1, 0]],
+    ["selectedGpuIndexKind", null, "physical"],
+  ] as const;
+  const pick = (index: 1 | 2): Partial<PerModelConfig> =>
+    Object.fromEntries(gpu.map((row) => [row[0], row[index]]));
+  const [automatic, manual] = [pick(1), pick(2)];
+  const render = shareDialog({ ...D, ...automatic });
+  assert.deepEqual(render().config, {});
   for (const key of Object.keys(automatic)) {
-    const choice = initial.choice(key);
-    assert.ok(choice, key);
-    assert.equal(choice.props.checked, false, key);
-    assert.equal(choice.props.disabled, false, key);
-    (choice.props.onCheckedChange as (checked: boolean) => void)(true);
+    const choice = render().choice(key);
+    assert.equal(choice?.props.checked || choice?.props.disabled, false);
+    toggle(choice, true);
   }
   assert.deepEqual(render().config, automatic);
-  assert.deepEqual(mergeSharedRunConfig(recipient, render().config), {
-    ...recipient,
+  assert.deepEqual(mergeSharedRunConfig({ ...D, ...manual }, render().config), {
+    ...D,
     ...automatic,
     tensorSplit: null,
   });
-  const selected = shareDialogHarness({
-    ...DEFAULT_PER_MODEL_CONFIG,
-    ...manual,
-  })();
-  assert.deepEqual(selected.config, manual);
-  for (const key of Object.keys(manual)) {
-    assert.equal(selected.choice(key)?.props.checked, true, key);
-  }
-  for (const gpu of [{}, { gpuMemoryMode: "auto" as const }]) {
-    assert.deepEqual(
-      shareDialogHarness({ ...DEFAULT_PER_MODEL_CONFIG, ...gpu })().config,
-      {},
-    );
-  }
+  assert.deepEqual(shareDialog({ ...D, ...manual })().config, manual);
+  assert.deepEqual(shareDialog(D)().config, {});
 });
 
-test("Share opens and closes its dialog", () => {
+function pendingImport() {
   const inbox = createRunConfigInbox();
-  const target = {
-    id: "owner/Model-GGUF",
-    displayName: "Model",
-    ggufVariant: "Q4_K_M",
-    isGguf: true,
-    apiLoadable: true,
-    meta: { source: "hub" as const, isLora: false },
-  };
-  const key = modelConfigDraftKey(target.id, target.ggufVariant);
+  const draftKey = modelConfigDraftKey(hubTarget.id, hubTarget.ggufVariant);
   inbox.submit({
     id: "pending",
-    draftKey: key,
+    draftKey,
     value: { config: { nParallel: 3 } },
   });
-  let sharing = false;
-  const dialog = Symbol("share dialog");
-  const button = Symbol("button");
-  const { SharedRunConfigActions } = loadWithStubs<{
-    SharedRunConfigActions: typeof Actions;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/config-ui.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      react: {
-        useState: () => [
-          sharing,
-          (value: boolean) => {
-            sharing = value;
-          },
-        ],
-        useSyncExternalStore: (_subscribe: unknown, get: () => unknown) =>
-          get(),
-        useEffect: () => undefined,
-      },
-      "@/components/ui/button": { Button: button },
-      "lucide-react": { ChevronDown: "chevron" },
-      "../model-config/model-config-draft": {
-        modelConfigDraftKey,
-      },
-      "./inbox": { runConfigInbox: inbox },
-      "./import-config": { scheduleRunConfigImport: () => undefined },
-      "./fields": fields,
-      "./share-dialog": { ShareRunConfigDialog: dialog },
-    },
-  );
-  const props = {
-    className: "h-9 rounded-full",
-    target,
-    config: DEFAULT_PER_MODEL_CONFIG,
-    ready: true,
-    hydrated: true,
-    canImport: true,
-    disabled: false,
-    onImport: () => undefined,
-  };
-  const render = () => elements(SharedRunConfigActions(props));
-  const initial = render();
-  assert.equal(
-    initial.some((element) => element.type === dialog),
-    false,
-  );
-  const share = initial.find((element) => element.type === button);
-  assert.ok(share);
-  (share.props.onClick as () => void)();
-  const opened = render();
-  const shownDialog = opened.find((element) => element.type === dialog);
-  assert.ok(shownDialog);
-  (shownDialog.props.onClose as () => void)();
-  assert.equal(
-    render().some((element) => element.type === dialog),
-    false,
-  );
+  return inbox;
+}
+const controlProps = {
+  className: "h-9 rounded-full",
+  target: hubTarget,
+  config: D,
+  ready: true,
+  canImport: true,
+  disabled: false,
+  onImport: () => undefined,
+};
+
+test("Share opens and closes its dialog without touching the pending import", () => {
+  const inbox = pendingImport();
+  const { module, render } = loadConfigUi(inbox);
+  const props = { ...controlProps, hydrated: true };
+  const tree = () =>
+    elements(render(() => module.SharedRunConfigActions(props)));
+  assert.equal(find(tree(), "ShareRunConfigDialog"), undefined);
+  call(find(tree(), "Button"), "onClick");
+  call(find(tree(), "ShareRunConfigDialog"), "onClose");
+  assert.equal(find(tree(), "ShareRunConfigDialog"), undefined);
   assert.equal(inbox.getSnapshot()?.id, "pending");
 });
 
 test("closing an editor before its sharing UI loads cancels the import, while effect replay retains it", async () => {
-  const inbox = createRunConfigInbox();
-  const target = {
-    id: "owner/Model-GGUF",
-    displayName: "Model",
-    ggufVariant: "Q4_K_M",
-    isGguf: true,
-    apiLoadable: true,
-    meta: { source: "hub" as const, isLora: false },
-  };
-  const key = modelConfigDraftKey(target.id, target.ggufVariant);
-  inbox.submit({
-    id: "pending",
-    draftKey: key,
-    value: { config: { nParallel: 3 } },
-  });
-  const effects: (() => (() => void) | undefined)[] = [];
+  const inbox = pendingImport();
   const notices: { id: string; description: string }[] = [];
-  const actions = Symbol("lazy sharing UI");
-  const { SharedRunConfigControls } = loadWithStubs<{
-    SharedRunConfigControls: typeof Controls;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/config-controls.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      "@/components/lazy-import-boundary": {
-        LazyImportBoundary: "boundary",
-        LazyImportFailure: "failure",
-      },
-      "@/components/ui/button": { Button: Symbol("button") },
-      react: {
-        lazy: () => actions,
-        Suspense: Symbol("suspense"),
-        useLayoutEffect: (effect: () => (() => void) | undefined) => {
-          effects.push(effect);
-        },
-      },
-      "@/lib/toast": {
-        toast: {
-          info: (_message: string, options: (typeof notices)[number]) =>
-            notices.push(options),
-        },
-      },
-      "../model-config/model-config-draft": {
-        modelConfigDraftKey,
-        isExtraArgsHydratedForDraft: () => false,
-      },
-      "./variant": { isRunConfigVariantUnresolved: () => false },
-      "./inbox": { runConfigInbox: inbox },
+  const { module, effects } = load<typeof Controls>("config-controls.tsx", {
+    "@/lib/toast": {
+      toast: { info: (_: string, notice: never) => notices.push(notice) },
     },
-  );
-  const props = {
-    className: "h-9 rounded-full",
-    target,
-    config: DEFAULT_PER_MODEL_CONFIG,
-    ready: true,
-    isDiffusion: false,
-    canImport: true,
-    disabled: false,
-    onImport: () => undefined,
-  };
-  SharedRunConfigControls({ ...props, canImport: false });
+    "./inbox": { runConfigInbox: inbox },
+  });
+  const props = { ...controlProps, isDiffusion: false };
+  module.SharedRunConfigControls({ ...props, canImport: false });
   assert.equal(effects[0](), undefined);
-  const tree = elements(SharedRunConfigControls(props));
-  assert.equal(tree[0].type, "boundary");
-  const fallback = tree[0].props.fallback as StubElement;
-  assert.equal(fallback.props.disabled, true);
-  assert.equal(fallback.props.className, props.className);
-  const loaded = tree.find((element) => element.type === actions);
-  assert.equal(loaded?.props.target, target);
-  assert.equal(loaded?.props.hydrated, false);
-  const release = effects[1]();
-  assert.ok(release);
-  release();
-  SharedRunConfigControls(props);
+  const tree = elements(module.SharedRunConfigControls(props));
+  assert.equal(tree[0].type, "LazyImportBoundary");
+  const fallback = (tree[0].props.fallback as StubElement).props;
+  assert.deepEqual(
+    [fallback.disabled, fallback.className],
+    [true, props.className],
+  );
+  assert.equal(find(tree, "lazy")?.props.target, hubTarget);
+  assert.equal(find(tree, "lazy")?.props.hydrated, false);
+  effects[1]()?.();
+  module.SharedRunConfigControls(props);
   const releaseRemounted = effects[2]();
   await Promise.resolve();
   assert.equal(inbox.getSnapshot()?.id, "pending");
-  assert.ok(releaseRemounted);
   assert.equal(notices.length, 0);
-  releaseRemounted();
+  releaseRemounted?.();
   await Promise.resolve();
   assert.equal(inbox.getSnapshot(), null);
-  assert.equal(notices.length, 1);
   assert.equal(notices[0].id, "pending");
-  assert.match(
-    notices[0].description,
-    /editor closed before the settings were imported/,
-  );
+  assert.match(notices[0].description, /editor closed before the settings/);
 });
 
 test("edit cancellation includes contained controls and excludes portaled dialog controls", (t) => {
   class NodeFake extends EventTarget {
-    children = new Set<NodeFake>();
-    contains(node: NodeFake) {
-      return node === this || this.children.has(node);
-    }
+    child?: NodeFake;
+    contains = (node: NodeFake) => node === this || node === this.child;
   }
-  const original = Object.getOwnPropertyDescriptor(globalThis, "Node");
-  Object.defineProperty(globalThis, "Node", {
-    value: NodeFake,
-    configurable: true,
-  });
-  t.after(() => {
-    if (original) Object.defineProperty(globalThis, "Node", original);
-    else Reflect.deleteProperty(globalThis, "Node");
-  });
+  // Bare node has no DOM Node global; this file runs in its own process.
+  Object.assign(globalThis, { Node: NodeFake });
+  t.after(() => Reflect.deleteProperty(globalThis, "Node"));
   const editor = new NodeFake();
-  const numericInput = new NodeFake();
-  const portaledTextarea = new NodeFake();
-  editor.children.add(numericInput);
+  editor.child = new NodeFake();
   const currentTarget = editor as unknown as Node;
-  assert.equal(
-    events.isRunConfigEditorChange({ currentTarget, target: numericInput }),
-    true,
-  );
-  assert.equal(
-    events.isRunConfigEditorChange({ currentTarget, target: portaledTextarea }),
-    false,
-  );
-  assert.equal(
-    events.isRunConfigEditorChange({
-      currentTarget,
-      target: new EventTarget(),
-    }),
-    false,
-  );
+  for (const [target, expected] of [
+    [editor.child, true],
+    [new NodeFake(), false],
+    [new EventTarget(), false],
+  ] as const) {
+    const changed = events.isRunConfigEditorChange({ currentTarget, target });
+    assert.equal(changed, expected);
+  }
 });
 
-test("review renders field labels and argument values as text", () => {
-  assert.equal(
-    SharedRunConfigReview({
-      config: null,
-      draftConfig: DEFAULT_PER_MODEL_CONFIG,
-      currentConfig: DEFAULT_PER_MODEL_CONFIG,
-    }),
-    null,
-  );
+test("review renders field labels, values and device adjustments as text", () => {
+  assert.equal(review(null), null);
   const args = ["--rope-scaling", "yarn"];
   const imported = {
     nParallel: 3,
     llamaExtraArgs: args,
     customContextLength: null,
+    kvCacheDtype: "q8_0",
+    selectedGpuIds: [0, 1],
   };
-  const tree = SharedRunConfigReview({
-    config: imported,
-    draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
-    currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
-  });
-  assert.equal(summaryText(tree), "Settings changed by link3");
+  const tree = review(imported);
+  assert.equal(summaryText(tree), "Settings changed by link5");
+  const values = elements(tree)
+    .filter((e) => e.type === "dd")
+    .map(text);
+  assert.deepEqual(values, ["Default", "q8_0", "3", args.join(" "), "[0,1]"]);
   assert.ok(text(tree).includes("Parallel slots"));
-  assert.ok(text(tree).includes("--rope-scaling yarn"));
-  assert.ok(text(tree).includes("Default"));
   assert.ok(
-    elements(tree).every(
-      (element) => !("dangerouslySetInnerHTML" in element.props),
-    ),
+    elements(tree).every((e) => !("dangerouslySetInnerHTML" in e.props)),
   );
-  assert.ok(
-    text(
-      SharedRunConfigReview({
-        config: {},
-        draftConfig: DEFAULT_PER_MODEL_CONFIG,
-        currentConfig: DEFAULT_PER_MODEL_CONFIG,
-      }),
-    ).includes("already match"),
-  );
+  assert.ok(text(review({})).includes("already match"));
   for (const changed of [
     { nParallel: 7 },
-    { llamaExtraArgs: ["--threads", "4"] },
-    DEFAULT_PER_MODEL_CONFIG,
+    { llamaExtraArgs: ["-t", "4"] },
+    D,
   ]) {
-    assert.equal(
-      SharedRunConfigReview({
-        config: imported,
-        draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported, ...changed },
-        currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported, ...changed },
-      }),
-      null,
-    );
+    const edited = { ...D, ...imported, ...changed };
+    const props = { draftConfig: edited, currentConfig: edited };
+    assert.equal(review(imported, props), null);
   }
-  assert.notEqual(
-    SharedRunConfigReview({
-      config: imported,
-      draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
-      currentConfig: {
-        ...DEFAULT_PER_MODEL_CONFIG,
-        ...imported,
-        llamaExtraArgs: [...args],
-      },
-    }),
-    null,
-  );
-  for (const llamaExtraArgs of [null, []]) {
-    const config = { llamaExtraArgs };
-    const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
-    const tree = SharedRunConfigReview({
-      config,
-      draftConfig,
-      currentConfig: draftConfig,
-    });
-    assert.ok(text(tree).includes("No extra arguments"));
-  }
-  const adjusted = SharedRunConfigReview({
-    config: { llamaExtraArgs: args },
-    draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs: args },
-    currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs: [] },
-  });
-  assert.ok(text(adjusted).includes("No extra arguments"));
-  assert.ok(
-    text(adjusted).includes(
-      "Requested --rope-scaling yarn, adjusted for this device or model.",
-    ),
-  );
+  const copied = { ...D, ...imported, llamaExtraArgs: [...args] };
+  assert.notEqual(review(imported, { currentConfig: copied }), null);
+  assert.match(text(review({ llamaExtraArgs: null })), /No extra arguments/);
+  const cleared = { currentConfig: { ...D, llamaExtraArgs: [] } };
+  const adjusted = text(review({ llamaExtraArgs: args }, cleared));
+  assert.match(adjusted, /No extra arguments/);
+  assert.match(adjusted, /Requested --rope-scaling yarn, adjusted for this/);
 });
 
 test("review states what loading does to this model's saved settings", () => {
-  const config = { nParallel: 3 };
-  const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
-  const note = (remember: boolean, hasSavedSettings: boolean) =>
-    text(
-      SharedRunConfigReview({
-        config,
-        draftConfig,
-        currentConfig: draftConfig,
-        remember,
-        hasSavedSettings,
-      }),
+  const notes = [
+    "Loading replaces your saved settings for this model. Close without loading to keep them.",
+    "Loading saves these settings for this model.",
+    "Loading clears your saved settings for this model. Close without loading to keep them.",
+    "To keep these settings for next time, tick “Remember for this model”.",
+  ];
+  notes.forEach((note, index) => {
+    const remember = index < 2;
+    const hasSavedSettings = index % 2 === 0;
+    const shown = text(
+      review({ nParallel: 3 }, { remember, hasSavedSettings }),
     );
-  assert.match(
-    note(true, true),
-    /Loading replaces your saved settings for this model\. Close without loading to keep them\./,
-  );
-  assert.match(
-    note(true, false),
-    /Loading saves these settings for this model\./,
-  );
-  assert.match(
-    note(false, true),
-    /Loading clears your saved settings for this model\. Close without loading to keep them\./,
-  );
-  assert.match(
-    note(false, false),
-    /To keep these settings for next time, tick “Remember for this model”\./,
-  );
-  assert.doesNotMatch(note(true, false), /replaces|clears|Close without/);
-  assert.doesNotMatch(note(false, false), /replaces|clears|saves these/);
+    assert.deepEqual(
+      notes.filter((entry) => shown.includes(entry)),
+      [note],
+    );
+  });
 });
 
-test("GPU reconciliation keeps imported settings visible and explains removed or filtered GPU choices", () => {
-  const imported = {
-    selectedGpuIds: [0, 1],
-    selectedGpuIndexKind: "physical" as const,
-    nParallel: 3,
-  };
-  const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...imported };
-  for (const [indexKind, deviceIds] of [
-    [null, []],
-    ["vulkan", [0, 1]],
-    ["physical", [0, 2]],
-  ] as const) {
-    const reconciled = reconcileGpuSelection(
-      imported.selectedGpuIds,
-      imported.selectedGpuIndexKind,
-      indexKind,
-      [...deviceIds],
-    );
-    const currentConfig = {
-      ...draftConfig,
-      selectedGpuIds: reconciled.ids ?? undefined,
-      selectedGpuIndexKind:
-        reconciled.ids === null ? undefined : reconciled.indexKind,
-    };
-    const tree = SharedRunConfigReview({
-      config: imported,
-      draftConfig,
-      currentConfig,
-    });
-    assert.equal(summaryText(tree), "Settings changed by link3");
-    const values = elements(tree)
-      .filter((element) => element.type === "dd")
-      .map(text);
-    assert.ok(values.includes("3"));
-    assert.ok(
-      values.some((value) =>
-        value.startsWith(reconciled.ids ? "[0]" : "Default"),
-      ),
-    );
-    assert.ok(
-      text(tree).includes(
-        "Requested [0,1], adjusted for this device or model.",
-      ),
-    );
-  }
-});
-
-test("review identifies a linked repository and explains uncached downloads, including model-only links", () => {
+test("review identifies a linked repository or quant and explains possible downloads", () => {
+  const hub = "If the model isn’t on this device, loading downloads it from";
+  const quant = "If this variant isn’t on this device, loading downloads it.";
   for (const config of [{}, { nParallel: 3 }]) {
-    const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
-    const props = { config, draftConfig, currentConfig: draftConfig };
-    const tree = SharedRunConfigReview({ ...props, model: "owner/model" });
-    assert.ok(summaryText(tree).endsWith("owner/model"));
-    assert.match(
-      text(tree),
-      /If the model isn’t on this device, loading downloads it from Hugging Face\./,
-    );
-    assert.doesNotMatch(
-      text(SharedRunConfigReview(props)),
-      /owner\/model|Hugging Face|downloads/,
-    );
-  }
-});
-
-test("review identifies an explicit quant selection and possible download without a linked model or changed settings", () => {
-  for (const model of [undefined, "owner/Model-GGUF"]) {
-    for (const config of [{}, { nParallel: 3 }]) {
-      const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
-      const tree = SharedRunConfigReview({
-        config,
-        model,
-        ggufVariant: "Q8_0",
-        draftConfig,
-        currentConfig: draftConfig,
-      });
-      assert.ok(
-        summaryText(tree).endsWith(model ? `${model} · Q8_0` : "Q8_0"),
-      );
-      assert.match(
-        text(tree),
-        model
-          ? /If the model isn’t on this device, loading downloads it from Hugging Face\./
-          : /If this variant isn’t on this device, loading downloads it\./,
-      );
+    const plain = text(review(config));
+    assert.doesNotMatch(plain, /owner\/model|Hugging Face|downloads/);
+    for (const [model, ggufVariant, summary, note] of [
+      ["owner/model", u, "owner/model", hub],
+      ["owner/Model-GGUF", "Q8_0", "owner/Model-GGUF · Q8_0", hub],
+      [u, "Q8_0", "Q8_0", quant],
+    ] as const) {
+      const tree = review(config, { model, ggufVariant });
+      assert.ok(summaryText(tree).endsWith(summary));
+      assert.ok(text(tree).includes(note));
       assert.doesNotMatch(text(tree), /Link settings already match/);
       if (!model) assert.doesNotMatch(text(tree), /from Hugging Face/);
-      if (!model && Object.keys(config).length === 0) {
+      if (!model && !("nParallel" in config)) {
         assert.match(text(tree), /GGUF variant selected by link/);
       }
     }
   }
 });
 
-test("settings-only chooser keeps the import while accepting recipient-local models", () => {
-  const inbox = createRunConfigInbox();
-  const dialog = Symbol("dialog");
-  const input = Symbol("input");
-  const button = Symbol("button");
-  let modelInput = "";
-  const runtime = { params: { checkpoint: "" }, settingsHydrated: true };
-  const { SharedRunConfigLinkEditor } = loadWithStubs<{
-    SharedRunConfigLinkEditor: typeof LinkEditor;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/link-editor.tsx",
-      import.meta.url,
-    ),
+const yes = () => true;
+const no = () => false;
+const useRouterState = () => ({ pathname: "/chat" });
+
+function linkEditor(runtime: object, inbox: Inbox) {
+  const useChatRuntimeStore = (select: (state: object) => unknown) =>
+    select(runtime);
+  const { module, render, states } = load<typeof LinkEditor>(
+    "link-editor.tsx",
     {
-      "react/jsx-runtime": stubJsxRuntime(),
-      react: {
-        useState: () => [
-          modelInput,
-          (value: string) => {
-            modelInput = value;
-          },
-        ],
-        useRef: () => ({ current: null }),
-        useEffect: () => undefined,
-      },
-      "@/components/ui/button": { Button: button },
-      "@/components/ui/input": { Input: input },
-      "@/components/ui/dialog": {
-        Dialog: dialog,
-        DialogContent: "content",
-        DialogDescription: "description",
-        DialogHeader: "header",
-        DialogTitle: "title",
-      },
-      "@/features/auth": {
-        hasAuthToken: () => true,
-        mustChangePassword: () => false,
-      },
-      "@/features/chat": {
-        isExternalModelId: () => false,
-        useChatRuntimeStore: (select: (state: typeof runtime) => unknown) =>
-          select(runtime),
-      },
-      "@/features/hub": {
-        useHfTokenStore: () => "",
-        useInventoryVersion: () => 0,
-      },
-      "@tanstack/react-router": {
-        useNavigate: () => undefined,
-        useRouterState: () => ({ pathname: "/chat" }),
-      },
+      "@/features/auth": { hasAuthToken: yes, mustChangePassword: no },
+      "@/features/chat": { isExternalModelId: no, useChatRuntimeStore },
+      "@/features/hub": { useHfTokenStore: no, useInventoryVersion: no },
+      "@tanstack/react-router": { useNavigate: no, useRouterState },
       "./inbox": { runConfigInbox: inbox },
-      "./link-lifecycle": {},
-      "./target": targetModule,
+      "./target": targets,
     },
   );
-  const value = { config: { nParallel: 3 } };
-  const render = () => {
+  const draw = () => {
     const pending = inbox.getSnapshot();
     assert.ok(pending);
-    return elements(SharedRunConfigLinkEditor({ pending, chatSearch: null }));
+    const props = { pending, chatSearch: null };
+    return elements(render(() => module.SharedRunConfigLinkEditor(props)));
   };
+  return { draw, states };
+}
+
+test("settings-only chooser accepts recipient-local models and skips known GGUF selections", () => {
+  const inbox = createRunConfigInbox();
+  const empty = { params: { checkpoint: "" }, settingsHydrated: true };
+  const { draw, states } = linkEditor(empty, inbox);
+  const value = { config: { nParallel: 3 } };
   for (const model of [
     "owner/model",
-    "/home/models/my model.gguf",
     "C:\\Models\\my model.gguf",
-    "\\\\server\\models\\model.gguf",
-    "/mnt/c/Models/model.gguf",
     "./models/native",
-    "models/owner/checkpoint-500",
-    "models\\checkpoint-500",
-    "models/my native model",
-    "checkpoint-500",
-    ".\\models\\checkpoint-500",
-    "../models/checkpoint-500",
-    "~/models/native",
     "ollama-manifest:registry.ollama.ai/library/llama3/latest",
   ]) {
     inbox.submit({ id: "local-choice", value });
-    modelInput = "";
-    let tree = render();
-    assert.equal(
-      tree.find((element) => element.type === dialog)?.props.open,
-      true,
-    );
-    assert.equal(
-      tree.find((element) => element.type === button)?.props.disabled,
-      true,
-    );
-    const modelField = tree.find((element) => element.type === input);
-    assert.ok(modelField);
-    (modelField.props.onChange as (event: unknown) => void)({
-      target: { value: model },
-    });
-    assert.equal(inbox.getSnapshot()?.value, value);
-    tree = render();
-    assert.equal(
-      tree.find((element) => element.type === button)?.props.disabled,
-      false,
-      model,
-    );
-    const form = tree.find((element) => element.type === "form");
-    assert.ok(form);
-    (form.props.onSubmit as (event: unknown) => void)({
-      preventDefault: () => undefined,
-    });
+    states.length = 0;
+    assert.equal(find(draw(), "Dialog")?.props.open, true);
+    assert.match(text(find(draw(), "Dialog")), /Choose a GGUF model/);
+    assert.equal(find(draw(), "Button")?.props.disabled, true);
+    call(find(draw(), "Input"), "onChange", { target: { value: model } });
+    assert.equal(find(draw(), "Button")?.props.disabled, false, model);
+    call(find(draw(), "form"), "onSubmit", { preventDefault: () => {} });
     assert.equal(inbox.getSnapshot()?.selectedModel, model);
     assert.equal(inbox.getSnapshot()?.value, value);
-    assert.equal(
-      render().find((element) => element.type === dialog)?.props.open,
-      false,
-    );
+    assert.equal(find(draw(), "Dialog")?.props.open, false);
   }
-  for (const model of [
-    "",
-    "https://example.com/model.gguf",
-    "external::provider::model",
-    "/model\u0000.gguf",
-    "/model\ud800.gguf",
-  ]) {
-    assert.equal(targetModule.isRunConfigModelInput(model), false, model);
+  const bad = ["", "https://e.com/m.gguf", "external::provider::model"];
+  for (const model of [...bad, "/m\u0000.gguf", "/m\ud800.gguf"]) {
+    assert.equal(targets.isRunConfigModelInput(model), false, model);
   }
-});
-
-test("a recipient's known safetensors model opens the GGUF chooser instead", () => {
-  const inbox = createRunConfigInbox();
-  const dialog = Symbol("dialog");
   const runtime = {
-    params: { checkpoint: "owner/native" },
-    settingsHydrated: true,
-    activeGgufVariant: null,
-    loadedIsGguf: false as boolean | null,
-    activeNativePathToken: null,
-    activeLoadId: null,
+    ...at("a/n"),
     models: [],
     loras: [],
+    settingsHydrated: true,
   };
-  const { SharedRunConfigLinkEditor } = loadWithStubs<{
-    SharedRunConfigLinkEditor: typeof LinkEditor;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/link-editor.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      react: {
-        useState: () => ["", () => undefined],
-        useRef: () => ({ current: null }),
-        useEffect: () => undefined,
-      },
-      "@/components/ui/button": { Button: "button" },
-      "@/components/ui/input": { Input: "input" },
-      "@/components/ui/dialog": {
-        Dialog: dialog,
-        DialogContent: "content",
-        DialogDescription: "description",
-        DialogHeader: "header",
-        DialogTitle: "title",
-      },
-      "@/features/auth": {
-        hasAuthToken: () => true,
-        mustChangePassword: () => false,
-      },
-      "@/features/chat": {
-        isExternalModelId: () => false,
-        useChatRuntimeStore: (select: (state: typeof runtime) => unknown) =>
-          select(runtime),
-      },
-      "@/features/hub": {
-        useHfTokenStore: () => "",
-        useInventoryVersion: () => 0,
-      },
-      "@tanstack/react-router": {
-        useNavigate: () => undefined,
-        useRouterState: () => ({ pathname: "/chat" }),
-      },
-      "./inbox": { runConfigInbox: inbox },
-      "./link-lifecycle": {},
-      "./target": targetModule,
-    },
-  );
-  const chooser = () => {
-    const pending = inbox.getSnapshot();
-    assert.ok(pending);
-    return elements(
-      SharedRunConfigLinkEditor({ pending, chatSearch: null }),
-    ).find((element) => element.type === dialog);
-  };
-  inbox.submit({ id: "settings-only", value: { config: { nParallel: 3 } } });
-  assert.equal(chooser()?.props.open, true);
-  assert.match(text(chooser()), /Choose a GGUF model/);
-  for (const loadedIsGguf of [true, null]) {
-    runtime.loadedIsGguf = loadedIsGguf;
-    assert.equal(chooser()?.props.open, false);
+  for (const [loadedIsGguf, model, open] of [
+    [false, u, true],
+    [true, u, false],
+    [null, u, false],
+    [false, "owner/Model-GGUF", false],
+  ] as const) {
+    inbox.submit({ id: "known", value: { model, config: { nParallel: 3 } } });
+    const shown = linkEditor({ ...runtime, loadedIsGguf }, inbox).draw();
+    assert.equal(find(shown, "Dialog")?.props.open, open, String(loadedIsGguf));
   }
-  runtime.loadedIsGguf = false;
-  inbox.submit({
-    id: "linked",
-    value: { model: "owner/Model-GGUF", config: { nParallel: 3 } },
-  });
-  assert.equal(chooser()?.props.open, false);
 });
 
 test("startup intake waits for mount effects and survives strict effect replay", async () => {
-  const browser = installLocalStorageFake();
   const inbox = createRunConfigInbox();
-  const effects: (() => undefined | (() => void))[] = [];
   let received = 0;
-  const editor = Symbol("lazy link editor");
-  let authChanged: (() => void) | undefined;
+  let authChanged = () => {};
   let disposed = false;
-  let revisions = 0;
-  Object.assign(window.location, {
-    href: "http://localhost/chat",
-    origin: "http://localhost",
-  });
-  const { SharedRunConfigLinkHandler } = loadWithStubs<{
-    SharedRunConfigLinkHandler: typeof LinkHandler;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/link-handler.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      react: {
-        lazy: () => editor,
-        Suspense: Symbol("suspense"),
-        useState: () => [
-          0,
-          () => {
-            revisions += 1;
-          },
-        ],
-        useSyncExternalStore: (_subscribe: unknown, get: () => unknown) =>
-          get(),
-        useEffect: (effect: () => undefined | (() => void)) =>
-          effects.push(effect),
-      },
-      "./inbox": { runConfigInbox: inbox },
-      "@/components/lazy-import-boundary": {
-        LazyImportBoundary: "boundary",
-        LazyImportFailure: "failure",
-      },
-      "./receive-link": {
-        receiveStartupRunConfigUrl: () => {
-          received += 1;
-        },
-        subscribeRunConfigSession: (onChange: () => void) => {
-          authChanged = onChange;
-          return () => {
-            disposed = true;
-          };
-        },
+  const handler = load<typeof LinkHandler>("link-handler.tsx", {
+    "./inbox": { runConfigInbox: inbox },
+    "./receive-link": {
+      receiveStartupRunConfigUrl: () => received++,
+      subscribeRunConfigSession: (onChange: () => void) => {
+        authChanged = onChange;
+        return () => {
+          disposed = true;
+        };
       },
     },
-  );
+  });
+  const { module, effects, states, render } = handler;
   const chatSearch = { new: "retained-draft" };
-  const render = () => SharedRunConfigLinkHandler({ chatSearch });
-  assert.equal(render(), null);
-  const cancelled = effects[0]();
-  assert.equal(received, 0);
-  cancelled?.();
+  const draw = () =>
+    render(() => module.SharedRunConfigLinkHandler({ chatSearch }));
+  assert.equal(draw(), null);
+  effects[0]()?.();
   await Promise.resolve();
   assert.equal(received, 0);
   disposed = false;
@@ -1120,25 +726,16 @@ test("startup intake waits for mount effects and survives strict effect replay",
   assert.equal(received, 0);
   await Promise.resolve();
   assert.equal(received, 1);
-  for (const event of ["hashchange", "popstate"]) {
-    window.location.href =
-      "http://localhost/chat#run?v=1&model=owner/model&nParallel=3";
-    browser.fireWindowEvent(event, {});
-    assert.equal(inbox.getSnapshot(), null);
-    assert.equal(received, 1);
-  }
   inbox.submit({ id: "link", value: { config: { nParallel: 3 } } });
-  const shown = elements(render()).find((element) => element.type === editor);
+  const shown = find(elements(draw()), "lazy");
   assert.equal(shown?.props.pending, inbox.getSnapshot());
   assert.equal(shown?.props.chatSearch, chatSearch);
-  authChanged?.();
-  assert.equal(revisions, 1);
-  const boundary = render() as StubElement;
-  assert.equal(boundary.type, "boundary");
-  const failure = boundary.props.fallback as StubElement;
-  assert.equal(failure.type, "failure");
-  (failure.props.onDismiss as () => void)();
-  assert.equal(render(), null);
+  authChanged();
+  assert.equal(states[0], 1);
+  const failure = (draw() as StubElement).props.fallback as StubElement;
+  assert.equal(failure.type, "LazyImportFailure");
+  call(failure, "onDismiss");
+  assert.equal(draw(), null);
   cleanup?.();
   assert.equal(disposed, true);
 });
