@@ -1273,6 +1273,29 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
     return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint, card)
 
 
+def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
+    """The installed class of ``binary`` when it is not the off-torch card's build. Any other build
+    ignores CUDA_VISIBLE_DEVICES (Vulkan) or reads it as HIP's mask (ROCm), so it would run on
+    torch's cards past the arbiter and the training guard. None for an unrecorded build."""
+    if off_torch is None or not binary:
+        return None
+    klass = _installed_accelerator_of(binary)
+    if klass and klass != _accelerator_class_of(off_torch.accelerator):
+        return klass
+    return None
+
+
+def _refuse_off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> None:
+    klass = off_torch_build_mismatch(off_torch, binary)
+    if klass:
+        raise RuntimeError(
+            f"UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} needs the "
+            f"{off_torch.accelerator} stable-diffusion.cpp build, but the installed one is "
+            f"{klass}. Let the {off_torch.accelerator} build install, or unset the setting, "
+            "then load again."
+        )
+
+
 def usable_or_recorded_failure(
     binary,
     requested,
@@ -2034,6 +2057,7 @@ class _SdLoading:
     expected_bytes: int = 0
     downloaded_bytes: int = 0
     error: Optional[str] = None
+    off_torch_device: Optional[str] = None
 
 
 @dataclass
@@ -2188,8 +2212,13 @@ class SdCppDiffusionBackend:
 
     @property
     def runs_off_torch_device(self) -> bool:
-        """The resident checkpoint holds no memory on any card torch drives."""
-        return bool(getattr(self._state, "off_torch_device", None))
+        """Everything resident or loading sits on a card torch cannot see. A pending load counts, or
+        training would cancel it; a torch-placed resident beside it still has to be freed."""
+        loading = getattr(self, "_loading", None)
+        if loading is not None and loading.error is not None:
+            loading = None
+        held = [x for x in (self._state, loading) if x is not None]
+        return bool(held) and all(getattr(x, "off_torch_device", None) for x in held)
 
     def _loading_card_store(self) -> threading.local:
         """Lazily, so an instance built with ``__new__`` (the unit-test seam) still answers."""
@@ -2523,6 +2552,7 @@ class SdCppDiffusionBackend:
                         if kind != "diffusion_model"
                     )
                 ),
+                off_torch_device = off_torch.label if off_torch is not None else None,
             )
 
         account_thread(
@@ -2784,6 +2814,7 @@ class SdCppDiffusionBackend:
                                 "load again."
                             )
                         else:
+                            _refuse_off_torch_build_mismatch(off_torch, server_binary)
                             server = SdCppServer(server_binary)
                             # Published INSIDE the claim: _tree_in_use reads _pending_server, so this is the handover
                             # from "a reader holds the tree" to "a starting server does", with no gap between them.
@@ -2880,6 +2911,8 @@ class SdCppDiffusionBackend:
                         "The stable-diffusion.cpp binary was replaced by an install for a "
                         "different accelerator while this model was loading. Try the load again."
                     )
+                if mode == "oneshot":
+                    _refuse_off_torch_build_mismatch(off_torch, getattr(engine, "binary", None))
                 committed_offload_flags = tuple(
                     _offload_with_device_pin_impl(
                         offload,

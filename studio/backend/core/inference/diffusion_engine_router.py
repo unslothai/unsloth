@@ -41,6 +41,7 @@ from core.inference.sd_cpp_backend import (
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
     note_unlaunchable_accelerator_build,
+    off_torch_build_mismatch,
     preferred_accelerator,
     sd_cpp_binary_runs_family,
     usable_or_recorded_failure,
@@ -354,6 +355,17 @@ def select_and_activate_engine(
         def _accept(candidate):
             if candidate and upgrade_is_deferred:
                 return candidate
+            wrong_build = off_torch_build_mismatch(off_torch, candidate)
+            if wrong_build:
+                # The ensure hands back whatever the tree holds (offline, installs off, asset missing).
+                logger.warning(
+                    "%s is the %s sd.cpp build; %s needs %s",
+                    candidate,
+                    wrong_build,
+                    off_torch.label,
+                    off_torch.accelerator,
+                )
+                return None
             return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
 
         server_binary = _accept(

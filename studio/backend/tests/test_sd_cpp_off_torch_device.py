@@ -366,3 +366,54 @@ def test_diffusion_training_keeps_an_off_torch_images_model(monkeypatch):
     resident.runs_off_torch_device = False
     training_routes._free_gpu_for_diffusion_training()
     assert "images" in unloaded
+
+
+@pytest.mark.parametrize("installed", ["rocm", "vulkan", "cpu"])
+def test_a_leftover_build_of_another_accelerator_is_not_treated_as_off_torch(
+    monkeypatch, installed
+):
+    """Offline, installs off or no CUDA asset: the ensure returns the tree's build, which reads
+    CUDA_VISIBLE_DEVICES as HIP's mask (ROCm) or ignores it, landing on torch's card unguarded."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")
+    _record_cli_requests(monkeypatch)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: installed)
+    r.select_and_activate_engine(detect_family("z-image"))
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+    assert "not honoured" in (r.active_status()["fallback_reason"] or "")
+
+
+def test_the_cuda_build_is_still_accepted(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "nvidia")
+    _record_cli_requests(monkeypatch)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "cuda")
+    r.select_and_activate_engine(detect_family("z-image"))
+    assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+def test_the_load_refuses_to_spawn_another_accelerators_build(monkeypatch):
+    device = r.OffTorchDevice(vendor = "nvidia", index = 0, accelerator = "cuda")
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    with pytest.raises(RuntimeError, match = "needs the cuda"):
+        sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
+    # Torch-placed loads and unrecorded builds are untouched.
+    sd_cpp_backend._refuse_off_torch_build_mismatch(None, "/opt/sd/sd-server")
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: None)
+    sd_cpp_backend._refuse_off_torch_build_mismatch(device, "/opt/sd/sd-server")
+
+
+def test_an_in_flight_off_torch_load_counts_as_off_torch():
+    backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
+    backend._state = None
+    backend._loading = sd_cpp_backend._SdLoading(
+        repo_id = "org/m", base_repo = "org/m", off_torch_device = "nvidia:0"
+    )
+    assert backend.runs_off_torch_device is True
+    # A torch-placed resident beside it still has to be freed.
+    backend._state = _state()
+    assert backend.runs_off_torch_device is False
+    # A failed load holds nothing.
+    backend._state = None
+    backend._loading.error = "boom"
+    assert backend.runs_off_torch_device is False
+    backend._loading = sd_cpp_backend._SdLoading(repo_id = "org/m", base_repo = "org/m")
+    assert backend.runs_off_torch_device is False
