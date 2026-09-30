@@ -8,7 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { normalizePerModelConfig } = await import(
+const { normalizePerModelConfig, storedSpeculativeAuto } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
@@ -38,13 +38,27 @@ test("a stored disable alias is an override, not a fall-through to the global de
 });
 
 test("the rest of the mapping still resolves as before", () => {
-  // "auto" and an unknown value are the follow-global sentinel, which is what the
-  // aliases above must not be confused with.
-  assert.equal(specOf("auto"), null);
-  assert.equal(specOf("default"), null);
+  // An unknown value is the follow-global sentinel the aliases must not become; Auto is kept.
+  assert.equal(specOf("auto"), "auto");
+  assert.equal(specOf("default"), "auto");
   assert.equal(specOf("bogus"), null);
   assert.equal(specOf("mtp"), "mtp");
   assert.equal(specOf("draft-mtp"), "mtp");
   assert.equal(specOf("ngram-mod"), "ngram");
   assert.equal(specOf("mtp+ngram"), "mtp+ngram");
+});
+
+test("MLX modes and an explicit Auto survive storage; the drafter only with a drafter mode", () => {
+  for (const mode of ["eagle3", "dflash+ngram"]) {
+    assert.equal(specOf(mode), mode);
+  }
+  const drafterOf = (speculativeType: string, specDraftModel: string) =>
+    normalizePerModelConfig({ speculativeType, specDraftModel }).specDraftModel;
+  assert.deepEqual(
+    [drafterOf("auto", " o/d "), drafterOf("ngram", "o/d"), drafterOf("mtp", " ")],
+    ["o/d", null, null],
+  );
+  // GGUF's Auto is "follow the standing preference", which storage spells null.
+  assert.equal(storedSpeculativeAuto({ speculativeType: "auto" }, false).speculativeType, null);
+  assert.equal(storedSpeculativeAuto({ speculativeType: "auto" }, true).speculativeType, "auto");
 });

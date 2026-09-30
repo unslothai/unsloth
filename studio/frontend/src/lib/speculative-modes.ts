@@ -21,6 +21,14 @@ export const SPECULATIVE_TYPES = [
   "off",
 ] as const;
 
+/** Modes only an MLX load reads (studio/backend/core/inference/mlx_speculative.py MLX_SPEC_MODES). */
+export const MLX_ONLY_SPEC_TYPES = [
+  "eagle3",
+  "dspark+ngram",
+  "dflash+ngram",
+  "eagle3+ngram",
+] as const;
+
 /**
  * The modes that consume spec_draft_n_max, i.e. the ones that launch a drafter
  * with a configurable depth. Named for the setting rather than for MTP: DSpark
@@ -32,7 +40,24 @@ export const DRAFT_N_MAX_SPEC_TYPES: ReadonlySet<string> = new Set([
   "mtp+ngram",
   "dspark",
   "dflash",
+  ...MLX_ONLY_SPEC_TYPES,
 ]);
+
+/** The modes under which an MLX load reads a named companion drafter (spec_draft_model). */
+export const DRAFTER_MODEL_SPEC_TYPES: ReadonlySet<string> = new Set([
+  ...DRAFT_N_MAX_SPEC_TYPES,
+  "auto",
+]);
+
+/** The mode a load sends: the model's own choice, else the standing preference, which GGUF loads write.
+ *  On MLX its ngram reads as auto: n-gram copying alone would move a text model onto the vision runtime. */
+export function resolveSpeculativeType(
+  chosen: string | null,
+  standing: string,
+  isMlx: boolean,
+): string {
+  return chosen ?? (isMlx && standing === "ngram" ? "auto" : standing);
+}
 
 /**
  * The modes that always launch a SEPARATE draft model, and so a second context

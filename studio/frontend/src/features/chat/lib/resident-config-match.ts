@@ -11,6 +11,7 @@ import {
 } from "./llama-extra-args-normalize";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -27,6 +28,7 @@ type ResidentRuntime = Pick<
   | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
+  | "spec_draft_model"
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
@@ -48,6 +50,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_mlx"
   | "is_diffusion"
   | "diffusion_requested_ngl"
   | "diffusion_split_supported"
@@ -182,12 +185,17 @@ export function residentSpeculativeNeedsRepair(
     | "spec_dflash_retry_pending"
     | "spec_dspark_sidecar_absent"
     | "spec_drafter_kind"
+    | "is_mlx"
   >,
   resolvedSpeculativeType: string | null,
   /** Whether the load carries a `gguf_path`, which the route sets from the identifier alone:
    *  `source.gguf_path if model_identifier.lower().endswith(".gguf") else None`. */
   sendsGgufPath = false,
 ): boolean {
+  // Every arm below is llama.cpp's; an identical MLX load dedupes.
+  if (status.is_mlx === true) {
+    return false;
+  }
   const mode = resolvedSpeculativeType ?? "auto";
   // Two arms that record no fallback reason, so the reason check below cannot see them. The probe
   // arm is not gated on a mode; the DFlash one is, as the backend gates it.
@@ -279,14 +287,27 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
     // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      (standing.normalizeSpeculative(c.speculativeType) ??
-        standing.speculativeType) ===
-      (standing.normalizeSpeculative(s.speculative_type) ??
-        standing.speculativeType),
+    agrees: (c, s, standing) => {
+      const unset = resolveSpeculativeType(
+        null,
+        standing.speculativeType ?? "auto",
+        s.is_mlx === true,
+      );
+      return (
+        (standing.normalizeSpeculative(c.speculativeType) ?? unset) ===
+        (standing.normalizeSpeculative(s.speculative_type) ?? unset)
+      );
+    },
   },
   {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftModel ?? null) === (s.spec_draft_model ?? null),
+  },
+  {
+    mlxComparable: true,
     // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
     // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
     // as the status carries a count only when a depth-consuming load recorded an override.

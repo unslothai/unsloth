@@ -1125,14 +1125,19 @@ def test_blur_cache_cleared_on_every_settled_render():
 
 
 def test_auto_defaults_not_persisted_as_overrides():
-    """Auto GPU memory mode and Auto/default speculative type are follow-global
-    defaults; normalization must not persist them as per-model overrides, else a
-    model stops following later changes to the global preference."""
+    """Auto GPU memory mode and a GGUF model's Auto/default speculative type are
+    follow-global defaults; they must not persist as per-model overrides, else a
+    model stops following later changes to the global preference. An MLX model
+    keeps its explicit Auto, which beats a standing "off"."""
     src = _read("features/model-picker/model-config/per-model-config.ts")
     assert 'if (partial.gpuMemoryMode === "manual") {' in src
     assert 'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"' not in src
     spec = re.search(r'if \(s === "auto" \|\| s === "default"\) \{\s*return ([^;]+);', src)
-    assert spec and spec.group(1).strip() == "null"
+    assert spec and spec.group(1).strip() == '"auto"'
+    fold = " ".join(src.split())
+    assert (
+        '!isMlx && config.speculativeType === "auto" ? { ...config, speculativeType: null }' in fold
+    )
 
 
 def test_compare_pane_context_from_own_config_only():
@@ -2445,7 +2450,7 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert 'entry["n_parallel"] = n_parallel' in store
     # Ungated: MLX sizes its batch by the same width llama-server sizes its slots by.
-    shared, gguf_block = store.split("    if is_gguf:", 1)
+    shared, gguf_block = store.rsplit("    if is_gguf:", 1)
     assert '("n_parallel", "n_parallel"),' in shared
     assert "n_parallel" not in gguf_block.split("\n\n", 1)[0]
 
@@ -3248,10 +3253,13 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
 
 def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
-    Speculative Decoding "auto", which canonicalizes to null."""
+    Speculative Decoding "auto", which a GGUF model stores as null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     # Load and Save (#10216) both go through persistConfig.
-    assert "const normalized = normalizePerModelConfig(next);" in src
+    assert (
+        "const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));"
+        in src
+    )
     assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
     assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src

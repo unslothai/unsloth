@@ -769,3 +769,18 @@ test("a localStorage that throws degrades on every path instead of propagating",
     asWindow.window.localStorage = storage;
   }
 });
+
+
+test("the MLX drafter mirrors to the server and back", () => {
+  const config = normalizePerModelConfig({ speculativeType: "eagle3", specDraftModel: "o/d" });
+  assert.equal(toApiOverride(config).spec_draft_model, "o/d");
+  // biome-ignore lint/style/useNamingConvention: API schema
+  const row = { speculative_type: "auto", spec_draft_model: "o/d" };
+  assert.equal(fromApiOverride(row).specDraftModel, "o/d");
+  // Without the flag the backend keeps a drafter the save cleared.
+  const overrides = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../src/features/model-picker/api/model-overrides.ts",
+  );
+  assert.match(readFileSync(overrides, "utf8"), /mirrors_spec_draft_model: true/);
+});
