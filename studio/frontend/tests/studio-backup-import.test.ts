@@ -272,7 +272,7 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
     ],
     messages: [
       { id: "a1", threadId: "a", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
-      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5 },
+      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5, metadata: { note: "kept", createdAtEstimated: false } },
       { id: "b1", threadId: "b", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
       { id: "orphan", threadId: "gone", role: "user", content: [{ type: "text", text: "lost" }], createdAt: 5 },
     ],
@@ -286,6 +286,8 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
   const left = messages.get(threads.find(({ title }) => title === "Left")?.id ?? "") as MessageRecord[];
   assert.deepEqual(left.map(({ role }) => role), ["user", "assistant"]);
   assert.deepEqual(left.map(({ createdAt }) => createdAt), [5, 6]);
+  assert.notEqual(left[0].metadata?.createdAtEstimated, true);
+  assert.deepEqual(left[1].metadata, { note: "kept", createdAtEstimated: true });
   assert.ok(left.every((record) => !("parentId" in record)));
 });
 
