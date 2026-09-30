@@ -3319,6 +3319,7 @@ class InferenceOrchestrator:
         audio_array,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR: sends audio to the subprocess and yields text."""
         yield from self._generate_audio_input_inner(
@@ -3328,6 +3329,7 @@ class InferenceOrchestrator:
             system_prompt = "",
             cancel_event = cancel_event,
             stats_holder = stats_holder,
+            extra_audio_arrays = extra_audio_arrays,
         )
 
     def generate_audio_input_response(
@@ -3345,6 +3347,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         stop = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n): streams text tokens."""
         yield from self._generate_audio_input_inner(
@@ -3362,6 +3365,7 @@ class InferenceOrchestrator:
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             stop = stop,
+            extra_audio_arrays = extra_audio_arrays,
         )
 
     def _generate_audio_input_inner(
@@ -3380,6 +3384,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         stop = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR). ``stats_holder``: as in
         generate_chat_response, caller-owned and filled on gen_done with the worker's usage /
@@ -3402,15 +3407,16 @@ class InferenceOrchestrator:
                 return
             request_id = str(uuid.uuid4())
 
-            # numpy array -> list for mp.Queue serialization
-            audio_data = (
-                audio_array.tolist() if hasattr(audio_array, "tolist") else list(audio_array)
-            )
+            import numpy as np
+
+            # Raw float32 bytes per clip; far cheaper to pickle than tolist().
+            clips = [audio_array, *(extra_audio_arrays or [])]
+            audio_clips = [np.asarray(clip, dtype = np.float32).tobytes() for clip in clips]
 
             cmd = {
                 "type": "generate_audio_input",
                 "request_id": request_id,
-                "audio_data": audio_data,
+                "audio_clips": audio_clips,
                 "audio_type": audio_type,
                 "messages": messages or [],
                 "system_prompt": system_prompt,

@@ -6406,6 +6406,7 @@ class MLXInferenceBackend:
         use_adapter = None,
         cancel_event = None,
         stop = None,
+        extra_audio_arrays = None,
         **_sampler,
     ):
         """Audio-input chat (omni models): waveform in, incremental text deltas out (the audio route
@@ -6417,6 +6418,10 @@ class MLXInferenceBackend:
                 "Audio input is not supported for this model on the MLX backend: "
                 "no verified audio-capable tower/processor was detected at load."
             )
+
+        # mlx-vlm silently drops all but the first clip; the route refuses this earlier.
+        if extra_audio_arrays:
+            raise RuntimeError("This MLX model takes one audio file per message.")
 
         from mlx_vlm import stream_generate as vlm_stream
 
