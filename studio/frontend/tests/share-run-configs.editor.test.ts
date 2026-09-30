@@ -14,6 +14,7 @@ import type { SharedRunConfigLinkHandler as LinkHandler } from "../src/features/
 import type { ShareRunConfigDialog as ShareDialog } from "../src/features/model-picker/sharing/share-dialog.tsx";
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 import {
@@ -1140,4 +1141,22 @@ test("startup intake waits for mount effects and survives strict effect replay",
   assert.equal(render(), null);
   cleanup?.();
   assert.equal(disposed, true);
+});
+
+test("Load and Save refuse while a shared GGUF variant is unresolved", () => {
+  const page = readSrc(
+    "features/model-picker/components/model-config-page.tsx",
+  ).replace(/\s+/g, " ");
+  for (const handler of ["handleRun", "handleSave"]) {
+    const body = page.slice(page.indexOf(`const ${handler} = () => {`));
+    assert.match(
+      body.slice(0, 80),
+      /^const \w+ = \(\) => \{ if \(sharedVariantUnresolved\) \{ return; \}/,
+    );
+    const button = page.slice(0, page.indexOf(`onClick={${handler}}`));
+    assert.match(
+      button.slice(button.lastIndexOf("disabled={")),
+      /^disabled=\{ sharedVariantUnresolved \|\|/,
+    );
+  }
 });
