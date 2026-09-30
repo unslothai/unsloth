@@ -3806,17 +3806,17 @@ export function useChatModelRuntime() {
       "unload",
     );
     if (!decision.proceed) return false;
-    if (selectedLocal) {
-      if (!(await ejectModel(undefined, decision))) return false;
-    } else {
+    if (!selectedLocal) {
       cancelPreStreamRunReservations(decision.preStreamRunTokens);
       requestLocalPromptQueueStop(decision.promptQueueThreadIds);
     }
+    // Others first: the selected model's eject refreshes, which would adopt one still loaded.
     const results = await Promise.allSettled(
       others.map((id) =>
         unloadModel({ model_path: id, force_cancel_active: decision.forceCancelActive }),
       ),
     );
+    if (selectedLocal && !(await ejectModel(undefined, decision))) return false;
     await refresh();
     const failed = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",

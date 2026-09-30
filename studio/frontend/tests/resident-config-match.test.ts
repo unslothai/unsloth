@@ -2014,9 +2014,16 @@ test("applying settings to one of several scopes the stop to that model", () => 
 test("eject all asks once about every model's chats before unloading any", () => {
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const decision = await confirmStopRunningChatsIfNeeded\(\s*"Unloading every model",\s*"unload",\s*\);\s*if \(!decision\.proceed\) return false;\s*if \(selectedLocal\) \{\s*if \(!\(await ejectModel\(undefined, decision\)\)\) return false;/,
+    /const decision = await confirmStopRunningChatsIfNeeded\(\s*"Unloading every model",\s*"unload",\s*\);\s*if \(!decision\.proceed\) return false;/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /force_cancel_active: decision\.forceCancelActive \}\),/);
+});
+
+test("eject all unloads the other models before the selected one, so its refresh adopts none of them", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /others\.map\(\(id\) =>\s*unloadModel\(\{ model_path: id, force_cancel_active: decision\.forceCancelActive \}\),\s*\),\s*\);\s*if \(selectedLocal && !\(await ejectModel\(undefined, decision\)\)\) return false;\s*await refresh\(\);/,
+  );
 });
 
 test("ejecting a kept model confirms its own chats and stops their queues", () => {
