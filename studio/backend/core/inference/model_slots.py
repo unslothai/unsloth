@@ -169,6 +169,20 @@ def claim_victim(slot: ExtraSlot) -> bool:
         return True
 
 
+def evict(
+    exclude: Optional[ExtraSlot],
+    short_mib: int,
+    gpu_indices = None,
+) -> list[ExtraSlot]:
+    """Unload the idle slots ``eviction_victims`` picks, skipping any a request reached meanwhile."""
+    dropped = []
+    for victim in eviction_victims(exclude, short_mib, gpu_indices):
+        if claim_victim(victim):
+            drop(victim)
+            dropped.append(victim)
+    return dropped
+
+
 def all_generations() -> set:
     return {event for slot in list(slots) for event in list(slot.generations)}
 

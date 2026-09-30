@@ -16780,24 +16780,18 @@ async def load_model_gated(
                     except GpuMemoryShortError as exc:
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
-                            dropped = 0
-                            for victim in model_slots.eviction_victims(
-                                extra, exc.short_mib, getattr(exc, "gpu_indices", None)
-                            ):
-                                if not model_slots.claim_victim(victim):
-                                    continue
-                                if victim.request is not None:
-                                    evicted.append(_model_key(victim.request))
-                                await asyncio.to_thread(model_slots.drop, victim)
-                                dropped += 1
+                            dropped = await asyncio.to_thread(
+                                model_slots.evict, extra, exc.short_mib, exc.gpu_indices
+                            )
                         if not dropped:
                             if not exc.capped:
                                 raise HTTPException(status_code = 409, detail = str(exc)) from exc
                             request = request.model_copy(update = {"force_alongside": True})
                             continue
+                        evicted += [_model_key(s.request) for s in dropped if s.request is not None]
                         logger.info(
                             "Unloaded %d model(s) loaded alongside to fit %s",
-                            dropped,
+                            len(dropped),
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
