@@ -40,10 +40,12 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
+    alternating_turns,
     build_dac_tts_prompt,
     make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    messages_with_attached_image,
     neutralize_control_markup_in_messages,
     neutralize_tts_prompt_text,
     prompt_opens_reasoning_channel,
@@ -2010,35 +2012,18 @@ class InferenceBackend:
         processor = model_info.get("processor") or model_info.get("tokenizer")
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        user_text = "Please transcribe this audio."
-        if messages:
-            for msg in reversed(messages):
-                if msg["role"] == "user" and msg.get("content"):
-                    user_text = content_to_text(msg["content"])
-                    break
-        # Not the caption scan above: that one falls back past a media-only turn.
-        last_user = next(
-            (m for m in reversed(messages or []) if m.get("role") == "user"),
-            None,
-        )
-
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Gemma 3n format — audio goes INTO apply_chat_template
-        audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            named_turn(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "audio", "audio": audio_array},
-                        {"type": "text", "text": user_text},
-                    ],
-                },
-                last_user,
-            ),
-        ]
+        audio_messages = messages_with_attached_image(
+            alternating_turns(messages),
+            system_prompt = system_prompt,
+            fallback_user_text = "Please transcribe this audio.",
+            structured_content = True,
+            image = 0,
+            audio = audio_array,
+        )
 
         # Direct processor render like the vision path, so neutralize here too, with
         # this processor's own profile so another family's marker stays untouched (#7066).

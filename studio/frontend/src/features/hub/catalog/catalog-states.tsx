@@ -32,6 +32,7 @@ function describeFailure(
   online: boolean,
   resourceLabel: "models" | "datasets",
   hub: string,
+  offersModelScope: boolean,
 ): {
   title: string;
   body: string;
@@ -55,7 +56,10 @@ function describeFailure(
     case "unknown":
       return {
         title: `Can't reach ${hub}`,
-        body: failure.message,
+        body:
+          failure.kind === "network-opaque" && offersModelScope
+            ? `Unable to reach ${hub}. Check your network connection or try ModelScope instead.`
+            : failure.message,
         offlineLike: false,
       };
     // Reached and refused: the fix is the token, not the connection or the hub.
@@ -82,13 +86,18 @@ function describeFailure(
       };
 }
 
-function UseModelScopeButton() {
-  const t = useT();
+function useOffersModelScope(): boolean {
   const isOwner = useIsAccountOwner();
   const source = useHubSource();
+  return isOwner && source === "huggingface";
+}
+
+function UseModelScopeButton() {
+  const t = useT();
+  const offersModelScope = useOffersModelScope();
   const [switching, setSwitching] = useState(false);
   const [failed, setFailed] = useState(false);
-  if (!isOwner || source !== "huggingface") return null;
+  if (!offersModelScope) return null;
   return (
     <span className="inline-flex items-center gap-2">
       <Button
@@ -152,6 +161,7 @@ export function NetworkErrorState({
     online,
     resourceLabel,
     useHubName(),
+    useOffersModelScope(),
   );
   const icon = offlineLike ? WifiDisconnected02Icon : CloudOffIcon;
 
@@ -215,6 +225,7 @@ export function HubFailureHint({
     phase === "available",
     "models",
     useHubName(),
+    useOffersModelScope(),
   );
   return (
     <div className="flex flex-col gap-2 px-2.5 py-2">

@@ -320,6 +320,7 @@ _npm_mirror_retry 'npm install'; echo \"RC \$? REG=\${UNSLOTH_NPM_REGISTRY:-} AR
 NPMM=https://registry.npmmirror.com
 assert_eq "npm: a registry transport failure reruns once on npmmirror, which later installs keep" "STEP registry.npmjs.org failed; retrying through $NPMM|RUN npm install --no-fund --no-audit --loglevel=error --registry $NPMM|RC 0 REG=$NPMM ARGS=--registry $NPMM" "$(_npm "$_fail_npm")"
 assert_eq "npm: ... not when the rerun fails too" "STEP registry.npmjs.org failed; retrying through $NPMM|RUN npm install --no-fund --no-audit --loglevel=error --registry $NPMM|RC 1 REG= ARGS=" "$(_npm "$_fail_npm" MIRROR_FAILS=1)"
+assert_eq "npm: the rerun keeps npm ci when the directory has a lockfile" "STEP registry.npmjs.org failed; retrying through $NPMM|RUN npm ci --no-fund --no-audit --loglevel=error --registry $NPMM|RC 0 REG=$NPMM ARGS=--registry $NPMM" "$(_npm "$_fail_npm" _NPM_INSTALL=ci)"
 assert_eq "npm: a dependency conflict is not retried" "RC 1 REG= ARGS=" "$(_npm 'npm error code ERESOLVE: While resolving: vite@7.1.0 from https://registry.npmjs.org/vite')"
 
 summary

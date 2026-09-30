@@ -84,6 +84,10 @@ class LoadRequest(BaseModel):
             "(llama.cpp or MLX) choose the context itself."
         ),
     )
+    max_seq_length_auto_derived: bool = Field(
+        False,
+        description = "max_seq_length is the previous load's fitted context, not a user choice",
+    )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
@@ -1484,6 +1488,34 @@ class _InferenceRuntimeFields(BaseModel):
     gpu_layers: int = Field(
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    offloaded_layers: Optional[int] = Field(
+        None,
+        description = (
+            "Layers llama.cpp actually placed on a GPU, when it reported the count. "
+            "In Auto mode the placement is llama.cpp's own (--fit on), so this is the "
+            "only account of what happened; gpu_layers above is the REQUEST."
+        ),
+    )
+    offload_total_layers: Optional[int] = Field(
+        None,
+        description = "Total layers in the model, alongside offloaded_layers.",
+    )
+    gpu_backend_unavailable: bool = Field(
+        False,
+        description = (
+            "Studio detected a GPU for this load but llama.cpp's own device table "
+            "reported none, meaning its GPU backend did not initialise. Separates a "
+            "backend failure from a fit that placed no layers; both log 0/M."
+        ),
+    )
+    offload_overridden: bool = Field(
+        False,
+        description = (
+            "Whether the user's own llama-server extras pinned the layer split. "
+            "Auto mode respects an inherited -ngl instead of stripping it, so a "
+            "deliberate placement can arrive with gpu_memory_mode still 'auto'."
+        ),
     )
     cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
         None,
@@ -3688,7 +3720,7 @@ class AnthropicThinkingConfig(BaseModel):
     # (adaptive tiers) and Claude Code sends them, and a strict Literal turns an unrecognized value
     # into a hard 400. Only "disabled" means off; treat anything else as a request to think.
     type: str = "enabled"
-    # Accepted for wire compatibility; llama-server has no thinking budget.
+    # Forwarded to llama-server as thinking_budget_tokens when thinking is on.
     budget_tokens: Optional[int] = None
     model_config = {"extra": "allow"}
 
@@ -3727,8 +3759,6 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
-    # Anthropic's native extended-thinking control. Only `type` is honored: llama-server has no
-    # thinking-token budget, so `budget_tokens` is accepted and ignored rather than 400'd.
     thinking: Optional[AnthropicThinkingConfig] = None
     # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
     # over `thinking` when both are present, matching enable_tools precedence.
@@ -3860,6 +3890,19 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
+class AnthropicResponseServerToolUseBlock(BaseModel):
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: str
+    input: dict
+
+
+class AnthropicResponseWebSearchToolResultBlock(BaseModel):
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str
+    content: Union[list[dict], dict]
+
+
 class AnthropicResponseThinkingBlock(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
@@ -3871,6 +3914,8 @@ class AnthropicResponseThinkingBlock(BaseModel):
 AnthropicResponseBlock = Union[
     AnthropicResponseTextBlock,
     AnthropicResponseToolUseBlock,
+    AnthropicResponseServerToolUseBlock,
+    AnthropicResponseWebSearchToolResultBlock,
     AnthropicResponseThinkingBlock,
 ]
 
@@ -3940,7 +3985,8 @@ class DiffusionLoadRequest(BaseModel):
         "~2x smaller, "
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
-        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (torchao weight-only, ~3.5x smaller, "
+        "dequantised to bf16 per forward so the prompt encode is slower; cc>=8.0). A "
         "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode. "
         "Fails CLOSED when NOTHING could be cast (409, or a load-progress error); an int8 request "
         "downgraded to fp8 loads and is reported through the status resolved record instead.",
@@ -5061,9 +5107,10 @@ class VideoLoadRequest(BaseModel):
         "the largest resident component. fp8 = diffusers layerwise casting (memory only, cc >= "
         "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
-        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
-        "sm_100+). null/auto leaves the choice to the backend, which keeps the encoder dense on "
-        "every family except MiniMax-H3, where it takes the hosted quantized conditioner; "
+        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only, "
+        "dequantised to bf16 per forward (cc >= 8.0). null/auto leaves the choice to the backend, "
+        "which keeps the encoder dense on every family except MiniMax-H3, where it takes the "
+        "hosted quantized conditioner; "
         "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
         "to ask for it. Mirrors the image backend's field.",
     )
