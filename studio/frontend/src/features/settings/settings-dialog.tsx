@@ -25,7 +25,7 @@ import {
   CpuIcon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
-  Globe02Icon,
+  InternetIcon,
   HelpCircleIcon,
   HomeWifiIcon,
   LibrariesIcon,
@@ -209,7 +209,7 @@ const TABS: TabDef[] = [
   {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
-    icon: Globe02Icon,
+    icon: InternetIcon,
   },
   {
     id: "remote-lan",
