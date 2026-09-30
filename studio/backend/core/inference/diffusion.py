@@ -1636,8 +1636,7 @@ def _inplace_torchao_placement(
     estimate: Any,
     largest_companion_mib: Callable[[], Optional[int]],
 ) -> tuple[Any, Optional[str]]:
-    """(placement, None) the in-place torchao quant of a pipeline denoiser runs on, or (``plan``, why it cannot).
-    Whole-module offload also checks the LOADED encoders, which the plan's estimates do not carry."""
+    """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
     if plan_keeps_transformer_resident(plan):
         return plan, None
     if plan.offload_policy == OFFLOAD_MODEL:
@@ -1683,8 +1682,7 @@ def _denoiser_hooked(pipe: Any) -> bool:
 
 
 def _torchao_render_needs_no_grad(state: Any) -> bool:
-    """Quantised weights behind ANY offload hook render under ``no_grad``: inference_mode rejects moving torchao
-    weights between devices."""
+    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
     return bool(

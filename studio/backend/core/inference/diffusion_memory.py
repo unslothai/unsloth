@@ -894,8 +894,7 @@ def plan_keeps_transformer_resident(plan: Any) -> bool:
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
 
 
-# Oldest torchao measured bit-exact under streamed group offload. 0.17's v1 int8 needs no copy stream and ran 14x
-# slower than streaming bf16, so int8 starts at 0.18. Older releases were never measured.
+# Oldest torchao measured bit-exact under streamed group offload; 0.17 int8 (v1, no copy stream) ran 14x slower.
 _TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
 _TORCHAO_STREAM_SAFE_CLASSES = frozenset(("Int8Tensor", "Float8Tensor"))
 # Before 0.38 diffusers moved only the torchao wrapper, leaving quantised data on the host.
@@ -925,8 +924,7 @@ def _installed_diffusers_version() -> Optional[tuple[int, int]]:
 
 
 def _model_offload_fits_quantised(plan: Any) -> bool:
-    """Whole-module offload cannot fall back to streaming a torchao denoiser, so the quantised denoiser and the
-    encoders (SUM stands in for the largest) must each fit the budget."""
+    """Quantised denoiser and encoders (SUM stands in for the largest) must each fit the budget whole."""
     try:
         est = plan.estimates
         budget = est.get("safe_device_budget_mib")
@@ -952,8 +950,7 @@ def torchao_offload_plan(
     *,
     torchao_version: Any = _UNSET,
 ) -> Optional[Any]:
-    """The placement a torchao ``scheme`` denoiser runs on under ``plan``, or None when its weights would not survive.
-    Sequential offload and other schemes were never measured, so they stay refused."""
+    """Placement a torchao ``scheme`` denoiser survives under ``plan``, or None (sequential offload: never measured)."""
     if plan_keeps_transformer_resident(plan):
         return plan
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
@@ -971,8 +968,7 @@ def torchao_offload_plan(
 
 
 def _torchao_stream_pinnable(plan: Any) -> bool:
-    """Lazy pinning refuses torchao and the stream-free fallback ran ~35x slower, so torchao streams only where the
-    denoiser can be pinned up front."""
+    """Lazy pinning refuses torchao and the stream-free fallback ran ~35x slower, so require an up-front pin."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no"):
         return False
@@ -1038,10 +1034,8 @@ def _torchao_group_offload_kwargs(
     kwargs: dict[str, Any],
     pinned_mib: Optional[list] = None,
 ) -> dict[str, Any]:
-    """``apply_group_offloading`` kwargs a torchao-weighted ``module`` survives. Weights are frozen first: swap_tensors
-    on a requires_grad torchao weight hits an unimplemented ``aten.view``. Lazy pinning refuses torchao, so the copy
-    stream needs an up-front pin, else it is dropped. ``pinned_mib`` is a one-item running total shared across the
-    modules of one install, so several denoisers never pin more than the budget between them."""
+    """Group-offload kwargs a torchao ``module`` survives. Frozen first (swap_tensors on a requires_grad torchao weight
+    hits an unimplemented ``aten.view``); the stream needs an up-front pin within ``pinned_mib``, a shared running total."""
     classes = _torchao_weight_classes(module)
     if not classes:
         return kwargs
@@ -1694,8 +1688,7 @@ def _module_host_mib(module: Any) -> int:
 
 
 def _storage_nbytes(tensor: Any, depth: int = 0) -> list[int]:
-    """Bytes of each allocation behind ``tensor``. A torchao subclass reports its logical bf16 size, so size its
-    packed inner tensors instead."""
+    """Bytes per allocation; torchao subclasses report their logical bf16 size, so size the packed inner tensors."""
     flatten = getattr(type(tensor), "__tensor_flatten__", None)
     if flatten is not None and depth < 4:
         try:
