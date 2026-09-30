@@ -66,7 +66,46 @@ print("@@@" + json.dumps(results))
 """
 
 
-def _run(tmp_path, *model_types):
+# post_patch_model twice on one deepseek_v41 model (from_pretrained, then get_peft_model), then a
+# positional gradient_checkpointing_enable: the newest wrapper (offloading) must be the one bound.
+_CHILD_REPATCH = r"""
+import json
+import unsloth  # noqa: F401
+import torch
+from transformers import LlamaConfig, LlamaForCausalLM
+from unsloth.models.vision import FastBaseModel
+
+config = LlamaConfig(
+    vocab_size = 128, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
+    num_attention_heads = 4, num_key_value_heads = 2, max_position_embeddings = 64,
+)
+model = LlamaForCausalLM(config).cuda()
+model.config.model_type = "deepseek_v41"
+for mode in (False, "unsloth"):
+    model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing = mode, trust_remote_code = True)
+model.gradient_checkpointing_enable({"use_reentrant": True})
+funcs = [
+    m._gradient_checkpointing_func for m in model.modules()
+    if getattr(m, "_gradient_checkpointing_func", None) is not None
+]
+def offload(f):
+    f = getattr(f, "func", f)
+    cells = dict(zip(f.__code__.co_freevars, (c.cell_contents for c in f.__closure__ or ())))
+    return cells.get("_offload")
+out = {
+    "n_funcs": len(funcs),
+    "use_reentrant": sorted({str(getattr(f, "keywords", {}).get("use_reentrant")) for f in funcs}),
+    "offload": sorted({str(offload(f)) for f in funcs}),
+}
+print("@@@" + json.dumps([out]))
+"""
+
+
+def _run(
+    tmp_path,
+    *model_types,
+    child = _CHILD,
+):
     env = dict(os.environ)
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env["PYTHONPATH"] = os.pathsep.join(
@@ -74,7 +113,7 @@ def _run(tmp_path, *model_types):
     )
     env.setdefault("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "unsloth_compiled_cache"))
     result = subprocess.run(
-        [sys.executable, "-c", _CHILD, *model_types],
+        [sys.executable, "-c", child, *model_types],
         cwd = str(tmp_path),
         env = env,
         capture_output = True,
@@ -108,3 +147,10 @@ def test_later_model_gets_reentrant_back(tmp_path):
     assert not llama["global_checkpoint_patched"], llama
     assert not llama["wrapper_in_use"], llama
     assert llama["layer0_grad"], llama
+
+
+def test_repatch_keeps_newest_wrapper_and_positional_call(tmp_path):
+    (out,) = _run(tmp_path, child = _CHILD_REPATCH)
+    assert out["n_funcs"] > 0, out
+    assert out["use_reentrant"] == ["False"], out
+    assert out["offload"] == ["True"], out

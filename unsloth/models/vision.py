@@ -4221,20 +4221,29 @@ class FastBaseModel:
             model.gradient_checkpointing_enable = _gc_enable_reentrant
 
         if _force_non_reentrant:
-            _original_gc_enable_nr = model.gradient_checkpointing_enable
+            # Wrap the unpatched method so a second post_patch_model (get_peft_model) replaces the wrapper instead of nesting it.
+            _original_gc_enable_nr = getattr(
+                model.gradient_checkpointing_enable,
+                "_unsloth_gc_original",
+                model.gradient_checkpointing_enable,
+            )
 
-            def _gc_enable_non_reentrant(**kwargs):
-                gc_kwargs = dict(kwargs.get("gradient_checkpointing_kwargs", None) or {})
+            def _gc_enable_non_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
                 gc_kwargs["use_reentrant"] = False
-                kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
                 # Bind this model's wrapper (and its offloading) even if a later load restored the global.
                 _prev_checkpoint = hf_modeling_utils.checkpoint
                 hf_modeling_utils.checkpoint = _nonre_checkpoint
                 try:
-                    return _original_gc_enable_nr(**kwargs)
+                    return _original_gc_enable_nr(gc_kwargs, *args, **kwargs)
                 finally:
                     hf_modeling_utils.checkpoint = _prev_checkpoint
 
+            _gc_enable_non_reentrant._unsloth_gc_original = _original_gc_enable_nr
             model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 
         from transformers.trainer import Trainer
