@@ -2456,6 +2456,10 @@ class TestSandboxEnvIsolation:
             monkeypatch.setenv(key, f"sentinel-{key}")
         env = _build_safe_env(str(tmp_path))
         for key in self._SECRET_KEYS:
+            if key in ("USERPROFILE", "APPDATA", "LOCALAPPDATA") and sys.platform == "win32":
+                # Repointed at the workdir so Path.home() works; the parent's value never reaches it.
+                assert env[key] == str(tmp_path), f"parent env var {key!r} leaked into sandbox env"
+                continue
             assert key not in env, f"parent env var {key!r} leaked into sandbox env"
 
     def test_sandbox_env_is_minimal_whitelist(self, monkeypatch, tmp_path):
@@ -2480,9 +2484,15 @@ class TestSandboxEnvIsolation:
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
             "TEMP",  # Windows only; native programs honour these, not TMPDIR
             "TMP",
+            # Windows only; profile dirs repointed at the workdir, never inherited
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        for key in ("USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+            assert env.get(key, str(tmp_path)) == str(tmp_path)
         assert env["MPLBACKEND"] == "Agg"
         # PYTHONPATH is whitelist-built, never inherited: only the sandbox
         # sitecustomize shim dir (code-interpreter path remap).

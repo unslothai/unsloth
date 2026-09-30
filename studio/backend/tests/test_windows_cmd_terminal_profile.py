@@ -155,6 +155,16 @@ def test_default_env_is_unchanged(windows, monkeypatch, tmp_path):
     assert not any(key.startswith("GIT_") for key in env)
 
 
+@pytest.mark.parametrize("shell", [None, "cmd_isolated"])
+def test_safe_env_points_the_windows_profile_at_the_workdir(windows, monkeypatch, tmp_path, shell):
+    windows()
+    _userland(monkeypatch, tmp_path)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\someone")
+    env = tools._build_safe_env(str(tmp_path), shell = shell)
+    for var in ("USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+        assert env[var] == str(tmp_path)
+
+
 def test_blocklist_still_catches_blocked_commands_under_cmd(windows):
     windows()  # bash on the host: the lexer must follow the explicit dialect, not the host shell
     for command in (
@@ -222,9 +232,17 @@ def test_bash_profile_keeps_multiline_and_bash_argv(windows, monkeypatch, tmp_pa
     assert "GIT_CONFIG_COUNT" not in plan.env
 
 
-def test_bash_hosts_keep_bash_outside_the_measured_dacl_tier(windows):
-    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True), dacl = False)
+@pytest.mark.parametrize("dacl", [False, True])
+def test_the_msys_verdict_moves_the_terminal_to_cmd_on_either_mxc_tier(windows, dacl):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True), dacl = dacl)
+    assert tools._terminal_profile() == "cmd_isolated"
+
+
+@pytest.mark.parametrize("dacl", [False, True])
+def test_bash_that_isolates_stays_bash_on_either_mxc_tier(windows, dacl):
+    calls = windows(bash_cap = _cap(True), cmd_cap = _cap(True), dacl = dacl)
     assert tools._terminal_profile() == "bash"
+    assert calls == [BASH]
 
 
 def test_cmd_isolated_strips_a_trailing_newline(windows, monkeypatch, tmp_path):
