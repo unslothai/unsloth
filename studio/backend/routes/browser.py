@@ -61,23 +61,25 @@ _REFRESH_RE = re.compile(
 )
 _META_CHARSET_RE = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
 
-# Pages load resources from anywhere; the sandbox (no allow-same-origin) isolates them from Studio.
+# Pages load https resources from anywhere; the sandbox (no allow-same-origin) isolates them from Studio.
 # Forms are submitted by the injected script.
 _FRAME_CSP = (
-    "default-src http: https: data: blob:; "
-    "script-src 'unsafe-inline' 'unsafe-eval' http: https: data: blob:; "
-    "style-src 'unsafe-inline' http: https: data: blob:; "
-    "img-src http: https: data: blob:; "
-    "font-src http: https: data: blob:; "
-    "media-src http: https: data: blob:; "
-    # No http: or ws:, so scripts can't hit local services (WebKit has no local network protection).
+    # https only: plain http would let a page hit local services (llama.cpp, Jupyter, a router), and
+    # WebKit has no local network protection. http subresources are upgraded instead.
+    "default-src https: data: blob:; "
+    "script-src 'unsafe-inline' 'unsafe-eval' https: data: blob:; "
+    "style-src 'unsafe-inline' https: data: blob:; "
+    "img-src https: data: blob:; "
+    "font-src https: data: blob:; "
+    "media-src https: data: blob:; "
     "connect-src https: wss: data: blob:; "
-    "worker-src http: https: blob:; "
-    "frame-src http: https: data: blob:; "
+    "worker-src https: blob:; "
+    "frame-src https: data: blob:; "
     "object-src 'none'; "
     "base-uri http: https:; "
     "form-action 'none'; "
     f"frame-ancestors {_FRAME_ANCESTORS}; "
+    "upgrade-insecure-requests; "
     "sandbox allow-scripts allow-forms; "
     # The shell is served from loopback; don't let that exempt pages from local network checks.
     "treat-as-public-address"

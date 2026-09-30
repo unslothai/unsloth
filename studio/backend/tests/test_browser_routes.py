@@ -32,9 +32,12 @@ def test_the_shell_does_not_inherit_studios_loopback_address():
     # Pages must not inherit the shell's loopback address.
     csp = _shell_response().headers["content-security-policy"]
     assert csp.rstrip().endswith("treat-as-public-address")
-    # No script requests to plain-http services.
-    connect = next(part for part in csp.split(";") if part.strip().startswith("connect-src"))
-    assert "http:" not in connect.split() and "ws:" not in connect.split()
+    # No plain-http requests of any kind, so pages can't hit local services.
+    for part in csp.split(";"):
+        name, *sources = part.split()
+        if name.endswith("-src"):
+            assert "http:" not in sources and "ws:" not in sources, name
+    assert "upgrade-insecure-requests;" in csp
 
 
 def test_the_shell_is_exempt_from_frame_denial():

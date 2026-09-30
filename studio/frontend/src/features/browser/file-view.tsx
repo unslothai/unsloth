@@ -5,11 +5,10 @@ import { CodeSourceView } from "@/components/code-source-view";
 import { DocumentView, MAX_DOCUMENT_PREVIEW_BYTES, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Spinner } from "@/components/ui/spinner";
-import { attachmentTextLanguage, truncateAttachmentPreviewText } from "@/features/chat";
+import { ArtifactHtmlFrame, attachmentTextLanguage, truncateAttachmentPreviewText } from "@/features/chat";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { useEffect, useMemo, useState } from "react";
-import { PageFrame, type FrameMessage } from "./page-frame";
 
 const HTML_NAME = /\.(html?|xhtml)$/i;
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\b/i;
@@ -48,13 +47,11 @@ function TextFile({
   name,
   contentType,
   plainText,
-  onFrameMessage,
 }: {
   blob: Blob;
   name: string;
   contentType: string;
   plainText: boolean;
-  onFrameMessage: (message: FrameMessage) => void;
 }) {
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
@@ -69,10 +66,15 @@ function TextFile({
     [text, name],
   );
   if (text === null) return <Spinner className="m-auto size-6" />;
-  if (!plainText && (HTML_NAME.test(name) || HTML_TYPE.test(contentType))) {
-    return <PageFrame html={text} url={null} base={null} title={name} onMessage={onFrameMessage} />;
-  }
   const preview = truncateAttachmentPreviewText(text);
+  // Same frame as the attachment preview: network stays off until the user allows it.
+  if (!plainText && (HTML_NAME.test(name) || HTML_TYPE.test(contentType))) {
+    return (
+      <div className="size-full overflow-auto">
+        <ArtifactHtmlFrame code={preview.text} title={name} fill={true} />
+      </div>
+    );
+  }
   if (!plainText && isMarkdown(name, contentType)) {
     return (
       <div className="size-full overflow-auto px-6">
@@ -98,13 +100,11 @@ export function FileView({
   name,
   contentType,
   plainText = false,
-  onFrameMessage,
 }: {
   blob: Blob;
   name: string;
   contentType: string;
   plainText?: boolean;
-  onFrameMessage: (message: FrameMessage) => void;
 }) {
   const t = useT();
   const media = plainText ? null : mediaKind(name, contentType);
@@ -144,13 +144,7 @@ export function FileView({
   }
   if (plainText || TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType) {
     return (
-      <TextFile
-        blob={blob}
-        name={name}
-        contentType={contentType}
-        plainText={plainText}
-        onFrameMessage={onFrameMessage}
-      />
+      <TextFile blob={blob} name={name} contentType={contentType} plainText={plainText} />
     );
   }
   return <Unavailable message={t("browser.cannotShowFile")} />;

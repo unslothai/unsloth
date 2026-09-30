@@ -50,7 +50,7 @@ function safeFavicon(url: string | null): string | null {
   }
 }
 
-/** Messages from a tab's page. `origin` is the site the page was loaded from, null for a local file. */
+/** Messages from a tab's page. `origin` is the site the page was loaded from, null until loaded. */
 function useFrameMessages(tabId: string, origin: string | null) {
   return useCallback(
     (message: FrameMessage) => {
@@ -170,12 +170,7 @@ function WebPage({
   const { page } = state;
   if (page.kind === "raw") {
     return (
-      <FileView
-        blob={page.blob}
-        name={fileNameFromUrl(page.url)}
-        contentType={page.contentType}
-        onFrameMessage={onFrameMessage}
-      />
+      <FileView blob={page.blob} name={fileNameFromUrl(page.url)} contentType={page.contentType} />
     );
   }
   return (
@@ -193,7 +188,6 @@ function WebPage({
 function LocalFile({ tab }: { tab: BrowserTab }) {
   const t = useT();
   const entry = currentEntry(tab);
-  const onFrameMessage = useFrameMessages(tab.id, null);
   if (entry.kind !== "file") return null;
   const blob = browserFile(entry.fileId);
   if (!blob) {
@@ -205,7 +199,6 @@ function LocalFile({ tab }: { tab: BrowserTab }) {
       name={entry.name}
       contentType={entry.contentType}
       plainText={entry.plainText}
-      onFrameMessage={onFrameMessage}
     />
   );
 }
