@@ -3,6 +3,7 @@
 
 """CPU reproduction: an authorized image unload cancels a later foreign generation."""
 
+import json
 import sys
 import secrets
 import threading
@@ -53,13 +54,11 @@ def client_for(account):
 
 
 def _write_local_pipeline(root: Path) -> None:
-    # The load preflight admits only a manifest whose declared components are on disk.
-    (root / "model_index.json").write_text(
-        '{"_class_name": "ZImagePipeline", "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"]}',
-        encoding = "utf-8",
-    )
+    scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"]
+    manifest = {"_class_name": "ZImagePipeline", "scheduler": scheduler}
+    (root / "model_index.json").write_text(json.dumps(manifest))
     (root / "scheduler").mkdir()
-    (root / "scheduler" / "scheduler_config.json").write_text("{}", encoding = "utf-8")
+    (root / "scheduler" / "scheduler_config.json").write_text("{}")
 
 
 @pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])

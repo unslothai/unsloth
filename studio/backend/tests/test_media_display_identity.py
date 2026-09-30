@@ -10,15 +10,10 @@ from models.inference import (
 
 
 def test_media_requests_and_statuses_keep_load_and_display_identities_separate():
-    snapshot = "/cache/models--Org--Opaque/snapshots/abc"
-    logical = "Org/Opaque"
-
+    snapshot, logical = "/cache/models--Org--Opaque/snapshots/abc", "Org/Opaque"
     for request_type in (DiffusionLoadRequest, VideoLoadRequest):
         request = request_type(model_path = snapshot, display_repo_id = logical)
-        assert request.model_path == snapshot
-        assert request.display_repo_id == logical
-
+        assert (request.model_path, request.display_repo_id) == (snapshot, logical)
     for status_type in (DiffusionStatusResponse, VideoStatusResponse):
         status = status_type(loaded = True, repo_id = snapshot, display_repo_id = logical)
-        assert status.repo_id == snapshot
-        assert status.display_repo_id == logical
+        assert (status.repo_id, status.display_repo_id) == (snapshot, logical)

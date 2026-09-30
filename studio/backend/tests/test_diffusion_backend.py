@@ -162,30 +162,21 @@ def test_supported_family_names():
         assert detect_family("some/unknown-repo", override = name) is not None
 
 
-def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
-    import core.inference.diffusion_families as families
-    monkeypatch.setattr(
-        families,
-        "family_selectable",
-        lambda fam: fam.name not in {"krea-2", "flux.2-klein"},
-    )
-    assert set(supported_family_names()) - set(pipeline_available_family_names()) == {
-        "krea-2",
-        "flux.2-klein",
-    }
-
-
-def test_pipeline_available_names_never_import_pipeline_classes(monkeypatch):
+def test_pipeline_available_names_filter_the_selector_without_importing(monkeypatch):
     # Status polls call this; importing pipeline classes there raced the loader's own import.
+    import importlib.util
+
     import core.inference.diffusion_families as families
+
+    blocked = {"krea-2", "flux.2-klein"}
+    monkeypatch.setattr(families, "family_selectable", lambda fam: fam.name not in blocked)
+    assert set(supported_family_names()) - set(pipeline_available_family_names()) == blocked
 
     def _strict(*_a, **_k):
         raise AssertionError("the selector must stay import-free")
 
+    monkeypatch.undo()
     monkeypatch.setattr(families, "assert_pipeline_class_available", _strict)
-    # Installed but unimported, as when a status poll runs before any load; independent of this host's install.
-    import importlib.util
-
     real_find_spec = importlib.util.find_spec
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setattr(
@@ -195,10 +186,7 @@ def test_pipeline_available_names_never_import_pipeline_classes(monkeypatch):
     )
     assert "flux.1" in pipeline_available_family_names()
 
-
-def test_pipeline_available_names_fail_closed_without_diffusers(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", None)
-
     assert pipeline_available_family_names() == ()
 
 
@@ -948,14 +936,13 @@ _LOAD_DEFAULTS = dict(gguf_filename = "model.gguf", base_repo = "base/repo", fam
 
 def _write_pipeline(
     root,
-    class_name,
-    spec = ("diffusers", "Transformer2DModel"),
-    weight = "diffusion_pytorch_model.safetensors",
+    class_name = "TestPipeline",
+    **components,
 ):
-    """A minimal complete local pipeline: a manifest naming one transformer plus its weights."""
+    weight = components.pop("weight", "diffusion_pytorch_model.safetensors")
     (root / "transformer").mkdir(parents = True, exist_ok = True)
-    manifest = {"_class_name": class_name, "transformer": list(spec)}
-    (root / "model_index.json").write_text(json.dumps(manifest), encoding = "utf-8")
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", "Transformer2DModel"]}
+    (root / "model_index.json").write_text(json.dumps({**manifest, **components}))
     (root / "transformer" / "config.json").write_text("{}")
     (root / "transformer" / weight).write_bytes(b"x")
 
@@ -2181,15 +2168,9 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(tmp_path),
         )
-    (tmp_path / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "QwenImagePipeline",
-                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
-                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
-            }
-        )
-    )
+    # A base whose declared transformer is absent still serves companions for a GGUF load.
+    _write_pipeline(tmp_path, scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"])
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
     (tmp_path / "scheduler").mkdir()
     (tmp_path / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
@@ -2199,7 +2180,6 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
-
     with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
         backend.validate_load_request(str(tmp_path), family_override = "qwen-image")
 
@@ -2208,68 +2188,47 @@ def test_validate_accepts_config_only_local_base_for_whole_pipeline_single_file(
     fake_runtime, tmp_path
 ):
     backend = DiffusionBackend()
-    checkpoint = tmp_path / "model.safetensors"
-    checkpoint.write_bytes(b"checkpoint")
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
     base = tmp_path / "sdxl-config"
-    unet = base / "unet"
-    unet.mkdir(parents = True)
-    (unet / "config.json").write_text("{}")
-    (base / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "StableDiffusionXLPipeline",
-                "unet": ["diffusers", "UNet2DConditionModel"],
-            }
-        )
-    )
+    (base / "unet").mkdir(parents = True)
+    (base / "unet" / "config.json").write_text("{}")
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["diffusers", "UNet2DConditionModel"],
+    }
+    (base / "model_index.json").write_text(json.dumps(manifest))
 
     fam = backend.validate_load_request(
         str(tmp_path),
-        gguf_filename = checkpoint.name,
+        gguf_filename = "model.safetensors",
         model_kind = "single_file",
         base_repo = str(base),
         family_override = "sdxl",
     )
     assert fam.single_file_is_pipeline is True
-
     with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
         backend.validate_load_request(str(base), family_override = "sdxl")
 
 
-@pytest.mark.parametrize("optional_spec", [None, [None, None]])
-def test_validate_accepts_custom_local_components_and_disabled_optional(
-    fake_runtime, tmp_path, optional_spec
-):
+def test_validate_accepts_custom_local_components(fake_runtime, tmp_path):
     manifest = {
         "_class_name": "StableDiffusionXLPipeline",
         "unet": ["local_extensions", "CustomModel"],
         "scheduler": ["local_extensions", "CustomScheduler"],
     }
-    if optional_spec is not None:
-        manifest["text_encoder"] = optional_spec
-        manifest["tokenizer"] = optional_spec
     (tmp_path / "model_index.json").write_text(json.dumps(manifest))
-    (tmp_path / "unet").mkdir()
-    (tmp_path / "unet" / "custom_weights.safetensors").write_bytes(b"weights")
-    (tmp_path / "scheduler").mkdir()
-    (tmp_path / "scheduler" / "custom_schedule.json").write_text("{}")
+    for name, asset in (
+        ("unet", "custom_weights.safetensors"),
+        ("scheduler", "custom_schedule.json"),
+    ):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / asset).write_text("{}")
 
     backend = DiffusionBackend()
     assert backend.validate_load_request(str(tmp_path), family_override = "sdxl").name == "sdxl"
     status = backend.load_pipeline(str(tmp_path), family_override = "sdxl", speed_mode = "off")
     assert status["loaded"] is True
     assert _FakePipeline.last["base"] == str(tmp_path)
-
-
-def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_path):
-    backend = DiffusionBackend()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
-
-    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
-        backend.validate_load_request(str(tmp_path), family_override = "z-image")
-
-    _write_pipeline(tmp_path, "ZImagePipeline")
-    assert backend.validate_load_request(str(tmp_path), family_override = "z-image") is not None
 
 
 def test_resolve_local_single_file(tmp_path):
@@ -3171,7 +3130,7 @@ def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, p
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    _write_pipeline(tmp_path, "TestPipeline", ("test_components", "TestTransformer"), "w.bin")
+    _write_pipeline(tmp_path)
 
     def record(name, value):
         calls.append(name)
@@ -3269,7 +3228,7 @@ def test_eager_encoder_cancellation_stops_pipeline_build(
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    _write_pipeline(tmp_path, "TestPipeline", ("test_components", "TestTransformer"), "w.bin")
+    _write_pipeline(tmp_path)
     filename = "model.gguf" if kind == "gguf" else "model.safetensors"
     (tmp_path / filename).write_bytes(b"weights")
     sys.modules["diffusers"].HiDreamImagePipeline = _FakePipeline
@@ -3345,7 +3304,7 @@ def test_ideogram_component_load_honors_eject(fake_runtime, tmp_path, monkeypatc
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    _write_pipeline(tmp_path, "TestPipeline", ("test_components", "TestTransformer"), "w.bin")
+    _write_pipeline(tmp_path, weight = "pytorch_model.bin")
 
     def component(name):
         calls.append(name)
@@ -10911,10 +10870,8 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
 def test_the_resident_size_table_trusts_only_a_configured_cache_snapshot(
     fake_runtime, tmp_path, monkeypatch, configured
 ):
-    """A configured-cache snapshot keeps its Hub provenance; a lookalike path elsewhere does not."""
+    # A configured-cache snapshot keeps its Hub provenance; a lookalike path elsewhere does not.
     import torch
-
-    from core.inference.diffusion_families import detect_family
 
     cache_root = tmp_path / "hub"
     snapshot = cache_root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)

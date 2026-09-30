@@ -9970,14 +9970,11 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     # The Images and Video backends own these; /v1/chat/completions cannot serve them.
 
     pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
-    (pipeline / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "DiffusionPipeline",
-                "transformer": ["diffusers", "Transformer2DModel"],
-            }
-        )
-    )
+    manifest = {
+        "_class_name": "DiffusionPipeline",
+        "transformer": ["diffusers", "Transformer2DModel"],
+    }
+    (pipeline / "model_index.json").write_text(json.dumps(manifest))
     (pipeline / "transformer").mkdir()
     (pipeline / "transformer" / "config.json").write_text("{}")
     (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
