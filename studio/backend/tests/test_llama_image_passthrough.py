@@ -133,6 +133,17 @@ def test_dark_strokes_on_a_transparent_background_stay_visible(fmt, mode, kw):
     assert max(stb_view.getpixel((32, 24))) < 64
 
 
+@pytest.mark.parametrize("mode, key", [("RGB", (0, 0, 0)), ("L", 0)], ids = ["rgb", "grey"])
+def test_colour_keyed_png_background_is_composited(mode, key):
+    img = Image.new(mode, (64, 48), key)
+    img.paste((16,) * len(img.getbands()), (8, 20, 56, 28))
+    head, out = _split(_llama_image_data_url(_encode(img, "PNG", transparency = key)))
+    assert head == "data:image/png;base64"
+    stb_view = Image.open(BytesIO(out)).convert("RGBA").convert("RGB")
+    assert stb_view.getpixel((2, 2)) == (255, 255, 255)
+    assert max(stb_view.getpixel((32, 24))) < 64
+
+
 def test_jpeg_frames_stb_rejects_are_not_passed_through():
     raw = _encode(_photo(), "JPEG")
     assert _stb_reads_jpeg(raw)

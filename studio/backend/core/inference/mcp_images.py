@@ -336,9 +336,8 @@ def flattened_rgb(image):
         if image.mode != "I;16":
             image = image.convert("I")
         image = image.point(lambda v: v * (1.0 / 257), mode = "L")
-    has_alpha = image.mode in ("RGBA", "LA", "PA") or (
-        image.mode == "P" and "transparency" in image.info
-    )
+    # "transparency" also keys a colour out of L / RGB PNGs (tRNS), not just P.
+    has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
     if not has_alpha:
         return image.convert("RGB")
     rgba = image.convert("RGBA")
