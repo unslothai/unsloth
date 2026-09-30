@@ -1555,6 +1555,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _loraParamEditGenerations.loraVariant += 1;
           setUserEdit({ loraVariant });
         },
+        setGpuSelection: (parallelismMode, selectedGpuIds) =>
+          setUserEdit({ parallelismMode, selectedGpuIds }),
         setBatchSize: (batchSize) => setUserEdit({ batchSize }),
         setGradientAccumulation: (gradientAccumulation) =>
           setUserEdit({ gradientAccumulation }),

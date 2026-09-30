@@ -326,6 +326,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "subject": values.get("subject"),
         "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
+        "parallelism_mode": values.get("parallelism_mode", "auto"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
     }
