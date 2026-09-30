@@ -813,8 +813,9 @@ def test_a_render_starts_only_after_the_background_pins_finish(fake_runtime, mon
         def start(self):
             order.append("start")
 
-        def join(self):
+        def join(self, timeout = None):
             order.append("pinned")
+            return True
 
         def stop(self, timeout = None):
             pass
@@ -832,3 +833,55 @@ def test_a_render_starts_only_after_the_background_pins_finish(fake_runtime, mon
     monkeypatch.setattr(type(pipe), "__call__", _call)
     backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
     assert order[:3] == ["start", "pinned", "render"], order
+
+
+def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
+    fake_runtime, monkeypatch, tmp_path
+):
+    """The wait held _generate_lock for the whole pin (minutes on LTX-2.3), so Cancel and unload waited too."""
+    import re
+    import threading
+    import time
+
+    import core.inference.diffusion_memory as mem
+    from core.inference.video import VIDEO_CANCELLED_MSG
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    pipe = backend._state.pipe
+    rendered: list = []
+
+    class _SlowPinner:
+        module = None
+
+        def start(self):
+            pass
+
+        def join(self, timeout = None):
+            # A pin that takes 3 s; an unbounded join waits it out, like the real worker.
+            time.sleep(3.0 if timeout is None else timeout)
+            return timeout is None
+
+        def stop(self, timeout = None):
+            pass
+
+    setattr(pipe, mem._PENDING_PINS_ATTR, [_SlowPinner()])
+    monkeypatch.setattr(
+        pipe, "scheduler", types.SimpleNamespace(step = lambda *a, **k: None), raising = False
+    )
+    original_call = type(pipe).__call__
+
+    def _call(self, *args, **kwargs):
+        rendered.append(1)
+        return original_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(pipe), "__call__", _call)
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    began = time.perf_counter()
+    with pytest.raises(RuntimeError, match = re.escape(VIDEO_CANCELLED_MSG)):
+        backend.generate(
+            prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8, cancel_event = cancel
+        )
+    assert time.perf_counter() - began < 10
+    assert not rendered

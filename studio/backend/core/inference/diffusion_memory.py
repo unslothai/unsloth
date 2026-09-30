@@ -1743,10 +1743,14 @@ class _GroupPinner:
             event.wait()
             self.waited_s += time.perf_counter() - began
 
-    def join(self) -> None:
+    def join(self, timeout: Optional[float] = None) -> bool:
+        """Wait for the worker; True once it has exited (or when called from the worker itself)."""
         import threading
-        if threading.current_thread() is not self._thread:
-            self._thread.join()
+
+        if threading.current_thread() is self._thread:
+            return True
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
 
     def stop(self, timeout: Optional[float] = None) -> None:
         self._stop.set()
@@ -1849,7 +1853,7 @@ def start_background_pins(pipe: Any) -> int:
     return len(pinners)
 
 
-def finish_background_pins(pipe: Any) -> float:
+def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
     """Block until every deferred pinner on ``pipe`` is done; returns the seconds waited.
 
     A render that overlaps the pinner ran its warm renders 2.5 to 3 s slower on an A100 (LTX-2.3, n=15 per arm);
@@ -1860,7 +1864,10 @@ def finish_background_pins(pipe: Any) -> float:
     start = time.perf_counter()
     for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
         pinner.start()
-        pinner.join()
+        # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
+        while not pinner.join(0.25):
+            if cancel is not None and cancel.is_set():
+                return time.perf_counter() - start
     return time.perf_counter() - start
 
 

@@ -7685,7 +7685,9 @@ class VideoBackend:
                 # resolves to its own default card while the pipeline sits on the selected one.
                 self._state_device_target(state)
                 # A render racing the post-load pinner ran every later render slower; the wait is usually over.
-                waited = finish_background_pins(getattr(state, "pipe", None))
+                waited = finish_background_pins(getattr(state, "pipe", None), cancel)
+                if cancel.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 if waited >= 1.0:
                     logger.info(
                         "video.generate: waited %.1f s for the host weights to finish pinning",
