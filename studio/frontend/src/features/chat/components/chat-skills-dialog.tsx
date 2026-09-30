@@ -759,7 +759,7 @@ function SkillRow({
       >
         {skill.valid ? skill.description : skill.error}
       </p>
-      <span className="flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
+      <span className="pointer-events-none flex h-[1lh] translate-y-[0.1em] items-center self-start justify-self-center text-ui-13">
         <HugeiconsIcon
           icon={ChevronRightStandardIcon}
           strokeWidth={2}
