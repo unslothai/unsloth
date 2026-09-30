@@ -54,7 +54,6 @@ def _plan(
 
 
 def _write_header(path, tensors):
-    """A safetensors header naming ``tensors`` (name -> MiB); only the header is ever read."""
     header, offset = {"__metadata__": {"format": "pt"}}, 0
     for name, mib in tensors.items():
         header[name] = {
@@ -77,7 +76,6 @@ def test_fast_still_offloads_when_resident_would_not_fit():
     plan = _plan(60 * 1024, LTX23_DIT_MIB)
     assert plan.offload_policy == OFFLOAD_GROUP
     assert "do not fit resident" in plan.reasons[0]
-    # A card too small for even the companions falls through to whole-module offload.
     assert _plan(20 * 1024, LTX23_DIT_MIB).offload_policy == OFFLOAD_MODEL
 
 
@@ -105,7 +103,6 @@ def test_fast_reserve_never_drops_below_two_gib():
 
 
 def test_auto_keeps_its_own_headroom():
-    """Only an explicit fast is widened: auto still streams the same load at the same free memory."""
     assert _plan(TENANT_FREE_MIB, LTX23_DIT_MIB, MEMORY_MODE_AUTO).offload_policy != OFFLOAD_NONE
 
 

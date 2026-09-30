@@ -334,8 +334,7 @@ def _ltx23_prequant_pick(
 
 
 def _memory_mode_resolved(memory_mode: Any, plan: Any, offload_policy: str) -> tuple:
-    """The ``memory_mode`` resolved entry. A ``fast`` that had to offload is a fallback whose value is the engaged
-    offload policy, so the badge reads "FAST -> GROUP" rather than "FAST -> FAST"."""
+    """A ``fast`` that had to offload is a fallback valued at the engaged policy ("FAST -> GROUP", not "FAST -> FAST")."""
     if plan.requested_mode == MEMORY_MODE_FAST and offload_policy != OFFLOAD_NONE:
         return (memory_mode, offload_policy, "; ".join(plan.reasons), RESOLVED_FELL_BACK)
     return (
