@@ -6932,10 +6932,15 @@ class ExternalProviderClient:
             timeout = self._timeout,
         )
         response.raise_for_status()
+        data = response.json()
+        models = data.get("data") if isinstance(data, dict) else None
         return [
             model["id"]
-            for model in response.json().get("data") or []
-            if "decisions" in ((model.get("architecture") or {}).get("output_modalities") or [])
+            for model in (models if isinstance(models, list) else [])
+            if isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and isinstance(model.get("architecture"), dict)
+            and "decisions" in (model["architecture"].get("output_modalities") or [])
         ]
 
     async def list_models(self) -> list[dict[str, Any]]:

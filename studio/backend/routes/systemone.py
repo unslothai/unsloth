@@ -290,7 +290,10 @@ def decision_model_objects() -> list[dict[str, Any]]:
             "owned_by": "unsloth",
             "architecture": {"input_modalities": ["text"], "output_modalities": ["decisions"]},
         }
-        for name in ("default", *catalog.CHECKPOINTS)
+        for name in (
+            "default",
+            *(() if systemone_settings.runtime_unavailable_reason() else catalog.CHECKPOINTS),
+        )
     ]
 
 

@@ -377,6 +377,8 @@ def test_a_system_one_connection_lists_only_decision_models(upstream):
         (httpx.Response(500, text = "boom"), "answered HTTP 500"),
         (httpx.Response(404, text = "not found"), None),
         (httpx.Response(200, text = "<html>welcome</html>"), None),
+        (httpx.Response(200, json = [{"id": "gpt2"}]), None),
+        (httpx.Response(200, json = {"data": ["jev", {"id": "x", "architecture": None}]}), None),
     ],
 )
 def test_a_system_one_model_list_explains_what_went_wrong(upstream, reply, detail):
@@ -409,6 +411,8 @@ def test_studio_lists_its_decision_models_only_when_asked(monkeypatch, studio):
         )
         return [model["id"] for model in listed["data"]]
 
+    assert ids("decisions") == ["default"]
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     laya = ["default", *catalog.CHECKPOINTS]
     assert ids() == ["unsloth/Qwen3-0.6B"]
     assert ids("text") == ids("image") == ["unsloth/Qwen3-0.6B"]
