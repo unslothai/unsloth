@@ -771,10 +771,19 @@ def _audio_cpp_download_plan(model_name: str, hf_token: Optional[str]) -> dict[s
     from core.inference.audio_cpp_models import AUDIO_CPP_REPO, lookup
 
     model = lookup(model_name)
+    cached_paths = audio_cpp_files.cached_files(model)
+    if cached_paths is not None:
+        # Fully downloaded: answer from disk, so an offline host (or a Hub outage) can still load it.
+        required_bytes = sum(p.stat().st_size for p in cached_paths)
+        return {
+            "entries": [],
+            "total_bytes": 0,
+            "required_bytes": required_bytes,
+            "checkpoint_bytes": required_bytes,
+        }
     files = audio_cpp_files.expand_repo_files(model, hf_token)
     required_bytes = sum(size for _path, size in files)
-    cached = audio_cpp_files.cached_files(model) is not None
-    missing = [] if cached else files
+    missing = files
     missing_bytes = sum(size for _path, size in missing)
     entries = (
         [

@@ -147,7 +147,10 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
     prune_link_farm(root)
     # One short directory per model: the package's files keep their layout below the model's
     # folder (PocketTTS reads embeddings/ beside its GGUF).
-    farm = _link_farm_root(root) / model.key
+    farm_root = _link_farm_root(root)
+    if _is_link(farm_root):
+        _unlink_link(farm_root)
+    farm = farm_root / model.key
     served = farm / _package_relative(model, model.gguf_file)
     if windows and len(str(served)) > _WINDOWS_MAX_MODEL_PATH:
         from core.inference.audio_cpp_server import AudioCppUnavailableError
@@ -160,6 +163,12 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
         rel = _package_relative(model, str(src.relative_to(snapshot)).replace("\\", "/"))
         dst = farm / rel
         blob = Path(os.path.realpath(src))
+        # A link planted anywhere between the farm and the file would take the write elsewhere.
+        for parent in [dst.parent, *dst.parent.parents]:
+            if parent == farm_root.parent:
+                break
+            if _is_link(parent):
+                _unlink_link(parent)
         if _already_materialized(dst, blob):
             continue
         dst.parent.mkdir(parents = True, exist_ok = True)
@@ -215,14 +224,19 @@ def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
     try:
         root = hub_cache if hub_cache is not None else _hub_cache()
         farm = _link_farm_root(root)
-        if not farm.is_dir():
+        if _is_link(farm) or not farm.is_dir():
             return 0
-        for model_dir in [p for p in farm.iterdir() if p.is_dir()]:
+        for model_dir in list(farm.iterdir()):
+            if _is_link(model_dir):
+                # Never materialize's work: drop the link itself, never what it points at.
+                _unlink_link(model_dir)
+                continue
+            if not model_dir.is_dir():
+                continue
             model = lookup(model_dir.name)
             keep = model is not None and _find(model, root) is not None
-            for path in model_dir.rglob("*"):
-                if not path.is_file():
-                    continue
+            files, dirs = _walk_no_links(model_dir)
+            for path in files:
                 try:
                     # Staging files of a live materialize are young; only a crashed one is old.
                     stale_tmp = (
@@ -233,16 +247,61 @@ def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
                         removed += 1
                 except OSError:
                     continue
-        for directory in sorted(
-            (p for p in farm.rglob("*") if p.is_dir()), key = lambda p: -len(p.parts)
-        ):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
+            if keep:
+                # A kept model's empty folders may be ones a concurrent materialize has just made.
+                continue
+            for directory in sorted([*dirs, model_dir], key = lambda p: -len(p.parts)):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
     except Exception as exc:  # noqa: BLE001 - housekeeping never fails a load or delete
         logger.debug("audio.cpp: link farm prune failed: %s", exc)
     return removed
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink or (Windows) junction: something the farm must never traverse or write through."""
+    try:
+        if path.is_symlink():
+            return True
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0)
+        return bool(attrs & getattr(os, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)) if attrs else False
+    except OSError:
+        return False
+
+
+def _unlink_link(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        try:
+            os.rmdir(
+                path
+            )  # a Windows junction is removed as a directory, without touching its target
+        except OSError:
+            pass
+
+
+def _walk_no_links(top: Path) -> tuple[list[Path], list[Path]]:
+    """Files and directories under ``top``, never descending into (or returning) a link."""
+    files: list[Path] = []
+    dirs: list[Path] = []
+    pending = [top]
+    while pending:
+        try:
+            entries = list(pending.pop().iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if _is_link(entry):
+                _unlink_link(entry)
+            elif entry.is_dir():
+                dirs.append(entry)
+                pending.append(entry)
+            elif entry.is_file():
+                files.append(entry)
+    return files, dirs
 
 
 def expand_repo_files(

@@ -8,6 +8,7 @@ import json
 import sys
 import textwrap
 import threading
+import time
 import wave
 
 import pytest
@@ -104,11 +105,25 @@ def test_ready_only_when_our_model_id_is_listed(fake_binary, tmp_path, monkeypat
         srv.AudioCppServer.start(model, str(tmp_path / "wrong-id.gguf"))
 
 
+def test_readiness_ignores_an_ambient_http_proxy(fake_binary, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "_SERVER_START_TIMEOUT_SECONDS", 6.0)
+    for name in ("HTTP_PROXY", "http_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising = False)
+    server = srv.AudioCppServer.start(lookup("audiocpp-kokoro-82m"), str(tmp_path / "m.gguf"))
+    try:
+        assert server._probe()
+    finally:
+        server.stop()
+
+
 def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
     server = srv.AudioCppServer.start(lookup("audiocpp-kokoro-82m"), str(tmp_path / "m.gguf"))
     try:
         cancel = threading.Event()
         threading.Timer(0.3, cancel.set).start()
+        started = time.monotonic()
         with pytest.raises(srv.AudioCppRequestCancelledError):
             server.post_json(
                 "/v1/audio/speech",
@@ -116,6 +131,8 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
                 timeout = 20,
                 cancel_event = cancel,
             )
+        # Returns on the cancel, not on the server's reply or the timeout (Windows never woke the recv).
+        assert time.monotonic() - started < 5
         # The server is untouched by the client-side cancel and still serves.
         _ctype, data = server.post_json(
             "/v1/audio/speech", {"model": server.model_id, "input": "hi"}

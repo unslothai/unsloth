@@ -909,3 +909,49 @@ def test_tar_extraction_without_filters_still_refuses_traversal(monkeypatch, tmp
     with pytest.raises(RuntimeError, match = "unsafe path"):
         M._extract(archive, tmp_path / "out")
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_an_upstream_fallback_install_asks_for_the_fork_again(monkeypatch, tmp_path, pins):
+    # The fork lookup failed on the run that installed upstream; the next run must not call that a match.
+    up_zip = f"audio-{M.UPSTREAM_FALLBACK_TAG}-bin-windows-x64-cpu-portable.zip"
+    release = _release(tmp_path, up_zip, tag = M.UPSTREAM_FALLBACK_TAG)
+    _install(monkeypatch, tmp_path, release, pins, repo = M.UPSTREAM_FALLBACK_REPO)
+    root = tmp_path / "audio.cpp"
+    record = M.read_install_record(root)
+    assert record["published_repo"] == M.UPSTREAM_FALLBACK_REPO
+    assert M._pinned_install_matches(root, record, "cpu", None) is None
+
+
+def test_the_accelerator_flag_takes_what_setup_forwards(monkeypatch, tmp_path, pins):
+    release = _release(tmp_path, CPU_ZIP)
+    asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
+    _stub_install_io(monkeypatch)
+    monkeypatch.setattr(M, "resolve", resolve)
+    _pin_release(pins, release)
+    root = str(tmp_path / "audio.cpp")
+    assert M.main(["--install-dir", root, "--accelerator", " CUDA "]) == M.EXIT_OK
+    assert asked == ["cuda"]
+
+
+def test_a_killed_install_leaves_no_staging_dir_behind(monkeypatch, tmp_path, pins):
+    stranded = tmp_path / ".audio.cpp-staging-killed"
+    stranded.mkdir()
+    (stranded / "partial.zip").write_bytes(b"x" * 16)
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release, pins)
+    assert not stranded.exists()
+
+
+def test_the_staged_server_never_sees_secrets(monkeypatch, tmp_path):
+    for name in ("GH_TOKEN", "HF_TOKEN", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(name, "secret")
+    env = M._loader_env(tmp_path / "bin" / M.SERVER_NAME)
+    assert not {"GH_TOKEN", "HF_TOKEN", "AWS_SECRET_ACCESS_KEY"} & set(env)
+    assert (
+        str(tmp_path / "bin")
+        in env[
+            "PATH"
+            if M.sys.platform == "win32"
+            else ("DYLD_LIBRARY_PATH" if M.sys.platform == "darwin" else "LD_LIBRARY_PATH")
+        ]
+    )

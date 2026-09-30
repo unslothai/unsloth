@@ -577,3 +577,107 @@ def test_load_rejects_speech_to_text_ids():
     b = audio_cpp_backend.AudioCppBackend()
     with pytest.raises(RuntimeError, match = "not a curated audio.cpp speech or music model"):
         b.load_model(SimpleNamespace(identifier = "audiocpp-qwen3-asr-0.6b"))
+
+
+def _dir_link(link, target):
+    """A directory symlink, or a Windows junction when this account cannot create symlinks."""
+    try:
+        os.symlink(target, link, target_is_directory = True)
+    except OSError:
+        if sys.platform != "win32":
+            pytest.skip("this filesystem or account cannot create symlinks")
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+
+
+def test_prune_never_follows_a_link_planted_in_the_farm(tmp_path):
+    root, _snap = _snapshot(tmp_path)
+    farm = audio_cpp_files._link_farm_root(root)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "notes.txt").write_text("keep", encoding = "utf-8")
+    farm.mkdir(parents = True)
+    # A top-level link named like no model, and one inside a (not downloaded) model folder.
+    _dir_link(farm / "not-a-model", victim)
+    (farm / "audiocpp-canary-180m-flash").mkdir()
+    _dir_link(farm / "audiocpp-canary-180m-flash" / "sub", victim)
+    audio_cpp_files.prune_link_farm(root)
+    assert (victim / "notes.txt").read_text(encoding = "utf-8") == "keep"
+    assert not (farm / "not-a-model").exists()
+
+
+def test_materialize_does_not_write_through_a_planted_model_folder_link(tmp_path, monkeypatch):
+    root, snap = _snapshot(tmp_path)
+    m = lookup("audiocpp-canary-180m-flash")
+    (snap / m.gguf_file).parent.mkdir(parents = True)
+    (snap / m.gguf_file).write_bytes(b"GGUF")
+    farm = audio_cpp_files._link_farm_root(root)
+    farm.mkdir(parents = True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _dir_link(farm / m.key, elsewhere)
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")  # always goes through the farm
+    served = audio_cpp_files.materialize(m, hub_cache = root)
+    assert list(elsewhere.iterdir()) == []
+    assert os.path.samefile(served, snap / m.gguf_file)
+
+
+def test_prune_keeps_the_empty_folders_of_a_downloaded_model(tmp_path):
+    # A concurrent materialize makes the folder before it links the file into it.
+    root, snap = _snapshot(tmp_path)
+    m = lookup("audiocpp-canary-180m-flash")
+    (snap / m.gguf_file).parent.mkdir(parents = True)
+    (snap / m.gguf_file).write_bytes(b"GGUF")
+    in_progress = audio_cpp_files._link_farm_root(root) / m.key
+    in_progress.mkdir(parents = True)
+    audio_cpp_files.prune_link_farm(root)
+    assert in_progress.is_dir()
+
+
+def test_download_plan_of_a_downloaded_model_needs_no_hub(tmp_path, monkeypatch):
+    from core.inference import native_audio
+
+    root, snap = _snapshot(tmp_path)
+    m = lookup("audiocpp-canary-180m-flash")
+    (snap / m.gguf_file).parent.mkdir(parents = True)
+    (snap / m.gguf_file).write_bytes(b"GGUF")
+    monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
+
+    def offline(*_args, **_kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(audio_cpp_files, "expand_repo_files", offline)
+    plan = native_audio._audio_cpp_download_plan(m.id, None)
+    assert plan["entries"] == [] and plan["total_bytes"] == 0 and plan["required_bytes"] == 4
+
+
+def test_clearing_the_hub_cache_prunes_the_link_farm(tmp_path, monkeypatch):
+    from utils import cache_inventory
+
+    root, snap = _snapshot(tmp_path)
+    m = lookup("audiocpp-canary-180m-flash")
+    (snap / m.gguf_file).parent.mkdir(parents = True)
+    (snap / m.gguf_file).write_bytes(b"GGUF")
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")
+    served = audio_cpp_files.materialize(m, hub_cache = root)
+    pruned = []
+    real = audio_cpp_files.prune_link_farm
+    monkeypatch.setattr(
+        audio_cpp_files, "prune_link_farm", lambda hub = None: pruned.append(hub) or real(hub)
+    )
+    monkeypatch.setattr(cache_inventory, "_training_refusal", lambda key: None)
+    monkeypatch.setattr(cache_inventory, "_inference_refusal", lambda key: None)
+    monkeypatch.setattr(cache_inventory, "_link_mode_refusal", lambda key: None)
+    monkeypatch.setattr(cache_inventory, "_reserve_downloads", lambda key: ([], None))
+    monkeypatch.setattr(cache_inventory, "_release_downloads", lambda reserved: None)
+    monkeypatch.setattr(cache_inventory, "_resolve_roots", lambda definition: [root])
+
+    def empty(hub, **_kwargs):
+        import shutil
+        shutil.rmtree(hub / ("models--" + AUDIO_CPP_REPO.replace("/", "--")))
+        return cache_inventory.PurgeOutcome()
+
+    monkeypatch.setattr(cache_inventory, "empty_cache_root", empty)
+    cache_inventory.purge_cache("hf_hub")
+    assert pruned == [root]
+    assert not os.path.exists(served)

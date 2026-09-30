@@ -26,7 +26,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -280,21 +279,16 @@ def _reserve_free_port() -> tuple[socket.socket, int]:
     return s, s.getsockname()[1]
 
 
-def _close_on_cancel(
-    connection: http.client.HTTPConnection, cancel: threading.Event, done: threading.Event
-) -> None:
-    while not done.wait(0.1):
-        if cancel.is_set():
-            try:
-                if connection.sock is not None:
-                    connection.sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                connection.close()
-            except Exception:  # noqa: BLE001 - best effort
-                pass
-            return
+def _abort_connection(connection: http.client.HTTPConnection) -> None:
+    try:
+        if connection.sock is not None:
+            connection.sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        connection.close()
+    except Exception:  # noqa: BLE001 - best effort
+        pass
 
 
 class AudioCppServer:
@@ -440,12 +434,18 @@ class AudioCppServer:
         raise AudioCppUnavailableError("The audio.cpp runtime did not start in time.")
 
     def _get_json(self, path: str) -> Optional[dict]:
+        # http.client, not urllib: urlopen routes loopback through an ambient HTTP_PROXY.
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.port, timeout = _PROBE_TIMEOUT_SECONDS
+        )
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method = "GET")
-            with urllib.request.urlopen(req, timeout = _PROBE_TIMEOUT_SECONDS) as response:
+            connection.request("GET", path)
+            with connection.getresponse() as response:
                 return json.loads(response.read(65536).decode("utf-8"))
         except Exception:
             return None
+        finally:
+            connection.close()
 
     def _probe(self) -> bool:
         """Ready only when our child is alive, reports ok, and lists this launch's model id."""
@@ -473,15 +473,39 @@ class AudioCppServer:
             raise AudioCppRequestCancelledError("Request cancelled.")
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout = timeout)
         done = threading.Event()
-        if cancel_event is not None:
-            threading.Thread(
-                target = _close_on_cancel, args = (connection, cancel_event, done), daemon = True
-            ).start()
+        outcome: dict = {}
+
+        def round_trip() -> None:
+            try:
+                connection.request(method, path, body = body, headers = {"Content-Type": content_type})
+                with connection.getresponse() as response:
+                    payload = response.read()
+                    outcome["result"] = (
+                        response.status,
+                        response.getheader("Content-Type") or "",
+                        payload,
+                    )
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                outcome["error"] = exc
+            finally:
+                done.set()
+
         try:
-            connection.request(method, path, body = body, headers = {"Content-Type": content_type})
-            with connection.getresponse() as response:
-                payload = response.read()
-                return response.status, response.getheader("Content-Type") or "", payload
+            if cancel_event is None:
+                round_trip()
+            else:
+                # Windows does not wake a blocked recv when another thread shuts the socket down, so
+                # the round trip runs on its own thread and a cancel returns without waiting for it.
+                threading.Thread(target = round_trip, daemon = True).start()
+                while not done.wait(0.1):
+                    if cancel_event.is_set():
+                        _abort_connection(connection)
+                        raise AudioCppRequestCancelledError("Request cancelled.")
+            if "error" in outcome:
+                raise outcome["error"]
+            return outcome["result"]
+        except AudioCppRequestCancelledError:
+            raise
         except Exception as exc:
             if cancel_event is not None and cancel_event.is_set():
                 raise AudioCppRequestCancelledError("Request cancelled.") from exc

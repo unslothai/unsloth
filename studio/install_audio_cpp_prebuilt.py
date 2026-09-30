@@ -589,6 +589,10 @@ def _sweep_retired_trees(target: Path) -> None:
     for old in target.parent.glob(target.name + ".old-*"):
         if old.is_dir() and (old / OWNERSHIP_MARKER).is_file():
             shutil.rmtree(old, ignore_errors = True)
+    # Staging dirs of a killed run; the install lock is held, so none belongs to a live one.
+    for staging in target.parent.glob(".audio.cpp-staging-*"):
+        if staging.is_dir() and not staging.is_symlink():
+            shutil.rmtree(staging, ignore_errors = True)
 
 
 def _server_in_use(server: Optional[Path]) -> bool:
@@ -645,7 +649,8 @@ def _pinned_install_matches(
     if not record or any(tag is None for _, tag in ladder):
         return None
     repo, tag = record.get("published_repo"), record.get("release_tag")
-    if (repo, tag) not in ladder:
+    # Only the first rung: a fallback install (the fork lookup failed that run) must ask again.
+    if (repo, tag) != ladder[0]:
         return None
     pin = pinned_sha256(repo, tag, str(record.get("asset") or ""))
     if pin is None and not _user_picked_release():
@@ -666,10 +671,26 @@ _WINDOWS_LOADER_FAILURES = {
 }
 
 
+def _scrubbed_environ() -> dict:
+    """``os.environ`` without secrets, through the backend's ``child_env.scrub_env`` so the staged
+    server sees what Studio will later launch it with."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "backend" / "utils" / "prebuilt" / "child_env.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_unsloth_audio_cpp_child_env", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.scrub_env(os.environ)
+    except Exception:  # noqa: BLE001 - a partial checkout: drop the obvious secret names
+        markers = ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "API_KEY", "PROXY")
+        return {k: v for k, v in os.environ.items() if not any(m in k.upper() for m in markers)}
+
+
 def _loader_env(server: Path, extra_dirs: Sequence[Path] = ()) -> dict:
     """The environment with the server's own directory first on the loader path, as the backend's
     ``child_env`` launches it."""
-    env = os.environ.copy()
+    env = _scrubbed_environ()
     if sys.platform == "win32":
         var = "PATH"
     elif sys.platform == "darwin":
@@ -925,6 +946,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--accelerator",
         default = _accelerator_from_env(),
+        # setup.sh / setup.ps1 forward UNSLOTH_AUDIO_CPP_ACCELERATOR verbatim ("CUDA", " cpu ").
+        type = lambda value: value.strip().lower(),
         choices = list(ACCELERATORS),
         help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else auto (detect; CPU when no bundle covers the GPU)",
     )
