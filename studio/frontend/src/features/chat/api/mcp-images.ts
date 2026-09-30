@@ -44,6 +44,30 @@ export function splitMcpImages(result: string): {
   return { text: result.slice(0, idx), images };
 }
 
+// Fail-closed stand-in for an envelope that does not parse.
+// Mirrors MCP_IMAGE_PARSE_ERROR_TEXT in mcp_images.py.
+export const MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]";
+
+/** Tool text for the model: valid envelope payloads come off as images, a result
+ *  whose sentinel does not parse fails closed when provenance is missing/empty or
+ *  an mcp__ tool (the backend's rule). */
+export function toolTextForModel(
+  content: string,
+  toolName: string | undefined,
+): string {
+  const { text, images } = splitMcpImages(content);
+  if (
+    images.length === 0 &&
+    content.includes(MCP_IMAGES_MARKER) &&
+    (toolName === undefined ||
+      toolName === "" ||
+      toolName.startsWith(MCP_TOOL_PREFIX))
+  ) {
+    return MCP_IMAGE_PARSE_ERROR_TEXT;
+  }
+  return text;
+}
+
 // Re-attached on replay: the backend promotes it into an image turn for a vision
 // model, and strips it for every other one.
 export function mcpImagesEnvelope(images: McpImage[]): string {
@@ -159,7 +183,11 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (!message || message.role !== "tool") continue;
     if (typeof message.content !== "string") continue;
     const { text, images } = splitMcpImages(message.content);
-    if (images.length === 0) continue;
+    if (images.length === 0) {
+      const safe = toolTextForModel(message.content, message.name);
+      if (safe !== message.content) out[i] = { ...message, content: safe };
+      continue;
+    }
     // Match backend provenance: strip named non-MCP envelopes so their payloads
     // cannot bypass the replay bounds and be uploaded again.
     if (
@@ -215,6 +243,10 @@ export function stripMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (!message || message.role !== "tool") return message;
     if (typeof message.content !== "string") return message;
     const { text, images } = splitMcpImages(message.content);
-    return images.length === 0 ? message : { ...message, content: text };
+    if (images.length === 0) {
+      const safe = toolTextForModel(message.content, message.name);
+      return safe === message.content ? message : { ...message, content: safe };
+    }
+    return { ...message, content: text };
   });
 }
