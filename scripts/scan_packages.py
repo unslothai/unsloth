@@ -1737,7 +1737,7 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
-# `--only-binary :all:` only filters index candidates. pip still prepares a VCS, URL or local-path requirement itself, running its build backend for metadata before scan_archive() sees a byte, so only name/version specs resolved from the index may reach pip.
+# `--only-binary :all:` only filters index candidates: pip still builds a VCS, URL or local-path requirement for metadata before anything is scanned.
 _RE_INDEX_SPEC = re.compile(
     r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?\s*(\[[A-Za-z0-9._,\s-]*\])?"
     r"[\s()<>=!~*+,.A-Za-z0-9_-]*$"
