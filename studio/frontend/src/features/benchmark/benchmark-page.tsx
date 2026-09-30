@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ModelSelector } from "@/features/model-picker/components/model-selector";
-import type {
-  LoraModelOption,
-  ModelOption,
-  ModelSelectorChangeMeta,
-} from "@/features/model-picker/components/model-selector/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,13 +11,8 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-import {
-  type LocalModelInfo,
-  listLocalModels,
-} from "@/features/training";
 import { useHfTokenStore } from "@/features/hub";
 import {
   DOWNLOAD_KIND,
@@ -38,8 +27,9 @@ import { CountInput, Field } from "@/features/benchmarks/components/setup-panel"
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedValue } from "@/hooks";
-import type { BenchmarkTaskConfig, BenchmarkTaskInfo, ModelCheckpoints } from "./api/benchmark-api";
-import { fetchBenchmarkTaskConfig, fetchBenchmarkTasks, fetchCheckpoints } from "./api/benchmark-api";
+import type { BenchmarkTaskConfig, BenchmarkTaskInfo } from "./api/benchmark-api";
+import { fetchBenchmarkTaskConfig, fetchBenchmarkTasks } from "./api/benchmark-api";
+import type { EvalsModel } from "./use-evals-model";
 import { BenchmarkRunPanel } from "./components/benchmark-run-panel";
 import { BenchmarkHistoryPanel } from "./components/benchmark-history-panel";
 import { EvalScoreboard } from "./components/eval-scoreboard";
@@ -47,52 +37,30 @@ import {
   isBenchmarkPanelActive,
   useBenchmarkRuntimeStore,
 } from "./stores/benchmark-runtime-store";
-import { useChatRuntimeStore, useChatModelRuntime } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 
-/** The Evals tab of the Benchmarks page: lm-eval tasks on a picked model. */
-export function BenchmarkPage() {
+/** The Evals tab of the Benchmarks page: lm-eval tasks on a picked model. The model
+ * itself is picked in the header pill next to the tabs (EvalsModelPicker), so the
+ * selection state arrives via the `evals` bundle BenchmarksPage owns. */
+export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const t = useT();
   const hfToken = useHfTokenStore((s) => s.token);
 
-  const [trainingModels, setTrainingModels] = useState<ModelCheckpoints[]>([]);
-  const [loadingCheckpoints, setLoadingCheckpoints] = useState(true);
-  const [checkpointError, setCheckpointError] = useState<string | null>(null);
-
-  const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
-  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
-  const [localModelsError, setLocalModelsError] = useState<string | null>(null);
-
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [selectedModelSource, setSelectedModelSource] = useState<"hub" | "lora" | "exported" | "local" | "external" | null>(null);
-  const [selectedGgufVariant, setSelectedGgufVariant] = useState<string | null>(null);
-  const [selectedModelIsDownloaded, setSelectedModelIsDownloaded] = useState<boolean | null>(null);
-  const [downloadingForBenchmark, setDownloadingForBenchmark] = useState(false);
-
   const [batchSize, setBatchSize] = useState(0); // 0 = auto
-  const [logSamples, setLogSamples] = useState(true);
   const [numFewshot, setNumFewshot] = useState(0);
   const [maxTokens, setMaxTokens] = useState(32768);
-  const [outputPath, setOutputPath] = useState("");
 
-  const { selectModel, loadingModel, refresh } = useChatModelRuntime();
-  const inferenceParams = useChatRuntimeStore((s) => s.params);
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
 
+  // A pick made in the header pill closes a stale run panel: the results below it
+  // belong to the model that was picked before.
+  const pickedModelRef = useRef<string | null>(evals.selectedModel);
   useEffect(() => {
-    if (inferenceParams.checkpoint && inferenceParams.checkpoint !== selectedModel) {
-      setSelectedModel(inferenceParams.checkpoint);
-      setSelectedGgufVariant(activeGgufVariant);
-    } else if (!inferenceParams.checkpoint && selectedModel) {
-      setSelectedModel(null);
-      setSelectedGgufVariant(null);
-      setDownloadingForBenchmark(false);
+    if (pickedModelRef.current !== evals.selectedModel) {
+      pickedModelRef.current = evals.selectedModel;
+      setPanelOpen(false);
     }
-  }, [inferenceParams.checkpoint, activeGgufVariant, selectedModel]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  }, [evals.selectedModel]);
 
   const [tasks, setTasks] = useState<BenchmarkTaskInfo[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
@@ -123,59 +91,11 @@ export function BenchmarkPage() {
   const selectingTaskRef = useRef(false);
 
   const [panelOpen, setPanelOpen] = useState(false);
-  const downloadUnsubRef = useRef<(() => void) | null>(null);
 
   const runBenchmark = useBenchmarkRuntimeStore((s) => s.run);
   const resetBenchmarkRun = useBenchmarkRuntimeStore((s) => s.reset);
   const isRunning = useBenchmarkRuntimeStore((s) => s.isRunning);
   const panelActive = useBenchmarkRuntimeStore(isBenchmarkPanelActive);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingCheckpoints(true);
-    setCheckpointError(null);
-    fetchCheckpoints()
-      .then((data) => {
-        if (!cancelled) {
-          setTrainingModels(data.models);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setCheckpointError(
-            err instanceof Error ? err.message : "Failed to load checkpoints",
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingCheckpoints(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void listLocalModels(controller.signal)
-      .then((models) => {
-        if (controller.signal.aborted) return;
-        setLocalModels(models);
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        setLocalModelsError(
-          error instanceof Error
-            ? error.message
-            : t("benchmark.failedToLoadLocalModels"),
-        );
-      })
-      .finally(() => {
-        if (controller.signal.aborted) return;
-        setIsLoadingLocalModels(false);
-      });
-    return () => controller.abort();
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,27 +116,6 @@ export function BenchmarkPage() {
       cancelled = true;
     };
   }, []);
-
-  const models = useMemo<ModelOption[]>(() => {
-    const seen = new Set<string>();
-    const result = localModels
-      .filter((m) => {
-        if (seen.has(m.id)) return false;
-        seen.add(m.id);
-        return true;
-      })
-      .map((m) => ({
-        id: m.id,
-        name: m.display_name ?? m.id,
-        description:
-          m.source === "hf_cache"
-            ? t("benchmark.hfCache")
-            : m.source === "custom"
-              ? t("benchmark.customFolders")
-              : t("benchmark.localDir"),
-      }));
-    return result;
-  }, [localModels]);
 
   const debouncedTaskSearch = useDebouncedValue(taskSearch, 150);
 
@@ -273,67 +172,11 @@ export function BenchmarkPage() {
     return [...starts, ...contains].slice(0, 50);
   }, [taskIndex, debouncedTaskSearch]);
 
-  const loraModels = useMemo<LoraModelOption[]>(() => {
-    const result: LoraModelOption[] = [];
-    for (const run of trainingModels) {
-      const tsMatch = run.name.match(/_(\d{10,})$/);
-      const displayName = tsMatch
-        ? run.name.slice(0, tsMatch.index)
-        : run.name;
-      const timeStr = tsMatch
-        ? new Date(Number(tsMatch[1]) * 1000).toLocaleString(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })
-        : null;
-
-      for (const cp of run.checkpoints) {
-        const label = timeStr ? `${displayName} · ${cp.display_name} · ${timeStr}` : `${displayName} · ${cp.display_name}`;
-        result.push({
-          id: cp.path,
-          name: label,
-          description: run.base_model ?? undefined,
-          baseModel: run.base_model ?? undefined,
-          source: "training",
-        });
-      }
-    }
-    return result;
-  }, [trainingModels]);
-
-  const handleModelChange = useCallback(
-    (value: string, meta: ModelSelectorChangeMeta) => {
-      if (value !== selectedModel) {
-        downloadUnsubRef.current?.();
-        downloadUnsubRef.current = null;
-        setPanelOpen(false);
-      }
-      setSelectedModel(value);
-      setSelectedModelSource(meta.isLora ? "lora" : meta.source);
-      setSelectedGgufVariant(meta.ggufVariant ?? null);
-      setSelectedModelIsDownloaded(meta.isDownloaded ?? null);
-      setDownloadingForBenchmark(false);
-      if (value && value !== (inferenceParams.checkpoint ?? undefined)) {
-        void selectModel({
-          id: value,
-          source: meta.source,
-          isLora: meta.isLora,
-          ggufVariant: meta.ggufVariant,
-          isDownloaded: meta.isDownloaded,
-          expectedBytes: meta.expectedBytes,
-          isGguf: meta.isGguf,
-          forceReload: true,
-          throwOnError: true,
-        });
-      }
-    },
-    [selectedModel, inferenceParams.checkpoint, selectModel],
-  );
-
   const handleStartAndOpenPanel = useCallback(() => {
-    if (!selectedModel) return;
+    const model = evals.selectedModel;
+    if (!model) return;
 
-    const resolvedSource = selectedModelSource === "lora" ? "checkpoint" : "local";
+    const resolvedSource = evals.selectedModelSource === "lora" ? "checkpoint" : "local";
 
     if (!isRunning) {
       resetBenchmarkRun();
@@ -342,48 +185,43 @@ export function BenchmarkPage() {
 
     const extraParams = {
       batch_size: batchSize > 0 ? String(batchSize) : "auto",
-      log_samples: logSamples,
       num_fewshot: numFewshot > 0 ? numFewshot : null,
       max_tokens: maxTokens,
-      output_path: outputPath || null,
     };
 
     const needsDownload =
-      selectedModelSource === "hub" &&
-      selectedModelIsDownloaded === false &&
-      !downloadingForBenchmark;
+      evals.selectedModelSource === "hub" &&
+      evals.selectedModelIsDownloaded === false &&
+      !evals.downloadingForBenchmark;
     if (needsDownload) {
-      setDownloadingForBenchmark(true);
-      downloadUnsubRef.current = subscribeJobListeners(DOWNLOAD_KIND.MODEL, selectedModel, {
+      evals.setDownloadingForBenchmark(true);
+      evals.setDownloadWatch(subscribeJobListeners(DOWNLOAD_KIND.MODEL, model, {
         onComplete: () => {
-          downloadUnsubRef.current?.();
-          downloadUnsubRef.current = null;
-          setDownloadingForBenchmark(false);
-          setSelectedModelIsDownloaded(true);
+          evals.setDownloadWatch(null);
+          evals.setDownloadingForBenchmark(false);
+          evals.setSelectedModelIsDownloaded(true);
           setPanelOpen(true);
           prepareHfTokenForUse(hfToken, { allowAnonymous: true }).then((preparedToken) => {
             if (preparedToken.proceed) {
-              void runBenchmark(selectedModel, resolvedSource, selectedGgufVariant, selectedTask, extraParams);
+              void runBenchmark(model, resolvedSource, selectedTask, extraParams);
             }
           });
         },
         onError: () => {
-          downloadUnsubRef.current?.();
-          downloadUnsubRef.current = null;
-          setDownloadingForBenchmark(false);
+          evals.setDownloadWatch(null);
+          evals.setDownloadingForBenchmark(false);
           setPanelOpen(false);
         },
         onCancelled: () => {
-          downloadUnsubRef.current?.();
-          downloadUnsubRef.current = null;
-          setDownloadingForBenchmark(false);
+          evals.setDownloadWatch(null);
+          evals.setDownloadingForBenchmark(false);
           setPanelOpen(false);
         },
-      });
+      }));
       void downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
-        repoId: selectedModel,
-        variant: selectedGgufVariant,
+        repoId: model,
+        variant: evals.selectedGgufVariant,
         expectedBytes: 0,
       });
       return;
@@ -392,10 +230,10 @@ export function BenchmarkPage() {
     setPanelOpen(true);
     prepareHfTokenForUse(hfToken, { allowAnonymous: true }).then((preparedToken) => {
       if (preparedToken.proceed) {
-        void runBenchmark(selectedModel, resolvedSource, selectedGgufVariant, selectedTask, extraParams);
+        void runBenchmark(model, resolvedSource, selectedTask, extraParams);
       }
     });
-  }, [selectedModel, selectedModelSource, selectedGgufVariant, selectedModelIsDownloaded, downloadingForBenchmark, selectedTask, hfToken, runBenchmark, isRunning, resetBenchmarkRun, batchSize, logSamples, numFewshot, maxTokens, outputPath]);
+  }, [evals, selectedTask, hfToken, runBenchmark, isRunning, resetBenchmarkRun, batchSize, numFewshot, maxTokens]);
 
   const handleClosePanel = useCallback(() => {
     resetBenchmarkRun();
@@ -427,44 +265,15 @@ export function BenchmarkPage() {
             Setup
           </span>
 
-          {loadingCheckpoints && (
-            <div className="flex items-center gap-2 text-ui-12 text-muted-foreground">
-              <Spinner className="size-4" />
-              {t("benchmark.loadingCheckpoints")}
-            </div>
-          )}
-          {checkpointError && (
+          {evals.modelsError && (
             <div className="flex items-center gap-2 text-ui-12 text-destructive">
               <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
-              {checkpointError}
+              {evals.modelsError}
             </div>
           )}
 
-          {!loadingCheckpoints && !checkpointError && (
+          {!evals.modelsError && (
             <>
-              <Field label={t("benchmark.modelLabel")}>
-                <ModelSelector
-                  models={models}
-                  loraModels={loraModels}
-                  externalModels={[]}
-                  value={selectedModel ?? undefined}
-                  activeGgufVariant={activeGgufVariant}
-                  onValueChange={handleModelChange}
-                  variant="muted"
-                  className="w-full bg-accent!"
-                />
-                {isLoadingLocalModels && (
-                  <span className="text-ui-11 text-muted-foreground">
-                    {t("benchmark.scanningLocalModels")}
-                  </span>
-                )}
-                {localModelsError && (
-                  <span className="text-ui-11 text-destructive">
-                    {localModelsError}
-                  </span>
-                )}
-              </Field>
-
               <Field label={t("benchmark.taskLabel")}>
                 {loadingTasks ? (
                   <span className="flex h-9 items-center gap-2 text-ui-12 text-muted-foreground">
@@ -581,31 +390,15 @@ export function BenchmarkPage() {
                 />
               </Field>
 
-              <Field label={t("benchmark.outputPathLabel")}>
-                <Input
-                  type="text"
-                  value={outputPath}
-                  onChange={(e) => setOutputPath(e.target.value)}
-                  placeholder={t("benchmark.outputPathPlaceholder")}
-                />
-                <label className="flex items-center gap-2.5 text-ui-12p5 text-foreground">
-                  <Checkbox
-                    checked={logSamples}
-                    onCheckedChange={(checked) => setLogSamples(checked === true)}
-                  />
-                  {t("benchmark.logSamplesLabel")}
-                </label>
-              </Field>
-
               {!showPanel && (
                 <Button
                   size="lg"
                   className={RUN_BUTTON}
                   disabled={
-                    !selectedModel ||
+                    !evals.selectedModel ||
                     modelLoading ||
-                    !!loadingModel ||
-                    downloadingForBenchmark
+                    !!evals.loadingModel ||
+                    evals.downloadingForBenchmark
                   }
                   onClick={handleStartAndOpenPanel}
                 >
@@ -614,9 +407,9 @@ export function BenchmarkPage() {
                     strokeWidth={1.75}
                     className="size-4"
                   />
-                  {loadingModel
+                  {evals.loadingModel
                     ? t("benchmark.loadingModel")
-                    : downloadingForBenchmark
+                    : evals.downloadingForBenchmark
                       ? t("benchmark.downloadingModel")
                       : t("benchmark.runButton")}
                 </Button>

@@ -26,11 +26,7 @@ export const ru = {
     runButton: "Запустить бенчмарк",
     batchSizeLabel: "Размер батча",
     maxTokensLabel: "Максимум токенов",
-    logSamplesLabel: "Логировать образцы",
-    logSamplesTooltip: "Сохранять результаты по каждому образцу на диск",
     numFewshotLabel: "Примеры few-shot",
-    outputPathLabel: "Путь для сохранения",
-    outputPathPlaceholder: "По умолчанию: outputs/",
     runPanel: {
       starting: "Запуск бенчмарка...",
       running: "Выполняется бенчмарк...",

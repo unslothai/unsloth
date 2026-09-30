@@ -26,11 +26,7 @@ export const de = {
     runButton: "Benchmark starten",
     batchSizeLabel: "Batch-Größe",
     maxTokensLabel: "Max. Tokens",
-    logSamplesLabel: "Beispiele protokollieren",
-    logSamplesTooltip: "Ergebnisse pro Beispiel auf der Festplatte speichern",
     numFewshotLabel: "Few-Shot-Beispiele",
-    outputPathLabel: "Ausgabepfad",
-    outputPathPlaceholder: "Standard: outputs/",
     runPanel: {
       starting: "Benchmark wird gestartet...",
       running: "Benchmark läuft...",

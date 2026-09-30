@@ -40,15 +40,9 @@ class BenchmarkRunRequest(BaseModel):
         None,
         description = "Hugging Face token for accessing gated models",
     )
-    gguf_variant: Optional[str] = Field(
-        None,
-        description = "GGUF quantization variant selected by user (e.g. 'Q4_K_M', 'UD-Q6_K_XL')",
-    )
     task: str = Field("mmlu", description = "Benchmark task to run (e.g. 'mmlu', 'hellaswag')")
-    batch_size: str = Field("auto", description = "Batch size for lm_eval (integer or 'auto')")
-    log_samples: bool = Field(True, description = "Whether lm_eval should log individual samples")
+    batch_size: str = Field("auto", description = "Concurrency for lm_eval (integer or 'auto' = server slot count)")
     num_fewshot: Optional[int] = Field(None, description = "Number of few-shot examples (None = task default)")
-    output_path: Optional[str] = Field(None, description = "Directory path for lm_eval results output")
     max_tokens: Optional[int] = Field(None, description = "Maximum tokens to generate per sample (None = 32768)")
 
 

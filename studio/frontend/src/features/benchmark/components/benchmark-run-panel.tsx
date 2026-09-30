@@ -22,7 +22,8 @@ const PHASE_LABEL_KEY: Record<string, TranslationKey> = {
   canceled: "benchmark.runPanel.cancelled",
 };
 
-function formatDuration(s: string): string {
+function formatDuration(s: string | null | undefined): string {
+  if (!s) return "--";
   const parts = s.split(":").map(Number);
   if (parts.length === 2) {
     const [m, sec] = parts;

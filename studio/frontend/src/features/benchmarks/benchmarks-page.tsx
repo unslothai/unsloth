@@ -13,6 +13,8 @@ import {
 } from "@/features/chat";
 import { authFetch } from "@/features/auth";
 import { BenchmarkPage } from "@/features/benchmark/benchmark-page";
+import { EvalsModelPicker } from "@/features/benchmark/components/evals-model-picker";
+import { useEvalsModel } from "@/features/benchmark/use-evals-model";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { useSystemInfo } from "@/hooks/use-system";
@@ -34,9 +36,9 @@ import { HistoryGrid } from "./components/history-grid";
 import { RunResults } from "./components/results-panel";
 import { RunPreviewCard } from "./components/run-preview";
 import {
-  BenchModelPicker,
   SetupPanel,
   StatPill,
+  SweepsModelPicker,
 } from "./components/setup-panel";
 import { TuneVerdictCard } from "./components/tune-section";
 import { useLocale } from "@/i18n";
@@ -409,6 +411,9 @@ export function BenchmarksPage(): ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolved window
   }, [contextSweep, maxContext]);
   const [tab, setTab] = useState<BenchTab>("benchmark");
+  // The Evals tab's model pick lives up here because its picker sits in this header,
+  // in the same slot the config-sweep picker uses.
+  const evals = useEvalsModel();
 
   useEffect(() => {
     if (!runsLoaded) void refreshRuns();
@@ -484,14 +489,14 @@ export function BenchmarksPage(): ReactElement {
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">
               <BenchSubNav value={tab} runCount={runs.length} />
-              {/* Quality picks its own model. */}
-              <div
-                className={cn(
-                  "ml-auto min-w-0 max-w-full pb-1.5 sm:max-w-[60%]",
-                  tab === "quality" && "invisible",
+              {/* Both tabs pick their model in this slot: the sweep pill drives the sweeps
+                  runner, the evals pill loads the pick through chat's runtime. */}
+              <div className="ml-auto min-w-0 max-w-full pb-1.5 sm:max-w-[60%]">
+                {tab === "quality" ? (
+                  <EvalsModelPicker evals={evals} />
+                ) : (
+                  <SweepsModelPicker status={status} locked={Boolean(live)} />
                 )}
-              >
-                <BenchModelPicker status={status} locked={Boolean(live)} />
               </div>
             </div>
           </header>
@@ -571,7 +576,7 @@ export function BenchmarksPage(): ReactElement {
           </TabsContent>
 
           <TabsContent value="quality" className="mt-0">
-            <BenchmarkPage />
+            <BenchmarkPage evals={evals} />
           </TabsContent>
 
           <TabsContent value="history" className="mt-0">

@@ -26,11 +26,7 @@ export const ar = {
     runButton: "تشغيل الاختبار",
     batchSizeLabel: "حجم الدفعة",
     maxTokensLabel: "الحد الأقصى للتوكنات",
-    logSamplesLabel: "تسجيل العينات",
-    logSamplesTooltip: "حفظ نتائج كل عينة على القرص",
     numFewshotLabel: "أمثلة Few-shot",
-    outputPathLabel: "مسار الإخراج",
-    outputPathPlaceholder: "الافتراضي: outputs/",
     runPanel: {
       starting: "جارٍ بدء الاختبار...",
       running: "جارٍ تشغيل الاختبار...",

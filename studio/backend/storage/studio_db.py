@@ -22,7 +22,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-
+from core.benchmark.parse import pick_default_metric
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -5096,7 +5096,11 @@ def insert_benchmark_samples(run_id: str, samples: list[dict]) -> None:
 
 def _benchmark_run_from_row(row: sqlite3.Row) -> dict:
     data = dict(row)
-    data["metrics"] = json.loads(data.pop("metrics_json", "[]"))
+    metrics = json.loads(data.pop("metrics_json", "[]"))
+    data["metrics"] = metrics
+    # The headline metric is derived, not stored: the priority walk over the
+    # already-filtered metric names is deterministic (see parse.pick_default_metric).
+    data["default_metric"] = pick_default_metric(metrics)
     return data
 
 

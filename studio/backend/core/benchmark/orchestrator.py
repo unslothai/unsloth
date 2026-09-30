@@ -7,7 +7,7 @@ Runs ``lm_eval.simple_evaluate`` in a worker thread so the event loop stays
 responsive and a cancel can be requested via a :class:`threading.Event`.
 
 Benchmarks always talk to a local inference server over HTTP (lm_eval's
-``local-completions`` backend); the model is never loaded in-process, so there
+``gguf`` backend); the model is never loaded in-process, so there
 is no need for the heavyweight ``mp.spawn`` subprocess + queue machinery that
 training/inference/export use. Running in-process also means we cannot forcibly
 kill an in-flight ``simple_evaluate`` call, so cancel is best-effort: it stops
@@ -47,7 +47,13 @@ _TQDM_PATCHED = False
 _ORIG_TQDM_UPDATE = None
 
 
-def _report_progress(n: Optional[int], total: Optional[int], desc: Optional[str]) -> None:
+def _report_progress(
+    n: Optional[int],
+    total: Optional[int],
+    desc: Optional[str],
+    elapsed: Optional[str] = None,
+    eta: Optional[str] = None,
+) -> None:
     global _latest_progress
     if not total:
         return
@@ -58,6 +64,8 @@ def _report_progress(n: Optional[int], total: Optional[int], desc: Optional[str]
             "current": n,
             "total": total,
             "desc": desc,
+            "elapsed": elapsed,
+            "eta": eta,
         }
 
 
@@ -85,7 +93,15 @@ def _install_tqdm_progress_patch() -> None:
         displayed = _ORIG_TQDM_UPDATE(self, n)
         if displayed:
             fmt = self.format_dict
-            _report_progress(fmt.get("n"), fmt.get("total"), fmt.get("desc"))
+            n_seen, total_seen, rate = fmt.get("n"), fmt.get("total"), fmt.get("rate")
+            remaining = (total_seen - n_seen) / rate if (rate and total_seen) else None
+            _report_progress(
+                n_seen,
+                total_seen,
+                fmt.get("desc"),
+                elapsed = _tqdm_mod.tqdm.format_interval(fmt.get("elapsed") or 0),
+                eta = _tqdm_mod.tqdm.format_interval(remaining) if remaining is not None else None,
+            )
         return displayed
 
     _tqdm_mod.tqdm.update = _patched_update
@@ -106,7 +122,7 @@ def _run_benchmark_task(params: dict) -> dict:
     """Import lm_eval lazily and run simple_evaluate, returning the result dict.
 
     ``params`` is the kwargs dict produced by ``resolve_model_details`` /
-    ``build_local_completions_kwargs``. Any internal (underscore-prefixed) keys
+    ``build_gguf_kwargs``. Any internal (underscore-prefixed) keys
     are stripped before forwarding to lm_eval.
     """
     kwargs = {k: v for k, v in params.items() if not k.startswith("_")}

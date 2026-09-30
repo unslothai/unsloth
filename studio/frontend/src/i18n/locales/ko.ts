@@ -26,11 +26,7 @@ export const ko = {
     runButton: "벤치마크 실행",
     batchSizeLabel: "배치 크기",
     maxTokensLabel: "최대 토큰 수",
-    logSamplesLabel: "샘플 기록",
-    logSamplesTooltip: "샘플별 결과를 디스크에 저장합니다",
     numFewshotLabel: "Few-shot 예제 수",
-    outputPathLabel: "출력 경로",
-    outputPathPlaceholder: "기본값: outputs/",
     runPanel: {
       starting: "벤치마크를 시작하는 중...",
       running: "벤치마크를 실행하는 중...",

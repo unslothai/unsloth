@@ -30275,7 +30275,15 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         # cancel-close hits this call only.
 
         _prompt_value = body.get("prompt")
-        if isinstance(_prompt_value, list):
+        # A prompt array of pure ints is a single token-array prompt (llama.cpp
+        # extension that the OpenAI spec leaves undefined) rather than an OpenAI
+        # batch of prompts — forward it verbatim instead of fanning out one request
+        # per element (an int element alone is a llama-server 400). lm_eval's `gguf`
+        # backend relies on this for exact teacher-forced scoring.
+        if isinstance(_prompt_value, list) and not (
+            _prompt_value
+            and all(isinstance(_el, int) and not isinstance(_el, bool) for _el in _prompt_value)
+        ):
             if not _prompt_value:
                 raise HTTPException(status_code = 400, detail = "'prompt' array must not be empty")
             _cancel_event = threading.Event()
@@ -31008,6 +31016,52 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     return Response(
         content = resp.content,
         status_code = resp.status_code,
+        media_type = "application/json",
+    )
+
+
+# =====================================================================
+
+# llama.cpp tokenize passthrough  (/tokenize → llama-server /tokenize)
+# =====================================================================
+
+
+@router.post("/tokenize")
+@account_access.gpu_busy_route
+async def llama_tokenize(request: Request, current_subject: str = Depends(get_current_subject)):
+    """llama.cpp ``/tokenize`` passthrough (GGUF only).
+
+    Exposed for clients that need the server's exact tokenization — notably
+    lm_eval's ``gguf`` backend, which tokenizes contexts with the model's own
+    tokenizer to split context/continuations at true token boundaries for
+    teacher-forced loglikelihood scoring.
+    """
+    llama_backend = get_llama_cpp_backend()
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    if not llama_backend.is_loaded:
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body) if isinstance(body, dict) else None,
+            request,
+            status = 503,
+        )
+        raise HTTPException(status_code = _status, detail = _detail)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    target_url = f"{llama_backend.base_url}/tokenize"
+    _client = _cancelable_nonstreaming_client()
+    try:
+        _resp = await _client.post(target_url, json = body, timeout = 30)
+    except httpx.RequestError as _exc:
+        raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
+    finally:
+        await _client.aclose()
+    if _resp.status_code != 200:
+        raise _openai_passthrough_error(_resp.status_code, _resp.text)
+    return Response(
+        content = _resp.content,
+        status_code = _resp.status_code,
         media_type = "application/json",
     )
 

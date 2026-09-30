@@ -232,20 +232,16 @@ async def run_benchmark(
 
         _run_start = time.monotonic()
 
-        output_path = request.output_path
-        if request.log_samples and not output_path:
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            output_path = os.path.abspath(f"outputs/benchmark_{request.task}_{ts}")
+        # Results are always written to an auto-managed directory; there is no
+        # user-supplied output path.
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.abspath(f"outputs/benchmark_{request.task}_{ts}")
 
         model_lines, lm_eval_kwargs = resolve_model_details(
             request.checkpoint_path,
-            request.hf_token,
-            gguf_variant = request.gguf_variant,
             task = request.task,
             batch_size = request.batch_size,
-            log_samples = request.log_samples,
             num_fewshot = request.num_fewshot,
-            output_path = output_path,
             max_tokens = request.max_tokens,
         )
         log_kwargs = copy.deepcopy(lm_eval_kwargs)
@@ -267,7 +263,7 @@ async def run_benchmark(
                 detail = detail,
             )
 
-        if lm_eval_kwargs.get("model") == "local-completions":
+        if lm_eval_kwargs.get("model") in ("local-completions", "gguf"):
             from datetime import datetime, timedelta, timezone
             from auth.storage import create_api_key
 
@@ -282,6 +278,9 @@ async def run_benchmark(
             api_key_id = row["id"]
             lm_eval_kwargs["model_args"]["auth_token"] = raw_key
             lm_eval_kwargs["model_args"]["header"] = {"Authorization": f"Bearer {raw_key}"}
+            # The gguf backend takes the key directly (it has no header-merge
+            # logic upstream of lm_eval >= the auth-support change).
+            lm_eval_kwargs["model_args"]["api_key"] = raw_key
             logger.info("Minted ephemeral API key for benchmark run")
 
         # ── Run lm_eval in the orchestrator worker thread ─────────
@@ -293,7 +292,7 @@ async def run_benchmark(
         results = await loop.run_in_executor(None, lambda: backend.run(lm_eval_kwargs))
 
         # ── Post-run: save to disk + DB ───────────────────────────
-        if output_path and request.log_samples:
+        if output_path:
             try:
                 os.makedirs(output_path, exist_ok = True)
                 results_path = os.path.join(output_path, "results.json")
@@ -517,9 +516,7 @@ async def stream_benchmark_logs(
     )
 
 
-# ── Benchmark result scanning ──────────────────────────
-_BENCHMARKS_DIR = backend_path / "outputs"
-
+# ── Past eval runs ─────────────────────────────
 
 @router.get("/runs", response_model = BenchmarkRunListResponse)
 async def list_benchmark_runs(current_subject: str = Depends(get_current_subject)):

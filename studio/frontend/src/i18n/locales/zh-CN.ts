@@ -26,11 +26,7 @@ export const zhCN = {
     runButton: "运行基准测试",
     batchSizeLabel: "批大小",
     maxTokensLabel: "最大 Token 数",
-    logSamplesLabel: "记录样本",
-    logSamplesTooltip: "将每个样本的结果保存到磁盘",
     numFewshotLabel: "Few-shot 示例数",
-    outputPathLabel: "输出路径",
-    outputPathPlaceholder: "默认：outputs/",
     runPanel: {
       starting: "正在启动基准测试...",
       running: "正在运行基准测试...",

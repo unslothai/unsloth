@@ -4,7 +4,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from routes import benchmarks as benchmarks_routes
 from storage import benchmark_runs_db as db
 
@@ -62,9 +62,12 @@ def _run(run_id = "run-1", results = None):
     }
 
 
-def _client():
+def _client(via_api_key = False):
+    """A caller with a UI session (the get_current_subject override) — or, with via_api_key,
+    an sk-unsloth API key, the other caller class the runs routes distinguish."""
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
     app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
     return TestClient(app)
 
@@ -156,6 +159,29 @@ def test_routes_round_trip_and_refuse_a_mismatched_id():
     assert client.delete("/api/benchmarks/runs/run-1").status_code == 204
     assert client.get("/api/benchmarks/runs/run-1").status_code == 404
     assert client.delete("/api/benchmarks/runs/run-1").status_code == 404
+
+
+def test_api_key_caller_gets_host_paths_redacted_ui_caller_does_not():
+    """The runs routes hide local GGUF paths from API-key callers (the same host identity the
+    inference status route hides), while a UI session sees them as stored."""
+    run = _run()
+    run["model"] = "/Users/dev/models/Qwen3.5-4B-Q4_K_M.gguf"
+    run["config"]["tuneModel"] = "/Users/dev/checkpoints/ckpt-1000"
+    db.upsert_run(run)
+
+    ui = _client()
+    listed = ui.get("/api/benchmarks/runs").json()["runs"]
+    assert listed[0]["model"] == "/Users/dev/models/Qwen3.5-4B-Q4_K_M.gguf"
+    assert listed[0]["config"]["tuneModel"] == "/Users/dev/checkpoints/ckpt-1000"
+
+    api = _client(via_api_key = True)
+    listed = api.get("/api/benchmarks/runs").json()["runs"]
+    assert listed[0]["model"].startswith("ref:")
+    assert listed[0]["config"]["tuneModel"].startswith("ref:")
+    one = api.get("/api/benchmarks/runs/run-1").json()
+    assert one["model"].startswith("ref:")
+    # The sweep config's other fields survive the redaction untouched.
+    assert one["config"]["sweep"] == "draft"
 
 
 def test_unknown_kind_is_rejected_until_that_phase_ships():

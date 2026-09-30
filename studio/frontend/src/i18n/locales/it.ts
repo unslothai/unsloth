@@ -23,11 +23,7 @@ export const it = {
     runButton: "Esegui benchmark",
     batchSizeLabel: "Dimensione del batch",
     maxTokensLabel: "Max token",
-    logSamplesLabel: "Registra campioni",
-    logSamplesTooltip: "Salva su disco i risultati per ogni campione",
     numFewshotLabel: "Esempi few-shot",
-    outputPathLabel: "Percorso di output",
-    outputPathPlaceholder: "Predefinito: outputs/",
     runPanel: {
       starting: "Avvio del benchmark...",
       running: "Benchmark in corso...",

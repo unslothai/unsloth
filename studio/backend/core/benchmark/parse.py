@@ -20,7 +20,8 @@ _NON_METRIC_KEYS = frozenset({
 _NON_METRIC_KEYS_LOWER = frozenset(k.lower() for k in _NON_METRIC_KEYS)
 
 # Priority list for selecting the default metric from lm_eval results.
-# First match wins.
+# First match wins. Shared by the summary parser and the DB read path, which
+# derives the headline metric for historical runs instead of storing it.
 _DEFAULT_METRIC_PRIORITY = (
     "acc_norm,none",
     "acc_norm",
@@ -34,6 +35,20 @@ _DEFAULT_METRIC_PRIORITY = (
     "acc,none",
     "acc",
 )
+
+
+def pick_default_metric(metrics: list) -> str:
+    """Pick the headline metric from an already-filtered metrics list.
+
+    Walks :data:`_DEFAULT_METRIC_PRIORITY` over the metric names. Because the
+    priority ordering is deterministic given the names, runs derive their
+    headline metric at read time (see the DB layer) instead of persisting it.
+    """
+    names = {m.get("name") for m in metrics if isinstance(m, dict)}
+    for candidate in _DEFAULT_METRIC_PRIORITY:
+        if candidate in names:
+            return candidate
+    return ""
 
 
 def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
@@ -62,7 +77,6 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
         except ValueError:
             created_at = dir_name
 
-    metric_keys = set()
     metrics = []
     for key, val in task_results.items():
         if key.endswith(",none") or key.lower() in _NON_METRIC_KEYS_LOWER:
@@ -75,7 +89,6 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
                 "score": round(float(val), 4),
                 "stderr": stderr_val,
             })
-            metric_keys.add(key)
         elif isinstance(val, str):
             try:
                 fv = float(val)
@@ -84,15 +97,8 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
                     "score": round(fv, 4),
                     "stderr": None,
                 })
-                metric_keys.add(key)
             except (ValueError, TypeError):
                 pass
-
-    default_metric = ""
-    for candidate in _DEFAULT_METRIC_PRIORITY:
-        if candidate in metric_keys:
-            default_metric = candidate
-            break
 
     n_shot = None
     n_shot_raw = n_shot_map.get(task_name) if isinstance(n_shot_map, dict) else None
@@ -111,7 +117,6 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
         "task": task_name,
         "model": model,
         "metrics": metrics,
-        "default_metric": default_metric,
         "n_samples": n_samples,
         "num_fewshot": n_shot,
         "created_at": created_at,

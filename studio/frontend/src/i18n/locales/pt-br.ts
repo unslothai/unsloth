@@ -26,11 +26,7 @@ export const ptBR = {
     runButton: "Executar Benchmark",
     batchSizeLabel: "Tamanho do Lote (Batch Size)",
     maxTokensLabel: "Máximo de Tokens",
-    logSamplesLabel: "Registrar Amostras",
-    logSamplesTooltip: "Salvar os resultados de cada amostra em disco",
     numFewshotLabel: "Exemplos few-shot",
-    outputPathLabel: "Caminho de saída",
-    outputPathPlaceholder: "Padrão: outputs/",
     runPanel: {
       starting: "Iniciando benchmark...",
       running: "Executando benchmark...",

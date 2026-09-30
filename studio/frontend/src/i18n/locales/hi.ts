@@ -26,11 +26,7 @@ export const hi = {
     runButton: "बेंचमार्क चलाएँ",
     batchSizeLabel: "बैच साइज़",
     maxTokensLabel: "अधिकतम टोकन",
-    logSamplesLabel: "सैंपल लॉग करें",
-    logSamplesTooltip: "प्रति-सैंपल परिणामों को डिस्क पर सहेजें",
     numFewshotLabel: "Few-shot उदाहरण",
-    outputPathLabel: "आउटपुट पथ",
-    outputPathPlaceholder: "डिफ़ॉल्ट: outputs/",
     runPanel: {
       starting: "बेंचमार्क शुरू हो रहा है...",
       running: "बेंचमार्क चल रहा है...",

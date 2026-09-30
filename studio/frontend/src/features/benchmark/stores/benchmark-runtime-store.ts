@@ -89,8 +89,9 @@ export interface BenchmarkProgress {
   pct: number;
   current: number;
   total: number;
-  elapsed: string;
-  eta: string;
+  /** Formatted by the backend's ``tqdm.format_interval`` — null before a rate is known. */
+  elapsed: string | null;
+  eta: string | null;
 }
 
 interface BenchmarkRuntimeState {
@@ -114,7 +115,7 @@ interface BenchmarkRuntimeState {
 }
 
 interface BenchmarkRuntimeActions {
-  run: (checkpointPath: string, modelSource: "checkpoint" | "hf" | "local", ggufVariant?: string | null, task?: string, extraParams?: { batch_size?: string; log_samples?: boolean; num_fewshot?: number | null; output_path?: string | null; max_tokens?: number | null }) => Promise<void>;
+  run: (checkpointPath: string, modelSource: "checkpoint" | "hf" | "local", task?: string, extraParams?: { batch_size?: string; num_fewshot?: number | null; max_tokens?: number | null }) => Promise<void>;
   requestCancel: () => Promise<void>;
   appendLog: (entry: BenchmarkLogEntry, seq?: number) => void;
   setConnected: (value: boolean) => void;
@@ -244,7 +245,7 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
     }
   },
 
-  run: async (checkpointPath, modelSource, ggufVariant, task, extraParams) => {
+  run: async (checkpointPath, modelSource, task, extraParams) => {
     const runId = get().runId + 1;
 
     set({
@@ -293,12 +294,9 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
 const apiParams = {
           checkpoint_path: checkpointPath,
           model_source: modelSource,
-          gguf_variant: ggufVariant ?? null,
           task: task ?? "mmlu",
           batch_size: extraParams?.batch_size ?? "auto",
-          log_samples: extraParams?.log_samples ?? true,
           num_fewshot: extraParams?.num_fewshot ?? null,
-          output_path: extraParams?.output_path ?? null,
           max_tokens: extraParams?.max_tokens ?? null,
         };
       await runRecoverableOp(() =>

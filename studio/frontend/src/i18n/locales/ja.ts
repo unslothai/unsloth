@@ -27,11 +27,7 @@ export const ja = {
     runButton: "ベンチマークを実行",
     batchSizeLabel: "バッチサイズ",
     maxTokensLabel: "最大トークン数",
-    logSamplesLabel: "サンプルを記録",
-    logSamplesTooltip: "サンプルごとの結果をディスクに保存します",
     numFewshotLabel: "Few-shot の例数",
-    outputPathLabel: "出力パス",
-    outputPathPlaceholder: "デフォルト: outputs/",
     runPanel: {
       starting: "ベンチマークを開始しています...",
       running: "ベンチマークを実行中...",

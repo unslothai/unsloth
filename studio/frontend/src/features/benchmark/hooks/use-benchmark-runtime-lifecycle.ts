@@ -15,7 +15,7 @@ const STREAM_RECONNECT_DELAY_MS = 600;
 /**
  * Global benchmark runtime driver, mounted once at the app root. It:
  *   - hydrates `is_benchmark_active` from the backend on mount / reload,
- *   - opens a single long-lived SSE stream to `/api/benchmark/logs/stream`
+ *   - opens a single long-lived SSE stream to `/api/benchmarks/evals/logs/stream`
  *     that replays the current run from the start and then tails live log
  *     lines, keeping the connection open until the panel closes, and
  *   - auto-reconnects the stream (resuming at the last received seq) if the

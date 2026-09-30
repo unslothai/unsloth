@@ -76,7 +76,7 @@ export interface BenchmarkTasksResponse {
 
 /** Fetch available benchmark tasks. */
 export async function fetchBenchmarkTasks(): Promise<BenchmarkTasksResponse> {
-  const response = await authFetch("/api/benchmark/tasks");
+  const response = await authFetch("/api/benchmarks/evals/tasks");
   return parseJson<BenchmarkTasksResponse>(response);
 }
 
@@ -92,7 +92,7 @@ export interface BenchmarkTaskConfig {
 }
 
 export async function fetchBenchmarkTaskConfig(taskId: string): Promise<BenchmarkTaskConfig> {
-  const response = await authFetch(`/api/benchmark/task/${encodeURIComponent(taskId)}/config`);
+  const response = await authFetch(`/api/benchmarks/evals/task/${encodeURIComponent(taskId)}/config`);
   return parseJson<BenchmarkTaskConfig>(response);
 }
 
@@ -100,17 +100,14 @@ export interface BenchmarkRunParams {
   checkpoint_path: string;
   model_source: "checkpoint" | "hf" | "local";
   hf_token?: string | null;
-  gguf_variant?: string | null;
   task?: string;
   batch_size?: string;
-  log_samples?: boolean;
   num_fewshot?: number | null;
-  output_path?: string | null;
   max_tokens?: number | null;
 }
 
 export async function runBenchmark(params: BenchmarkRunParams): Promise<BenchmarkOperationResponse> {
-  const response = await authFetch("/api/benchmark/run", {
+  const response = await authFetch("/api/benchmarks/evals/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -119,12 +116,12 @@ export async function runBenchmark(params: BenchmarkRunParams): Promise<Benchmar
 }
 
 export async function cancelBenchmark(): Promise<BenchmarkOperationResponse> {
-  const response = await authFetch("/api/benchmark/cancel", { method: "POST" });
+  const response = await authFetch("/api/benchmarks/evals/cancel", { method: "POST" });
   return parseJson<BenchmarkOperationResponse>(response);
 }
 
 export async function getBenchmarkStatus(): Promise<BenchmarkStatus> {
-  const response = await authFetch("/api/benchmark/status");
+  const response = await authFetch("/api/benchmarks/evals/status");
   return parseJson<BenchmarkStatus>(response);
 }
 
@@ -176,17 +173,17 @@ export interface BenchmarkRunDetail extends BenchmarkRunSummary {
 }
 
 export async function listBenchmarkRuns(): Promise<BenchmarkRunListResponse> {
-  const response = await authFetch("/api/benchmark/runs");
+  const response = await authFetch("/api/benchmarks/evals/runs");
   return parseJson<BenchmarkRunListResponse>(response);
 }
 
 export async function getBenchmarkRunDetail(runId: string): Promise<BenchmarkRunDetail> {
-  const response = await authFetch(`/api/benchmark/runs/${encodeURIComponent(runId)}`);
+  const response = await authFetch(`/api/benchmarks/evals/runs/${encodeURIComponent(runId)}`);
   return parseJson<BenchmarkRunDetail>(response);
 }
 
 export async function deleteBenchmarkRun(runId: string): Promise<BenchmarkOperationResponse> {
-  const response = await authFetch(`/api/benchmark/runs/${encodeURIComponent(runId)}`, {
+  const response = await authFetch(`/api/benchmarks/evals/runs/${encodeURIComponent(runId)}`, {
     method: "DELETE",
   });
   return parseJson<BenchmarkOperationResponse>(response);
@@ -195,7 +192,7 @@ export async function deleteBenchmarkRun(runId: string): Promise<BenchmarkOperat
 // ── Benchmark Export ─────────────────────────────────
 
 export async function exportBenchmarkRuns(runIds: string[]): Promise<void> {
-  const response = await authFetch("/api/benchmark/export", {
+  const response = await authFetch("/api/benchmarks/evals/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ run_ids: runIds }),
@@ -224,7 +221,7 @@ export interface BenchmarkGraphParams {
 }
 
 export async function generateBenchmarkGraph(params: BenchmarkGraphParams): Promise<Blob> {
-  const response = await authFetch("/api/benchmark/graph", {
+  const response = await authFetch("/api/benchmarks/evals/graph", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -269,8 +266,8 @@ export async function streamBenchmarkLogs(options: {
 
   const url =
     typeof options.since === "number"
-      ? `/api/benchmark/logs/stream?since=${options.since}`
-      : "/api/benchmark/logs/stream";
+      ? `/api/benchmarks/evals/logs/stream?since=${options.since}`
+      : "/api/benchmarks/evals/logs/stream";
 
   const response = await authFetch(url, {
     method: "GET",
@@ -340,6 +337,19 @@ export async function streamBenchmarkLogs(options: {
               // no active flag available — ignore
             }
             options.onEvent({ event: "heartbeat", id: parsed.id, active });
+          } else if (parsed.event === "progress") {
+            // tqdm progress arrives as a dedicated (unsequenced) SSE event; the store's
+            // progress bar consumes it as a "progress"-stream log entry, which the log
+            // console filters out of its stdout/stderr view.
+            options.onEvent({
+              event: "log",
+              id: null,
+              entry: {
+                stream: "progress",
+                line: parsed.data,
+                ts: null,
+              },
+            });
           } else if (parsed.event === "complete") {
             options.onEvent({ event: "complete", id: parsed.id });
             // The stream is long-lived and stays open across runs — do NOT
