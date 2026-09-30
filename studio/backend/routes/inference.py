@@ -32180,8 +32180,7 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
 @router.get("/models/", include_in_schema = False)
 @router.get("/models")
 async def openai_list_models(
-    output_modalities: Optional[str] = None,
-    current_subject: str = Depends(get_current_subject),
+    output_modalities: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ):
     """
     OpenAI-compatible model listing endpoint (``GET /v1/models``).

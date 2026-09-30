@@ -335,7 +335,11 @@ def test_a_system_one_connection_lists_only_decision_models(upstream):
     upstream.replies[0] = httpx.Response(200, json = OPENROUTER_MODELS)
     listed = _providers_post(
         "/providers/models",
-        {"provider_type": "custom", "api_type": "systemone", "base_url": "http://localhost:8888/v1"},
+        {
+            "provider_type": "custom",
+            "api_type": "systemone",
+            "base_url": "http://localhost:8888/v1",
+        },
     )
     assert [model["id"] for model in listed] == ["upstage/solar-decide", "typesafe/jev-1.13"]
     assert upstream.calls[0].url.params["output_modalities"] == "decisions"
@@ -361,7 +365,11 @@ def test_a_system_one_model_list_explains_what_went_wrong(upstream, reply, detai
     upstream.replies[0] = reply
     listed = _providers_post(
         "/providers/models",
-        {"provider_type": "custom", "api_type": "systemone", "base_url": "http://localhost:8888/v1"},
+        {
+            "provider_type": "custom",
+            "api_type": "systemone",
+            "base_url": "http://localhost:8888/v1",
+        },
     )
     if detail is None:
         assert listed == []

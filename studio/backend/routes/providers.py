@@ -1075,8 +1075,7 @@ async def list_provider_models(
         except ValueError:
             ids = []
         return [
-            ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None)
-            for m in ids
+            ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None) for m in ids
         ]
 
     try:

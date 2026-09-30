@@ -1469,7 +1469,6 @@ def get_systemone_settings(
 async def _refresh_decision_models(payload: SystemOneSettingsPayload) -> None:
     from core.systemone import catalog
     from routes.systemone import refresh_listed_decision_models
-
     if catalog.parse_connection(payload.model):
         await refresh_listed_decision_models()
 
