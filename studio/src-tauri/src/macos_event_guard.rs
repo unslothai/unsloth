@@ -1,11 +1,13 @@
 //! Stops an AppKit exception during event dispatch from aborting the app.
 //!
-//! tao's `sendEvent:` override is `extern "C"`, so an Objective-C exception raised beneath it
-//! aborts with "panic in a function that cannot unwind". macOS 27.0 raises one from the Siri
-//! selected-text affordance (NSCampoLightweightUIController). Catching it at AppKit's own
-//! `sendEvent:` restores stock AppKit behavior: report and keep running.
+//! tao overrides `sendEvent:` on both its NSApplication and NSWindow subclasses with `extern "C"`
+//! functions, so an Objective-C exception raised beneath either aborts with "panic in a function
+//! that cannot unwind". macOS 27.0 raises one from the Siri selected-text affordance
+//! (NSCampoLightweightUIController). Catching it at AppKit's own `sendEvent:` on both classes
+//! restores stock AppKit behavior: report and keep running.
 //! Upstream fix: tauri-apps/tao#1354.
 
+use std::ffi::CStr;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -14,45 +16,53 @@ use log::{error, warn};
 use objc2::exception::Exception;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::{msg_send, sel};
+use objc2::{class, msg_send, sel};
 
 type SendEvent = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
 
-static APPKIT_SEND_EVENT: OnceLock<SendEvent> = OnceLock::new();
+/// The AppKit classes beneath tao's overrides: TaoApp's, and TaoWindow's, which also takes
+/// TaoApp's Cmd+key-up path (it calls the key window's `sendEvent:` directly).
+const GUARDED_CLASSES: [&CStr; 2] = [c"NSApplication", c"NSWindow"];
+static APPKIT_SEND_EVENT: [OnceLock<SendEvent>; 2] = [OnceLock::new(), OnceLock::new()];
 static CAUGHT_EXCEPTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Wraps `-[NSApplication sendEvent:]`. Call on the main thread before the event loop starts.
+/// Wraps `-[NSApplication sendEvent:]` and `-[NSWindow sendEvent:]`. Call on the main thread
+/// before the event loop starts.
 pub fn install() {
-    if APPKIT_SEND_EVENT.get().is_some() {
+    install_guard::<0>();
+    install_guard::<1>();
+}
+
+fn install_guard<const I: usize>() {
+    let name = GUARDED_CLASSES[I];
+    if APPKIT_SEND_EVENT[I].get().is_some() {
         return;
     }
-    let Some((class, method)) = AnyClass::get(c"NSApplication")
+    let Some((class, method)) = AnyClass::get(name)
         .and_then(|class| Some((class, class.instance_method(sel!(sendEvent:))?)))
     else {
-        warn!(
-            "NSApplication has no sendEvent:; AppKit exceptions during event dispatch stay fatal"
-        );
+        warn!("{name:?} has no sendEvent:; AppKit exceptions beneath it stay fatal");
         return;
     };
     // SAFETY: Same signature, and the original is stored before the swap can call it.
     unsafe {
         let appkit: SendEvent = std::mem::transmute::<Imp, SendEvent>(method.implementation());
-        let _ = APPKIT_SEND_EVENT.set(appkit);
+        let _ = APPKIT_SEND_EVENT[I].set(appkit);
         objc2::ffi::class_replaceMethod(
             (class as *const AnyClass).cast_mut(),
             sel!(sendEvent:),
-            std::mem::transmute::<SendEvent, Imp>(guarded_send_event),
+            std::mem::transmute::<SendEvent, Imp>(guarded_send_event::<I>),
             objc2::ffi::method_getTypeEncoding(method),
         );
     }
 }
 
-unsafe extern "C-unwind" fn guarded_send_event(
+unsafe extern "C-unwind" fn guarded_send_event<const I: usize>(
     this: *mut AnyObject,
     cmd: Sel,
     event: *mut AnyObject,
 ) {
-    if let Some(appkit) = APPKIT_SEND_EVENT.get() {
+    if let Some(appkit) = APPKIT_SEND_EVENT[I].get() {
         // SAFETY: AppKit's arguments, forwarded to AppKit's implementation.
         unsafe { dispatch(*appkit, this, cmd, event) };
     }
@@ -64,13 +74,14 @@ unsafe fn dispatch(send_event: SendEvent, this: *mut AnyObject, cmd: Sel, event:
     let result =
         objc2::exception::catch(AssertUnwindSafe(|| unsafe { send_event(this, cmd, event) }));
     if let Err(exception) = result {
-        unsafe { report(this, exception) };
+        // Null only in tests, which must not touch NSApp off the main thread.
+        unsafe { report(!this.is_null(), exception) };
     }
 }
 
 /// Reports like `-[NSApplication run]`, honoring NSApplicationCrashOnExceptions. Only the 1st,
 /// 2nd, 4th, 8th, ... occurrence is reported so a per-event exception cannot flood the logs.
-unsafe fn report(app: *mut AnyObject, exception: Option<Retained<Exception>>) {
+unsafe fn report(to_app: bool, exception: Option<Retained<Exception>>) {
     let count = CAUGHT_EXCEPTIONS.fetch_add(1, Ordering::Relaxed) + 1;
     if !count.is_power_of_two() {
         return;
@@ -80,16 +91,21 @@ unsafe fn report(app: *mut AnyObject, exception: Option<Retained<Exception>>) {
         return;
     };
     error!("Caught an AppKit exception during event dispatch (#{count}): {exception:?}");
-    // Skip nil: msg_send! panics on it in debug builds, and a panic here aborts.
-    if let Some(app) = unsafe { app.as_ref() } {
-        let () = unsafe { msg_send![app, reportException: &*exception] };
+    if !to_app {
+        return;
+    }
+    // NSApp, since the receiver may be a window. Skip nil: msg_send! panics on it in debug builds,
+    // and a panic here aborts.
+    let app: Option<Retained<AnyObject>> =
+        unsafe { msg_send![class!(NSApplication), sharedApplication] };
+    if let Some(app) = app {
+        let () = unsafe { msg_send![&*app, reportException: &*exception] };
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use objc2::class;
     use objc2_foundation::NSString;
 
     static REACHED_APPKIT: AtomicU64 = AtomicU64::new(0);
@@ -133,15 +149,24 @@ mod tests {
 
     #[test]
     fn install_wraps_appkit_send_event_once() {
-        let method = AnyClass::get(c"NSApplication")
-            .and_then(|class| class.instance_method(sel!(sendEvent:)))
-            .expect("NSApplication implements sendEvent:");
-        let appkit = method.implementation();
+        let method = |name: &CStr| {
+            AnyClass::get(name)
+                .and_then(|class| class.instance_method(sel!(sendEvent:)))
+                .expect("AppKit class implements sendEvent:")
+        };
+        let appkit = GUARDED_CLASSES.map(|name| method(name).implementation() as usize);
         install();
         install();
-        let guarded: Imp = unsafe { std::mem::transmute::<SendEvent, Imp>(guarded_send_event) };
-        assert_eq!(method.implementation() as usize, guarded as usize);
-        let stored = *APPKIT_SEND_EVENT.get().expect("original stored");
-        assert_eq!(stored as usize, appkit as usize);
+        let guarded: [Imp; 2] = unsafe {
+            [
+                std::mem::transmute::<SendEvent, Imp>(guarded_send_event::<0>),
+                std::mem::transmute::<SendEvent, Imp>(guarded_send_event::<1>),
+            ]
+        };
+        for (i, name) in GUARDED_CLASSES.into_iter().enumerate() {
+            assert_eq!(method(name).implementation() as usize, guarded[i] as usize);
+            let stored = *APPKIT_SEND_EVENT[i].get().expect("original stored");
+            assert_eq!(stored as usize, appkit[i]);
+        }
     }
 }
