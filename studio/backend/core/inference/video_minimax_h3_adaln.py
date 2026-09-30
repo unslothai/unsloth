@@ -100,8 +100,18 @@ def _curve_modulation_forward(self: Any, temb: Any) -> tuple:
     whole block stack to float32 and the very first quantized matmul dies with
     "expected mat1 and mat2 to have the same dtype". The reference casts modulation to the hidden
     stream's dtype at the point of use for exactly this reason; ``adaln_out_dtype`` is the dtype the
-    offline builder recorded for that stream, so honour it here where the chunks are produced."""
+    offline builder recorded for that stream, so honour it here where the chunks are produced.
+
+    The projection is split per modality BEFORE the cast, then flattened to the ``(3 * rows, 6 * hidden)`` layout.
+    Same values, but a different graph for torch.compile: with ``temb``'s row count unbacked (see
+    ``diffusion_dynamic_text``), torch 2.12 to 2.14 Inductor unfuses the float32 addmm into ``mm + bias`` (the cast
+    is a pointwise user), inlines that add into the block's ``index_select`` consumer, and indexes the 1-D bias of
+    the single ``(rows, 18 * hidden) -> (3 * rows, 6 * hidden)`` view as ``6 * hidden * row`` instead of
+    ``6 * hidden * (row % 3)``. From the second denoising step (2 timestep rows) that reads past the bias: garbage
+    modulation, or an illegal memory access. With the modality axis kept explicit the bias index stays correct.
+    2.11 materialises the add and was never affected; its output is bit-identical either way."""
     temb = self.linear(temb.to(self.linear.weight.dtype))
+    temb = temb.view(-1, MINIMAX_H3_MODALITY_NUM, 6 * self.hidden_size)
     out_dtype = getattr(self, "_unsloth_adaln_out_dtype", None)
     if out_dtype is not None:
         temb = temb.to(out_dtype)
