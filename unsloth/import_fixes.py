@@ -6520,7 +6520,6 @@ _SDPA_CUDNN_D256_WARNED = False
 
 
 def _sdpa_cudnn_d256_sm100_devices():
-    """CUDA device indices with compute capability 10.x (B200 / B300), or an empty set."""
     try:
         import torch
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
@@ -6535,11 +6534,7 @@ def _sdpa_cudnn_d256_sm100_devices():
 
 
 def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
-    """True for exactly the calls whose cuDNN backward returns NaN dQ on SM100.
-
-    The call must build an autograd graph (a no-grad forward never reaches the broken backward),
-    carry an explicit mask, use head_dim 256 on a half-precision CUDA query on a 10.x device.
-    """
+    """True for the calls whose cuDNN backward returns NaN dQ on SM100 (no-grad never reaches it)."""
     import torch
 
     if attn_mask is None or not torch.is_grad_enabled():
@@ -6556,22 +6551,11 @@ def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
 
 
 def fix_cudnn_sdpa_d256_masked_backward():
-    """Keep masked head_dim-256 SDPA training off cuDNN attention on SM100 (B200 / B300).
+    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100.
 
-    torch 2.14.0+cu130 ships cuDNN 9.24, the first build where SDPA's default dispatch picks
-    CUDNN_ATTENTION for a head_dim-256 call with an explicit `attn_mask` on SM100; torch 2.11 to
-    2.13 (cuDNN 9.19 / 9.20) report "No available kernel" for that backend and dispatch to the
-    efficient kernel instead. The cuDNN backward then returns NaN for grad_query while the forward,
-    grad_key and grad_value are finite. Measured on a B200: bf16 and fp16, bool and additive masks,
-    GQA or not, seq 24 and 64, every run; head_dim 64 / 128 / 192, `is_causal=True` without a mask,
-    and the maskless call are all clean. head_dim 256 is Gemma 2 / 3 / 4, Qwen3.5 and Qwen3-Next,
-    so any padded batch (a mask reaches SDPA) trains on NaN from step one.
-
-    The detour routes only those calls through `sdpa_kernel` with cuDNN excluded, so the flash /
-    efficient / math choice torch would make without cuDNN applies; every other call, inference
-    included, keeps cuDNN. On a torch where cuDNN cannot take such a call the detour changes
-    nothing, so it is gated on the device, not on the torch version.
-    UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 opts out.
+    torch 2.14 (cuDNN 9.24) first dispatches such calls to cuDNN, whose backward returns NaN dQ
+    (bf16 / fp16); torch <= 2.13 never picks cuDNN here, so the detour is a no-op
+    there. Gated on the device, not the torch version. UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 opts out.
     """
     if os.environ.get("UNSLOTH_ALLOW_CUDNN_SDPA_D256", "0") == "1":
         return

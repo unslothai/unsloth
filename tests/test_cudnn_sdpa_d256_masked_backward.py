@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Masked head_dim-256 SDPA training must not get NaN gradients from cuDNN on SM100.
-
-torch 2.14.0+cu130 (cuDNN 9.24) is the first build whose default SDPA dispatch sends a
-head_dim-256 call with an explicit `attn_mask` to CUDNN_ATTENTION on a B200; torch 2.11 to
-2.13 have no cuDNN kernel for it and use the efficient kernel. That cuDNN backward returns NaN
-for grad_query (forward, grad_key and grad_value stay finite), so Qwen3.5 / Gemma training on a
-padded batch reads NaN from its first backward. The regression suite caught it as
-`test_text_only_load_train_generate[qwen35-4bit]`: loss [12.43, nan] on 2.14, finite on 2.11-2.13.
-
-The GPU tests run in a fresh interpreter that only does `import unsloth`, so they fail on a tree
-without the fix wherever the bug exists (torch 2.14 on SM100) and pass wherever it does not.
-"""
+"""Masked head_dim-256 SDPA training must not get NaN gradients from cuDNN on SM100 (torch 2.14,
+cuDNN 9.24). The GPU tests only `import unsloth` in a fresh interpreter, so they fail on a tree
+without the fix wherever the bug exists."""
 
 import json
 import os
@@ -26,8 +17,7 @@ torch = pytest.importorskip("torch")
 
 
 def _detour(*args):
-    # Imported per test, not at module scope: the GPU tests below must still run (and fail) on a
-    # tree that predates the fix.
+    # Per test, so the GPU tests still run (and fail) on a tree without the fix.
     from unsloth.import_fixes import _sdpa_needs_cudnn_d256_detour
     return _sdpa_needs_cudnn_d256_detour(*args)
 

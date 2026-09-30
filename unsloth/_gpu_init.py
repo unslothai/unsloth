@@ -365,7 +365,6 @@ check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
-# SM100 only: masked head_dim-256 SDPA training off cuDNN attention, whose backward returns NaN dQ.
 fix_cudnn_sdpa_d256_masked_backward()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo

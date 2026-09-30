@@ -493,9 +493,8 @@ _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
 def _sdpa_reaches_cudnn_at_head_dim_256():
     """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box.
 
-    False while import_fixes.fix_cudnn_sdpa_d256_masked_backward is installed: it sends masked
-    head_dim 256 training off cuDNN (NaN dQ on SM100), onto the same efficient kernel torch <= 2.13
-    uses, so flex is the faster path again (8.7x less attention time at T=4096 on a B200).
+    False under fix_cudnn_sdpa_d256_masked_backward: it moves that training onto the efficient
+    kernel, where flex is faster again.
     """
     try:
         if Version(torch.__version__.split("+")[0]) < Version(_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION):
