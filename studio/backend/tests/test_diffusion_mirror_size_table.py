@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A known unsloth mirror of a family's base repo is sized from the family's bf16 table.
-
-``DiffusionBackend.load_pipeline("unsloth/FLUX.1-schnell", local_files_only = False)`` called
-directly on an empty cache has no cached bytes to size from. The table lookup matched only the
-family's own ``base_repo`` string, so the mirror planned as "device budget or model size unknown;
-staying resident" and ran out of memory building a ~33 GB pipeline on a 24 GB L4. The Images page
-path downloads first and was unaffected. Hermetic: empty hub caches under ``tmp_path``, no GPU.
-"""
+"""An uncached unsloth mirror is sized from its family's bf16 table, like its upstream (empty caches, no GPU)."""
 
 from __future__ import annotations
 

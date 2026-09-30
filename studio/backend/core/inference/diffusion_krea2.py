@@ -72,9 +72,7 @@ def load_krea2_tokenizer(
     }
     if hf_token:
         kwargs["token"] = hf_token
-    # Offline, open the cached snapshot folder: by repo id, transformers 5.x asks for the absent
-    # tokenizer/config.json and cannot tell "not in this repo" from "not downloaded", so BOTH attempts
-    # below failed on a fully downloaded model (see diffusion_offline_source).
+    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
     source = offline_snapshot_source(
         repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
     )

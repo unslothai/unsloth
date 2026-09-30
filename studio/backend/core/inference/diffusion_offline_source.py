@@ -3,21 +3,8 @@
 
 """Offline tokenizer / processor loads open the cached snapshot folder, not the Hub repo id.
 
-transformers 5.x ``AutoTokenizer.from_pretrained(repo, subfolder = sub)`` always asks for
-``<sub>/config.json`` first (it wants the model type), and a ``ProcessorMixin`` reaches the same
-call for its tokenizer. Tokenizer and processor subfolders of a diffusers repo never ship that file:
-
-- online, the Hub answers 404, and transformers treats a missing ``config.json`` as "no config";
-- offline (``local_files_only`` or ``HF_HUB_OFFLINE``) with a repo id, transformers passes no commit
-  hash, so it never consults huggingface_hub's ``.no_exist`` marker, and it raises "We couldn't
-  connect to 'https://huggingface.co'" even though every tokenizer file is in the cache;
-- with a local folder, a missing ``config.json`` is skipped by name, and the load succeeds.
-
-So a fully downloaded MiniMax-H3 came back from ``load_components`` with ``processor = None``
-(the modular loader only WARNS on a failed component), and the Krea 2 tokenizer, retried with its
-4.x compat override, failed the same way. Handing the loader the snapshot folder that the cache
-already resolves (``refs/main`` -> ``snapshots/<commit>``) removes the network question entirely.
-Online loads are left on the repo id, unchanged.
+transformers 5.x asks for ``<subfolder>/config.json`` first; offline by repo id it ignores the
+``.no_exist`` marker and raises, while a local folder just skips the missing file.
 """
 
 from __future__ import annotations
@@ -26,8 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
-# Files that prove a tokenizer / processor subfolder is in the cache. Any one is enough to locate
-# the snapshot folder; the loader itself then reports a genuinely missing file by name.
+# Any one locates the snapshot; the loader reports a genuinely missing file by name.
 _PROBE_FILES = (
     "tokenizer_config.json",
     "processor_config.json",
@@ -108,10 +94,8 @@ def offline_component_sources(
     local_files_only: bool,
     cache_dir: Optional[str] = None,
 ) -> dict[str, str]:
-    """``{component: snapshot folder}`` for a modular pipeline's tokenizer / processor specs that
-    would otherwise be opened offline by repo id. Feed it to
-    ``load_components(pretrained_model_name_or_path = ...)``: a dict value is applied per component,
-    and components it does not name keep their spec's own source."""
+    """``{component: snapshot folder}`` for the tokenizer / processor specs, as the per-component
+    ``load_components(pretrained_model_name_or_path = ...)`` dict."""
     if not _offline_requested(local_files_only):
         return {}
     specs = getattr(pipe, "_component_specs", None)

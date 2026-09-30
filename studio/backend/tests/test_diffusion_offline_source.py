@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A fully downloaded model must load its tokenizer / processor offline.
-
-transformers 5.x opens ``<sub>/config.json`` before any tokenizer; tokenizer and processor subfolders
-never ship it, and offline by repo id that absence is indistinguishable from "not downloaded". The
-MiniMax-H3 modular load came back with ``processor = None`` and the Krea 2 tokenizer (both attempts)
-raised "We couldn't connect to 'https://huggingface.co'". Offline loads now open the cached snapshot
-folder instead. Everything here runs against a hand-built hub cache under ``tmp_path``.
-"""
+"""A fully downloaded model must load its tokenizer / processor offline (hand-built hub cache)."""
 
 from __future__ import annotations
 
@@ -32,9 +25,7 @@ def _fake_cache(
     subfolders = ("tokenizer",),
     no_exist_marker = True,
 ) -> pathlib.Path:
-    """``models--acme--tiny-diffusion`` with ``refs/main`` and one snapshot, as a completed download
-    leaves it. The ``.no_exist`` marker is what an earlier online 404 writes; it is there by default
-    to show it does not rescue a load by repo id."""
+    """A completed download; the ``.no_exist`` marker (an online 404) does not rescue a repo-id load."""
     repo_dir = root / ("models--" + REPO.replace("/", "--"))
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text(SHA, encoding = "utf-8")
@@ -53,9 +44,6 @@ def _fake_cache(
 def online(monkeypatch):
     import huggingface_hub.constants as constants
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
-
-
-# -- the resolver ---------------------------------------------------------------------------------
 
 
 def test_an_offline_load_opens_the_cached_snapshot_folder(tmp_path, online):
@@ -109,9 +97,6 @@ def test_a_local_folder_is_left_alone(tmp_path, online):
     assert offline_source.offline_snapshot_source(
         str(local), "tokenizer", local_files_only = True, cache_dir = str(tmp_path)
     ) == str(local)
-
-
-# -- the modular (MiniMax-H3) component sources -----------------------------------------------------
 
 
 def _spec(
@@ -186,9 +171,6 @@ def test_the_h3_modular_build_hands_the_offline_sources_to_load_components():
                 assert "pretrained_model_name_or_path" in spelled, spelled
             return
     raise AssertionError("_load_h3_modular_pipeline not found")
-
-
-# -- the Krea 2 tokenizer (shared by Ideogram 4) ---------------------------------------------------
 
 
 def _live_cache(monkeypatch, root: pathlib.Path) -> None:

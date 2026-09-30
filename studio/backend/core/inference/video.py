@@ -6123,9 +6123,7 @@ class VideoBackend:
         # cache_dir for the same reason as the token: load_components forwards extra kwargs through ComponentSpec.load
         # into each from_pretrained, and without it those ~145 GB of Hub-pinned components resolve against the
         # import-time HF_HUB_CACHE snapshot rather than Unsloth's live cache folder, which the user can move.
-        # Offline, the processor / tokenizer specs are pointed at the cached snapshot folder: opened by repo id,
-        # transformers 5.x asks for their absent config.json and raises, and load_components only warns, so a fully
-        # downloaded model came back with processor=None and died on the first render (diffusion_offline_source).
+        # Offline by repo id, load_components only warns and returns processor=None (diffusion_offline_source).
         from .diffusion_offline_source import offline_component_sources
 
         offline_sources = offline_component_sources(

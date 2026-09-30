@@ -7739,9 +7739,7 @@ class DiffusionBackend:
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
             # undershoot the bf16 footprint ~2x. Plan against the size table's bf16 total when it knows this repo.
-            # A known unsloth mirror is a byte copy of its upstream, so it reads the same table: matched on the raw id
-            # only, a direct load of unsloth/FLUX.1-schnell on an empty cache sized to None ("unknown, stay resident")
-            # and ran out of memory building a ~33 GB pipeline on a 24 GB card.
+            # A known mirror is a byte copy of its upstream, so it reads the upstream's table.
             is_narrow_base = (
                 bool(repo_id) and canonical_base(repo_id).lower() == fam.base_repo.strip().lower()
             )
