@@ -436,9 +436,9 @@ class _Q21Block(torch.nn.Module):
 
 
 class _Q21Transformer(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, dynamic = None):
         super().__init__()
-        self.block = torch.compile(_Q21Block())
+        self.block = torch.compile(_Q21Block(), dynamic = dynamic)
 
     def forward(self, prefix_len, total):
         x = torch.randn(1, total, 8)
@@ -447,16 +447,18 @@ class _Q21Transformer(torch.nn.Module):
         return out
 
 
-def test_new_prompt_length_does_not_recompile_the_prefix_kv_write():
+@pytest.mark.parametrize("dynamic", [None, True])
+def test_new_prompt_length_does_not_recompile_the_prefix_kv_write(dynamic):
     """torch 2.13+ specialised the armed ``cache_write_slice.stop`` through ``is not None`` on the slice, so every new
-    Qwen-Image-2.1 prompt length compiled the block again (seconds per new prompt)."""
+    Qwen-Image-2.1 prompt length compiled the block again (seconds per new prompt). dynamic=True is the default tier
+    of an unquantized DiT once the divisibility backport is in."""
     from torch._dynamo.utils import counters
 
     Transformer = type("QwenImage21Transformer2DModel", (_Q21Transformer,), {})
     torch._dynamo.reset()
     counters.clear()
-    m = Transformer()
-    assert dt.install(m)
+    m = Transformer(dynamic)
+    dt.install(m, dynamic = dynamic)
     try:
         for prefix_len, total in ((26, 90), (31, 95), (40, 104)):
             m(prefix_len, total)

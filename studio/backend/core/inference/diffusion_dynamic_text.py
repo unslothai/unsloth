@@ -206,17 +206,18 @@ def install(
         return False
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:
         return True
-    unbacked = unbacked_sources_for(transformer)
-    sources = sources_for(transformer) if dynamic is None else ()
-    cfg = _compiler_config()
-    if not (sources or unbacked) or cfg is None:
-        return False
-    if _arms_slice_bound(sources):
+    # dynamic=True makes the slice bound symbolic too, so the fix keys on the family, not on what gets armed.
+    if _arms_slice_bound(sources_for(transformer)):
         try:
             install_slice_identity_fix(logger)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             if logger is not None:
                 logger.warning("diffusion.dynamic_text: slice identity fix failed: %s", exc)
+    unbacked = unbacked_sources_for(transformer)
+    sources = sources_for(transformer) if dynamic is None else ()
+    cfg = _compiler_config()
+    if not (sources or unbacked) or cfg is None:
+        return False
     saved: list[tuple[Optional[str], Optional[str]]] = []
 
     def _enter(module: Any, args: Any) -> None:
