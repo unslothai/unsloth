@@ -62,6 +62,15 @@ test("the mac update screen keeps a window drag region", () => {
   }
 });
 
+// A Radix modal's body lock (pointer-events: none) is inherited, and would leave the strip undraggable.
+test("the mac update screen drag region opts back into pointer events", () => {
+  nativeMacTitlebar = true;
+  assert.match(
+    render("updating-backend"),
+    /<div data-tauri-drag-region="true"[^>]*class="pointer-events-auto /,
+  );
+});
+
 test("the update screen adds no drag region beside the custom titlebar", () => {
   nativeMacTitlebar = false;
   assert.doesNotMatch(render("updating-backend"), /data-tauri-drag-region/);
