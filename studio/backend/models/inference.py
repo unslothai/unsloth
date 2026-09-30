@@ -1684,6 +1684,10 @@ class _InferenceRuntimeFields(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        description = "The companion drafter an MLX load was asked for; None elsewhere.",
+    )
     spec_drafter_kind: Optional[str] = Field(
         None,
         description = (

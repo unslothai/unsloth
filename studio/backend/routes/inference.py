@@ -8376,6 +8376,7 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
         "context_unbounded_when_batched": bool(model_info.get("context_unbounded_when_batched")),
         "speculative_type": model_info.get("speculative_type"),
         "spec_draft_n_max": model_info.get("spec_draft_n_max"),
+        "spec_draft_model": model_info.get("spec_draft_model"),
         "spec_drafter_kind": model_info.get("spec_drafter_kind"),
         "spec_fallback_reason": model_info.get("spec_fallback_reason"),
     }
@@ -8406,6 +8407,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_int8_prefill_requested = None,
         mlx_int8_prefill_reason = None,
         mlx_context_budget = None,
+        spec_draft_model = None,
         chat_template_override_reason = None,
         context_length_enforced = True,
         context_length_fitted = None,
