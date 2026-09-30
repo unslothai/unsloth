@@ -493,3 +493,21 @@ def test_a_binary_resource_stays_base64_for_the_widget():
     assert out["blob"] == png and out["text"] == "" and out["mime_type"] == "image/png"
     html = base64.b64encode(b"<p/>").decode()
     assert _resource_contents([_contents(blob = html)], UI)["text"] == "<p/>"
+
+
+def test_a_mounted_widget_can_still_call_after_the_server_is_toggled(routes, monkeypatch):
+    from core.inference import mcp_client
+
+    routes.warm([_APP])
+    # Off/on (or any endpoint edit) empties the cache while the widget stays on screen.
+    mcp_client.invalidate_tool_cache("s1")
+
+    async def probe(url, headers, timeout, use_oauth):
+        return [_APP]
+
+    monkeypatch.setattr(routes, "list_tools_async", probe)
+    monkeypatch.setattr(
+        routes, "call_tool_structured_sync", lambda **kw: {"content": [], "is_error": False}
+    )
+    assert _call(routes, tool_name = "get_stats", permission_mode = "off").is_error is False
+    assert routes.get_cached_tools("s1") == [_APP]

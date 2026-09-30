@@ -717,6 +717,8 @@ async def call_mcp_ui_tool(
     tool_name = (payload.tool_name or "").strip()
     if not tool_name:
         raise HTTPException(status_code = 400, detail = "tool_name must not be empty")
+    # A mounted widget outlives the cache: an edit or off/on toggle of the server empties it.
+    await _warm_tool_cache(server)
     tool = mcp_tool_definition(server_id, tool_name)
     if tool is None:
         raise HTTPException(
