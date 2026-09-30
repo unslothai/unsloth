@@ -400,8 +400,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...(requestedSelectionOwnsLoraSnapshot
                 ? cptLoraProvenanceRefresh
                 : {}),
+              // Fill only: a value captured on entering CPT is the user's, not a default.
               ...(requestedSelectionOwnsLoraSnapshot &&
-              !_trainOnCompletionsManuallySet
+              !_trainOnCompletionsManuallySet &&
+              get().trainingMethodProvenance.trainOnCompletionsBeforeCpt ===
+                null
                 ? cptCompletionProvenanceRefresh
                 : {}),
             };

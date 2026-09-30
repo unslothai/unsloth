@@ -1066,3 +1066,38 @@ test("restored train on completions is not counted as a modified setting", async
     assert.equal(count(), 0);
   }
 });
+
+test("a cache refetch inside CPT keeps the train on completions the user turned off", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler((input) => {
+    if (input === "/api/hub/datasets/check-format") {
+      return Response.json({
+        columns: ["messages"],
+        detected_format: "chatml",
+        is_audio: false,
+        is_image: false,
+        requires_manual_mapping: false,
+      });
+    }
+    return completionDefaults("org/chat", false);
+  });
+  useTrainingConfigStore.getState().selectTrainingModel("org/chat", "text");
+  await waitForModelDefaults("org/chat");
+  useTrainingConfigStore.getState().setTrainOnCompletions(false);
+  // A dataset pick clears the manual-toggle flag.
+  useTrainingConfigStore.getState().setDataset("org/text");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!useTrainingConfigStore.getState().isCheckingDataset) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  useTrainingConfigStore.getState().setSelectedModelCacheReference("org/chat", {
+    localPath: "/cache/org/chat",
+    modelFormat: null,
+  });
+  await waitForModelDefaults("org/chat");
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
