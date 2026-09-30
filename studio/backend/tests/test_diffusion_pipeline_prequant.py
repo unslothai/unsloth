@@ -60,7 +60,10 @@ ALL_BYTES = sum(size for _name, size in Z_IMAGE_FILES)
 def _unmeasured_torchao(monkeypatch):
     """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
     from core.inference import diffusion_memory
+
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
 
 
 @pytest.fixture(autouse = True)

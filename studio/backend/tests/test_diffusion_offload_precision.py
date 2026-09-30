@@ -33,6 +33,8 @@ def _roomy_host(monkeypatch):
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 10**7)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    # Studio's diffusers pin; a runner without diffusers would otherwise refuse every streamed tier.
+    monkeypatch.setattr(mem, "_installed_diffusers_version", lambda: (0, 40))
 
 
 def _plan(

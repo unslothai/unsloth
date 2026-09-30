@@ -58,7 +58,10 @@ from core.inference.diffusion_families import (
 def _unmeasured_torchao(monkeypatch):
     """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
     from core.inference import diffusion_memory
+
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
 
 
 # Pure family helpers
