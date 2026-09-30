@@ -1025,9 +1025,11 @@ def module_forward_patch(forward_function, scale_attr = "weight_scale"):
             )
         weight_scale = getattr(self, scale_attr)
         # Kernels read block_size off weight/scale, else assume 128x128 (breaks 32x32 DeepSeek-V4.1-Flash).
+        # Tag only non-default sizes: tagging a 128x128 weight changes nothing but costs a torch.compile recompile.
         module_block_size = getattr(self, "block_size", None)
         if (
             module_block_size is not None
+            and list(module_block_size) != [128, 128]
             and getattr(weight, "block_size", None) is None
             and getattr(weight_scale, "block_size", None) is None
         ):
