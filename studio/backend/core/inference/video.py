@@ -106,6 +106,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
+    finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
     settled_snapshot_device_memory,
@@ -7677,6 +7678,10 @@ class VideoBackend:
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
                 # resolves to its own default card while the pipeline sits on the selected one.
                 self._state_device_target(state)
+                # A render racing the post-load pinner ran every later render slower; the wait is usually over.
+                waited = finish_background_pins(getattr(state, "pipe", None))
+                if waited >= 1.0:
+                    logger.info("video.generate: waited %.1f s for the host weights to finish pinning", waited)
                 fam = state.family
                 if _resolved_inputs is None:
                     first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(

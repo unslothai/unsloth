@@ -796,3 +796,37 @@ def test_a_declined_quant_unstages_before_any_bf16_rollback():
 
     import core.inference.video as V
     assert "if staged and (video_offload or scheme is None):" in inspect.getsource(V)
+
+
+def test_a_render_starts_only_after_the_background_pins_finish(fake_runtime, monkeypatch, tmp_path):
+    """A render overlapping the post-load pinner ran every later render 2.5-3 s slower (LTX-2.3, A100): wait first."""
+    import core.inference.diffusion_memory as mem
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    pipe = backend._state.pipe
+    order: list = []
+
+    class _Pinner:
+        module = None
+
+        def start(self):
+            order.append("start")
+
+        def join(self):
+            order.append("pinned")
+
+        def stop(self, timeout = None):
+            pass
+
+    setattr(pipe, mem._PENDING_PINS_ATTR, [_Pinner()])
+    monkeypatch.setattr(pipe, "scheduler", types.SimpleNamespace(step = lambda *a, **k: None), raising = False)
+    original_call = type(pipe).__call__
+
+    def _call(self, *args, **kwargs):
+        order.append("render")
+        return original_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(pipe), "__call__", _call)
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    assert order[:3] == ["start", "pinned", "render"], order

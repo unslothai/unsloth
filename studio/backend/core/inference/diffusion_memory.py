@@ -1733,6 +1733,12 @@ class _GroupPinner:
             event.wait()
             self.waited_s += time.perf_counter() - began
 
+    def join(self) -> None:
+        import threading
+
+        if threading.current_thread() is not self._thread:
+            self._thread.join()
+
     def stop(self, timeout: Optional[float] = None) -> None:
         self._stop.set()
         if self._started:
@@ -1830,6 +1836,21 @@ def start_background_pins(pipe: Any) -> int:
     for pinner in pinners:
         pinner.start()
     return len(pinners)
+
+
+def finish_background_pins(pipe: Any) -> float:
+    """Block until every deferred pinner on ``pipe`` is done; returns the seconds waited.
+
+    A render that overlaps the pinner ran its warm renders 2.5 to 3 s slower on an A100 (LTX-2.3, n=15 per arm);
+    letting the pinner finish first matched the eager pin. So the pin overlaps the idle time after the load, not
+    the first render."""
+    import time
+
+    start = time.perf_counter()
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        pinner.start()
+        pinner.join()
+    return time.perf_counter() - start
 
 
 def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
