@@ -5965,8 +5965,7 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
 
 
 class _RefusingEmptyRenderClient:
-    """llama-server with a Qwen3.5+ style template that raises on no messages. Drops a trailing
-    assistant turn as a prefill, like the real server."""
+    """llama-server with a Qwen3.5+ template that raises on no messages; strips a trailing assistant."""
 
     sent = []
     down = False
@@ -6040,9 +6039,7 @@ def refusing_client(monkeypatch):
 def test_a_template_refusing_an_empty_render_is_priced_behind_one_empty_user_turn(
     refusing_client, prefer_native, messages
 ):
-    """#12327: Qwen3.5+ templates raise 'No messages provided.' on an empty render. A new chat
-    and a lone pending tool call both render empty, so the strict count failed. A refusal is
-    re-priced behind one empty user turn and remembered for the load."""
+    """#12327: an empty render the template refuses is priced behind one empty user turn, once per load."""
     backend = _CountBackend()
     count = backend.count_chat_tokens(
         messages, None, None, strict = True, prefer_native = prefer_native
