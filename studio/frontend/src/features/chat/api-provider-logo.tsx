@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { DashboardSquare01Icon, TaskDone01Icon } from "@hugeicons/core-free-icons";
+import { DashboardSquare01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { isCustomProviderType, isDecisionConnection } from "./external-providers";
+import { isCustomProviderType } from "./external-providers";
 import { providerLogoPath } from "./provider-logo-path";
 
 export function apiProviderLogoSrc(
@@ -20,20 +20,15 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter", "liquid"]);
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter", "liquid", "typesafe"]);
 
 /** Shared hub or connection logo; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
   const src = apiProviderLogoSrc(providerType);
-  const fallbackIcon = isCustomProviderType(providerType)
-    ? DashboardSquare01Icon
-    : providerType && isDecisionConnection({ providerType })
-      ? TaskDone01Icon
-      : null;
-  if (!src && fallbackIcon) {
+  if (!src && isCustomProviderType(providerType)) {
     return (
       <span title={title} aria-hidden className="inline-flex shrink-0">
-        <HugeiconsIcon icon={fallbackIcon} className={cn("shrink-0", className)} />
+        <HugeiconsIcon icon={DashboardSquare01Icon} className={cn("shrink-0", className)} />
       </span>
     );
   }
