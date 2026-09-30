@@ -1121,3 +1121,115 @@ test("a config imported inside CPT decides train on completions after leaving", 
     );
   }
 });
+
+const completionModel = (id: string, isVision: boolean) =>
+  Response.json({
+    id,
+    config: { training: { train_on_completions: true } },
+    is_vision: isVision,
+    is_embedding: false,
+    is_audio: false,
+    audio_type_known: true,
+    is_lora: false,
+    model_type: isVision ? "vision" : "text",
+    model_size_bytes: null,
+    max_position_embeddings: 32768,
+  });
+
+const datasetCheck = (isImage: boolean) =>
+  Response.json({
+    columns: ["messages"],
+    detected_format: "chatml",
+    is_audio: false,
+    is_image: isImage,
+    requires_manual_mapping: false,
+  });
+
+async function settleStore(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const state = useTrainingConfigStore.getState();
+    if (
+      !state.isLoadingModelDefaults &&
+      !state.isCheckingDataset &&
+      state.modelDefaultsAppliedFor === state.selectedModel
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("store did not settle");
+}
+
+test("a model found to be vision inside CPT keeps completions off for an image dataset", async () => {
+  useTrainingConfigStore.getState().reset();
+  let isVision = false;
+  setAuthFetchHandler((input) =>
+    input === "/api/hub/datasets/check-format"
+      ? datasetCheck(true)
+      : completionModel("org/model", isVision),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("org/model", "text");
+  await settleStore();
+  useTrainingConfigStore.getState().setDataset("org/images");
+  await settleStore();
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  isVision = true;
+  useTrainingConfigStore
+    .getState()
+    .setSelectedModelCacheReference("org/model", {
+      localPath: "/cache/org/model",
+      modelFormat: null,
+    });
+  await settleStore();
+  assert.equal(useTrainingConfigStore.getState().isVisionModel, true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
+
+test("an opt-out made while defaults load survives a CPT round trip", async () => {
+  useTrainingConfigStore.getState().reset();
+  let resolveDefaults!: (response: Response) => void;
+  setAuthFetchHandler((input) =>
+    input === "/api/hub/datasets/check-format"
+      ? datasetCheck(false)
+      : new Promise<Response>((resolve) => {
+          resolveDefaults = resolve;
+        }),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("org/model", "text");
+  useTrainingConfigStore.getState().setTrainOnCompletions(false);
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  useTrainingConfigStore.getState().setDataset("org/text");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  resolveDefaults(completionModel("org/model", false));
+  await settleStore();
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
+
+test("an image split picked inside CPT keeps completions off after manual toggles", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler((input, init) =>
+    input === "/api/hub/datasets/check-format"
+      ? datasetCheck(JSON.parse(String(init?.body)).train_split === "images")
+      : completionModel("org/vision", true),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("org/vision", "vision");
+  await settleStore();
+  useTrainingConfigStore.getState().setDataset("org/mixed");
+  await settleStore();
+  useTrainingConfigStore.getState().setTrainOnCompletions(false);
+  useTrainingConfigStore.getState().setTrainOnCompletions(true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  useTrainingConfigStore.getState().setDatasetSplit("images");
+  await settleStore();
+  assert.equal(useTrainingConfigStore.getState().isDatasetImage, true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});

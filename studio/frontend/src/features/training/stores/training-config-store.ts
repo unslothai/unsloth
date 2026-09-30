@@ -609,7 +609,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               if (updates.trainOnCompletions === false) {
                 updates.trainingMethodProvenance = {
                   ...current.trainingMethodProvenance,
-                  trainOnCompletionsBeforeCpt: null,
+                  trainOnCompletionsBeforeCpt: false,
                 };
               }
             }
@@ -1047,6 +1047,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainingMethodEditGeneration += 1;
           const state = get();
           const patch = buildTrainingMethodPatch(state, trainingMethod);
+          if (
+            state.trainingMethod !== "cpt" &&
+            trainingMethod === "cpt" &&
+            _trainOnCompletionsManuallySet &&
+            patch.trainingMethodProvenance
+          ) {
+            patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
+              state.trainOnCompletions;
+          }
           setUserEdit({
             ...patch,
             ...(patch.trainOnCompletions !== undefined
