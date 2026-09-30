@@ -322,7 +322,6 @@ def test_the_curve_forward_is_bound_per_instance_not_on_the_class():
 
 
 def _to_copy_inputs(proj, temb):
-    """The input shape of every dtype cast in the traced curve modulation forward."""
     from torch.fx.experimental.proxy_tensor import make_fx
 
     graph = make_fx(lambda t: proj(t))(temb).graph
@@ -331,11 +330,7 @@ def _to_copy_inputs(proj, temb):
 
 
 def test_modulation_casts_with_the_modality_axis_still_split():
-    # torch 2.12 to 2.14 Inductor mis-indexes the 1-D bias when the cast sits on the single
-    # (rows, 18 * hidden) -> (3 * rows, 6 * hidden) view of an unfused addmm and the row count is
-    # unbacked: bias[6 * hidden * row] instead of bias[6 * hidden * (row % 3)], so the second
-    # denoising step reads past the bias (illegal memory access on MiniMax-H3). Casting while the
-    # (rows, 3, 6 * hidden) axis is explicit keeps the index right; this pins that graph shape.
+    # torch 2.12-2.14 Inductor mis-indexes the bias when the cast follows the flat view (unbacked rows).
     model = _FakeH3()
     apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
     proj = model.transformer_blocks[0].adaln_proj
@@ -356,8 +351,7 @@ def test_modulation_values_match_the_single_view_form_bit_for_bit():
     not torch.cuda.is_available(), reason = "the mis-indexing is in Inductor's CUDA lowering"
 )
 def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
-    # The real failure: Studio marks temb's row count unbacked and compiles the block; the second
-    # step has two timestep rows, so adaln_indices reach rows 3..5 of the viewed modulation.
+    # Studio compiles with temb's rows unbacked; 2+ rows reach adaln_indices 3.. of the viewed modulation.
     import torch.compiler.config as compiler_config
 
     if not hasattr(compiler_config, "unbacked_sources"):
