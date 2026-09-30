@@ -97,9 +97,6 @@ def validate(
     if enabled is not None:
         if enabled_locked():
             raise ValueError(f"The Decision API is turned off by {ENV_DISABLE}.")
-        remote = parse_connection(get_model() if model is None else model) is not None
-        if enabled and not remote and (reason := runtime_unavailable_reason()):
-            raise ValueError(reason)
         values[ENABLED_KEY] = bool(enabled)
     if model is not None:
         if model_locked():
@@ -120,6 +117,10 @@ def validate(
         if device not in DEVICES:
             raise ValueError("Device must be cpu or gpu.")
         values[DEVICE_KEY] = device
+    serving = enabled if enabled is not None else model is not None and get_enabled()
+    local = parse_connection(get_model() if model is None else model) is None
+    if serving and local and (reason := runtime_unavailable_reason()):
+        raise ValueError(reason)
     return values
 
 

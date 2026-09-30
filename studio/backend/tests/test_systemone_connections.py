@@ -173,6 +173,24 @@ def test_a_connection_can_be_enabled_without_local_torch(upstream, studio):
     assert plan.json()["cached"] is True
 
 
+def test_a_remote_decision_api_cannot_switch_to_a_local_model_without_torch(studio):
+    client = _client()
+    studio[systemone_settings.ENABLED_KEY] = False
+    name = _connection()
+    assert client.put("/api/settings/systemone", json = {"enabled": True, "model": name}).status_code == 200
+    for route in ("validate", ""):
+        refused = client.request(
+            "POST" if route else "PUT",
+            f"/api/settings/systemone/{route}".rstrip("/"),
+            json = {"model": "laya-english"},
+        )
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == "The Decision API needs PyTorch."
+    assert client.get("/api/settings/systemone").json()["model"] == name
+    off = client.put("/api/settings/systemone", json = {"enabled": False, "model": "laya-english"})
+    assert off.status_code == 200, off.text
+
+
 def test_a_custom_system_one_connection_is_called_at_its_base_url(upstream):
     client = _client()
     name = _connection("custom", "systemone", "http://decider.example/v1/systemone")
