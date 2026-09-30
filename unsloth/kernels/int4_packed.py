@@ -55,6 +55,7 @@ class Int4QuantState:
         "_launchers",
         "layout",
         "_fast",
+        "training",
     )
 
     def __init__(self, scale, zero_point, g_idx, shape, bits, group_size, dtype):
@@ -69,6 +70,8 @@ class Int4QuantState:
         self._launchers = None
         self.layout = None
         self._fast = None
+        # Owning module in train mode: every caller (incl. the fast LoRA kernels) skips the fused kernel.
+        self.training = False
 
 
 @triton.jit
@@ -724,6 +727,7 @@ def int4_matmul(
     fast = True,
 ):
     """``x @ W.T`` for packed ``W``; ``x`` is ``[..., K]``. ``fast = False`` (training) keeps the exact dequantize + matmul."""
+    fast = fast and not qs.training
     shape = x.shape
     x2 = x.reshape(-1, shape[-1])
     M = x2.shape[0]

@@ -661,12 +661,15 @@ def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
     lin.train()
     with torch.no_grad():
         y = lin(x)
-    assert qs._fast is None and torch.equal(y, want)
+        # The fast LoRA kernels call int4_matmul directly (default fast = True) inside their autograd forward.
+        from unsloth.kernels.utils import matmul_lora
+        z = matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
+    assert qs._fast is None and torch.equal(y, want) and torch.equal(z, want)
 
     # Eval keeps the fused kernel (and its cache); going back to training frees it.
     lin.eval()
     with torch.no_grad():
-        lin(x)
+        matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
     assert qs._fast is not None
     lin.train()
     assert qs._fast is None

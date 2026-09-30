@@ -128,6 +128,7 @@ class Int4PackedLinear(nn.Linear):
                 self.__dict__.get("_int4_dtype") or torch.bfloat16,
             )
             qs.layout = self.__dict__.get("_int4_layout")
+            qs.training = self.training
             self.__dict__["_int4_quant_state"] = qs
             packed.quant_state = qs
         elif getattr(packed, "quant_state", None) is not qs:
@@ -159,10 +160,11 @@ class Int4PackedLinear(nn.Linear):
         return out if bias is None else out + bias.to(out.dtype)
 
     def train(self, mode = True):
-        if mode:
-            # Free the fused kernel's per-layer scale cache (1/8 of the packed weight); training never uses it.
-            qs = self.__dict__.get("_int4_quant_state")
-            if qs is not None:
+        qs = self.__dict__.get("_int4_quant_state")
+        if qs is not None:
+            qs.training = bool(mode)
+            if mode:
+                # Free the fused kernel's per-layer scale cache (1/8 of the packed weight); training never uses it.
                 qs._fast = None
         return super().train(mode)
 
