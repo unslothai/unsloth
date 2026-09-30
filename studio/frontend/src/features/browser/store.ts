@@ -4,6 +4,7 @@
 import { useChatArtifactsStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
+import type { BrowserPage } from "./api";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -62,6 +63,47 @@ export function pageDownload(tabId: string): PageDownload | undefined {
 }
 
 const isWeb = (url: string) => /^https?:\/\//i.test(url.trim());
+
+// Caps history for pages that keep redirecting.
+const MAX_HISTORY = 50;
+
+// Loaded pages by history entry, so back and forward skip the fetch. Reload bumps reloadKey.
+const MAX_CACHED_PAGES = 12;
+const MAX_CACHED_BLOB_BYTES = 8 * 1024 * 1024;
+const pageCache = new Map<BrowserEntry, { page: BrowserPage; reloadKey: number }>();
+
+const entryIds = new WeakMap<BrowserEntry, number>();
+let nextEntryId = 0;
+
+/** Stable id for a history entry; entries can share a URL. */
+export function entryKey(entry: BrowserEntry): number {
+  let id = entryIds.get(entry);
+  if (id === undefined) {
+    id = nextEntryId++;
+    entryIds.set(entry, id);
+  }
+  return id;
+}
+
+export function cachedPage(entry: BrowserEntry, reloadKey: number): BrowserPage | undefined {
+  const hit = pageCache.get(entry);
+  if (!hit || hit.reloadKey !== reloadKey) return undefined;
+  // Most recently used last.
+  pageCache.delete(entry);
+  pageCache.set(entry, hit);
+  return hit.page;
+}
+
+export function cachePage(entry: BrowserEntry, reloadKey: number, page: BrowserPage): void {
+  pageCache.delete(entry);
+  if (page.kind === "raw" && page.blob.size > MAX_CACHED_BLOB_BYTES) return;
+  pageCache.set(entry, { page, reloadKey });
+  while (pageCache.size > MAX_CACHED_PAGES) {
+    const oldest = pageCache.keys().next().value;
+    if (oldest === undefined) break;
+    pageCache.delete(oldest);
+  }
+}
 
 let nextId = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
@@ -131,6 +173,7 @@ const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) =
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
   history.push(entry);
+  if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
   return {
     ...tab,
     history,
@@ -263,7 +306,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set({ tabs: remaining, activeTabId: nextActive });
     },
     updateTab: (tabId, patch) =>
-      set((state) => ({ tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, ...patch })) })),
+      set((state) => {
+        const tab = state.tabs.find((candidate) => candidate.id === tabId);
+        // Skip no-op updates.
+        const keys = Object.keys(patch) as (keyof typeof patch)[];
+        if (!tab || keys.every((key) => tab[key] === patch[key])) return state;
+        return { tabs: patchTab(state.tabs, tabId, (current) => ({ ...current, ...patch })) };
+      }),
     focusAddress: () => set((state) => ({ focusAddressSequence: state.focusAddressSequence + 1 })),
   };
 });

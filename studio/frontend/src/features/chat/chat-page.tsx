@@ -577,19 +577,37 @@ const SingleContent = memo(function SingleContent({
     if (!chatActive) closeBrowser();
   }, [chatActive, closeBrowser]);
 
-  // The browser is full height, so the header and notice stop at its edge.
+  // The browser is full height, so the header and notice stop at its edge. Set the width on them
+  // only; on the root it would restyle the whole thread on every resize.
   const contextSurfaceRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const surface = contextSurfaceRef.current;
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
     if (!surface || !root || !showBrowserPanel) return;
-    const observer = new ResizeObserver(() => {
-      root.style.setProperty("--studio-side-panel-width", `${surface.getBoundingClientRect().width}px`);
+    let width = "";
+    const insets = () =>
+      root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
+    const apply = () => {
+      for (const element of insets()) {
+        element.style.setProperty("--studio-side-panel-width", width);
+      }
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      const next = `${Math.round(surface.getBoundingClientRect().width)}px`;
+      if (next === width) return;
+      width = next;
+      apply();
     });
-    observer.observe(surface);
+    resizeObserver.observe(surface);
+    // The model notice can mount while the panel is open.
+    const childObserver = new MutationObserver(apply);
+    childObserver.observe(root, { childList: true });
     return () => {
-      observer.disconnect();
-      root.style.removeProperty("--studio-side-panel-width");
+      resizeObserver.disconnect();
+      childObserver.disconnect();
+      for (const element of insets()) {
+        element.style.removeProperty("--studio-side-panel-width");
+      }
     };
   }, [showBrowserPanel]);
 
@@ -4288,10 +4306,12 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
+            data-side-panel-inset=""
             className="chat-header-fade pointer-events-none absolute left-0 right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
+          data-side-panel-inset=""
           className={cn(
             "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile

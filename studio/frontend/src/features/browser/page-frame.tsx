@@ -23,6 +23,28 @@ export type FrameMessage =
 
 let loadCounter = 0;
 
+// Messages that open tabs or apps, or run shortcuts. Pages can post anything, so check them here.
+const isUserAction = (message: FrameMessage) =>
+  (message.type === "navigate" && message.newTab === true) ||
+  message.type === "external" ||
+  message.type === "shortcut";
+
+// Activation outlives the click that loaded the page, so also rate limit.
+const USER_ACTION_INTERVAL_MS = 1000;
+let lastUserAction = Number.NEGATIVE_INFINITY;
+
+/** True when the frame has focus and the user just clicked or typed. */
+function allowUserAction(frame: HTMLIFrameElement, message: FrameMessage): boolean {
+  if (document.activeElement !== frame) return false;
+  if (!(navigator.userActivation?.isActive ?? true)) return false;
+  // Shortcuts aren't rate limited.
+  if (message.type === "shortcut") return true;
+  const now = performance.now();
+  if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return false;
+  lastUserAction = now;
+  return true;
+}
+
 /** A page written into the sandbox shell (opaque origin, so it can't reach Studio's storage or API). */
 export function PageFrame({
   html,
@@ -50,9 +72,11 @@ export function PageFrame({
 
   useEffect(() => {
     const listener = (event: MessageEvent) => {
-      if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+      const frame = frameRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
       const data = event.data as ({ source?: string } & FrameMessage) | null;
       if (!data || data.source !== "unsloth-browser") return;
+      if (isUserAction(data) && !allowUserAction(frame, data)) return;
       onMessageRef.current(data);
     };
     window.addEventListener("message", listener);

@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import html as _html
+import json
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
 from urllib.parse import quote, urljoin
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
@@ -44,6 +47,9 @@ _MAX_REFRESH_DELAY_S = 10
 # Fixed UA so a site's layout doesn't change between requests.
 _BROWSER_UA = _USER_AGENTS[1]
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+# Own pool, so slow sites can't starve the default executor that chat inference uses.
+_FETCH_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-fetch")
+_DISCONNECT_POLL_S = 0.25
 
 _BASE_TAG_RE = re.compile(r"<base\b[^>]*>", re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
@@ -64,14 +70,17 @@ _FRAME_CSP = (
     "img-src http: https: data: blob:; "
     "font-src http: https: data: blob:; "
     "media-src http: https: data: blob:; "
-    "connect-src http: https: ws: wss: data: blob:; "
+    # No http: or ws:, so scripts can't hit local services (WebKit has no local network protection).
+    "connect-src https: wss: data: blob:; "
     "worker-src http: https: blob:; "
     "frame-src http: https: data: blob:; "
     "object-src 'none'; "
     "base-uri http: https:; "
     "form-action 'none'; "
     f"frame-ancestors {_FRAME_ANCESTORS}; "
-    "sandbox allow-scripts allow-forms"
+    "sandbox allow-scripts allow-forms; "
+    # The shell is served from loopback; don't let that exempt pages from local network checks.
+    "treat-as-public-address"
 )
 
 # Shell a page is written into. It injects <base> and a script that turns navigations into messages
@@ -235,14 +244,19 @@ _FRAME_HTML = r"""<!doctype html>
         };
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", report, { once: true });
         else report();
-        // Watches the whole document (no <title> yet); only report changes.
+        // Watch <head> only; the whole document fires on every DOM change.
         let lastTitle = null;
-        new MutationObserver(() => {
+        const titleObserver = new MutationObserver(() => {
           const title = document.title || "";
           if (title === lastTitle) return;
           lastTitle = title;
           post({ type: "title", title });
-        }).observe(document.documentElement, { childList: true, characterData: true, subtree: true });
+        });
+        const observeTitle = () => {
+          if (document.head) titleObserver.observe(document.head, { childList: true, characterData: true, subtree: true });
+        };
+        if (document.head) observeTitle();
+        else document.addEventListener("DOMContentLoaded", observeTitle, { once: true });
         if (cfg.refresh) {
           setTimeout(() => post({ type: "navigate", url: cfg.refresh.url, replace: true }), cfg.refresh.delay * 1000);
         }
@@ -340,7 +354,9 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
     return _META_TAG_RE.sub(strip_meta, page), base_url, refresh
 
 
-def _fetch(request: BrowserFetchRequest) -> tuple[Optional[str], bytes, str, dict]:
+def _fetch(
+    request: BrowserFetchRequest, cancel_event: threading.Event
+) -> tuple[Optional[str], bytes, str, dict]:
     meta: dict = {}
     error, body, content_type = _fetch_url_raw(
         request.url,
@@ -354,30 +370,29 @@ def _fetch(request: BrowserFetchRequest) -> tuple[Optional[str], bytes, str, dic
         raw_bytes_max = _MAX_BROWSER_FETCH_BYTES,
         post_data = (request.body or "").encode() if request.method == "POST" else None,
         meta_out = meta,
+        cancel_event = cancel_event,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
-@router.post("/fetch")
-async def browser_fetch(
-    request: BrowserFetchRequest, current_subject: str = Depends(get_current_subject)
-):
-    """Fetch a page for the browser panel. HTML returns as JSON for the sandbox shell; anything
-    else (PDF, images, text) returns raw with its content type."""
-    request.url = _normalize_url_scheme(request.url.strip())
-    error, body, content_type, meta = await asyncio.to_thread(_fetch, request)
+def _build_response(
+    url: str, error: Optional[str], body: bytes, content_type: str, meta: dict
+) -> Response:
+    """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
     if error is not None:
-        logger.info("browser_fetch_failed", url = request.url, error = error)
+        logger.info("browser_fetch_failed", url = url, error = error)
         raise HTTPException(status_code = 502, detail = error)
 
-    final_url = meta.get("url") or request.url
+    final_url = meta.get("url") or url
     looks_html = not content_type and body[:512].lstrip().lower().startswith(
         (b"<!doctype html", b"<html")
     )
     if content_type in _HTML_TYPES or looks_html:
         page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
-        return JSONResponse(
-            {"url": final_url, "base": base_url, "refresh": refresh, "html": page},
+        payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
+        return Response(
+            content = json.dumps(payload, ensure_ascii = False).encode("utf-8"),
+            media_type = "application/json",
             headers = {KIND_HEADER: "html"},
         )
     return Response(
@@ -386,8 +401,40 @@ async def browser_fetch(
         headers = {
             KIND_HEADER: "raw",
             URL_HEADER: quote(final_url, safe = ":/?#[]@!$&'()*+,;=%~"),
+            # Never rendered on Studio's origin.
+            "Content-Security-Policy": "sandbox",
         },
     )
+
+
+def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
+    error, body, content_type, meta = _fetch(request, cancel_event)
+    return _build_response(request.url, error, body, content_type, meta)
+
+
+@router.post("/fetch")
+async def browser_fetch(
+    request: BrowserFetchRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Fetch a page for the browser panel. HTML returns as JSON for the sandbox shell; anything
+    else (PDF, images, text) returns raw with its content type."""
+    request.url = _normalize_url_scheme(request.url.strip())
+    cancel_event = threading.Event()
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(_FETCH_POOL, _fetch_and_build, request, cancel_event)
+    try:
+        # Stop the fetch when the panel aborts the load.
+        while True:
+            done, _ = await asyncio.wait({task}, timeout = _DISCONNECT_POLL_S)
+            if done:
+                return task.result()
+            if await http_request.is_disconnected():
+                cancel_event.set()
+                raise HTTPException(status_code = 499, detail = "Client closed request")
+    finally:
+        cancel_event.set()
 
 
 @router.get("/frame", include_in_schema = False)

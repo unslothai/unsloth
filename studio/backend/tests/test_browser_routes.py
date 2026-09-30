@@ -20,12 +20,21 @@ def _shell_response():
 
 def test_the_shell_is_sandboxed_without_same_origin():
     csp = _shell_response().headers["content-security-policy"]
-    assert csp.endswith("sandbox allow-scripts allow-forms")
+    assert "sandbox allow-scripts allow-forms;" in csp
     assert "allow-same-origin" not in csp
     assert "object-src 'none';" in csp
     # Submits are routed by the injected script; a real one would leave the proxy.
     assert "form-action 'none';" in csp
     assert "frame-ancestors 'self'" in csp
+
+
+def test_the_shell_does_not_inherit_studios_loopback_address():
+    # Pages must not inherit the shell's loopback address.
+    csp = _shell_response().headers["content-security-policy"]
+    assert csp.rstrip().endswith("treat-as-public-address")
+    # No script requests to plain-http services.
+    connect = next(part for part in csp.split(";") if part.strip().startswith("connect-src"))
+    assert "http:" not in connect.split() and "ws:" not in connect.split()
 
 
 def test_the_shell_is_exempt_from_frame_denial():
@@ -88,8 +97,18 @@ def _fetch(
     return calls
 
 
-def _call(request):
-    return asyncio.run(browser_mod.browser_fetch(request, current_subject = "user"))
+class _Client:
+    def __init__(self, disconnected = False):
+        self.disconnected = disconnected
+
+    async def is_disconnected(self):
+        return self.disconnected
+
+
+def _call(request, client = None):
+    return asyncio.run(
+        browser_mod.browser_fetch(request, client or _Client(), current_subject = "user")
+    )
 
 
 def test_html_comes_back_as_json_with_its_final_url(monkeypatch):
@@ -114,6 +133,7 @@ def test_other_bodies_pass_through_untouched(monkeypatch):
     assert response.headers["x-unsloth-browser-url"] == "https://example.com/p.pdf"
     assert response.body == pdf
     assert response.media_type == "application/pdf"
+    assert response.headers["content-security-policy"] == "sandbox"
 
 
 def test_a_form_post_sends_its_body(monkeypatch):
@@ -130,11 +150,46 @@ def test_a_refused_fetch_is_a_bad_gateway(monkeypatch):
     assert "non-public" in caught.value.detail
 
 
+def test_fetches_run_in_their_own_pool_and_pass_a_cancel_event(monkeypatch):
+    import threading
+
+    threads = []
+
+    def fake_fetch(url, **kwargs):
+        threads.append(threading.current_thread().name)
+        assert isinstance(kwargs["cancel_event"], threading.Event)
+        return None, b"<html></html>", "text/html"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    _call(browser_mod.BrowserFetchRequest(url = "https://example.com/"))
+    # Not the default executor, which chat inference shares.
+    assert threads[0].startswith("browser-fetch")
+
+
+def test_a_closed_request_cancels_the_fetch(monkeypatch):
+    seen = {}
+
+    def slow_fetch(url, **kwargs):
+        seen["cancelled"] = kwargs["cancel_event"].wait(5)
+        return "cancelled", "", ""
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", slow_fetch)
+    with pytest.raises(HTTPException) as caught:
+        _call(browser_mod.BrowserFetchRequest(url = "https://example.com/"), _Client(disconnected = True))
+    assert caught.value.status_code == 499
+    # Wait for the pool thread to see the cancel.
+    for _ in range(browser_mod._FETCH_POOL._max_workers):
+        browser_mod._FETCH_POOL.submit(lambda: None).result(5)
+    assert seen["cancelled"] is True
+
+
 def test_the_shell_keeps_widget_links_and_popups_in_check():
     shell = browser_mod._FRAME_HTML
     # href="#" belongs to the page's own click handler; it must not reload the page.
     assert 'if (raw.startsWith("#"))' in shell
     # window.open without a click or key press is a popup, and is dropped.
     assert "navigator.userActivation?.isActive !== false" in shell
-    # Title reports are deduplicated: the observer sees every DOM mutation.
+    # Title reports are deduplicated, and only <head> is observed, not every DOM change.
     assert "if (title === lastTitle) return;" in shell
+    assert "titleObserver.observe(document.head" in shell
+    assert "observe(document.documentElement" not in shell

@@ -5,14 +5,24 @@ import { Button } from "@/components/ui/button";
 import { useT } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
 import { FileView } from "./file-view";
 import { NewTabPage } from "./new-tab-page";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
-import { type BrowserTab, browserFile, currentEntry, setPageDownload, useBrowserStore } from "./store";
+import {
+  type BrowserEntry,
+  type BrowserTab,
+  browserFile,
+  cachePage,
+  cachedPage,
+  currentEntry,
+  entryKey,
+  setPageDownload,
+  useBrowserStore,
+} from "./store";
 
 type LoadState =
   | { status: "loading" }
@@ -24,6 +34,19 @@ function sameOrigin(url: string, origin: string): boolean {
     return new URL(url).origin === origin;
   } catch {
     return false;
+  }
+}
+
+/** The page's favicon, unless it points at Studio. */
+function safeFavicon(url: string | null): string | null {
+  if (!url) return null;
+  if (/^data:image\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol) || parsed.origin === window.location.origin) return null;
+    return parsed.href;
+  } catch {
+    return null;
   }
 }
 
@@ -41,7 +64,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           openExternalLink(message.url);
           break;
         case "loaded":
-          store.updateTab(tabId, { title: message.title, favicon: message.favicon, loading: false });
+          store.updateTab(tabId, { title: message.title, favicon: safeFavicon(message.favicon), loading: false });
           break;
         case "title":
           if (message.title) store.updateTab(tabId, { title: message.title });
@@ -88,36 +111,46 @@ function PageError({ url, message, onRetry }: { url: string; message: string; on
 
 function WebPage({
   tab,
-  url,
-  method,
-  body,
+  entry,
 }: {
   tab: BrowserTab;
-  url: string;
-  method?: "GET" | "POST";
-  body?: string;
+  entry: Extract<BrowserEntry, { kind: "web" }>;
 }) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
+  const { url, method, body } = entry;
+  const { reloadKey } = tab;
+  // Keyed per load; starts from the cache on back and forward.
+  const [state, setState] = useState<LoadState>(() => {
+    const page = cachedPage(entry, reloadKey);
+    return page ? { status: "ready", page } : { status: "loading" };
+  });
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
   const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
   const updateTab = useBrowserStore((store) => store.updateTab);
   const reload = useBrowserStore((store) => store.reload);
 
-  // Keyed per load, so state starts at loading.
   useEffect(() => {
+    const show = (page: BrowserPage) => {
+      if (page.kind === "raw") {
+        const name = fileNameFromUrl(page.url);
+        setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
+        updateTab(tab.id, { loading: false, title: name, displayUrl: page.url });
+      } else {
+        // Host until the frame reports the title.
+        updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
+      }
+    };
+    const cached = cachedPage(entry, reloadKey);
+    if (cached) {
+      show(cached);
+      return () => setPageDownload(tab.id, null);
+    }
     const controller = new AbortController();
     updateTab(tab.id, { loading: true });
     fetchBrowserPage({ url, method, body }, controller.signal)
       .then((page) => {
+        cachePage(entry, reloadKey, page);
         setState({ status: "ready", page });
-        if (page.kind === "raw") {
-          const name = fileNameFromUrl(page.url);
-          setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
-          updateTab(tab.id, { loading: false, title: name, displayUrl: page.url });
-        } else {
-          // Host until the frame reports the title.
-          updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
-        }
+        show(page);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -128,7 +161,7 @@ function WebPage({
       controller.abort();
       setPageDownload(tab.id, null);
     };
-  }, [url, method, body, tab.id, updateTab]);
+  }, [entry, url, method, body, reloadKey, tab.id, updateTab]);
 
   if (state.status === "loading") return <div className="size-full bg-background" />;
   if (state.status === "error") {
@@ -177,24 +210,18 @@ function LocalFile({ tab }: { tab: BrowserTab }) {
   );
 }
 
-/** One tab's content. Stays mounted once shown, keeping scroll and state. */
-export function TabView({ tab, active }: { tab: BrowserTab; active: boolean }) {
+/** One tab's content. Stays mounted while recently shown, keeping scroll and state. */
+export const TabView = memo(function TabView({ tab, active }: { tab: BrowserTab; active: boolean }) {
   const entry = currentEntry(tab);
   return (
     <div className={cn("absolute inset-0 flex min-h-0 flex-col", !active && "hidden")} aria-hidden={!active}>
       {entry.kind === "newtab" ? (
         <NewTabPage tabId={tab.id} />
       ) : entry.kind === "web" ? (
-        <WebPage
-          key={`${tab.index}:${tab.reloadKey}:${entry.url}`}
-          tab={tab}
-          url={entry.url}
-          method={entry.method}
-          body={entry.body}
-        />
+        <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />
       ) : (
         <LocalFile key={entry.fileId} tab={tab} />
       )}
     </div>
   );
-}
+});

@@ -32,7 +32,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { type IconSvgElement, HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, memo, useEffect, useRef, useState } from "react";
 import { hostOf, resolveAddress } from "./address";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserTab, browserFile, currentEntry, pageDownload, useBrowserStore } from "./store";
@@ -295,16 +295,24 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** The chat's in-app browser: tabs of web pages and opened files. */
-export function BrowserPanel() {
+// Hidden pages still run scripts, so only the most recent tabs stay mounted.
+const MAX_MOUNTED_TABS = 4;
+
+/** The chat's in-app browser: tabs of web pages and opened files. Memoized so chat renders skip it. */
+export const BrowserPanel = memo(function BrowserPanel() {
   const t = useT();
   const tabs = useBrowserStore((state) => state.tabs);
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const { goBack, goForward, reload } = useBrowserStore.getState();
-  // Mount tabs on first view, so reopening the panel loads one page, not all.
-  const [shown, setShown] = useState<ReadonlySet<string>>(() => new Set(activeTabId ? [activeTabId] : []));
-  if (activeTabId && !shown.has(activeTabId)) setShown(new Set(shown).add(activeTabId));
+  // Mount tabs on first view. Most recent last.
+  const [mounted, setMounted] = useState<readonly string[]>(() => (activeTabId ? [activeTabId] : []));
+  if (activeTabId && mounted[mounted.length - 1] !== activeTabId) {
+    const open = new Set(tabs.map((tab) => tab.id));
+    setMounted(
+      [...mounted.filter((id) => id !== activeTabId && open.has(id)), activeTabId].slice(-MAX_MOUNTED_TABS),
+    );
+  }
 
   return (
     // Full-height pane; the top inset clears a desktop titlebar.
@@ -343,9 +351,9 @@ export function BrowserPanel() {
           </div>
         ) : null}
         {tabs.map((tab) =>
-          shown.has(tab.id) ? <TabView key={tab.id} tab={tab} active={tab.id === activeTabId} /> : null,
+          mounted.includes(tab.id) ? <TabView key={tab.id} tab={tab} active={tab.id === activeTabId} /> : null,
         )}
       </div>
     </section>
   );
-}
+});
