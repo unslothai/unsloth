@@ -96,6 +96,13 @@ def test_request_model_name_picks_the_backend(backends):
     assert _routed("org/B-GGUF:Q4_K_M") == (None, primary)
     assert _routed("org/A-GGUF") == (None, primary)
     assert _routed(None) == (None, primary)
+    assert extra.last_used > 0.0
+    # The primary wins a bare name both serve.
+    inf._extra_slots.append(
+        inf._ExtraSlot(FakeLlama("org/A-GGUF", "Q8_0"), FakeOrchestrator(), "owner")
+    )
+    assert _routed("org/A-GGUF") == (None, primary)
+    assert _routed("org/A-GGUF:Q8_0")[0] is inf._extra_slots[-1]
 
 
 def test_a_safetensors_slot_is_served_by_its_own_orchestrator(backends):
@@ -147,12 +154,14 @@ def test_a_load_picks_its_slot(backends):
 
 def test_unload_drops_only_the_named_extra_slot(backends, monkeypatch):
     primary, extra = backends
-    released = []
-    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: released.append(True))
+    _hold_chat_claim(monkeypatch)
+    released, release = [], inf.release_chat_gpu_claim
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: released.append(release()))
     response = asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
     assert response.status == "unloaded"
-    assert primary.is_loaded and not extra.llama.is_loaded
-    assert inf._extra_slots == [] and released == [True]
+    assert primary.is_loaded and not extra.llama.is_loaded and inf._extra_slots == []
+    # Tried, but the claim the primary holds stays.
+    assert released == [False] and gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_a_failed_llama_unload_still_cleans_the_orchestrator(backends):
@@ -198,6 +207,18 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
     primary = asyncio.run(inf.get_status("s"))
     assert (primary.active_model, primary.loaded) == ("org/A-GGUF", ["org/B-GGUF"])
 
+    async def held_behind(subject):
+        return InferenceStatusResponse(
+            active_model = "org/A-GGUF", loaded = ["org/A-GGUF", "org/held-hf"]
+        )
+
+    # serving leaves out a model only held in memory behind the active one.
+    monkeypatch.setattr(inf, "_slot_status", held_behind)
+    status = asyncio.run(inf.get_status("s"))
+    assert status.serving == ["org/A-GGUF", "org/B-GGUF"] and "org/held-hf" in status.loaded
+    monkeypatch.setattr(inf, "_extra_slots", [])
+    assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]
+
 
 def test_stop_loading_reaches_the_slot_being_filled(backends, monkeypatch):
     primary, _ = backends
@@ -209,15 +230,6 @@ def test_stop_loading_reaches_the_slot_being_filled(backends, monkeypatch):
     response = asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/D-GGUF"), "s"))
     assert response.status == "unloaded"
     assert primary.is_loaded and not filling.llama.is_active
-
-
-def test_the_primary_wins_a_bare_name_both_serve(backends):
-    primary, _ = backends
-    inf._extra_slots.append(
-        inf._ExtraSlot(FakeLlama("org/A-GGUF", "Q8_0"), FakeOrchestrator(), "owner")
-    )
-    assert _routed("org/A-GGUF") == (None, primary)
-    assert _routed("org/A-GGUF:Q8_0")[0] is inf._extra_slots[-1]
 
 
 def test_a_slot_evicted_while_it_loads_is_torn_down(backends, monkeypatch):
@@ -377,13 +389,6 @@ def test_a_slot_load_drops_no_claim_and_a_load_that_tears_nothing_down_stops_no_
     assert "if on_reload_confirmed is not None:" not in source
 
 
-def test_routing_marks_a_slot_as_used(backends):
-    _, extra = backends
-    assert extra.last_used == 0.0
-    _routed("org/B-GGUF")
-    assert extra.last_used > 0.0
-
-
 def test_a_load_prices_the_vram_the_other_servers_hold():
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -410,14 +415,6 @@ def test_a_load_prices_the_vram_the_other_servers_hold():
 def _hold_chat_claim(monkeypatch):
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
     monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
-
-
-def test_unloading_the_last_slot_keeps_the_claim_the_primary_holds(backends, monkeypatch):
-    primary, _ = backends
-    _hold_chat_claim(monkeypatch)
-    asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
-    assert primary.is_active and inf._extra_slots == []
-    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_a_failed_slot_load_drops_the_slot_but_keeps_the_primarys_claim(backends, monkeypatch):
@@ -466,9 +463,13 @@ def test_unloading_a_generating_slot_is_refused_unless_forced(backends, monkeypa
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: True)
     event = threading.Event()
     extra.generations.add(event)
-    with pytest.raises(HTTPException) as excinfo:
+    with (
+        active_generations.ActiveGeneration(event, thread_id = "t1"),
+        pytest.raises(HTTPException) as excinfo,
+    ):
         asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
-    assert excinfo.value.status_code == 409 and extra.llama.is_loaded and not event.is_set()
+    assert excinfo.value.status_code == 409 and excinfo.value.detail["thread_ids"] == ["t1"]
+    assert extra.llama.is_loaded and not event.is_set()
 
     def finish_on_cancel():
         event.wait(5)
@@ -520,16 +521,6 @@ def test_a_primary_swap_neither_refuses_on_nor_stops_another_models_chats(backen
     assert on_primary.is_set() and not on_slot.is_set()
 
 
-def test_a_slot_refusal_names_its_own_chats(backends):
-    _, extra = backends
-    event = threading.Event()
-    extra.generations.add(event)
-    with active_generations.ActiveGeneration(event, thread_id = "t1"):
-        with pytest.raises(HTTPException) as excinfo:
-            inf._raise_or_cancel_slot_generations(extra, force = False)
-    assert excinfo.value.detail["thread_ids"] == ["t1"]
-
-
 def test_reloading_a_kept_model_stops_only_its_own_chats(backends, monkeypatch):
     _, extra = backends
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
@@ -561,6 +552,9 @@ def test_training_sizes_and_frees_the_models_kept_alongside(backends, monkeypatc
     monkeypatch.setattr(inf, "_loading_slot", (extra, "org/D-GGUF"))
     assert training_vram.summarize_resident_chat()["loading"]
     monkeypatch.setattr(inf, "_loading_slot", None)
+    extra.orchestrator.loading_models = {"org/C"}
+    assert training_vram.summarize_resident_chat()["loading"]
+    extra.orchestrator.loading_models = set()
     assert training_vram.free_chat_models_for_training("test") == ["kept:org/B-GGUF"]
     assert inf._extra_slots == [] and not extra.llama.is_active
 
@@ -602,13 +596,6 @@ def test_a_chat_starting_on_a_victim_during_eviction_spares_it(backends, monkeyp
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert asyncio.run(inf.load_model_gated(request, None, "s")) == "loaded"
     assert mid in inf._extra_slots and mid.llama.is_active
-
-
-def test_victims_that_cannot_make_room_are_left_loaded(backends):
-    _, extra = backends
-    extra.llama._planned_vram_mib = {0: 3000}
-    assert inf._eviction_victims(None, 10000) == []
-    assert inf._eviction_victims(None, 2000) == [extra]
 
 
 def test_a_routed_request_holds_its_slot_until_it_ends(backends):
@@ -672,7 +659,7 @@ def test_a_slot_evicted_while_a_request_routes_is_not_served(backends, monkeypat
     assert _routed("org/B-GGUF") == (None, backends[0])
 
 
-def test_a_slot_on_another_gpu_is_no_victim(backends):
+def test_eviction_skips_other_gpus_and_victims_that_cannot_make_room(backends):
     _, extra = backends
     extra.llama._planned_vram_mib = {1: 9000}
     other = _slot("org/D-GGUF", last_used = 5.0)
@@ -680,6 +667,8 @@ def test_a_slot_on_another_gpu_is_no_victim(backends):
     inf._extra_slots.append(other)
     assert inf._eviction_victims(None, 5000, (0,)) == [other]
     assert inf._eviction_victims(None, 5000) == [extra]
+    # Victims that together cannot make room are left loaded.
+    assert inf._eviction_victims(None, 20000) == []
 
 
 def test_a_token_count_waits_only_on_its_own_models_chats(backends):
@@ -744,19 +733,6 @@ def test_a_llama_update_stops_every_llama_slot_and_only_those(backends, monkeypa
     inf._extra_slots.append(loading)
     monkeypatch.setattr(inf, "_loading_slot", (loading, "org/E"))
     assert inf.unload_llama_slots() == 0
-
-
-def test_training_sees_a_model_still_loading_alongside(backends, monkeypatch):
-    primary, extra = backends
-    primary.unload_model()
-    extra.llama.unload_model()
-    extra.orchestrator.loading_models = {"org/C"}
-    summary = training_vram.summarize_resident_chat()
-    assert summary["any"] and summary["loading"]
-    extra.orchestrator.loading_models = set()
-    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/D-GGUF"))
-    summary = training_vram.summarize_resident_chat()
-    assert summary["any"] and summary["loading"]
 
 
 def test_deleting_a_model_another_slot_serves_or_fills_is_refused(backends, monkeypatch):
@@ -877,24 +853,13 @@ def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
 def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, tmp_path):
     import struct
 
-    class _Orch:
-        active_model_name = None
-        models = {}
-        loading_models = ()
-
-        def set_parallel_slots(self, n):
-            pass
-
-    class _Refused(Exception):
-        pass
-
     npu = SimpleNamespace(
         is_loaded = True,
         loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
         resident = lambda: None,
         unload = lambda: None,
     )
-    monkeypatch.setattr(orchestrator, "_inference_backend", _Orch())
+    monkeypatch.setattr(orchestrator, "_inference_backend", FakeOrchestrator())
     monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
     torn_down = []
@@ -909,7 +874,7 @@ def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, 
     def _gate(*, cancel):
         asked.append(cancel)
         if active_generations.count() and not cancel:
-            raise _Refused
+            raise LookupError("refused")
         return 0
 
     def _s(x):
@@ -954,20 +919,6 @@ def test_active_generations_for_a_model_lists_only_its_chats(backends):
         assert get("?model=org/B-GGUF") == ["chat-on-B"]
         assert get("?model=org/A-GGUF") == ["chat-on-A"]
         assert sorted(get("")) == ["chat-on-A", "chat-on-B"]
-
-
-def test_serving_leaves_out_a_model_only_held_behind_the_active_one(backends, monkeypatch):
-    async def slot_status(subject):
-        return InferenceStatusResponse(
-            active_model = "org/A-GGUF", loaded = ["org/A-GGUF", "org/held-hf"]
-        )
-
-    monkeypatch.setattr(inf, "_slot_status", slot_status)
-    status = asyncio.run(inf.get_status("s"))
-    assert status.serving == ["org/A-GGUF", "org/B-GGUF"]
-    assert "org/held-hf" in status.loaded
-    monkeypatch.setattr(inf, "_extra_slots", [])
-    assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]
 
 
 def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():
