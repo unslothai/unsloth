@@ -80,6 +80,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -101,7 +102,7 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  Globe02Icon,
+  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -138,7 +139,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
@@ -558,13 +559,6 @@ function formatRelativeShort(iso: string): string {
   return `${d}d`;
 }
 
-function createNavigationNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
@@ -799,6 +793,13 @@ function ImagesWorkflowList({
   );
 }
 
+// Hugeicons' three dots, spread 1.5 units and centred vertically (its own sit half a unit low).
+const MORE_DOTS_ICON: IconSvgElement = [
+  ["circle", { cx: "4.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+];
+
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
   icon,
@@ -1004,39 +1005,12 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
-  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
-  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
-  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
-  const moreOpen = moreHoverOpen || morePinnedOpen;
-  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearMoreCloseTimer = useCallback(() => {
-    if (!moreCloseTimer.current) return;
-    clearTimeout(moreCloseTimer.current);
-    moreCloseTimer.current = null;
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
+  const moreFocusReturning = useRef(false);
+  const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
+    if (!(next && moreFocusReturning.current)) setMoreTooltipOpen(next);
   }, []);
-  const openMorePreview = useCallback(() => {
-    clearMoreCloseTimer();
-    setMoreHoverOpen(true);
-  }, [clearMoreCloseTimer]);
-  const closeMorePreviewSoon = useCallback(() => {
-    clearMoreCloseTimer();
-    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
-  }, [clearMoreCloseTimer]);
-  const handleMoreOpenChange = useCallback((next: boolean) => {
-    if (next) {
-      setMorePinnedOpen(true);
-      return;
-    }
-    setMorePinnedOpen(false);
-    setMoreHoverOpen(false);
-  }, []);
-  useEffect(
-    () => () => {
-      clearMoreCloseTimer();
-    },
-    [clearMoreCloseTimer],
-  );
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -2727,7 +2701,7 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: Globe02Icon,
+      icon: InternetIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
@@ -5041,7 +5015,7 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5059,10 +5033,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -5282,17 +5256,17 @@ export function AppSidebar() {
               })}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
-                <SidebarMenuItem
-                  onPointerEnter={openMorePreview}
-                  onPointerLeave={closeMorePreviewSoon}
-                >
+                <SidebarMenuItem>
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={handleMoreOpenChange}
+                    onOpenChange={setMoreOpen}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
-                    <Tooltip>
+                    <Tooltip
+                      open={moreTooltipOpen && !moreOpen}
+                      onOpenChange={handleMoreTooltipOpenChange}
+                    >
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
@@ -5300,25 +5274,12 @@ export function AppSidebar() {
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
-                            onPointerDownCapture={(event) => {
-                              if (event.button !== 0 || event.ctrlKey) return;
-                              event.preventDefault();
-                              event.stopPropagation();
-                              event.currentTarget.focus({ preventScroll: true });
-                              clearMoreCloseTimer();
-                              if (morePinnedOpen) {
-                                setMorePinnedOpen(false);
-                                setMoreHoverOpen(false);
-                              } else {
-                                setMorePinnedOpen(true);
-                              }
-                            }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MoreHorizontalIcon}
+                              icon={MORE_DOTS_ICON}
                               strokeWidth={1.75}
-                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                              className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
                             <span className="text-ui-14p5 leading-ui-19 tracking-nav">
                               {t("shell.navigation.more")}
@@ -5341,8 +5302,12 @@ export function AppSidebar() {
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onPointerEnter={openMorePreview}
-                      onPointerLeave={closeMorePreviewSoon}
+                      onCloseAutoFocus={() => {
+                        moreFocusReturning.current = true;
+                        queueMicrotask(() => {
+                          moreFocusReturning.current = false;
+                        });
+                      }}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
@@ -5732,7 +5697,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
