@@ -942,6 +942,16 @@ export async function getDocxAttachmentError(
   return null;
 }
 
+export function getPdfAttachmentTextError(
+  fileName: string,
+  text: string,
+  pythonToolOpensFile: boolean,
+): string | null {
+  return text || pythonToolOpensFile
+    ? null
+    : `PDF has no readable text: ${fileName}. Scanned pages can't be read.`;
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
@@ -1060,6 +1070,109 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   return value;
 }
 
+const HTML_PRESCAN_BYTES = 1024;
+// Comment or whole tag, quotes included; an unterminated tag ends the scan, as in browsers.
+const HTML_PRESCAN_TAG_RE =
+  /<!--[\s\S]*?(?:-->|$)|<([a-z][^\s/>]*)((?:[\s/](?:[^>"']|"[^"]*"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?][\s\S]*/gi;
+const HTML_META_ATTR_RE =
+  /([^\s"'/=>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?/g;
+const HTML_META_CONTENT_CHARSET_RE = /charset\s*=\s*["']?\s*([^\s"';]+)/i;
+
+function declaredHtmlEncoding(bytes: Uint8Array): string | null {
+  const head = new TextDecoder("windows-1252").decode(
+    bytes.subarray(0, HTML_PRESCAN_BYTES),
+  );
+  for (const [, tag, attributes] of head.matchAll(HTML_PRESCAN_TAG_RE)) {
+    if (tag?.toLowerCase() !== "meta") {
+      continue;
+    }
+    const attrs = new Map<string, string>();
+    for (const [, name, ...values] of attributes.matchAll(HTML_META_ATTR_RE)) {
+      const key = name.toLowerCase();
+      if (!attrs.has(key)) {
+        attrs.set(key, values.join(""));
+      }
+    }
+    let label = attrs.get("charset");
+    if (
+      label === undefined &&
+      attrs.get("http-equiv")?.toLowerCase() === "content-type"
+    ) {
+      label = attrs.get("content")?.match(HTML_META_CONTENT_CHARSET_RE)?.[1];
+    }
+    if (!label) {
+      continue;
+    }
+    let encoding: string;
+    try {
+      encoding = new TextDecoder(label).encoding;
+    } catch {
+      continue;
+    }
+    // WHATWG prescan: a <meta> claiming UTF-16 means UTF-8.
+    if (encoding.startsWith("utf-16")) {
+      return "utf-8";
+    }
+    return encoding === "x-user-defined" ? "windows-1252" : encoding;
+  }
+  return null;
+}
+
+export function decodeHtmlAttachmentBytes(
+  bytes: Uint8Array,
+  truncated = false,
+): string {
+  const bom =
+    bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+      ? "utf-8"
+      : bytes[0] === 0xff && bytes[1] === 0xfe
+        ? "utf-16le"
+        : bytes[0] === 0xfe && bytes[1] === 0xff
+          ? "utf-16be"
+          : null;
+  if (bom) {
+    return new TextDecoder(bom).decode(bytes);
+  }
+  const declared = declaredHtmlEncoding(bytes);
+  // Stale meta after a UTF-8 re-save; short CJK can be valid in both, and ISO-2022-JP is 7-bit.
+  if (declared && declared !== "utf-8") {
+    const utf8 = strictDecode("utf-8", bytes, truncated);
+    if (
+      utf8 !== null &&
+      utf8.length !== bytes.length &&
+      (!MULTIBYTE_HTML_ENCODINGS.has(declared) ||
+        strictDecode(declared, bytes, truncated) === null)
+    ) {
+      return utf8;
+    }
+  }
+  return new TextDecoder(declared ?? "utf-8").decode(bytes);
+}
+
+const MULTIBYTE_HTML_ENCODINGS = new Set([
+  "big5",
+  "euc-jp",
+  "euc-kr",
+  "gb18030",
+  "gbk",
+  "iso-2022-jp",
+  "shift_jis",
+]);
+
+function strictDecode(
+  label: string,
+  bytes: Uint8Array,
+  truncated: boolean,
+): string | null {
+  try {
+    return new TextDecoder(label, { fatal: true }).decode(bytes, {
+      stream: truncated,
+    });
+  } catch {
+    return null;
+  }
+}
+
 export function extractHtmlAttachmentText(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
   for (const el of doc.querySelectorAll("script, style, noscript, template")) {
@@ -1127,7 +1240,7 @@ export async function readAttachmentText(
   }
   // raw markup, not the extraction; kept before opendocument to match the adapters
   if (isHtmlAttachment(name, contentType)) {
-    return { label: null, ...(await readBoundedText(file)) };
+    return { label: null, ...(await readBoundedHtml(file)) };
   }
   if (isOpenDocumentAttachment(name, contentType)) {
     const { label, text } = await readOpenDocumentAttachmentContent(
@@ -1181,6 +1294,15 @@ async function readBoundedText(
     text: decodeTextAttachmentBytes(bytes, file.name, truncated, whole),
     truncated,
   };
+}
+
+async function readBoundedHtml(
+  file: File,
+): Promise<{ text: string; truncated: boolean }> {
+  const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
+  const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
+  const bytes = new Uint8Array(await slice.arrayBuffer());
+  return { text: decodeHtmlAttachmentBytes(bytes, truncated), truncated };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview unwraps the

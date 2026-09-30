@@ -366,7 +366,6 @@ export function DecisionApiSection(): ReactElement | null {
                 })
               : t("settings.apiKeys.decisionApi.enableDescription")
           }
-          alignTop={true}
         >
           <Switch
             checked={enabled}
