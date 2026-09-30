@@ -15,6 +15,7 @@ const {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  getProviderCapabilities,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -461,6 +462,32 @@ test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can se
     [...getExternalReasoningCapabilities("anthropic", "claude-sonnet-4-6-20260219").reasoningEffortLevels],
     ["none", "low", "medium", "high", "max"],
   );
+});
+
+test("the Claude sampling panel offers only what the backend sends Anthropic", () => {
+  for (const id of [
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-20241022",
+    "claude-opus-4-20250514",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.temperature, true, id);
+    assert.equal(caps?.topK, true, id);
+  }
+  for (const id of [
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-preview",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.temperature, false, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.topK, false, id);
+  }
 });
 
 // #11557: claiming a sandbox the backend registry lacks sends `code_execution` to a connection that runs nothing.
