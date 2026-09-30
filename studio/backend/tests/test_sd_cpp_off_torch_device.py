@@ -437,3 +437,48 @@ def test_prediction_filters_a_leftover_build_like_selection(monkeypatch, install
     if not install_allowed:
         r.select_and_activate_engine(detect_family("z-image"))
         assert r.active_engine_name() == predicted
+
+
+@pytest.mark.parametrize(
+    "family, kind, evicted", [("minimax-h3", "gguf", True), ("ltx-2", "pipeline", False)]
+)
+def test_a_native_video_load_frees_the_off_torch_images_engine(monkeypatch, family, kind, evicted):
+    """An off-torch image server holds the managed sd.cpp tree without owning DIFFUSION."""
+    import asyncio
+
+    from core.inference import diffusion_compat, diffusion_device, video
+    from hub.services.models import account_access
+    from models.inference import VideoLoadRequest
+    from routes import video as video_route
+
+    unloaded: list[str] = []
+    images = SimpleNamespace(runs_off_torch_device = True, unload = lambda: unloaded.append("images"))
+    backend = SimpleNamespace(
+        validate_load_request = lambda *_a, **_k: SimpleNamespace(name = family, base_repo = None),
+        begin_load = lambda *_a, **_k: {},
+    )
+
+    async def _no_ordinal(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: images)
+    monkeypatch.setattr(video, "get_video_backend", lambda: backend)
+    monkeypatch.setattr(video, "assert_video_precision_available", lambda *_a, **_k: None)
+    monkeypatch.setattr(video, "resolve_video_model_kind", lambda *_a, **_k: kind, raising = False)
+    monkeypatch.setattr(
+        video_route, "resolve_video_model_kind", lambda *_a, **_k: kind, raising = False
+    )
+    monkeypatch.setattr(
+        diffusion_device,
+        "resolve_diffusion_device_target",
+        lambda *_a, **_k: SimpleNamespace(device = "cpu", backend = "cpu"),
+    )
+    monkeypatch.setattr(diffusion_compat, "assert_pick_is_not_speech", lambda *_a, **_k: None)
+    monkeypatch.setattr(video_route, "_guard_video_load_against_training", lambda: None)
+    monkeypatch.setattr(video_route, "_selected_gpu_ordinal", _no_ordinal)
+    monkeypatch.setattr(account_access, "admit_media_load", lambda _k, fn, *_a: fn())
+    monkeypatch.setattr(account_access, "note_resident_components", lambda *_a, **_k: None)
+
+    request = VideoLoadRequest(model_path = "org/video", gguf_filename = "model.gguf")
+    asyncio.run(video_route.load_video_model_gated(request, "tester"))
+    assert unloaded == (["images"] if evicted else [])
