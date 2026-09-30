@@ -633,6 +633,13 @@ class SystemOneModelOption(BaseModel):
     download_bytes: int
 
 
+class SystemOneConnectionOption(BaseModel):
+    name: str
+    provider_id: str
+    provider: str
+    model: str
+
+
 class SystemOneSettingsResponse(BaseModel):
     enabled: bool
     enabled_locked: bool
@@ -1494,15 +1501,43 @@ def validate_systemone_settings(
                 raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
+@_owner_settings_router.get(
+    "/systemone/connections", response_model = list[SystemOneConnectionOption]
+)
+async def list_systemone_connections(
+    current_subject: str = Depends(get_current_subject),
+) -> list[SystemOneConnectionOption]:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+
+    await refresh_listed_decision_models()
+    return [
+        SystemOneConnectionOption(
+            name = catalog.Connection(row["id"], model).name,
+            provider_id = row["id"],
+            provider = row["display_name"],
+            model = model,
+        )
+        for row, models in await asyncio.to_thread(catalog.decision_connections)
+        for model in models
+    ]
+
+
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
     model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
 
-    checkpoint = catalog.default_checkpoint() if model is None else catalog.resolve(model)
+    checkpoint = (
+        catalog.default_checkpoint()
+        if model is None
+        else catalog.parse_connection(model) or catalog.resolve(model)
+    )
     if checkpoint is None:
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    if isinstance(checkpoint, catalog.Connection):
+        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
     return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
 
 

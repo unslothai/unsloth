@@ -26,6 +26,7 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["vllm", "/provider-logos/vllm.svg"],
   ["ollama", "/provider-logos/ollama.svg"],
   ["llama_cpp", "/provider-logos/llama_cpp.svg"],
+  ["liquid", "/provider-logos/liquid.svg"],
 ]);
 
 /** Public asset path shared by Connections, agent icons, and the model picker. */
