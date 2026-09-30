@@ -5,6 +5,7 @@
 
 import {
   AudioWave01Icon,
+  Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
   Image02Icon,
@@ -22,6 +23,7 @@ export type AttachmentFileKind =
   | "pdf"
   | "audio"
   | "video"
+  | "word"
   | "document"
   | "spreadsheet"
   | "presentation"
@@ -42,7 +44,8 @@ register(
   "mp3 mp2 wav m4a ogg oga opus flac aac aiff aif aifc caf wma amr",
 );
 register("video", "mp4 m4v mov mkv avi webm 3gp 3g2 mpg mpeg wmv");
-register("document", "doc docx odt rtf pages epub");
+register("word", "doc docx docm dot dotx dotm odt ott rtf gdoc");
+register("document", "pages epub");
 register("spreadsheet", "csv tsv xls xlsx xlsm ods numbers");
 register("presentation", "ppt pptx odp key");
 register("web", "html htm xhtml mhtml");
@@ -52,6 +55,18 @@ register(
 );
 register("text", "txt md markdown mdx rst log patch diff tex srt vtt");
 register("archive", "zip tar gz tgz bz2 xz zst 7z rar");
+
+// Word, Google Docs and OpenDocument text, for files that arrive without an extension.
+const WORD_TYPES = new Set([
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+  "application/vnd.ms-word.document.macroenabled.12",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.google-apps.document",
+  "application/rtf",
+  "text/rtf",
+]);
 
 const CODE_BASENAMES = new Set(["dockerfile", "makefile", "gemfile", "rakefile"]);
 
@@ -75,6 +90,7 @@ export function attachmentFileKind(
   if (extension && Object.hasOwn(EXTENSION_KINDS, extension)) {
     return EXTENSION_KINDS[extension];
   }
+  if (WORD_TYPES.has(mime.split(";", 1)[0]!.trim())) return "word";
   const base = (name ?? "").toLowerCase().split(/[\\/]/).pop() ?? "";
   if (CODE_BASENAMES.has(base)) return "code";
   if (mime.startsWith("text/")) return "text";
@@ -87,6 +103,7 @@ export const ATTACHMENT_KIND_ICONS = {
   pdf: Pdf01Icon,
   audio: AudioWave01Icon,
   video: FlimSlateIcon,
+  word: Doc01Icon,
   document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
@@ -102,6 +119,8 @@ export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   pdf: "text-red-500",
   audio: "text-violet-500",
   video: "text-pink-400 scale-90",
+  // Google Docs' blue, close to Word's lighter blue.
+  word: "text-[#4285F4]",
   document: "text-blue-500",
   spreadsheet: "text-emerald-500",
   presentation: "text-orange-500",
@@ -117,6 +136,7 @@ const KIND_LABELS: Record<Exclude<AttachmentFileKind, "file">, string> = {
   pdf: "PDF",
   audio: "Audio",
   video: "Video",
+  word: "Document",
   document: "Document",
   spreadsheet: "Spreadsheet",
   presentation: "Presentation",
