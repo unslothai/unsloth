@@ -45,6 +45,20 @@ export function normalizeLlamaCppConfig(
   };
 }
 
+/** The mode switch: coming back to custom restores the last source instead of a blank one. */
+export function toggledLlamaCppConfig(
+  value: LlamaCppConfig | undefined,
+  lastCustom: { ini: string; section: string | null } | null,
+): LlamaCppConfig {
+  if (value?.mode === "custom") return { version: 1, mode: "managed" };
+  return {
+    version: 1,
+    mode: "custom",
+    ini: lastCustom?.ini ?? "[*]\n",
+    section: lastCustom?.section ?? null,
+  };
+}
+
 /** Suggestions for the selector, never a parser or a validation verdict. */
 export function customConfigSections(ini: string): string[] {
   return [

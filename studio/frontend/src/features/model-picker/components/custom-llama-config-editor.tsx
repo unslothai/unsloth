@@ -16,9 +16,12 @@ import { consumeNativePathToken } from "@/features/native-intents";
 import {
   customConfigSections,
   MAX_LLAMA_CPP_CONFIG_BYTES,
+  toggledLlamaCppConfig,
   type LlamaCppConfig,
   type LlamaCppConfigSummary,
 } from "../model-config/llama-cpp-config";
+
+const lastCustomSource = new Map<string, { ini: string; section: string | null }>();
 
 export function CustomLlamaConfigEditor({
   value,
@@ -51,6 +54,11 @@ export function CustomLlamaConfigEditor({
   const active = value?.mode === "custom";
   const ini = active ? value.ini : "";
   const section = active ? value.section : null;
+  // Module scope, not a ref: a refused load remounts the editor after dropping the source from value.
+  const sourceKey = `${modelPath}\u0000${ggufVariant ?? ""}`;
+  useEffect(() => {
+    if (active) lastCustomSource.set(sourceKey, { ini, section });
+  }, [active, ini, section, sourceKey]);
   const inputKey = JSON.stringify([
     modelPath,
     ggufVariant,
@@ -144,14 +152,10 @@ export function CustomLlamaConfigEditor({
         </span>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
           onClick={() =>
-            onChange(
-              active
-                ? { version: 1, mode: "managed" }
-                : { version: 1, mode: "custom", ini: "[*]\n", section: null },
-            )
+            onChange(toggledLlamaCppConfig(value, lastCustomSource.get(sourceKey) ?? null))
           }
         >
           {active ? "Use Studio settings" : "Use custom configuration"}

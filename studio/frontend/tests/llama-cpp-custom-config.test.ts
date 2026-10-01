@@ -14,6 +14,7 @@ const { store } = installLocalStorageFake();
 const {
   normalizeLlamaCppConfig,
   customConfigSections,
+  toggledLlamaCppConfig,
   llamaCppConfigPayload,
   customSamplingPayload,
   markSamplingFields,
@@ -82,6 +83,22 @@ test("removing a selected section clears the editor's stale selection", async ()
   assert.equal(changed?.section, null);
   onChange({ target: { value: custom.ini } });
   assert.equal(changed?.section, "my-model");
+});
+
+test("switching back to custom restores the last source instead of a blank one", () => {
+  assert.deepEqual(toggledLlamaCppConfig(custom, null), managed);
+  assert.deepEqual(toggledLlamaCppConfig(managed, { ini: custom.ini, section: custom.section }), custom);
+  assert.deepEqual(toggledLlamaCppConfig(undefined, null), {
+    version: 1,
+    mode: "custom",
+    ini: "[*]\n",
+    section: null,
+  });
+  const editor = readSrc("features/model-picker/components/custom-llama-config-editor.tsx");
+  // A refused load remounts the editor, so the remembered source has to live outside it.
+  assert.match(editor, /^const lastCustomSource = new Map</m);
+  assert.match(editor, /toggledLlamaCppConfig\(value, lastCustomSource\.get\(sourceKey\) \?\? null\)/);
+  assert.match(editor, /if \(active\) lastCustomSource\.set\(sourceKey, \{ ini, section \}\)/);
 });
 
 test("custom source and selection round-trip through storage and API without consuming legacy extras", () => {
