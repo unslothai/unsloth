@@ -5,8 +5,6 @@
 
 import re
 
-from .cells import text_cell_check
-
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
@@ -642,6 +640,9 @@ def _has_image_header(data: bytes) -> bool:
 
 def detect_vlm_dataset_structure(dataset):
     """Detect which VLM dataset shape this is: standard VLM messages (image objects in content), Llava format (image indices plus a separate images column), or a simple image + text pair needing conversion."""
+    # Imported here: this module is also loaded on its own by file path.
+    from .cells import text_cell_check
+
     try:
         sample = next(iter(dataset))
     except StopIteration:
