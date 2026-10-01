@@ -3886,7 +3886,11 @@ from core.inference.providers import (
     provider_runs_local_tools,
     validate_provider_base_url,
 )
-from core.inference.external_provider import ExternalProviderClient, _is_openai_family_cloud
+from core.inference.external_provider import (
+    ExternalProviderClient,
+    _is_openai_family_cloud,
+    caches_at_the_last_block,
+)
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
     is_ui_control_sse_line,
@@ -25259,7 +25263,10 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
-        thread_id = getattr(payload, "thread_id", None),
+        # a thread's date note would sit on the cache breakpoint and move off it next turn.
+        thread_id = None
+        if caches_at_the_last_block(provider_type, model, payload.enable_prompt_caching)
+        else getattr(payload, "thread_id", None),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -25304,6 +25311,7 @@ async def _proxy_to_external_provider(
             compaction_threshold = payload.compaction_threshold,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
+            thread_id = payload.thread_id,
         )
         # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
         managed_finish = _TurnFinish()
@@ -35638,7 +35646,7 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     """Convert image bytes to base64 PNG for formats llama-server cannot decode."""
     from PIL import Image
 
-    img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
+    img = _mcp_flattened_rgb(Image.open(io.BytesIO(raw)))
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -35725,6 +35733,17 @@ def _llama_image_data_url(raw: bytes) -> str:
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
         upright = exif_upright(img)
+        # 16-bit tRNS keys cannot survive the 8-bit scaling, so those pass through as before.
+        if img.has_transparency_data and not img.mode.startswith("I;16"):
+            # Alpha band only: no RGBA copy of opaque screenshots.
+            bands = img.getbands()
+            alpha = img.getchannel("A") if "A" in bands else img.convert("RGBA").getchannel("A")
+            if alpha.getextrema()[0] < 255:
+                del alpha
+                buf = io.BytesIO()
+                # Reuse this decode: a second one doubles peak memory on large images.
+                _mcp_flattened_rgb(upright).save(buf, format = "PNG")
+                return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     if upright is not img:
         buf = io.BytesIO()
         if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
@@ -35736,7 +35755,7 @@ def _llama_image_data_url(raw: bytes) -> str:
                 subsampling = JpegImagePlugin.get_sampling(img),
             )
             return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-        _scaled_from_16_bit(upright).convert("RGB").save(buf, format = "PNG")
+        _mcp_flattened_rgb(upright).save(buf, format = "PNG")
         return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
         return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
@@ -41468,6 +41487,28 @@ def _training_is_active() -> bool:
     return _diffusion_training_active()
 
 
+def _unload_native_video_sharing_the_sd_cpp_tree() -> None:
+    """An off-torch image load skips the arbiter, a native H3 model's only evictor, yet may reinstall
+    the managed sd.cpp tree that model runs from."""
+    from core.inference import gpu_arbiter
+    from core.inference.video import get_video_backend
+
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    video = get_video_backend()
+    # engine is published at commit; a downloading H3 load shows only in _loading, from begin_load on.
+    loading = getattr(video, "_loading", None)
+    h3_loading = (
+        loading is not None
+        and loading.error is None
+        and H3_GGUF_REPO in (getattr(loading, "asset_repos", None) or ())
+    )
+    if h3_loading or video.status().get("engine") == "sd_cpp":
+        logger.info("Unloading the native video model: the Images load replaces its sd.cpp build")
+        video.unload()
+        gpu_arbiter.release(gpu_arbiter.VIDEO)
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -41817,6 +41858,7 @@ async def load_diffusion_model_gated(
         annotate_status,
         begin_load_on,
         engine_for,
+        off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
     )
@@ -41850,8 +41892,11 @@ async def load_diffusion_model_gated(
             model_kind = kind,
             base_repo = request.base_repo,
         )
+        # Off-torch native shares no VRAM with training or chat; re-settled after selection (diffusers lands on torch's card).
+        off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
-        _guard_diffusion_load_against_training()
+        if off_torch is None:
+            _guard_diffusion_load_against_training()
         # Take the GPU from chat only on a non-CPU device: gate on the device, not the engine name.
         # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
@@ -41888,6 +41933,9 @@ async def load_diffusion_model_gated(
             )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
+        if off_torch is not None and pending_name != ENGINE_SD_CPP:
+            _guard_diffusion_load_against_training()
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
         # makes the identical network-free check, but it runs inside acquire_for -- which evicts
         # chat under the arbiter lock BEFORE the register callback -- and after selection, which
@@ -41939,6 +41987,8 @@ async def load_diffusion_model_gated(
 
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
+        if off_torch is not None and pending_name == ENGINE_SD_CPP:
+            await asyncio.to_thread(_unload_native_video_sharing_the_sd_cpp_tree)
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             functools.partial(
@@ -41948,6 +41998,10 @@ async def load_diffusion_model_gated(
                 model_kind = kind,
                 # The ordinal resolved above: re-resolving re-ranks by free VRAM and can pick another card.
                 gpu_ordinal = gpu_ordinal,
+                # A fallback lands on torch's card: refuse it during training before it unloads anything.
+                before_fallback = (
+                    _guard_diffusion_load_against_training if off_torch is not None else None
+                ),
             )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -41983,6 +42037,11 @@ async def load_diffusion_model_gated(
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
                 )
+        if off_torch is not None:
+            if activated == ENGINE_SD_CPP:
+                needs_gpu = False
+            else:
+                _guard_diffusion_load_against_training()
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,
