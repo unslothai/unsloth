@@ -1420,6 +1420,29 @@ class FastSentenceTransformer(FastModel):
                 )
 
     @staticmethod
+    def _commit_of_response(exception):
+        """The commit a hub error's own response was answered at, or "".
+
+        hf_hub_download's 404 carries x-repo-commit, so the commit that established an
+        absence is already in hand. Only the remote variants of the error carry a
+        response, and the header can be absent through a proxy, so this returns "" and the
+        caller leaves the load unpinned rather than guessing.
+        """
+        response = getattr(exception, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return ""
+        try:
+            sha = headers.get("x-repo-commit") or headers.get("X-Repo-Commit") or ""
+        except Exception:
+            return ""
+        if isinstance(sha, str) and len(sha) == 40:
+            lowered = sha.lower()
+            if all(c in "0123456789abcdef" for c in lowered):
+                return lowered
+        return ""
+
+    @staticmethod
     def _snapshot_revision(path):
         """The commit a hub cache path belongs to, or "" when it is not one.
 
@@ -1527,24 +1550,25 @@ class FastSentenceTransformer(FastModel):
                 # none was resolved and the recorded one is a stale local pointer.
                 return None
             unverifiable = exception
-        except EntryNotFoundError:
-            # The repo really has no modules.json at this revision, answered by the hub
-            # just now. Pin anyway: absence is the thing being validated, and a branch
-            # that gains one before the load would otherwise bring in an unchecked module
-            # type. One request, only on this path, and a failure degrades to not pinning
-            # rather than to a broken load.
+        except EntryNotFoundError as exception:
+            # The repo really has no modules.json at this revision. Pin anyway: absence is
+            # the thing being validated, and a branch that gains one before the load would
+            # otherwise bring in an unchecked module type.
+            #
+            # The commit comes off the 404 itself, not from a second lookup. Resolving the
+            # branch again could answer with a newer commit than the one that established
+            # the absence, which would pin the load to a snapshot nothing had checked: the
+            # same inversion as validating one commit and loading another, moved one step
+            # along. The hub returns x-repo-commit on the 404, so the response names
+            # exactly the commit whose answer was "no modules.json", and it costs nothing.
             if resolved is not None:
-                try:
-                    from huggingface_hub import HfApi
-                    sha = HfApi(token = token).model_info(model_name, revision = revision).sha
-                    if isinstance(sha, str) and len(sha) == 40:
-                        resolved["revision"] = sha.lower()
-                except Exception as error:
+                sha = FastSentenceTransformer._commit_of_response(exception)
+                if sha:
+                    resolved["revision"] = sha
+                else:
                     logging.debug(
-                        "Unsloth: could not resolve the commit for %s (%s); the load will "
-                        "not be pinned.",
+                        "Unsloth: the 404 for %s carried no commit, so the load is not pinned.",
                         model_name,
-                        error,
                     )
             return None
         except Exception as exception:
@@ -1706,6 +1730,16 @@ class FastSentenceTransformer(FastModel):
         if isinstance(config_file_name, str):
             config_names.append(config_file_name)
         else:
+            # config_file_name only exists from 5, so on 3.x and 4.x a WordEmbeddings has
+            # no such attribute while its loader still opens wordembedding_config.json.
+            # Asking only for config.json got a 404, left nothing to check, and passed,
+            # after which the loader read the legacy file and imported its tokenizer_class
+            # ungated. The local checker already consults this table; so does this now.
+            legacy = FastSentenceTransformer._LEGACY_MODULE_CONFIG_FILES.get(
+                getattr(module_class, "__name__", "")
+            )
+            if legacy is not None:
+                config_names.append(legacy)
             config_names.append("config.json")
         # Only Router and Asym fall back to config.json when their own file is absent.
         # The others open exactly one file, and requesting a second one the loader never

@@ -1157,36 +1157,32 @@ def test_an_immutable_revision_resolves_to_itself(tmp_path, monkeypatch):
 def test_a_confirmed_absent_modules_json_still_pins_the_load(tmp_path, monkeypatch):
     """Absence is the thing being validated, so it has to be pinned like a presence.
 
-    A branch with no modules.json validated clean and reported no commit, so the load went
-    unpinned: a branch that gains one before the load brings in a module type nothing
-    checked. The hub answered the 404 against a revision just now, so resolving that
-    revision to its commit is sound, and it is one request on this path only.
+    And pinned to the commit that answered the 404, read off that response, not from a
+    second resolution of the branch. A second lookup can return a newer commit than the
+    one whose answer was "no modules.json", which pins the load to a snapshot nothing
+    checked: the same inversion as validating one commit and loading another, moved one
+    step along. The hub sends x-repo-commit on the 404, so the exact commit is already in
+    hand and costs no request.
     """
     from huggingface_hub.errors import EntryNotFoundError
 
     commit = "f" * 40
     monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
-    _patch_download(
-        monkeypatch,
-        lambda *a, **k: (_ for _ in ()).throw(EntryNotFoundError("no modules.json")),
-    )
 
-    asked = {}
+    class Response:
+        headers = {"x-repo-commit": commit}
 
-    class FakeApi:
-        def __init__(self, token = None):
-            asked["token"] = token
+    def absent(*args, **kwargs):
+        error = EntryNotFoundError("no modules.json")
+        error.response = Response()
+        raise error
 
-        def model_info(
-            self,
-            repo_id,
-            revision = None,
-        ):
-            asked["repo_id"] = repo_id
-            asked["revision"] = revision
-            return types.SimpleNamespace(sha = commit)
+    _patch_download(monkeypatch, absent)
 
-    monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
+    def unexpected(*args, **kwargs):
+        pytest.fail("the 404 already named the commit; nothing should resolve it again")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", unexpected)
 
     assert (
         FastSentenceTransformer._check_modules_json_types(
@@ -1194,15 +1190,14 @@ def test_a_confirmed_absent_modules_json_still_pins_the_load(tmp_path, monkeypat
         )
         == commit
     )
-    assert asked["repo_id"] == "acme/embedder"
-    assert asked["revision"] == "main"
 
 
-def test_a_failed_commit_lookup_does_not_break_the_load(tmp_path, monkeypatch):
-    """The extra request is an improvement, not a dependency.
+def test_a_404_without_a_commit_header_does_not_break_the_load(tmp_path, monkeypatch):
+    """The pin is an improvement, not a dependency.
 
-    If it fails the result is the previous behaviour, an unpinned load, rather than an
-    exception out of a guard that had already decided there was nothing to check.
+    A proxy that strips x-repo-commit, or an older hub whose error carries no response at
+    all, leaves the previous behaviour: an unpinned load, not an exception out of a guard
+    that had already decided there was nothing to check.
     """
     from huggingface_hub.errors import EntryNotFoundError
 
@@ -1211,19 +1206,6 @@ def test_a_failed_commit_lookup_does_not_break_the_load(tmp_path, monkeypatch):
         monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(EntryNotFoundError("no modules.json")),
     )
-
-    class BrokenApi:
-        def __init__(self, token = None):
-            pass
-
-        def model_info(
-            self,
-            repo_id,
-            revision = None,
-        ):
-            raise RuntimeError("hub down")
-
-    monkeypatch.setattr("huggingface_hub.HfApi", BrokenApi)
 
     assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == ""
 
@@ -1414,3 +1396,59 @@ def test_every_config_driven_import_in_sentence_transformers_has_a_rule():
         if klass is None:
             continue
         assert FastSentenceTransformer._class_ref_rules(klass), name
+
+
+def test_the_delegated_check_fetches_the_legacy_config_filename(tmp_path, monkeypatch):
+    """A 3.x/4.x WordEmbeddings has no config_file_name, and its loader still reads
+    wordembedding_config.json.
+
+    Asking only for config.json got a 404, left `folders` empty, and passed, after which
+    the delegated loader read the legacy file and imported its tokenizer_class with
+    trust_remote_code=False. The local checker already consults
+    _LEGACY_MODULE_CONFIG_FILES; the delegated one did not.
+    """
+    _simulate_pre_six(monkeypatch)
+
+    class LegacyWordEmbeddings:
+        """No config_file_name, which is what 3.x and 4.x look like."""
+
+        __name__ = "WordEmbeddings"
+
+    LegacyWordEmbeddings.__name__ = "WordEmbeddings"
+
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    (remote / "wordembedding_config.json").write_text(
+        json.dumps({"tokenizer_class": "evil_pkg.Tok"}), encoding = "utf8"
+    )
+    cache = tmp_path / "cache" / "0_WordEmbeddings"
+    cache.mkdir(parents = True)
+
+    requested = []
+
+    def fake_download(repo, filename, **kwargs):
+        name = os.path.basename(filename)
+        requested.append(name)
+        source = remote / name
+        if not source.exists():
+            from huggingface_hub.errors import EntryNotFoundError
+            raise EntryNotFoundError(filename)
+        target = cache / name
+        target.write_text(source.read_text(encoding = "utf8"), encoding = "utf8")
+        return str(target)
+
+    _patch_download(monkeypatch, fake_download)
+
+    with pytest.raises(ValueError, match = "evil_pkg.Tok"):
+        FastSentenceTransformer._check_delegated_module_config(
+            "acme/embedder",
+            {
+                "idx": 0,
+                "name": "0",
+                "path": "0_WordEmbeddings",
+                "type": "sentence_transformers.models.WordEmbeddings",
+            },
+            "sentence_transformers.models.WordEmbeddings",
+            LegacyWordEmbeddings,
+        )
+    assert "wordembedding_config.json" in requested
