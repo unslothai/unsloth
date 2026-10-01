@@ -204,12 +204,20 @@ def h3_host_capacity_bytes() -> int:
     return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
 
 
+# Host floor when the int8 conditioner streams (pinned in place) beside the streamed int8 denoiser, the pinned VAE swap
+# and the resident-block bookkeeping. Measured, not summed: peak system RAM in use on a Colab G4 at 24 / 16 / 12 GB
+# budgets was 63.6 GiB with ~2.2 GiB of it idle baseline, i.e. ~66 GB for the process, above the 64.5 GB the component
+# sum gives. 70 keeps ~4 GB of margin over that peak.
+H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 70.0
+
+
 def estimate_h3_diffusers_host_ram_gb(
     available_vram_gb: float,
     *,
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> float:
     """Host-RAM floor for the offload tier selected at the available VRAM.
 
@@ -237,7 +245,10 @@ def estimate_h3_diffusers_host_ram_gb(
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
     if transformer_streamed:
         transformer *= 2
-    return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+    total = text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+    if text_encoder_streamed:
+        total = max(total, H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB)
+    return total
 
 
 def h3_host_ram_shortfall(
@@ -246,6 +257,7 @@ def h3_host_ram_shortfall(
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> Optional[str]:
     """The refusal for a generation whose host-RAM floor exceeds what this host can give it, else None.
 
@@ -257,6 +269,7 @@ def h3_host_ram_shortfall(
         text_encoder_gb = text_encoder_gb,
         transformer_gb = transformer_gb,
         transformer_streamed = transformer_streamed,
+        text_encoder_streamed = text_encoder_streamed,
     )
     host_capacity_gb = h3_host_capacity_bytes() / 1_000_000_000
     if host_capacity_gb + 0.5 < required_host_gb:
@@ -279,15 +292,16 @@ def h3_host_ram_shortfall(
 #     renders in under 11 GB reserved (measured 10.0-10.9 GiB at a 12 GB budget), so a 12 GB card qualifies. Without
 #     it the conditioner rotates whole and the floor stays at the catalog's 30 GiB.
 #   - RAM: with the slab-arena pin (UNSLOTH_DIFFUSION_PIN_ARENA) the streamed denoiser holds one host copy, so the
-#     host floor is estimate_h3_diffusers_host_ram_gb with a single count (64.5 GB). Without it the floor is the
-#     double-counted 84.8 GB the catalog's 80 GiB tier already encodes.
+#     host floor is estimate_h3_diffusers_host_ram_gb with a single count (64.5 GB), or the measured 70 GB streamed-set
+#     floor while the conditioner streams too. Without it the floor is the double-counted 84.8 GB the catalog's 80 GiB
+#     tier already encodes.
 H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
 H3_DIFFUSERS_STREAMED_TIER_GPU_GIB = 11.5
 H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
 H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
 
 
-def _h3_streamed_host_floor_gib(single_host_copy: bool) -> float:
+def _h3_streamed_host_floor_gib(single_host_copy: bool, text_encoder_streamed: bool = False) -> float:
     from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
 
     floor_gb = estimate_h3_diffusers_host_ram_gb(
@@ -295,6 +309,7 @@ def _h3_streamed_host_floor_gib(single_host_copy: bool) -> float:
         text_encoder_gb = H3_TE_QUANT_RESIDENT_GB["int8"],
         transformer_gb = H3_TRANSFORMER_PREQUANT_GB["int8"],
         transformer_streamed = not single_host_copy,
+        text_encoder_streamed = text_encoder_streamed,
     )
     # The picker reads available RAM in GiB; round up to the next whole GiB.
     return float(math.ceil(floor_gb * 1e9 / 2**30))
@@ -319,7 +334,9 @@ def h3_diffusers_fit_tiers() -> list[dict]:
         return []
     gpu_gib = H3_DIFFUSERS_STREAMED_TIER_GPU_GIB if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
     ram_gib = (
-        _h3_streamed_host_floor_gib(True) if single_copy else H3_DIFFUSERS_CATALOG_TIER_RAM_GIB
+        _h3_streamed_host_floor_gib(True, text_encoder_streamed = te_streamed)
+        if single_copy
+        else H3_DIFFUSERS_CATALOG_TIER_RAM_GIB
     )
     return [{"gpu_gb": gpu_gib, "system_ram_gb": ram_gib, "requires_quantised_streaming": True}]
 

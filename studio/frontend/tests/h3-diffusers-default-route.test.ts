@@ -27,7 +27,7 @@ const notDownloaded = () => false;
 // The shape /api/system reports, after normalisation. Values mirror the backend table.
 const EXTRA = {
   "minimaxai/minimax-h3": [
-    { gpuGb: 11.5, systemRamGb: 61, requiresQuantisedStreaming: true },
+    { gpuGb: 11.5, systemRamGb: 66, requiresQuantisedStreaming: true },
   ],
 };
 
@@ -37,8 +37,9 @@ const HOSTS = {
   rtx3090: { gpuGb: 24, systemRamGb: 80 },
   a100_40: { gpuGb: 39.39, systemRamGb: 72 },
   g4: { gpuGb: 95.59, systemRamGb: 160 },
-  card16: { gpuGb: 15.99, systemRamGb: 62 },
-  card12: { gpuGb: 12, systemRamGb: 62 },
+  // 16 / 12 GB cards on a 96 GB RAM desktop (~88 GiB available).
+  card16: { gpuGb: 15.99, systemRamGb: 88 },
+  card12: { gpuGb: 12, systemRamGb: 88 },
 };
 
 test("without backend tiers every listed consumer host still lands on GGUF (base routing)", () => {
@@ -86,6 +87,9 @@ test("GGUF stays the fallback when RAM, VRAM or streaming cannot fit", () => {
   const cases = [
     { gpuGb: 8, systemRamGb: 120, quantisedStreaming: true },
     { gpuGb: 48, systemRamGb: 40, quantisedStreaming: true },
+    // A 64 GB RAM desktop (~58 GiB available) is under the measured 70 GB streamed-set floor.
+    { gpuGb: 12, systemRamGb: 58, quantisedStreaming: true },
+    { gpuGb: 24, systemRamGb: 58, quantisedStreaming: true },
     { gpuGb: 48, systemRamGb: 120, quantisedStreaming: false },
     { gpuGb: 48, systemRamGb: 120, quantisedStreaming: undefined },
   ];

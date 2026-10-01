@@ -8011,6 +8011,7 @@ class VideoBackend:
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
                             transformer_streamed = bool(getattr(state, "denoiser_host_copy", False)),
+                            text_encoder_streamed = bool(getattr(state, "te_streamed", False)),
                         )
                         if shortfall is not None:
                             raise RuntimeError(shortfall)

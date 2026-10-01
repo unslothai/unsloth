@@ -114,7 +114,7 @@ def test_the_estimators_size_864x480_below_960x544(families):
 @pytest.mark.parametrize(
     "te_stream, arena, expected",
     [
-        (None, None, [{"gpu_gb": 11.5, "system_ram_gb": 61.0, "requires_quantised_streaming": True}]),
+        (None, None, [{"gpu_gb": 11.5, "system_ram_gb": 66.0, "requires_quantised_streaming": True}]),
         ("0", None, [{"gpu_gb": 30.0, "system_ram_gb": 61.0, "requires_quantised_streaming": True}]),
         (None, "0", [{"gpu_gb": 11.5, "system_ram_gb": 80.0, "requires_quantised_streaming": True}]),
         ("0", "0", []),
@@ -142,3 +142,32 @@ def test_the_ram_tier_is_the_single_count_host_floor_in_gib():
     floor_gb = estimate_h3_diffusers_host_ram_gb(0.0, text_encoder_gb = 27.2, transformer_gb = 20.3)
     assert floor_gb == pytest.approx(64.5)
     assert 60.0 < floor_gb * 1e9 / 2**30 <= 61.0
+
+
+def test_a_streamed_conditioner_raises_the_host_floor_to_the_measured_peak():
+    # Colab G4 at 24 / 16 / 12 GB budgets: ~66 GB process peak with the conditioner streamed, above the 64.5 GB sum.
+    from core.inference.video_minimax_h3 import (
+        H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB,
+        estimate_h3_diffusers_host_ram_gb,
+    )
+
+    summed = estimate_h3_diffusers_host_ram_gb(30.0, text_encoder_gb = 27.2, transformer_gb = 20.3)
+    streamed = estimate_h3_diffusers_host_ram_gb(
+        30.0, text_encoder_gb = 27.2, transformer_gb = 20.3, text_encoder_streamed = True
+    )
+    assert summed == pytest.approx(64.5)
+    assert streamed == H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB >= 66.0 + 3.0
+    # A double-counted denoiser is still larger than the streamed-set floor and wins.
+    assert estimate_h3_diffusers_host_ram_gb(
+        30.0, text_encoder_gb = 27.2, transformer_gb = 20.3, transformer_streamed = True, text_encoder_streamed = True
+    ) == pytest.approx(84.8)
+
+
+def test_the_guard_prices_a_streamed_conditioner_at_the_streamed_set_floor(monkeypatch):
+    import core.inference.video_minimax_h3 as h3
+
+    monkeypatch.setattr(h3, "h3_host_capacity_bytes", lambda: int(67e9))
+    kw = dict(text_encoder_gb = 27.2, transformer_gb = 20.3)
+    assert h3.h3_host_ram_shortfall(30.0, **kw) is None
+    message = h3.h3_host_ram_shortfall(30.0, text_encoder_streamed = True, **kw)
+    assert message is not None and "70 GB" in message
