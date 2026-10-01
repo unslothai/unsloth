@@ -1012,6 +1012,9 @@ class _VideoLoadState:
     vram_decode_floor_mib: Optional[int] = None
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
+    # MiniMax-H3: the conditioner streams leaf by leaf (group offload) instead of rotating onto the device whole, so
+    # the VRAM floor counts its streamed footprint, not its 27.2 GB.
+    te_streamed: bool = False
     resolved: Optional[dict] = None
 
 
@@ -1159,14 +1162,25 @@ def h3_streamed_int8_supported(target: Any = None) -> bool:
 
 
 def _h3_others_bytes(
-    fam: Any, components: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool
+    fam: Any,
+    components: Any,
+    *,
+    te_scheme: Optional[str],
+    dtype: Any,
+    rotating: bool,
+    te_streamed: bool = False,
 ) -> int:
     """Bytes beside the denoiser. ``rotating``: conditioner and VAEs rotate (the 40 GB reserve evicts
-    one before placing the other), so only the larger counts; otherwise they add up."""
+    one before placing the other), so only the larger counts; otherwise they add up.
+    ``te_streamed``: the conditioner streams leaf by leaf, so only its streamed footprint is on the device."""
     import torch
 
+    from .video_minimax_h3_te import H3_TE_STREAMED_GB
+
     scale = 2.0 if dtype is torch.float32 else 1.0
-    text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
+    text_encoder_gb = (
+        H3_TE_STREAMED_GB if te_streamed else h3_te_resident_gb(te_scheme, bf16_gb = components[1])
+    )
     headroom_bytes = (
         estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
@@ -1187,6 +1201,7 @@ def _h3_dense_denoiser_resident_bytes(
     te_scheme: Optional[str],
     dtype: Any,
     rotating: bool = False,
+    te_streamed: bool = False,
 ) -> Optional[tuple[int, int]]:
     """``(denoiser_bytes, everything_else_bytes)`` for a MiniMax-H3 modular pipeline, or None.
 
@@ -1208,7 +1223,12 @@ def _h3_dense_denoiser_resident_bytes(
         if denoiser_bytes <= 0:
             return None
         others = _h3_others_bytes(
-            fam, components, te_scheme = te_scheme, dtype = dtype, rotating = rotating
+            fam,
+            components,
+            te_scheme = te_scheme,
+            dtype = dtype,
+            rotating = rotating,
+            te_streamed = te_streamed,
         )
         return int(denoiser_bytes), others
     except Exception:  # noqa: BLE001 -- an unanswerable estimate keeps the rotation as it is
@@ -6793,6 +6813,7 @@ class VideoBackend:
         offload_policy = "none"
         denoiser_pinned = False
         denoiser_streamed: Optional[str] = None
+        te_streamed: Optional[str] = None
         # load_components just spent minutes building ~145 GB of components, and everything below this line either moves
         # weights onto the card or mutates process-wide backend flags. The conventional placement path fences on the
         # token for exactly that reason; without the same fence here a cancelled or superseded worker resumes into a GPU
@@ -6875,12 +6896,23 @@ class VideoBackend:
                         stream_prequantized_module,
                     )
 
+                    if text_encoder_quant_engaged is not None:
+                        # The conditioner streams leaf by leaf instead of rotating onto the card whole (27.2 GB, the
+                        # floor that kept 24 GB and smaller cards out). Decided BEFORE the denoiser's tier: with the
+                        # conditioner no longer the largest rotating component, a 32-48 GB card can keep the denoiser
+                        # resident. None (switch off, no group offload, refused) leaves the rotation as it was.
+                        from .video_minimax_h3_te import stream_h3_text_encoder
+
+                        te_streamed = stream_h3_text_encoder(
+                            manager, getattr(pipe, "text_encoder", None), device, logger = logger
+                        )
                     pinned_sizes = _h3_dense_denoiser_resident_bytes(
                         fam,
                         denoiser = denoiser,
                         te_scheme = text_encoder_quant_engaged,
                         dtype = dtype,
                         rotating = True,
+                        te_streamed = bool(te_streamed),
                     )
                     stream = (
                         denoiser is not None
@@ -7065,6 +7097,11 @@ class VideoBackend:
                         "; the pre-quantized denoiser streams block by block (group offload)"
                         if denoiser_streamed
                         else ""
+                    )
+                    + (
+                        "; the quantized conditioner streams leaf by leaf (group offload)"
+                        if te_streamed
+                        else ""
                     ),
                 ),
                 "speed_mode": (
@@ -7168,6 +7205,7 @@ class VideoBackend:
                 denoiser_pinned = denoiser_pinned,
                 denoiser_streamed = bool(denoiser_streamed),
                 denoiser_host_copy = denoiser_streamed == "stream",
+                te_streamed = bool(te_streamed),
                 resolved = resolved,
             )
             self._precommit_globals = None
@@ -7830,6 +7868,7 @@ class VideoBackend:
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
                             transformer_pinned = bool(getattr(state, "denoiser_pinned", False)),
                             transformer_streamed = bool(getattr(state, "denoiser_streamed", False)),
+                            text_encoder_streamed = bool(getattr(state, "te_streamed", False)),
                         )
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
