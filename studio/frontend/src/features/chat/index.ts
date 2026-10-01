@@ -537,4 +537,9 @@ export {
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 
+export {
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./api/gguf-variants-request";
+export type { ChatModelSummary, ChatLoraSummary } from "./types/runtime";
 export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";

@@ -51,6 +51,8 @@ from .diffusion_families import (
     DiffusionModelReplacedError,  # re-exported: callers import it from either module
     LoadIdentity,
     load_identity,
+    local_pipeline_components_are_complete,
+    _family_override_resolved,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -99,6 +101,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .model_ids import hf_cache_repo_id
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
@@ -127,6 +130,12 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _torchao_stream_pinnable,
+    pipeline_host_mib,
+    torchao_offload_plan,
+    torchao_scheme_streams,
+    torchao_streaming_plan,
+    torchao_survives_plan,
     unified_memory_shortfall_message,
     vae_tile_side,
     vae_can_slice,
@@ -749,7 +758,13 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
-def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = False) -> None:
+def _assert_local_base_is_pipeline(
+    base_repo: str,
+    *,
+    allow_modular: bool = False,
+    excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
+) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
     ANY existing local path, so without this a local base that is not a pipeline dir would pass the
@@ -762,7 +777,9 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
     ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
     pipeline (MiniMax-H3 ships no ``model_index.json`` at all). Off by default: a conventional
     ``DiffusionPipeline`` load still needs the conventional index.
-    """
+
+    ``excluded_components`` are supplied by the caller (the checkpoint's denoiser), not the base;
+    ``config_only_model_components`` means the base only supplies component configs."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -776,10 +793,18 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
     indexes = ["model_index.json"]
     if allow_modular:
         indexes.append("modular_model_index.json")
-    if not root.is_dir() or not any((root / name).is_file() for name in indexes):
+    if not root.is_dir() or not any(
+        local_pipeline_components_are_complete(
+            root,
+            name,
+            excluded_components = excluded_components,
+            config_only_model_components = config_only_model_components,
+        )
+        for name in indexes
+    ):
         raise ValueError(
             f"Local base_repo is not a diffusers pipeline directory "
-            f"(no {' or '.join(indexes)}): {base}"
+            f"(no valid {' or '.join(indexes)}): {base}"
         )
 
 
@@ -967,6 +992,7 @@ class _LoadState:
     device: str
     dtype: str
     cpu_offload: bool
+    display_repo_id: Optional[str] = None
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
     vae_tiling: bool = False
@@ -1624,6 +1650,66 @@ def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
     if sys.platform != "win32":
         return 1
     return max((len(chunk) for chunk in chunks), default = 1)
+
+
+def _inplace_torchao_placement(
+    plan: Any,
+    scheme: Optional[str],
+    estimate: Any,
+    largest_companion_mib: Callable[[], Optional[int]],
+) -> tuple[Any, Optional[str]]:
+    """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
+    if plan_keeps_transformer_resident(plan):
+        return plan, None
+    if plan.offload_policy == OFFLOAD_MODEL:
+        estimates = getattr(plan, "estimates", None) or {}
+        budget = int(estimates.get("safe_device_budget_mib") or 0)
+        overhead = int(estimates.get("runtime_headroom_mib") or 0) + int(
+            estimates.get("base_overhead_mib") or 0
+        )
+        if (
+            estimate is not None
+            and estimate.steady_transformer_mib + overhead <= budget
+            and (largest_companion_mib() or 0) <= budget
+        ):
+            return plan, None
+        if torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan):
+            return torchao_streaming_plan(plan), None
+        return plan, (
+            "whole-module offload onloads each component whole, and the quantised transformer or a text "
+            "encoder is not known to fit the device budget"
+        )
+    placed = torchao_offload_plan(plan, scheme)
+    if placed is not None:
+        return placed, None
+    return plan, (
+        f"'{plan.offload_policy}' offload streams the transformer through hooks torchao weights do not survive "
+        f"({scheme} on this torchao). Pin low_vram or a resident memory mode to combine the two"
+    )
+
+
+def _denoiser_hooked(pipe: Any) -> bool:
+    """Whether an offload hook moves a denoiser of ``pipe``; a CUDA graph over it would replay stale pointers."""
+    for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        if getattr(module, "_hf_hook", None) is not None:
+            return True
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
+def _torchao_render_needs_no_grad(state: Any) -> bool:
+    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad."""
+    if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
+        return False
+    return bool(
+        getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None)
+    )
 
 
 def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
@@ -2681,7 +2767,13 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
-        _assert_local_base_is_pipeline(base_repo)
+        whole_file = kind == "single_file" and fam.single_file_is_pipeline
+        excluded = (
+            (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
+        )
+        _assert_local_base_is_pipeline(
+            base_repo, excluded_components = excluded, config_only_model_components = whole_file
+        )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
         path_shaped = (
@@ -2712,9 +2804,9 @@ class DiffusionBackend:
                     "a 'pipeline' load takes a full diffusers repo, not a single-file name."
                 )
             if local_root.exists():
-                if not (local_root / "model_index.json").exists():
+                if not local_pipeline_components_are_complete(local_root, "model_index.json"):
                     raise FileNotFoundError(
-                        f"Local pipeline directory has no model_index.json: {repo_id}"
+                        f"Local pipeline directory has no complete valid model_index.json: {repo_id}"
                     )
             elif path_shaped:
                 raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
@@ -2770,6 +2862,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -2854,6 +2947,7 @@ class DiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
@@ -3410,7 +3504,13 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 -- no lower rungs is just "no retry"
                         pass
                 declined = False
+                # An offloaded quantised rung beats bf16 shards; a later resident rung beats both.
+                offloaded_rung: Optional[str] = None
                 memory = snapshot_device_memory(target)
+                # Like the VRAM override below: the outgoing pipeline's host weights are gone before this one pins.
+                reclaimable_host_mib = pipeline_host_mib(
+                    getattr(getattr(self, "_state", None), "pipe", None)
+                )
                 for rung in rungs:
                     source = denoiser_prequant_source(
                         fam,
@@ -3453,16 +3553,24 @@ class DiffusionBackend:
                         ),
                         device_memory_override = replace(memory, free_mib = memory.total_mib),
                     )
-                    if not plan_keeps_transformer_resident(planned):
+                    if not torchao_survives_plan(
+                        planned, rung, reclaimable_host_mib = reclaimable_host_mib
+                    ):
                         logger.info(
-                            "diffusion.denoiser_prequant: an artifact-sized plan for %s streams the "
-                            "denoiser on this card, and offload moves the denoiser via Module.to(), "
-                            "so the released shards are kept",
+                            "diffusion.denoiser_prequant: an artifact-sized plan for %s places the "
+                            "denoiser with '%s' offload, which its torchao weights do not survive "
+                            "here, so the released shards are kept",
                             rung,
+                            planned.offload_policy,
                         )
                         declined = True
                         continue
+                    if not plan_keeps_transformer_resident(planned):
+                        offloaded_rung = offloaded_rung or rung
+                        continue
                     return rung
+                if offloaded_rung is not None:
+                    return offloaded_rung
                 return PIPELINE_SEED_DECLINED if declined else None
         except Exception as exc:  # noqa: BLE001 -- an unanswerable probe keeps the released shards
             logger.warning("diffusion.denoiser_prequant_plan_failed: %s", exc)
@@ -4923,6 +5031,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -5153,17 +5262,22 @@ class DiffusionBackend:
                         fetch_base = fetch_base,
                         text_encoder_quant = text_encoder_quant,
                     )
-                    if seeded_plan is None or not plan_keeps_transformer_resident(seeded_plan):
-                        # Offload hooks use Module.to(), which torchao tensors reject, and live free
-                        # memory can undercut the CAPACITY the plan settled this against.
+                    seeded_placement = (
+                        None
+                        if seeded_plan is None
+                        else torchao_offload_plan(seeded_plan, pipeline_seed_scheme)
+                    )
+                    if seeded_placement is None:
+                        # Live free memory can undercut the CAPACITY the plan settled this against.
                         logger.info(
-                            "diffusion.denoiser_prequant: an artifact-sized plan for %s offloads on "
-                            "this card, so the released denoiser is loaded instead",
+                            "diffusion.denoiser_prequant: an artifact-sized plan for %s places the "
+                            "denoiser where its torchao weights do not survive on this card, so the "
+                            "released denoiser is loaded instead",
                             pipeline_seed_scheme,
                         )
                         pipeline_seed_scheme = None
                     else:
-                        plan = seeded_plan
+                        plan = seeded_placement
                 # On unified memory the plan above is final (the quant re-plans below are CUDA-only) and its 'none'
                 # policy is a placement, not a fit. Refuse here, after the eviction above freed the previous pipeline
                 # and before any weight is materialised. A pipeline's weight term is cached SHARD bytes, which is a
@@ -6298,14 +6412,28 @@ class DiffusionBackend:
                                         ),
                                         text_encoder_quant = text_encoder_quant,
                                     )
-                                    if plan_keeps_transformer_resident(replanned):
+                                    # Native schemes (incl. explicit int8 offloaded) keep the resident-only rule.
+                                    placed = (
+                                        (
+                                            replanned
+                                            if plan_keeps_transformer_resident(replanned)
+                                            else None
+                                        )
+                                        if native_scheme is not None
+                                        or native_offload_scheme is not None
+                                        else torchao_offload_plan(replanned, preview_scheme)
+                                    )
+                                    if placed is not None:
+                                        replanned = placed
                                         logger.info(
-                                            "diffusion.transformer_quant: %s fits resident (%d MiB "
-                                            "steady, encoders streamed=%s); replacing the bf16 plan's "
-                                            "'%s' offload",
+                                            "diffusion.transformer_quant: %s fits the '%s' placement "
+                                            "(%d MiB steady, denoiser streamed=%s, encoders streamed=%s); "
+                                            "replacing the bf16 plan's '%s' offload",
                                             preview_scheme,
+                                            replanned.offload_policy,
                                             estimate.steady_transformer_mib,
-                                            replanned.offload_policy != OFFLOAD_NONE,
+                                            not plan_keeps_transformer_resident(replanned),
+                                            bool(getattr(replanned, "stream_text_encoders", False)),
                                             plan.offload_policy,
                                         )
                                         plan = replanned
@@ -6322,34 +6450,16 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            # Group offload is WRONG for torchao: its stream cache aliases weights and swap_tensors fails when compiled.
-                            quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
-                            quant_overhead = int(
-                                plan.estimates.get("runtime_headroom_mib") or 0
-                            ) + int(plan.estimates.get("base_overhead_mib") or 0)
-                            if (
-                                not keeps_resident
-                                and native_scheme is None
-                                and (
-                                    plan.offload_policy != OFFLOAD_MODEL
-                                    or estimate is None
-                                    or estimate.steady_transformer_mib + quant_overhead
-                                    > quant_budget
-                                    or (largest_streamable_companion_mib(pipe) or 0) > quant_budget
+                            inplace_decline = None
+                            if not keeps_resident and native_scheme is None:
+                                plan, inplace_decline = _inplace_torchao_placement(
+                                    plan,
+                                    preview_scheme,
+                                    estimate,
+                                    lambda: largest_streamable_companion_mib(pipe),
                                 )
-                            ):
-                                if plan.offload_policy == OFFLOAD_MODEL:
-                                    transformer_quant_decline = (
-                                        "whole-module offload onloads each component whole, and the "
-                                        "quantised transformer or a text encoder is not known to fit "
-                                        "the device budget"
-                                    )
-                                else:
-                                    transformer_quant_decline = (
-                                        f"'{plan.offload_policy}' offload streams the transformer through "
-                                        "hooks torchao weights do not survive. Pin low_vram or a resident "
-                                        "memory mode to combine the two"
-                                    )
+                            if inplace_decline is not None:
+                                transformer_quant_decline = inplace_decline
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (%s)",
                                     transformer_quant_decline,
@@ -6636,6 +6746,7 @@ class DiffusionBackend:
                         cache_active = cache_graph_break or cache_may_toggle,
                         cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
+                        denoiser_offloaded = not plan_keeps_transformer_resident(plan),
                         logger = logger,
                     )
                     if vae_fp16:
@@ -6739,11 +6850,17 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    if speed_applied.get("cuda_graph") and _denoiser_hooked(pipe):
+                        cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+                        pipe._unsloth_cuda_graphs = ()
+                        pipe._unsloth_cuda_graph_reason = "offload active"
+                        speed_applied["cuda_graph"] = False
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
                     resolved = build_resolved_record(
                         {
+                            "family_override": _family_override_resolved(family_override, fam),
                             "speed_mode": (
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
@@ -6861,6 +6978,7 @@ class DiffusionBackend:
                         pipe = pipe,
                         family = fam,
                         repo_id = repo_id,
+                        display_repo_id = display_repo_id,
                         base_repo = base,
                         device = device,
                         gpu_ordinal = target.ordinal,
@@ -7498,7 +7616,7 @@ class DiffusionBackend:
         on any target not sized in bf16, and for a LOCAL directory: the table is keyed on upstream
         repo ids, so a local checkpoint can only reach the coarse family entry, and a family
         covering more than one size would be lowered to a number less than half what it loads.
-        """
+        A snapshot inside a configured HF cache is sized by the repo id it came from."""
         try:
             # A whole-pipeline single file (SDXL) carries the U-Net, VAE and text encoders itself, and the base repo
             # is read for config only, but the plan still adds the base's cached companion weights, so a user who once
@@ -7516,8 +7634,19 @@ class DiffusionBackend:
                         },
                     )
                 return plan
-            if kind != "pipeline" or _is_local_path(base):
+            if kind != "pipeline":
                 return plan
+            table_base = base
+            if _is_local_path(base):
+                from utils.hf_cache_settings import known_hf_hub_caches
+
+                table_base = hf_cache_repo_id(base)
+                snapshot = Path(base).expanduser().resolve()
+                if table_base is None or not any(
+                    snapshot.is_relative_to(Path(root).expanduser().resolve())
+                    for root in known_hf_hub_caches()
+                ):
+                    return plan
             import torch
 
             if getattr(target, "dtype", None) not in (torch.bfloat16, torch.float16):
@@ -7527,13 +7656,13 @@ class DiffusionBackend:
             # carrying two sizes that entry is the smaller one, so a 9B derivative would be lowered to the 4B number
             # and walk past the refusal. Accept the family's own default base and anything with an explicit override;
             # anything else keeps its measured size.
-            canonical = canonical_base(base)
+            canonical = canonical_base(table_base)
             if (
-                base_repo_bf16_components_gb(base) is None
+                base_repo_bf16_components_gb(table_base) is None
                 and canonical.lower() != str(getattr(fam, "base_repo", "") or "").lower()
             ):
                 return plan
-            table = family_bf16_components_gb(fam, base)
+            table = family_bf16_components_gb(fam, table_base)
             if table is None:
                 return plan
             # The table's encoder term is the DENSE one. When this pick takes its encoder pre-cast from a hosted fp8
@@ -7546,7 +7675,7 @@ class DiffusionBackend:
                 fam,
                 te_quant_mode = text_encoder_quant,
                 target = target,
-                base = base,
+                base = table_base,
             )
             transformer_gb, text_encoders_gb, vae_gb = table
             resident_gb = transformer_gb + text_encoders_gb * te_scale + vae_gb
@@ -8336,6 +8465,8 @@ class DiffusionBackend:
             cache_active = cache_breaks_graph(state.transformer_cache) or state.cache_auto,
             cache_engaged = cache_breaks_graph(state.transformer_cache),
             offload_active = state.offload_policy != OFFLOAD_NONE,
+            denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
+            and _denoiser_hooked(state.pipe),
             logger = logger,
         )
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
@@ -8936,12 +9067,11 @@ class DiffusionBackend:
                             gen.eta_seconds = None
 
                         try:
-                            # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
+                            # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
                             with (
                                 (
                                     torch.no_grad()
-                                    if state.transformer_quant
-                                    and state.offload_policy == OFFLOAD_MODEL
+                                    if _torchao_render_needs_no_grad(state)
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,
@@ -9048,7 +9178,7 @@ class DiffusionBackend:
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD this ran on, not just the repo id: a GGUF quant and a torchao scheme each change the
                     # pixels.
                     "model_kind": state.kind,
@@ -9287,6 +9417,7 @@ class DiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -9321,6 +9452,7 @@ class DiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,

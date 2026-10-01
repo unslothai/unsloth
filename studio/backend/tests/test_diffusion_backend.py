@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import json
 import re
 import sys
 import threading
@@ -45,6 +46,7 @@ from core.inference.diffusion_families import (
     family_prequant_repo,
     load_identity,
     mirror_repo,
+    pipeline_available_family_names,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -52,6 +54,16 @@ from core.inference.diffusion_families import (
     supported_family_names,
     upstream_is_gated,
 )
+
+
+@pytest.fixture(autouse = True)
+def _unmeasured_torchao(monkeypatch):
+    """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
 
 
 # Pure family helpers
@@ -158,6 +170,34 @@ def test_supported_family_names():
     # Every listed name is a valid family_override (round-trips through detect_family).
     for name in names:
         assert detect_family("some/unknown-repo", override = name) is not None
+
+
+def test_pipeline_available_names_filter_the_selector_without_importing(monkeypatch):
+    # Status polls call this; importing pipeline classes there raced the loader's own import.
+    import importlib.util
+
+    import core.inference.diffusion_families as families
+
+    blocked = {"krea-2", "flux.2-klein"}
+    monkeypatch.setattr(families, "family_selectable", lambda fam: fam.name not in blocked)
+    assert set(supported_family_names()) - set(pipeline_available_family_names()) == blocked
+
+    def _strict(*_a, **_k):
+        raise AssertionError("the selector must stay import-free")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(families, "assert_pipeline_class_available", _strict)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "diffusers" else real_find_spec(name, *a, **k),
+    )
+    assert "flux.1" in pipeline_available_family_names()
+
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+    assert pipeline_available_family_names() == ()
 
 
 def test_resolve_base_repo():
@@ -904,6 +944,19 @@ def fake_runtime(monkeypatch):
 _LOAD_DEFAULTS = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
 
 
+def _write_pipeline(
+    root,
+    class_name = "TestPipeline",
+    **components,
+):
+    weight = components.pop("weight", "diffusion_pytorch_model.safetensors")
+    (root / "transformer").mkdir(parents = True, exist_ok = True)
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", "Transformer2DModel"]}
+    (root / "model_index.json").write_text(json.dumps({**manifest, **components}))
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / weight).write_bytes(b"x")
+
+
 def _load_into(backend, tmp_path, **overrides):
     """``load_pipeline`` on ``tmp_path`` over the z-image defaults; writes no checkpoint file."""
     return backend.load_pipeline(str(tmp_path), **{**_LOAD_DEFAULTS, **overrides})
@@ -1028,7 +1081,9 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
 
-    status = _load_into(backend, tmp_path, hf_token = "hf_secret")
+    status = _load_into(
+        backend, tmp_path, hf_token = "hf_secret", display_repo_id = "Org/pinned-z-image"
+    )
     assert status["loaded"] is True
     assert status["family"] == "z-image"
     assert status["base_repo"] == "base/repo"
@@ -1047,7 +1102,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
         prompt = "a sloth", negative_prompt = "blurry", width = 512, height = 512, steps = 4, guidance = 3.0
     )
     assert gen["seed"] == 4242  # random seed reported back
-    assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
+    assert gen["repo_id"] == "Org/pinned-z-image"  # stable picker identity for the recipe
     assert len(gen["images"]) == 1  # PIL images handed to the route for persistence
     # z-image guides via guidance_scale; the signature-gated negative_prompt and the step callback both land.
     call = backend._state.pipe.last_kwargs
@@ -2155,8 +2210,19 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
-    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "model_index.json").write_text("{")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(
+            "unsloth/Qwen-Image-2512-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = str(tmp_path),
+        )
+    # A base whose declared transformer is absent still serves companions for a GGUF load.
+    _write_pipeline(tmp_path, scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"])
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+    (tmp_path / "scheduler").mkdir()
+    (tmp_path / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/Qwen-Image-2512-GGUF",
         gguf_filename = "x.gguf",
@@ -2164,6 +2230,55 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(tmp_path), family_override = "qwen-image")
+
+
+def test_validate_accepts_config_only_local_base_for_whole_pipeline_single_file(
+    fake_runtime, tmp_path
+):
+    backend = DiffusionBackend()
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    base = tmp_path / "sdxl-config"
+    (base / "unet").mkdir(parents = True)
+    (base / "unet" / "config.json").write_text("{}")
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["diffusers", "UNet2DConditionModel"],
+    }
+    (base / "model_index.json").write_text(json.dumps(manifest))
+
+    fam = backend.validate_load_request(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+        base_repo = str(base),
+        family_override = "sdxl",
+    )
+    assert fam.single_file_is_pipeline is True
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(base), family_override = "sdxl")
+
+
+def test_validate_accepts_custom_local_components(fake_runtime, tmp_path):
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["local_extensions", "CustomModel"],
+        "scheduler": ["local_extensions", "CustomScheduler"],
+    }
+    (tmp_path / "model_index.json").write_text(json.dumps(manifest))
+    for name, asset in (
+        ("unet", "custom_weights.safetensors"),
+        ("scheduler", "custom_schedule.json"),
+    ):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / asset).write_text("{}")
+
+    backend = DiffusionBackend()
+    assert backend.validate_load_request(str(tmp_path), family_override = "sdxl").name == "sdxl"
+    status = backend.load_pipeline(str(tmp_path), family_override = "sdxl", speed_mode = "off")
+    assert status["loaded"] is True
+    assert _FakePipeline.last["base"] == str(tmp_path)
 
 
 def test_resolve_local_single_file(tmp_path):
@@ -2535,7 +2650,7 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 def _load_ideogram(backend, tmp_path):
     # Ideogram 4 loads only as a full pipeline (the loader is stubbed), so a local dir is enough.
-    (tmp_path / "model_index.json").write_text("{}")
+    _write_pipeline(tmp_path, "Ideogram4Pipeline", weight = "pytorch_model.bin")
     backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
 
 
@@ -2579,7 +2694,7 @@ def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path
 
 def _load_lumina(backend, tmp_path):
     # Lumina 2 loads through the GENERIC pipeline path, so a local pipeline dir is enough here.
-    (tmp_path / "model_index.json").write_text("{}")
+    _write_pipeline(tmp_path, "Lumina2Pipeline")
     backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
 
 
@@ -3065,7 +3180,7 @@ def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, p
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_pipeline(tmp_path)
 
     def record(name, value):
         calls.append(name)
@@ -3163,7 +3278,7 @@ def test_eager_encoder_cancellation_stops_pipeline_build(
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_pipeline(tmp_path)
     filename = "model.gguf" if kind == "gguf" else "model.safetensors"
     (tmp_path / filename).write_bytes(b"weights")
     sys.modules["diffusers"].HiDreamImagePipeline = _FakePipeline
@@ -3239,7 +3354,7 @@ def test_ideogram_component_load_honors_eject(fake_runtime, tmp_path, monkeypatc
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_pipeline(tmp_path, weight = "pytorch_model.bin")
 
     def component(name):
         calls.append(name)
@@ -10801,6 +10916,28 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     assert lowered.estimates["model_dense_mib"] < measured
 
 
+@pytest.mark.parametrize("configured", [True, False])
+def test_the_resident_size_table_trusts_only_a_configured_cache_snapshot(
+    fake_runtime, tmp_path, monkeypatch, configured
+):
+    # A configured-cache snapshot keeps its Hub provenance; a lookalike path elsewhere does not.
+    import torch
+
+    cache_root = tmp_path / "hub"
+    snapshot = cache_root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    known = [cache_root] if configured else [tmp_path / "other-hub"]
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: known)
+    sized = DiffusionBackend()._resident_sized_plan(
+        _plan_with_weights(40_000),
+        detect_family("Tongyi-MAI/Z-Image-Turbo"),
+        str(snapshot),
+        _mps_target(torch),
+        "pipeline",
+    )
+    assert (sized.estimates["model_dense_mib"] < 40_000) is configured
+
+
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):
     """An explicit Speed=off rewrites an auto request to "off" and the plan stages no
     transformer/ on purpose. Reading that expected absence as a decline told the caller their
@@ -12163,7 +12300,8 @@ def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_
 
 
 @pytest.mark.parametrize(
-    ("offload_policy", "expected"), [("none", "inference_mode"), ("model", "no_grad")]
+    ("offload_policy", "expected"),
+    [("none", "inference_mode"), ("model", "no_grad"), ("group", "no_grad")],
 )
 def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
     fake_runtime, tmp_path, monkeypatch, offload_policy, expected
@@ -12171,6 +12309,10 @@ def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
     """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad."""
     import torch
 
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
@@ -12287,6 +12429,63 @@ def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_
     assert calls == []
     assert status["transformer_quant"] is None
     assert "not known to fit" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize("torchao_version", [(0, 17), (0, 18)])
+def test_a_pipeline_pick_quantises_under_streamed_group_offload_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch, torchao_version
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: torchao_version)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("group"))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("budget_mib", "runtime_headroom_mib", "companion_mib"),
+    [(1, 0, None), (1_000_000, 1_000_000, None), (1_000_000, 0, 2_000_000)],
+)
+def test_a_quantised_transformer_too_big_to_onload_whole_streams_instead(
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    # diffusion.py binds its own reference; without this the host's real pin budget decides.
+    monkeypatch.setattr(dmod, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
+    placed: list = []
+
+    def _apply(pipe, plan, **_kwargs):
+        placed.append(plan.offload_policy)
+        return plan.offload_policy, plan.vae_tiling
+
+    monkeypatch.setattr(dmod, "apply_memory_plan", _apply)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        _offload_plan("model", budget_mib = budget_mib, runtime_headroom_mib = runtime_headroom_mib),
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert placed == ["streaming"] and status["offload_policy"] == "streaming"
     backend.unload()
 
 
@@ -13401,6 +13600,52 @@ def test_the_act_kill_switch_keeps_nvidia_offload_native_but_weight_only(
     )
     assert calls[0]["offload"] is True and calls[0]["act_int8"] is False
     assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
+def test_an_explicit_fp8_under_group_offload_engages_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch, engages = "fp8")
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        memory_mode = "balanced",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1 and "offload" not in calls[0] and reasons == []
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}],
+)
+def test_an_explicit_int8_under_offload_stays_native_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch, memory
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        _base_local_dir = str(tmp_path),
+        **memory,
+    )
+    assert len(calls) == 1 and calls[0]["offload"] is True
+    assert status["transformer_quant"] == "int8" and reasons == ["int8"]
     backend.unload()
 
 
