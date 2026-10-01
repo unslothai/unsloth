@@ -55,3 +55,25 @@ test("media prompt rails and their gutters ignore the font size", () => {
   assert.match(hook, /rail\.width \* rail\.scale/);
   assert.equal(/useUiSpaceScale/.test(hook), false);
 });
+
+test("compare panes keep their message column gutters off the font size", () => {
+  const chatPage = readSrc("features/chat/chat-page.tsx");
+  assert.ok(
+    chatPage.includes(
+      "[&_.aui-thread-viewport]:px-[calc(24px*var(--ui-layout-scale,1))] lg:[&_.aui-thread-viewport]:px-[calc(40px*var(--ui-layout-scale,1))]",
+    ),
+  );
+  assert.equal(/\[&_\.aui-thread-viewport\]:px-\d/.test(chatPage), false);
+});
+
+test("the Images Train rail lines up with Create's at every font size", () => {
+  // Its rail shares Create's width, so its gutters follow the same scale or the fields shift
+  // between the two tabs once the font size moves off the default.
+  const train = readSrc("features/images/train/diffusion-train-panel.tsx");
+  assert.ok(
+    train.includes(
+      "pl-[calc(40px*var(--ui-layout-scale,1))] max-sm:pl-[calc(20px*var(--ui-layout-scale,1))] @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-layout-scale,1)))",
+    ),
+  );
+  assert.ok(train.includes("pl-0.5 pr-[calc(32px*var(--ui-layout-scale,1))]"));
+});

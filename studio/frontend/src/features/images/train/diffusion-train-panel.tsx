@@ -1522,13 +1522,13 @@ export function DiffusionTrainPanel({
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
       {/* Left: configure. The rail width and container breakpoint match Create and the shared header.
           The cap adds back the parent's pr-8 so it matches Create's, where the page divider sits. */}
-      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-layout-scale,1))),calc(100%-13rem+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-[calc(40px*var(--ui-layout-scale,1))] max-sm:pl-[calc(20px*var(--ui-layout-scale,1))] @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-layout-scale,1))),calc(100%-13rem+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[calc(42px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-[calc(32px*var(--ui-layout-scale,1))] pt-[calc(42px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
