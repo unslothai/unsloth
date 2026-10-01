@@ -1211,7 +1211,168 @@ def load_ltx23_audio_vae_and_vocoder(
     return audio_vae, vocoder.to(torch_dtype)
 
 
+# Kill switch for warming the base repo's text encoder files in the page cache beside the checkpoint read.
+PREFETCH_ENV = "UNSLOTH_VIDEO_PREFETCH"
+_PREFETCH_THREADS = 8
+_PREFETCH_CHUNK_BYTES = 16 << 20
+
+
+def prefetch_enabled() -> bool:
+    import os
+    return (os.environ.get(PREFETCH_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+def _uncached_bytes(path: str, stride: int = 64 << 20, window: int = 1 << 20) -> int:
+    """Estimated bytes of ``path`` not in the page cache: Linux ``mincore`` over a ``window`` every ``stride`` bytes
+    (a full sweep of a 46 GB encoder costs ~0.25 s on a warm cache, the sample a few ms); 0 when it cannot tell."""
+    import ctypes
+    import mmap
+    import os
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        return 0
+    size = os.path.getsize(path)
+    if size == 0:
+        return 0
+    page = mmap.PAGESIZE
+    window = max(page, window - window % page)
+    stride = max(window, stride - stride % page)
+    with open(path, "rb") as handle:
+        mapped = mmap.mmap(handle.fileno(), size, access = mmap.ACCESS_COPY)
+    try:
+        anchor = ctypes.c_char.from_buffer(mapped)
+        try:
+            base = ctypes.addressof(anchor)
+            libc = ctypes.CDLL(None, use_errno = True)
+            libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+            vector = (ctypes.c_ubyte * (window // page))()
+            sampled = missing = 0
+            for offset in range(0, size, stride):
+                length = min(window, size - offset)
+                pages = (length + page - 1) // page
+                if libc.mincore(base + offset, ctypes.c_size_t(length), vector) != 0:
+                    return 0
+                missing += bytes(vector)[:pages].count(0)
+                sampled += pages
+            return int(size * missing / sampled) if sampled else 0
+        finally:
+            del anchor
+    finally:
+        mapped.close()
+
+
+def _text_encoder_files(base_repo: str, cache_dir: Optional[str]) -> list[str]:
+    """The cached weight shards ``from_pretrained`` reads for ``base_repo``'s text encoder (its sharded index, cache
+    only, never a download); empty when they are not cached."""
+    import json
+    import os
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        index = try_to_load_from_cache(
+            base_repo, "text_encoder/model.safetensors.index.json", cache_dir = cache_dir
+        )
+        if not isinstance(index, str):
+            return []
+        with open(index, "r", encoding = "utf-8") as handle:
+            shards = sorted(set(json.load(handle).get("weight_map", {}).values()))
+    except Exception:  # noqa: BLE001 - not cached (the load downloads it) or an unreadable cache
+        return []
+    folder = os.path.dirname(index)
+    return [p for p in (os.path.join(folder, name) for name in shards) if os.path.isfile(p)]
+
+
+def start_prefetch(paths: list[str]) -> Optional[Any]:
+    """Read the uncached parts of ``paths`` into the page cache on worker threads; returns a stop Event, or None when
+    there is nothing to warm or host RAM is too tight to hold it.
+
+    On a cold cache the base repo's 46 GB fp32 Gemma3 shards read through ``from_pretrained`` at ~1.7 GB/s (25 to
+    28 s on a B200 host) after the checkpoint read; warmed beside the checkpoint read, the encoder load finds them
+    cached. A warm cache costs one ``mincore`` sweep."""
+    import os
+    import threading
+
+    try:
+        uncached = [(path, _uncached_bytes(path)) for path in paths]
+    except Exception:  # noqa: BLE001 - residency unknown: leave the reads to the loader
+        return None
+    pending = [path for path, missing in uncached if missing > 0]
+    need = sum(missing for _path, missing in uncached)
+    if not pending or need < 1 << 30:
+        return None
+    try:
+        from .diffusion_memory import _available_system_memory_mib
+
+        available = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001
+        available = None
+    # The warmed pages must not push the checkpoint (or anything else) out of a small host's cache.
+    if available is None or need > (int(available) << 20) // 2:
+        return None
+    stop = threading.Event()
+    jobs = []
+    for path in pending:
+        size = os.path.getsize(path)
+        jobs += [(path, offset) for offset in range(0, size, _PREFETCH_CHUNK_BYTES)]
+    lock = threading.Lock()
+    queue = iter(jobs)
+
+    def _worker() -> None:
+        buffer = bytearray(_PREFETCH_CHUNK_BYTES)
+        view = memoryview(buffer)
+        handles: dict[str, Any] = {}
+        try:
+            while not stop.is_set():
+                with lock:
+                    job = next(queue, None)
+                if job is None:
+                    return
+                path, offset = job
+                handle = handles.get(path)
+                if handle is None:
+                    handle = handles[path] = open(path, "rb", buffering = 0)
+                handle.seek(offset)
+                handle.readinto(view)
+        except Exception:  # noqa: BLE001 - a prefetch is only a hint
+            pass
+        finally:
+            for handle in handles.values():
+                handle.close()
+
+    for index in range(_PREFETCH_THREADS):
+        threading.Thread(target = _worker, name = f"unsloth-prefetch-{index}", daemon = True).start()
+    logger.info(
+        "video.ltx23_prefetch: warming %.1f GiB of %d text encoder file(s)", need / 2**30, len(pending)
+    )
+    return stop
+
+
 def load_ltx23_pipeline(
+    checkpoint_path: Path | str,
+    *,
+    base_repo: str,
+    text_encoder: Optional[Any] = None,
+    **kwargs: Any,
+) -> Any:
+    """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint (see ``_assemble_ltx23_pipeline``). When the base
+    repo's text encoder is built here, its cached files are warmed in the page cache beside the checkpoint read
+    (``start_prefetch``)."""
+    prefetch = None
+    if text_encoder is None and prefetch_enabled():
+        prefetch = start_prefetch(_text_encoder_files(base_repo, _live_cache_dir()))
+    try:
+        return _assemble_ltx23_pipeline(
+            checkpoint_path, base_repo = base_repo, text_encoder = text_encoder, **kwargs
+        )
+    finally:
+        if prefetch is not None:
+            # Read by the encoder load by now, or the assembly failed: nothing is left to warm either way.
+            prefetch.set()
+
+
+def _assemble_ltx23_pipeline(
     checkpoint_path: Path | str,
     *,
     base_repo: str,
