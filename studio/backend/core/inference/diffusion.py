@@ -6865,6 +6865,7 @@ class DiffusionBackend:
                                 fam.name,
                                 effective_speed,
                                 plan.estimates.get("measured_dense_transformer_mib"),
+                                plan.estimates.get("measured_compute_bytes"),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention

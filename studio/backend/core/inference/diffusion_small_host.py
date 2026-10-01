@@ -411,8 +411,11 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
     keep = _keep_fp32_patterns(module)
     streamable = (torch.nn.Linear, torch.nn.Embedding)
 
+    def _kept(mname: str) -> bool:
+        return bool(keep) and any(k in mname for k in keep)
+
     def _want(mname: str) -> Any:
-        return torch.float32 if keep and any(k in mname for k in keep) else compute_dtype
+        return torch.float32 if _kept(mname) else compute_dtype
 
     def _convert(sub: Any, want: Any) -> None:
         for pname, p in list(sub.named_parameters(recurse = False)):
@@ -435,7 +438,7 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
             # cast) and would cast its input to the stored bf16. 4 GB for T5-XXL, the bytes the dense load holds too.
             if (
                 type(sub) in streamable
-                and want is compute_dtype
+                and not _kept(mname)
                 and mname != first_owner
                 and sub.weight.dtype != want
             ):

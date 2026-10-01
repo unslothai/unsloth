@@ -1991,10 +1991,13 @@ def measured_image_runtime_mib(
     height: Optional[int] = None,
     batch_size: int = 1,
     dense_transformer_mib: Optional[int] = None,
+    compute_bytes: int = 2,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
 
-    ``dense_transformer_mib`` (the loaded DiT size) selects the dense eager table instead of the torchao one."""
+    ``dense_transformer_mib`` (the loaded DiT size) selects the dense eager table instead of the torchao one.
+    ``compute_bytes`` scales that fp16 table to the activation dtype: an fp32-promoted family (Qwen-Image on an fp16
+    card) measured 8480 MiB against 4248 at fp16."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
     if dense_transformer_mib is not None:
@@ -2004,6 +2007,8 @@ def measured_image_runtime_mib(
         if entry is None or str(speed_mode or "") not in _MEASURED_DENSE_SPEED_MODES:
             return None
         peak, max_dit = entry
+        widen = max(2, int(compute_bytes or 2))
+        peak, max_dit = peak * widen // 2, max_dit * widen // 2
         if int(dense_transformer_mib) <= 0 or int(dense_transformer_mib) > max_dit:
             return None
     else:
@@ -2052,6 +2057,21 @@ def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
         return None
 
 
+def _denoiser_compute_bytes(pipe: Any) -> int:
+    """Element size of the denoiser's float compute dtype (4 for an fp32-promoted family), 2 when unreadable."""
+    try:
+        for name in ("transformer", "unet"):
+            module = getattr(pipe, name, None)
+            dtype = getattr(module, "dtype", None) if module is not None else None
+            if dtype is not None:
+                import torch
+
+                return 4 if dtype == torch.float32 else 2
+    except Exception:  # noqa: BLE001
+        pass
+    return 2
+
+
 def refine_plan_from_loaded_weights(
     pipe: Any,
     plan: MemoryPlan,
@@ -2088,8 +2108,9 @@ def refine_plan_from_loaded_weights(
             return plan
         # A dense denoiser uses the eager-tier table, sized by its loaded DiT; a torchao one the compiled table.
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
+        compute_bytes = _denoiser_compute_bytes(pipe)
         headroom = measured_image_runtime_mib(
-            family, speed_mode, dense_transformer_mib = dense_mib
+            family, speed_mode, dense_transformer_mib = dense_mib, compute_bytes = compute_bytes
         )
         if headroom is None:
             return plan
@@ -2099,6 +2120,7 @@ def refine_plan_from_loaded_weights(
         estimates.update(
             measured_runtime_headroom_mib = headroom,
             measured_dense_transformer_mib = dense_mib,
+            measured_compute_bytes = compute_bytes,
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -2344,6 +2366,7 @@ def measured_request_extra_mib(
         return 0
     headroom, family, speed_mode = reserve[:3]
     dense_mib = reserve[3] if len(reserve) > 3 else None
+    compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
     need = measured_image_runtime_mib(
         family,
         speed_mode,
@@ -2351,6 +2374,7 @@ def measured_request_extra_mib(
         height = height,
         batch_size = batch_size,
         dense_transformer_mib = dense_mib,
+        compute_bytes = compute_bytes,
     )
     if need is None:
         return 0
