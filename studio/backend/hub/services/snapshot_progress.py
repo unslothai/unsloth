@@ -500,7 +500,7 @@ def compute_snapshot_progress(
             )
         )
         entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
-            lambda: raw_manifest.get()
+            lambda raw_manifest = raw_manifest: raw_manifest.get()
             if manifest_matches_download(raw_manifest.get(), metadata)
             else None
         )
