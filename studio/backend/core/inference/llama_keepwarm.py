@@ -3,13 +3,10 @@
 
 """Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp model.
 
-Off by default (idle seconds = 0). When enabled, a background loop unloads the
-loaded GGUF once it has been idle for the configured TTL, freeing VRAM. A
-pure-ASGI middleware tracks in-flight inference requests so a long stream that
-outlives the TTL is never unloaded mid-response.
-
-The same loop and the same middleware drive the image/video side (media_keepwarm),
-so Unsloth has one idle mechanism rather than one per backend.
+Off by default (idle seconds = 0). A background loop unloads the GGUF after the TTL, and a
+pure-ASGI middleware tracks in-flight requests so a long stream is never unloaded mid-response.
+The resident model is shared, so any account's activity resets the one global idle clock. The
+same loop and middleware drive media_keepwarm.
 """
 
 from __future__ import annotations
@@ -896,6 +893,16 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
+                    # As /unload: a kept claim hides the empty GPU from other accounts. After the
+                    # stash, so a failed release never loses the reload identity.
+                    try:
+                        from hub.services.models.account_access import clear_resident
+                        from routes.inference import release_chat_gpu_claim
+
+                        clear_resident("chat")
+                        await asyncio.to_thread(release_chat_gpu_claim)
+                    except Exception as exc:  # noqa: BLE001 - the unload already happened
+                        logger.debug("Idle auto-unload: claim release failed: %s", exc)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
                     # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)

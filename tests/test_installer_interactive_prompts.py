@@ -44,12 +44,15 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/install_rocm_wsl_strixhalo.sh",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
+    "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
+    "studio/install_mxc_prebuilt.py",
     "studio/install_node_prebuilt.py",
     "studio/install_python_stack.py",
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
+    "studio/nvidia_probe.py",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
 )
@@ -523,6 +526,10 @@ def test_helpers_the_installers_invoke_are_scanned():
             # resolves to the local copy. What resolves nowhere is a filename in a message, not an invocation.
             reference = match.group(1).replace("\\", "/")
             name = reference.rsplit("/", 1)[-1]
+            if name == "__init__.py":
+                # A presence marker (tiktoken/__init__.py), not a helper they run; by name alone it
+                # would resolve to studio/__init__.py.
+                continue
             for candidate in (
                 path.parent / reference,
                 REPO_ROOT / reference,

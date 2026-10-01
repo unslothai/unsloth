@@ -646,7 +646,10 @@ export function UsageExamples({
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  const model = useExampleModelName(keylessBase && !apiKey);
+  // Only the inference scope keeps a keyless caller on the loaded model; full can switch.
+  const model = useExampleModelName(
+    keylessBase && !apiKey && keylessScope === "inference",
+  );
 
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;
@@ -858,7 +861,7 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col">
-      <h2 className="mb-2 text-sm font-semibold text-foreground">
+      <h2 className="settings-heading mb-2 text-sm font-semibold">
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
@@ -885,13 +888,15 @@ export function UsageExamples({
                       className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("settings.apiKeys.secureHttpsHint")}
                     >
+                      {/* Follows the UI font size, like the SettingsRow hint
+                          this matches. */}
                       <HugeiconsIcon
                         icon={InformationCircleIcon}
-                        className="size-3.5"
+                        className="size-[var(--ui-icon-size-sm)]"
                       />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent className="max-w-[260px] text-ui-11 leading-snug">
+                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>

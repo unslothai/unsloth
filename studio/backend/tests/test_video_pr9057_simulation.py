@@ -413,9 +413,9 @@ def _routes_source() -> str:
     "needle",
     [
         # external provider (OpenAI / Anthropic / any proxied backend)
-        'raise HTTPException(\n                status_code = 400,\n                detail = "Video input is only supported on a local GGUF model with video support.",',
-        # local non-GGUF (transformers, MLX)
-        "if payload.video_base64 and not using_gguf:",
+        "raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)",
+        # local non-GGUF: served on a backend reporting video input, refused elsewhere
+        "_video_clip = _local_video_clip(payload, model_info)",
         # GGUF that cannot take video
         'if not getattr(llama_backend, "_has_video_input", False):',
         # tool / guided-decoding passthrough
@@ -431,7 +431,7 @@ def test_every_path_that_cannot_serve_a_clip_refuses_out_loud(needle):
 def test_the_size_check_is_paid_before_the_model_switch_not_after():
     src = _routes_source()
     handler = src.index("_needs_image = bool(_pre_parsed[2])")
-    assert src.index("_video_b64_rejection(payload.video_base64)", handler) < src.index(
+    assert src.index("_request_video_rejection(payload)", handler) < src.index(
         "await _maybe_auto_switch_model(", handler
     )
 
@@ -440,4 +440,4 @@ def test_the_external_provider_refusal_precedes_the_proxy_call():
     src = _routes_source()
     start = src.index("if payload.provider_id or payload.provider_type:")
     branch = src[start : src.index("_proxy_to_external_provider(payload", start)]
-    assert "payload.video_base64" in branch
+    assert "_request_has_video(payload)" in branch

@@ -27,6 +27,7 @@ CPU-only, no network, no GPU, no weights.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,18 +65,40 @@ hw.ensure_hardware_detected = must_not_run
 
 app = FastAPI()
 app.add_api_route("/api/liveness", main.liveness_check, methods = ["GET"])
+
+# A route that does nothing, served by the same app through the same TestClient. The
+# claim here is "liveness costs about what answering costs", and a bare answer is the
+# only honest zero: everything a runner charges the real probe, it charges this too.
+async def _nothing():
+    return {"ok": True}
+
+app.add_api_route("/api/nothing", _nothing, methods = ["GET"])
 client = TestClient(app)
 
-def probe():
+def _timed(path):
     started = time.perf_counter()
-    response = client.get("/api/liveness")
-    elapsed = time.perf_counter() - started
+    response = client.get(path)
+    return time.perf_counter() - started, response
+
+def probe():
+    # Interleaved, and best of three on each side. Taken in one batch after the fact, a
+    # control shares no scheduler delay with what it is compared against, so a pause that
+    # lands on the measured request alone is not divided out. Alternating them gives each
+    # side the same chance of being unlucky, and a minimum over three is not moved by a
+    # pause that has to hit all three to count.
+    mine, controls, response = [], [], None
+    for _ in range(3):
+        control_elapsed, _ = _timed("/api/nothing")
+        elapsed, response = _timed("/api/liveness")
+        controls.append(control_elapsed)
+        mine.append(elapsed)
     body = response.json()
     return {
         "status_code": response.status_code,
         "status": body.get("status"),
         "service": body.get("service"),
-        "elapsed": elapsed,
+        "elapsed": min(mine),
+        "control": min(controls),
         "inference_active": body.get("inference_active"),
         "has_busy_key": "inference_active" in body,
     }
@@ -168,15 +191,47 @@ def test_the_marker_disappears_once_nothing_is_generating():
     )
 
 
+def _watchdog_probe_budget_s() -> float:
+    """The launcher's per-probe HTTP budget, read out of the Rust that owns it.
+
+    A ceiling on this route has to sit under the number the watchdog actually allows, or a
+    regression that makes /api/liveness block for most of a probe passes here while every
+    real probe times out. Derived rather than written down so the two cannot drift apart,
+    the way test_health_answers_within_probe_budget.py derives its own budget.
+    """
+    assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
+    match = re.search(
+        r"const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
+        _COMMANDS_RS.read_text(encoding = "utf-8"),
+    )
+    assert match, "commands.rs no longer sets a whole-seconds probe timeout"
+    return float(match.group(1))
+
+
 def test_the_marker_costs_nothing_to_read():
     """A probe every 15s cannot pay for anything that waits, which is why the route reads
     a registry len() rather than asking the backend what it is doing."""
     result = _probe()["probes"]
 
+    # Two bounds, because they answer different questions and neither covers the other.
+    #
+    # The first is the one that matters: liveness against a route in the same app that
+    # only returns a dict. Both pay the same interpreter, the same TestClient and the same
+    # scheduler, so what is left is the route's own work, and a second of new I/O shows up
+    # as a ratio however slow the runner is. Generous at 40x, since the floor here is tens
+    # of microseconds and small absolute jitter is a large ratio.
+    #
+    # The second is the absolute one the watchdog imposes: at or over its per-probe budget
+    # every real probe times out. A relative bound cannot see that, because a control that
+    # somehow took seconds would scale with it.
     for state, sample in result.items():
-        assert sample["elapsed"] < 0.5, (
-            f"/api/liveness took {sample['elapsed']:.2f}s while {state}; it must read the "
-            f"registry rather than wait on the generations in it"
+        control = sample["control"]
+        relative = max(control * 40, 0.05)
+        ceiling = min(relative, _watchdog_probe_budget_s() / 2)
+        assert sample["elapsed"] < ceiling, (
+            f"/api/liveness took {sample['elapsed'] * 1000:.1f}ms while {state}, against "
+            f"{control * 1000:.1f}ms to answer a route that does nothing; it must read "
+            f"the registry rather than wait on the generations in it"
         )
 
 

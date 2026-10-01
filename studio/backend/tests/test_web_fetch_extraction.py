@@ -1612,6 +1612,47 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     assert body == ""
 
 
+def test_read_capped_body_deadline_bounds_a_real_socket_drip():
+    # A buffered read(n) keeps receiving until n bytes arrive, so only a real socket shows
+    # whether a server sending one byte at a time can outlast the deadline.
+    import socket
+    import threading
+    import urllib.request
+
+    from core.inference.tools import _read_capped_body
+
+    server = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def _drip():
+        conn, _ = server.accept()
+        with conn:
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
+            try:
+                while not stop.is_set():
+                    conn.sendall(b"x")
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    threading.Thread(target = _drip, daemon = True).start()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    resp = opener.open(f"http://127.0.0.1:{server.getsockname()[1]}/", timeout = 15)
+    started = time.monotonic()
+    try:
+        err, _body = _read_capped_body(resp, 1_000_000, 15, started + 0.5, None)
+    except TimeoutError:
+        err = "timed out"
+    finally:
+        stop.set()
+        resp.close()
+        server.close()
+
+    assert err is not None
+    assert time.monotonic() - started < 5
+
+
 def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
     # getaddrinfo has no deadline of its own; a resolver slower than the budget must
     # abort on time instead of blocking the whole fetch.

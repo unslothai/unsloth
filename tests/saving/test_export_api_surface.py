@@ -31,6 +31,8 @@ PUBLIC_EXPORT_METHODS = (
     "save_pretrained_gguf",
     "push_to_hub_gguf",
     "save_pretrained_torchao",
+    "save_pretrained_openvino",
+    "push_to_hub_openvino",
     "save_pretrained_ggml",
     "push_to_hub_ggml",
 )

@@ -539,6 +539,156 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
     assert called["n"] == 0
 
 
+def _make_cuda_bundle(
+    tmp_path,
+    *,
+    runtime_line = "cuda13",
+    linked_from = None,
+):
+    """A CUDA whisper bundle whose install marker names a CUDA runtime line."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / _SERVER_NAME).write_text("#!/bin/sh\n")
+    (bindir / "libggml-cuda.so").write_text("")
+    if runtime_line is not None or linked_from is not None:
+        marker = {}
+        if runtime_line is not None:
+            marker["runtime_line"] = runtime_line
+        if linked_from is not None:
+            marker["linked_from"] = str(linked_from)
+        (tmp_path / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(json.dumps(marker))
+    return bindir
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
+    import utils.prebuilt.runtime_libs as rl
+    from utils.whisper_cpp_freshness import reset_caches
+
+    bindir = _make_cuda_bundle(tmp_path)
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+    wheel_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
+    wheel_dir.mkdir(parents = True)
+
+    reset_caches()
+    monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(wheel_dir)])
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
+    reset_caches()
+
+    parts = env[_loader_path_var()].split(os.pathsep)
+    assert parts[-1] == str(vendored.resolve())  # behind every other source
+    assert parts.index(str(bindir.resolve())) < parts.index(str(vendored.resolve()))
+    assert parts.index(str(wheel_dir.resolve())) < parts.index(str(vendored.resolve()))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_child_env_keeps_vendored_runtime_off_a_resolvable_runtime(monkeypatch, tmp_path):
+    import utils.prebuilt.runtime_libs as rl
+    from utils.whisper_cpp_freshness import reset_caches
+
+    bindir = _make_cuda_bundle(tmp_path)
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+
+    reset_caches()
+    monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [])
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: True)
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
+    reset_caches()
+
+    assert str(vendored.resolve()) not in env[_loader_path_var()].split(os.pathsep)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_slim_child_env_reads_vendored_cuda_runtime_from_paired_llama(monkeypatch, tmp_path):
+    import utils.prebuilt.runtime_libs as rl
+    from utils.llama_cpp_freshness import reset_caches as reset_llama_caches
+    from utils.whisper_cpp_freshness import reset_caches as reset_whisper_caches
+
+    llama_bin = tmp_path / "llama.cpp" / "build" / "bin"
+    llama_bin.mkdir(parents = True)
+    (tmp_path / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"runtime_line": "cuda13"})
+    )
+    bindir = _make_cuda_bundle(tmp_path, runtime_line = None, linked_from = llama_bin)
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+
+    reset_llama_caches()
+    reset_whisper_caches()
+    monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [])
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
+    reset_llama_caches()
+    reset_whisper_caches()
+
+    assert str(vendored.resolve()) in env[_loader_path_var()].split(os.pathsep)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_child_env_omits_vendored_cuda_runtime_for_cpu_bundle(monkeypatch, tmp_path):
+    import utils.prebuilt.runtime_libs as rl
+    from utils.whisper_cpp_freshness import reset_caches
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / _SERVER_NAME).write_text("#!/bin/sh\n")
+    (tmp_path / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(
+        json.dumps({"runtime_line": "cuda13"})
+    )
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+
+    reset_caches()
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
+    reset_caches()
+
+    assert str(vendored.resolve()) not in env[_loader_path_var()].split(os.pathsep)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_child_env_resolves_external_symlink_before_cuda_bundle_probe(monkeypatch, tmp_path):
+    import utils.prebuilt.runtime_libs as rl
+    from utils.whisper_cpp_freshness import reset_caches
+
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    bindir = _make_cuda_bundle(managed_root)
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    alias = external_dir / _SERVER_NAME
+    alias.symlink_to(bindir / _SERVER_NAME)
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+
+    monkeypatch.setattr(ggml_module, "_managed_whisper_cpp_dir", lambda: managed_root)
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
+    reset_caches()
+    env = ggml_module._whisper_server_child_env(str(alias))
+    reset_caches()
+
+    parts = env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(bindir.resolve()) in parts
+    assert parts[-1] == str(vendored.resolve())
+
+
 def test_engine_unavailable_is_stt_unavailable():
     # Routes map SttUnavailableError to HTTP 501; the engine error must share it.
     assert issubclass(SttEngineUnavailableError, SttUnavailableError)
