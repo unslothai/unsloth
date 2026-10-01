@@ -833,15 +833,11 @@ def test_tokenized_chunks_reserve_space_for_the_final_eos():
     for size in (2, 4):
         for stride in range(size):
             loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
-            # 2 * size and 3 * size are the exact multiples: with stride 0 the content fills
-            # whole chunks and the reserved EOS slot is left over on its own.
             for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
                 if count == 0:
                     continue
                 chunks = loader.chunk_text(" ".join(map(str, range(count))))
                 assert all(len(chunk["input_ids"]) <= size for chunk in chunks)
-                # A chunk holding nothing but the EOS is a one-token training row, the same
-                # thing the empty-text guard in smart_chunk_text exists to avoid.
                 assert all(chunk["input_ids"] != [99] for chunk in chunks)
                 assert all(
                     len(chunk["attention_mask"]) == len(chunk["input_ids"]) for chunk in chunks

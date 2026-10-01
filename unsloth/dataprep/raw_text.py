@@ -164,9 +164,7 @@ class RawTextDataLoader:
             tokens = list(range(tokens))
 
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
-        # Count the final EOS in the budget without materializing all token IDs. chunk_size 1
-        # cannot hold a token and the EOS, so there is nothing to reserve there and the last
-        # chunk keeps the one-token overflow it has always had.
+        # The final EOS counts toward chunk_size; chunk_size 1 cannot hold a token plus EOS.
         reserve_eos = return_tokenized and eos_token_id is not None and chunk_size > 1
         num_tokens = len(tokens) + int(reserve_eos)
 
@@ -216,10 +214,7 @@ class RawTextDataLoader:
                 break
             start_idx += chunk_size - stride
 
-        # Stride 0 with a token count that is an exact multiple of chunk_size leaves the reserved
-        # EOS slot alone in a chunk of its own, which is the degenerate lone-EOS sample the
-        # empty-text guard above exists to avoid. Move the previous chunk's last token across:
-        # both stay inside the budget and the concatenation is unchanged.
+        # Stride 0 + exact multiple leaves a lone-EOS chunk: move the previous chunk's last token in.
         if reserve_eos and len(chunks) > 1 and len(chunks[-1]["input_ids"]) == 1:
             chunks[-1]["input_ids"].insert(0, chunks[-2]["input_ids"].pop())
             for chunk in chunks[-2:]:
