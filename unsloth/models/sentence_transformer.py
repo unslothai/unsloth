@@ -1499,6 +1499,12 @@ class FastSentenceTransformer(FastModel):
             model_name, token, cache_dir = cache_dir, revision = revision, resolved = resolved
         )
         validated = resolved.get("revision", "")
+        # Everything below this point reads from the snapshot modules.json came out of, not
+        # from the caller's revision. Passing the original through meant modules.json could
+        # resolve commit A while each module config resolved commit B, and since the caller
+        # pins the load to A, a clean config in B was validated while A's unchecked value
+        # was the one that ran. That inverts the race rather than closing it.
+        config_revision = validated or revision
         if not modules_json_path:
             return validated
         try:
@@ -1526,7 +1532,7 @@ class FastSentenceTransformer(FastModel):
                 trust_remote_code,
                 token = token,
                 cache_dir = cache_dir,
-                revision = revision,
+                revision = config_revision,
             )
             FastSentenceTransformer._check_delegated_module_config(
                 model_name,
@@ -1535,7 +1541,7 @@ class FastSentenceTransformer(FastModel):
                 module_class,
                 token = token,
                 cache_dir = cache_dir,
-                revision = revision,
+                revision = config_revision,
             )
 
         return validated
@@ -2047,10 +2053,14 @@ class FastSentenceTransformer(FastModel):
             )
             # Load the snapshot that was checked. Without this the gate reads one commit of
             # a branch and the load resolves the branch again, so a repository that advances
-            # in between is validated on the old files and loaded from the new ones. Only
-            # when the caller named no revision: an explicit one is already the user's
-            # choice, and an empty _validated means the gate had nothing immutable to pin to.
-            if _validated and not revision:
+            # in between is validated on the old files and loaded from the new ones.
+            #
+            # Whenever the gate resolved a commit, including when the caller named a
+            # revision. Restricting it to a falsey revision left `revision = "main"` racing
+            # exactly as before, and it does not override anyone's choice: _validated IS
+            # what the caller's own revision resolved to, so pinning only removes the second
+            # resolution. An explicit commit resolves to itself and the pin is a no-op.
+            if _validated:
                 st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
             if _ensure_sentence_attention_masks(
@@ -2160,7 +2170,7 @@ class FastSentenceTransformer(FastModel):
                 device = st_device,
                 trust_remote_code = trust_remote_code,
                 token = token,
-                revision = (_validated if (_validated and not revision) else revision),
+                revision = _validated or revision,
                 model_kwargs = model_kwargs,
                 cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
             )

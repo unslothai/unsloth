@@ -1041,3 +1041,124 @@ def test_consent_reports_no_commit(monkeypatch):
 def test_only_an_immutable_snapshot_is_a_commit(path, expected):
     """A branch name in the snapshot slot is not something to pin to."""
     assert FastSentenceTransformer._snapshot_revision(path) == expected
+
+
+def test_the_module_configs_are_read_from_the_validated_snapshot(tmp_path, monkeypatch):
+    """Every config read has to come from the commit modules.json came out of.
+
+    Passing the caller's revision through meant modules.json could resolve commit A while
+    each module config resolved commit B. The caller then pins the load to A, so a clean
+    config in B was validated while A's unchecked value was the one that ran. That inverts
+    the race rather than closing it.
+    """
+    _simulate_pre_six(monkeypatch)
+
+    commit = "c" * 40
+    snapshot = tmp_path / "models--acme--embedder" / "snapshots" / commit
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "1_Dense",
+                    "type": "sentence_transformers.models.Dense",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    dense = snapshot / "1_Dense"
+    dense.mkdir()
+    (dense / "config.json").write_text(
+        json.dumps({"activation_function": "torch.nn.Tanh"}),
+        encoding = "utf8",
+    )
+
+    revisions = []
+
+    def fake_download(repo, filename, **kwargs):
+        revisions.append((os.path.basename(filename), kwargs.get("revision")))
+        return str(snapshot / filename)
+
+    _patch_download(monkeypatch, fake_download)
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types(
+            "acme/embedder", None, False, revision = "main"
+        )
+        == commit
+    )
+
+    # modules.json is fetched on the caller's revision, because that is what resolves the
+    # commit. Everything after it is fetched on the commit that resolution produced.
+    assert revisions[0] == ("modules.json", "main")
+    assert [r for name, r in revisions[1:]] == [commit] * len(revisions[1:])
+    assert len(revisions) > 1
+
+
+def test_a_named_branch_still_resolves_to_a_commit(tmp_path, monkeypatch):
+    """The gate reports a commit even when the caller named a branch.
+
+    That is the input the pin needs, and it held on the previous head too: the bug was the
+    condition at the call site, which discarded this value whenever a revision was given
+    and so left `revision = "main"` racing exactly as a missing revision did. That half is
+    not unit-testable without a full load, and is covered by a traced base-against-head
+    run instead, where base passes "main" to SentenceTransformer and head passes the
+    resolved commit. This test guards the contract the call site depends on.
+    """
+    commit = "d" * 40
+    snapshot = tmp_path / "models--acme--embedder" / "snapshots" / commit
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(monkeypatch, lambda *a, **k: str(snapshot / "modules.json"))
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types(
+            "acme/embedder", None, False, revision = "main"
+        )
+        == commit
+    )
+
+
+def test_an_immutable_revision_resolves_to_itself(tmp_path, monkeypatch):
+    """A caller who already named a commit gets a pin that changes nothing."""
+    commit = "e" * 40
+    snapshot = tmp_path / "models--acme--embedder" / "snapshots" / commit
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(monkeypatch, lambda *a, **k: str(snapshot / "modules.json"))
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types(
+            "acme/embedder", None, False, revision = commit
+        )
+        == commit
+    )
