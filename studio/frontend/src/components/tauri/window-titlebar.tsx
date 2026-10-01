@@ -458,6 +458,7 @@ export function WindowTitlebar({
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
         data-titlebar-live-width-scope=""
+        data-slot="window-titlebar"
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
