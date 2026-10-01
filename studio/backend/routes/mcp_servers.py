@@ -163,7 +163,12 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
 
 
 def _image_mappings_active(row: dict) -> bool:
-    if not image_input_mappings(row):
+    from core.inference.tools import _enabled_mcp_servers
+
+    # Same servers the model's MCP catalog keeps; a mapping elsewhere could never receive the image.
+    if not image_input_mappings(row) or not _enabled_mcp_servers([row]):
+        return False
+    if is_stdio(row["url"]) and not stdio_mcp_enabled():
         return False
     tools = get_cached_tools(row["id"])
     return tools is None or any(

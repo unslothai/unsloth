@@ -223,6 +223,21 @@ def test_app_only_tools_are_not_mapping_candidates(mapped_server):
     )
 
 
+def test_servers_outside_the_model_catalog_have_no_active_mapping(mapped_server, monkeypatch):
+    from routes import mcp_servers as routes_mcp
+
+    listed = lambda: routes_mcp._row_to_response(mcp_servers_db.get_server("srv1"))  # noqa: E731
+    mcp_servers_db.update_server("srv1", {"url": "trace-mcp --stdio"})
+    mcp_client.cache_tools("srv1", [LOOKUP])
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    assert listed().image_mappings_active is True
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: False)
+    assert listed().image_mappings_active is False
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    mcp_servers_db.update_server("srv1", {"is_enabled": 0})
+    assert listed().image_mappings_active is False
+
+
 def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {"image": ATTACHED_IMAGE}
