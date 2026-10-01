@@ -283,3 +283,26 @@ def test_the_check_does_not_key_off_the_import_module_class_attribute(
         FastSentenceTransformer._check_module_config_class_refs(
             str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
         )
+
+
+def test_a_legacy_module_class_without_config_file_name_is_still_read(tmp_path):
+    """sentence-transformers 3.x/4.x WordEmbeddings has no config_file_name and opens
+    wordembedding_config.json by name, so the attribute lookup alone finds nothing to check."""
+
+    class WordEmbeddings:  # no config_file_name, like the 3.x/4.x class
+        pass
+
+    load_path = tmp_path / "0_WordEmbeddings"
+    load_path.mkdir()
+    (load_path / "wordembedding_config.json").write_text(
+        json.dumps({"tokenizer_class": f"{MARKER}.Thing"}), encoding = "utf-8"
+    )
+
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(load_path),
+            "sentence_transformers.models.WordEmbeddings",
+            "some/repo",
+            False,
+            WordEmbeddings,
+        )

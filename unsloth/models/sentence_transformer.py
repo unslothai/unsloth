@@ -1306,6 +1306,16 @@ class FastSentenceTransformer(FastModel):
         ("tokenizer_class", "sentence_transformers."),
     )
 
+    # config_file_name only exists from sentence-transformers 5: on 3.x/4.x these classes open
+    # their file by name, so the attribute lookup alone would find nothing to check.
+    _LEGACY_MODULE_CONFIG_FILES = {
+        "WordEmbeddings": "wordembedding_config.json",
+        "Router": "router_config.json",
+        "Asym": "router_config.json",
+        "CNN": "cnn_config.json",
+        "LSTM": "lstm_config.json",
+    }
+
     @staticmethod
     def _check_module_config_class_refs(
         load_path, class_ref, model_name, trust_remote_code, module_class
@@ -1321,6 +1331,11 @@ class FastSentenceTransformer(FastModel):
         config_file_name = getattr(module_class, "config_file_name", None)
         if isinstance(config_file_name, str):
             config_names.append(config_file_name)
+        legacy = FastSentenceTransformer._LEGACY_MODULE_CONFIG_FILES.get(
+            getattr(module_class, "__name__", "")
+        )
+        if legacy is not None:
+            config_names.append(legacy)
         config_names.append("config.json")
 
         refs = []
@@ -2549,6 +2564,11 @@ def _patch_st_trainer_load_from_checkpoint():
                 raise RuntimeError(f"Unsloth: Bad checkpoint module path for index {idx}.")
             if not hasattr(module_cls, "load"):
                 raise RuntimeError(f"Unsloth: Module {idx} cannot be reloaded.")
+            # module_cls comes from the live model, so the class is trusted, but load() still reads
+            # the checkpoint's own config files and some versions import dotted paths out of them.
+            FastSentenceTransformer._check_module_config_class_refs(
+                module_dir, saved_type or module_cls.__name__, root, False, module_cls
+            )
             fresh = module_cls.load(module_dir)
             if not isinstance(fresh, module_cls):
                 raise RuntimeError(f"Unsloth: Module {idx} reload returned wrong type.")
