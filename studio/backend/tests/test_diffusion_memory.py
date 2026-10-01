@@ -2977,3 +2977,45 @@ def test_top_level_weights_onload_from_one_pinned_copy_on_a_real_gpu(monkeypatch
     torch.cuda.synchronize()
     assert net.proj_out.weight.data_ptr() == ptr
     assert all(torch.allclose(g, want, atol = 1e-5) for g in got)
+
+
+def test_top_level_weights_replaced_while_offloaded_are_picked_up(monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    pytest.importorskip("diffusers.hooks")
+    import copy
+
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PIN_TOP_GROUP", raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+
+    class Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList(torch.nn.Linear(16, 16) for _ in range(3))
+            self.proj_out = torch.nn.Linear(16, 16)
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = x + torch.tanh(block(x))
+            return self.proj_out(x)
+
+    torch.manual_seed(0)
+    net = Net().eval()
+    ref = copy.deepcopy(net)
+    x = torch.randn(4, 16)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    mem._apply_streaming_offload(pipe, "cuda", None)
+    with torch.no_grad():
+        for _ in range(2):
+            net(x.cuda())
+        torch.cuda.synchronize()
+        # e.g. a .to() conversion or an adapter fused on the host while the weights sit offloaded
+        net.proj_out.weight.data = net.proj_out.weight.data * 2
+        ref.proj_out.weight.data = ref.proj_out.weight.data * 2
+        got = net(x.cuda()).cpu()
+        want = ref(x)
+    assert torch.allclose(got, want, atol = 1e-5)

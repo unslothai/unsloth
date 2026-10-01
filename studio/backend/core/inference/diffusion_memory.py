@@ -2303,7 +2303,12 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
         device = group.onload_device
 
         def onload_() -> None:
-            for tensor, pinned in host.items():
+            for tensor, pinned in list(host.items()):
+                current = tensor.data
+                if current.device.type == "cpu" and current.data_ptr() != pinned.data_ptr():
+                    # replaced while offloaded (a .to() conversion, an adapter fused on the host): re-pin what is there now
+                    pinned = current if current.is_pinned() else current.pin_memory()
+                    host[tensor] = pinned
                 tensor.data = pinned.to(device, non_blocking = True)
 
         def offload_() -> None:
