@@ -925,9 +925,9 @@ export function applyCustomizationToDocument(
   setVar(
     "--custom-chat-max-width",
     c.chatWidth === "full"
-      ? "max(72rem, calc(100% - 6rem))"
+      ? "max(calc(72rem * var(--ui-layout-scale, 1)), calc(100% - 6rem * var(--ui-layout-scale, 1)))"
       : c.chatWidth === "wide"
-        ? "72rem"
+        ? "calc(72rem * var(--ui-layout-scale, 1))"
         : null,
   );
   // Unset, the composer shell takes the message column's width. Full width's cap
@@ -936,7 +936,7 @@ export function applyCustomizationToDocument(
   setVar(
     "--custom-chat-shell-max-width",
     c.chatWidth === "full"
-      ? "min(100%, max(calc(72rem - 1.5rem), calc(100% - 1.5rem)))"
+      ? "min(100%, max(calc((72rem - 1.5rem) * var(--ui-layout-scale, 1)), calc(100% - 1.5rem * var(--ui-layout-scale, 1))))"
       : null,
   );
 

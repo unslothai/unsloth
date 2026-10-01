@@ -901,8 +901,8 @@ function CompareShell({
         </div>
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
-        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
+        <div className="shrink-0 bg-background px-[calc(20px*var(--ui-layout-scale,1))] md:px-[calc(30px*var(--ui-layout-scale,1))] pb-2 pt-1">
+          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,calc(48rem*var(--ui-layout-scale,1)))]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -1839,15 +1839,15 @@ function ProjectLanding({
         </div>
       ) : (
         <div
-          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-[calc(20px*var(--ui-layout-scale,1))]"
           style={
             {
-              ["--thread-max-width" as string]: "48rem",
+              ["--thread-max-width" as string]: "calc(48rem * var(--ui-layout-scale, 1))",
             } as CSSProperties
           }
         >
           {/* Slightly narrower than the composer max; every block shares this. */}
-          <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-space-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
+          <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-layout-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon

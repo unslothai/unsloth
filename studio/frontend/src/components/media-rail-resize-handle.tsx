@@ -14,9 +14,9 @@ import { cn } from "@/lib/utils";
 
 /** The rail's rendered width, mirroring the pages' `min(rail, 100% - 13rem)`. */
 const RAIL_BOX_WIDTH: Record<MediaRailKind, string> = {
-  images: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - 13rem))",
-  video: "min(var(--media-rail-width,calc(400px*var(--ui-space-scale,1))),calc(100% - 13rem))",
-  audio: "min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100% - 13rem))",
+  images: "min(var(--media-rail-width,calc(408px*var(--ui-layout-scale,1))),calc(100% - 13rem))",
+  video: "min(var(--media-rail-width,calc(400px*var(--ui-layout-scale,1))),calc(100% - 13rem))",
+  audio: "min(var(--media-rail-width,calc(408px*var(--ui-layout-scale,1))),calc(100% - 13rem))",
 };
 
 /**

@@ -334,6 +334,10 @@
 	   hairlines) skip it. */
 	--ui-space-scale: calc(var(--ui-font-scale, 1) / 0.9375);
 
+	/* Chatbox widths and the gutters around them. Interface scale is a zoom, so it moves them;
+	   the UI font size never does. 1 on desktop, where the webview zoom scales everything. */
+	--ui-layout-scale: var(--ui-interface-scale, 1);
+
 	/* Named widths (max-w-md, max-w-xs) scale with their content. @container
 	   thresholds are inlined at build time, so breakpoints do not move. */
 	--container-3xs: calc(16rem * var(--ui-space-scale, 1));
@@ -3569,8 +3573,8 @@ html[data-chat-font] .aui-root {
 	   breakpoint would keep the full 20px there. */
 	@container (max-width: 31.5rem) {
 		.unsloth-composer-dock-inner {
-			padding-left: calc(0.75rem * var(--ui-space-scale, 1));
-			padding-right: calc(0.75rem * var(--ui-space-scale, 1));
+			padding-left: calc(0.75rem * var(--ui-layout-scale, 1));
+			padding-right: calc(0.75rem * var(--ui-layout-scale, 1));
 		}
 
 		/* The welcome screen is inside the viewport's own 20px gutter, so pull
@@ -3579,12 +3583,12 @@ html[data-chat-font] .aui-root {
 		.aui-thread-welcome-message {
 			padding-left: 0;
 			padding-right: 0;
-			margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
-			margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
+			margin-left: calc(-0.5rem * var(--ui-layout-scale, 1));
+			margin-right: calc(-0.5rem * var(--ui-layout-scale, 1));
 			/* w-full would pin the width and the margins would only shift the
 			   box left. An explicit width widens it into the gutter instead;
 			   auto would shrink-wrap, since the parent centres its children. */
-			width: calc(100% + 1rem * var(--ui-space-scale, 1));
+			width: calc(100% + 1rem * var(--ui-layout-scale, 1));
 		}
 
 		.unsloth-welcome-title {

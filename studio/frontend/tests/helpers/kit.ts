@@ -17,11 +17,11 @@ export function readSrc(relative: string): string {
 }
 
 const UI_SPACE_SCALE =
-  /calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(--ui-space-scale\s*,\s*1\)\s*\)/g;
+  /calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(--ui-(?:space|layout)-scale\s*,\s*1\)\s*\)/g;
 
 /**
- * Source with --ui-space-scale collapsed to the length it resolves to at the
- * default UI font size. Shape assertions reason in px, and every length in such
+ * Source with --ui-space-scale and --ui-layout-scale collapsed to the length they resolve to at
+ * the default UI font size and interface scale. Shape assertions reason in px, and every length in such
  * a comparison moves by the same factor, so reading the authored base keeps
  * them true at any font size.
  */

@@ -35,10 +35,10 @@ test("nothing around the composer re-adds a one-sided inset", async () => {
 
   // The compare-mode wrapper mirrored the old one-sided gutter.
   assert.doesNotMatch(chatPage, /pl-5 pr-5 md:pr-\[30px\]/);
-  assert.match(chatPage, /pl-5 pr-5 md:px-\[30px\]/);
+  assert.match(chatPage, /px-\[20px\] md:px-\[30px\]/);
 
   // The dock's own padding stays even.
-  assert.match(thread, /unsloth-composer-dock-inner relative px-5/);
+  assert.match(thread, /unsloth-composer-dock-inner relative px-\[20px\]/);
 
   // The dock offset keeps the bottom fade off the scrollbar, so it stays,
   // but one-sided it also shifts the composer half its width off centre.

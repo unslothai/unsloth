@@ -400,7 +400,7 @@ test("a scaled media rail leaves the preview its minimum", () => {
   // At 200% a shrink-0 rail passed the 50rem split it sits in, clipping the
   // preview. The header column shrinks the same way, so the dividers line up.
   // The width is the draggable --media-rail-width, falling back to the old fixed one.
-  const rail = "var(--media-rail-width,calc(408px*var(--ui-space-scale,1)))";
+  const rail = "var(--media-rail-width,calc(408px*var(--ui-layout-scale,1)))";
   for (const file of [
     "features/images/images-page.tsx",
     "features/audio/audio-page.tsx",

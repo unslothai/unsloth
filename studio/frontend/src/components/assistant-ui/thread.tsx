@@ -2143,9 +2143,11 @@ export const Thread: FC<{
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
-          ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
+          // Chatbox geometry follows the layout scale, never the UI font size.
+          ["--thread-max-width" as string]:
+            "var(--custom-chat-max-width, calc(48rem * var(--ui-layout-scale, 1)))",
           ["--thread-content-max-width" as string]:
-            "calc(var(--thread-max-width) - 1.5rem)",
+            "calc(var(--thread-max-width) - 1.5rem * var(--ui-layout-scale, 1))",
         }}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
@@ -2160,7 +2162,7 @@ export const Thread: FC<{
             scrollToBottomOnInitialize={false}
             scrollToBottomOnThreadSwitch={false}
             className={cn(
-              "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+              "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-[calc(20px*var(--ui-layout-scale,1))]",
               hideComposer
                 ? "pt-4"
                 : // + the chat-model notice, which is an opaque absolute bar
@@ -2426,7 +2428,7 @@ const ThreadComposerDock: FC<{
       />
       {/* Narrow panes spend the gutter on the composer instead; index.css
           trims it off the pane's width, not the window's. */}
-      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
+      <div className="unsloth-composer-dock-inner relative px-[calc(20px*var(--ui-layout-scale,1))] pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2601,7 +2603,7 @@ const ComposerAnimated: FC<{
     // trim the surface's own padding.
     // Same width as the message column. Full chat width sets its own variable, since
     // its percentage would otherwise resolve against this narrower parent.
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,calc(46rem*var(--ui-layout-scale,1))))]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
