@@ -14,23 +14,11 @@
 
 """A modules.json "type" is untrusted input, not an import target.
 
-`modules.json` ships inside the model folder or Hub repo (`_module_path` fetches it
-with `hf_hub_download`, so publishing a repo is enough; no local access required).
-Resolving its `type` imports whatever dotted path it names and runs that module's
-top-level code in-process, with no `.py` needed anywhere in the model folder.
+`_module_path` fetches modules.json with `hf_hub_download`, so publishing a Hub repo is
+enough; no local access required. See `_resolve_module_class` for the gate being tested.
 
-sentence-transformers 6.0 refuses any class outside `sentence_transformers.*` unless
-`trust_remote_code=True` (upstream #3801), but Unsloth reimplements the module scan in
-`_load_modules` and called the raw `import_from_string` primitive, so that gate never
-ran: with ST 6.x installed, Unsloth imported what stock ST had just refused. On ST 5.x
-nothing gated it on either side. Studio made it worse, not better: its consent gate
-returns early when remote code is off, so the import ran with remote code explicitly
-disabled.
-
-Offline and CPU-only: the marker package is inert (importing it only appends to a file,
-which is how the test observes whether an import happened at all) and stands in for any
-installed module an attacker-chosen dotted path could reach. No weights are loaded, since
-the gate decides before any download.
+Offline and CPU-only: the marker package is inert and only appends to a file, which is how
+these tests observe whether an import happened at all.
 """
 
 import json
@@ -88,7 +76,7 @@ def _load_modules(model, trust_remote_code):
 
 
 def test_an_untrusted_module_type_is_never_imported(model_dir):
-    """The refusal has to land BEFORE the import, so the witness must not exist."""
+    """The refusal must land BEFORE the import, so the witness must not exist."""
     model, witness = model_dir
 
     with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
@@ -98,7 +86,7 @@ def test_an_untrusted_module_type_is_never_imported(model_dir):
 
 
 def test_the_refusal_fails_the_load_rather_than_skipping_the_module(model_dir):
-    """Fail closed: a refused type must not degrade to "load the other modules and carry on"."""
+    """Fail closed, rather than degrading to "load the other modules and carry on"."""
     model, witness = model_dir
     (model / "1_Pooling").mkdir()
     (model / "modules.json").write_text(
@@ -123,7 +111,6 @@ def test_the_refusal_fails_the_load_rather_than_skipping_the_module(model_dir):
 
 
 def test_consent_still_loads_a_custom_module_type(model_dir):
-    """trust_remote_code=True is the documented opt-in and keeps working."""
     model, witness = model_dir
 
     modules, no_modules_json = _load_modules(model, True)
@@ -134,7 +121,6 @@ def test_consent_still_loads_a_custom_module_type(model_dir):
 
 
 def test_a_non_string_module_type_is_refused(model_dir):
-    """A crafted type that is not a dotted path must not reach .startswith/import."""
     model, witness = model_dir
     (model / "modules.json").write_text(
         json.dumps([{"idx": 0, "name": "0", "path": "0_Sub", "type": {"bad": 1}}]),
@@ -157,9 +143,8 @@ def test_a_non_string_module_type_is_refused(model_dir):
     ],
 )
 def test_the_stock_module_types_resolve_without_consent(class_ref, tmp_path):
-    """Every module type real embedders ship stays loadable with the gate closed:
-    bge, MiniLM, e5, gte, bge-m3 and Qwen3-Embedding use only these, and
-    embeddinggemma-300m adds the two Dense entries."""
+    """These are every type real embedders ship: bge, MiniLM, e5, gte, bge-m3 and
+    Qwen3-Embedding use the first three, embeddinggemma-300m adds the two Dense entries."""
     module_class = FastSentenceTransformer._resolve_module_class(class_ref, str(tmp_path), False)
 
     assert module_class.__module__.startswith("sentence_transformers")
@@ -174,14 +159,13 @@ def test_the_stock_module_types_resolve_without_consent(class_ref, tmp_path):
     ],
 )
 def test_the_fast_encoder_path_still_recognises_the_transformer_refs(class_ref):
-    """The gate must not cost the fast encoder path: these three refs name ST's
-    Transformer across 5.x/6.x layouts and are matched without importing anything."""
+    """These three refs name ST's Transformer across the 5.x/6.x layouts."""
     assert FastSentenceTransformer._is_transformer_module_ref(class_ref) is True
 
 
 def test_an_untrusted_type_is_not_probed_as_a_transformer_ref(model_dir):
-    """_is_transformer_module_ref used to import the ref just to compare it against ST's
-    Transformer, which is the same execution by another door. It is now a pure string test."""
+    """It used to import the ref just to compare it against ST's Transformer, which is the same
+    execution by another door. It is now a pure string test."""
     model, witness = model_dir
 
     assert FastSentenceTransformer._is_transformer_module_ref(f"{MARKER}.Thing") is False
@@ -189,10 +173,10 @@ def test_an_untrusted_type_is_not_probed_as_a_transformer_ref(model_dir):
 
 
 def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, monkeypatch):
-    """An in-namespace "type" is allowed, but the module's own config.json carries more dotted
-    paths, and the sentence-transformers < 6 loaders import them ungated: Dense imports AND
-    CALLS activation_function. Simulate that older library by hiding import_module_class."""
+    """Simulate sentence-transformers < 6, whose Dense loader imports AND CALLS
+    activation_function ungated, by hiding import_module_class."""
     import sentence_transformers.util as st_util
+    from sentence_transformers.models import Dense
 
     monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
@@ -205,14 +189,59 @@ def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, mo
 
     with pytest.raises(ValueError, match = "does not gate it"):
         FastSentenceTransformer._check_module_config_class_refs(
-            str(load_path), "sentence_transformers.models.Dense", "some/repo", False
+            str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
         )
 
 
-def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
-    """embeddinggemma-300m's two Dense modules declare torch.nn.modules.linear.Identity, which is
-    exactly what ST >= 6 allows unconsented, so the check above must stay silent for them."""
+@pytest.mark.parametrize(
+    "module_name, config_name, config",
+    [
+        # Each module names its own config file, so a check reading only "config.json" skips the two
+        # modules whose loaders resolve a dotted path out of it, which are the reason it exists.
+        ("Router", "router_config.json", {"types": {"query": MARKER + ".Thing"}}),
+        ("WordEmbeddings", "wordembedding_config.json", {"tokenizer_class": MARKER + ".Thing"}),
+    ],
+)
+def test_an_in_namespace_type_cannot_smuggle_a_path_via_its_own_config_file(
+    module_name, config_name, config, model_dir, monkeypatch
+):
+    """Through _load_modules, not the helper: the type is an allowed sentence_transformers.* class,
+    so the refusal has to come from reading the config file that module's loader reads."""
     import sentence_transformers.util as st_util
+    from sentence_transformers import models as st_models
+
+    monkeypatch.delattr(st_util, "import_module_class", raising = False)
+    if getattr(st_models, module_name, None) is None:
+        pytest.skip(f"installed sentence-transformers has no {module_name}")
+
+    model, witness = model_dir
+    (model / f"1_{module_name}").mkdir()
+    (model / f"1_{module_name}" / config_name).write_text(json.dumps(config), encoding = "utf-8")
+    (model / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": f"1_{module_name}",
+                    "type": f"sentence_transformers.models.{module_name}",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    with pytest.raises(ValueError, match = "does not gate it"):
+        _load_modules(model, False)
+
+    assert not witness.exists()
+
+
+def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
+    """embeddinggemma-300m's Dense modules declare torch.nn.modules.linear.Identity, exactly what
+    ST >= 6 allows unconsented."""
+    import sentence_transformers.util as st_util
+    from sentence_transformers.models import Dense
 
     monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
@@ -231,14 +260,18 @@ def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
     )
 
     FastSentenceTransformer._check_module_config_class_refs(
-        str(load_path), "sentence_transformers.models.Dense", "unsloth/embeddinggemma-300m", False
+        str(load_path),
+        "sentence_transformers.models.Dense",
+        "unsloth/embeddinggemma-300m",
+        False,
+        Dense,
     )
 
 
 def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path):
-    """On ST >= 6 the module loaders gate their own config refs, so the check is a no-op there
-    rather than a second, diverging copy of upstream's rules."""
+    """ST >= 6 gates its own config refs, so the check is a no-op rather than a diverging copy."""
     import sentence_transformers.util as st_util
+    from sentence_transformers.models import Dense
 
     if not hasattr(st_util, "import_module_class"):
         pytest.skip("installed sentence-transformers has no gate of its own")
@@ -250,5 +283,5 @@ def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path
     )
 
     FastSentenceTransformer._check_module_config_class_refs(
-        str(load_path), "sentence_transformers.models.Dense", "some/repo", False
+        str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
     )

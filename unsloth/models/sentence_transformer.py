@@ -1206,11 +1206,10 @@ class FastSentenceTransformer(FastModel):
         """Resolve a modules.json "type" to a class, gated like sentence-transformers >= 6.0.
 
         modules.json ships inside the model directory or Hub repo, so its "type" is untrusted
-        input: resolving it imports whatever dotted path it names and runs that module's
-        top-level code in this process, with no .py needed anywhere in the model folder.
-        sentence-transformers 6.0 therefore refuses any class outside the sentence_transformers.*
-        namespace unless trust_remote_code is set (its #3801); mirror that gate here so Unsloth's
-        own module scan cannot be used to walk around it.
+        input: resolving it imports that dotted path and runs its top-level code in this process,
+        with no .py needed anywhere in the model folder. sentence-transformers 6.0 refuses any
+        class outside sentence_transformers.* without trust_remote_code (its #3801); since
+        _load_modules reimplements their module scan, that gate has to be mirrored here.
         """
         from sentence_transformers.util import import_from_string
 
@@ -1254,10 +1253,9 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _is_transformer_module_ref(class_ref):
-        """Name ST's Transformer without importing anything. A ref that spells it some other way
-        is caught by the `is Transformer` comparison in _load_modules, once it has been gated."""
-        # A crafted modules.json can hold any JSON here, and an unhashable one would raise out of the
-        # set test below; leave every refusal to _resolve_module_class so there is one refusal path.
+        """Name ST's Transformer without importing anything, since importing to compare is the same
+        execution the gate refuses. Any other spelling is caught by `is Transformer` in
+        _load_modules, after gating; refusals all live in _resolve_module_class."""
         if not isinstance(class_ref, str):
             return False
 
@@ -1267,20 +1265,21 @@ class FastSentenceTransformer(FastModel):
             "sentence_transformers.base.modules.transformer.Transformer",
         }
 
-    # A module's own config.json inside the repo carries further dotted class paths, and the
-    # sentence-transformers < 6 loaders import them with no gate whatsoever: Dense imports AND
+    # A module's own config carries further dotted class paths that the ST < 6 loaders import
+    # ungated, so an allowed in-namespace "type" could walk around the gate above: Dense imports AND
     # CALLS config["activation_function"], WordEmbeddings imports config["tokenizer_class"], and
-    # Router/Asym import every value of config["types"]. An in-namespace "type" that the gate above
-    # rightly allows would otherwise walk straight around it. ST >= 6 gates these itself (its
-    # Dense allows only "torch.*" unconsented, the others go through import_module_class), so
-    # these are the same rules, applied only where the installed library has none.
+    # Router/Asym import every value of config["types"]. The prefixes are upstream's own rules
+    # (ST >= 6 allows only "torch.*" for Dense and routes the rest through import_module_class),
+    # applied only where the installed library has no gate.
     _MODULE_CONFIG_CLASS_REFS = (
         ("activation_function", "torch."),
         ("tokenizer_class", "sentence_transformers."),
     )
 
     @staticmethod
-    def _check_module_config_class_refs(load_path, class_ref, model_name, trust_remote_code):
+    def _check_module_config_class_refs(
+        load_path, class_ref, model_name, trust_remote_code, module_class
+    ):
         if trust_remote_code:
             return
 
@@ -1291,30 +1290,44 @@ class FastSentenceTransformer(FastModel):
             # sentence-transformers >= 6 applies these gates in the module loaders themselves.
             return
 
-        config_path = os.path.join(load_path, "config.json")
-        if not os.path.isfile(config_path):
-            return
-        try:
-            with open(config_path, encoding = "utf8") as f:
-                config = json.load(f)
-        except (OSError, ValueError) as exception:
-            logging.debug("Unsloth: Could not read module config %s: %s", config_path, exception)
-            return
-        if not isinstance(config, dict):
-            return
+        # Read what the loader will read: each module names its own file (Router
+        # "router_config.json", WordEmbeddings "wordembedding_config.json"), and Router falls back to
+        # "config.json", which is also Module's default and so Dense's. Hard-coding "config.json"
+        # would skip exactly the two modules this check exists for.
+        config_names = []
+        config_file_name = getattr(module_class, "config_file_name", None)
+        if isinstance(config_file_name, str):
+            config_names.append(config_file_name)
+        config_names.append("config.json")
 
-        refs = [
-            (key, config[key], prefix)
-            for key, prefix in FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS
-            if isinstance(config.get(key), str)
-        ]
-        types = config.get("types")
-        if isinstance(types, dict):
+        refs = []
+        for config_name in dict.fromkeys(config_names):
+            config_path = os.path.join(load_path, config_name)
+            if not os.path.isfile(config_path):
+                continue
+            try:
+                with open(config_path, encoding = "utf8") as f:
+                    config = json.load(f)
+            except (OSError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not read module config %s: %s", config_path, exception
+                )
+                continue
+            if not isinstance(config, dict):
+                continue
+
             refs += [
-                ("types", value, "sentence_transformers.")
-                for value in types.values()
-                if isinstance(value, str)
+                (key, config[key], prefix)
+                for key, prefix in FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS
+                if isinstance(config.get(key), str)
             ]
+            types = config.get("types")
+            if isinstance(types, dict):
+                refs += [
+                    ("types", value, "sentence_transformers.")
+                    for value in types.values()
+                    if isinstance(value, str)
+                ]
 
         for key, value, prefix in refs:
             if not value.startswith(prefix):
@@ -1356,9 +1369,9 @@ class FastSentenceTransformer(FastModel):
                 class_ref = module_config["type"]
                 name = module_config.get("name", str(module_config.get("idx", len(modules))))
 
-                # Resolve (and so gate) the class before any download: a refused type must fail the
-                # load outright, not fall through the "could not download" skip below. Resolved once,
-                # since for a consented repo-local ref this is a Hub round trip.
+                # Gate before any download: a refused type must fail the load outright, not fall
+                # through the "could not download" skip below. Resolved once, since a consented
+                # repo-local ref costs a Hub round trip.
                 module_class = None
                 if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                     is_transformer_module = True
@@ -1404,7 +1417,7 @@ class FastSentenceTransformer(FastModel):
                             continue
 
                     FastSentenceTransformer._check_module_config_class_refs(
-                        load_path, class_ref, model_name, trust_remote_code
+                        load_path, class_ref, model_name, trust_remote_code, module_class
                     )
 
                     try:

@@ -5133,13 +5133,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
-                # Deliberately NOT config["trust_remote_code"]. A modules.json module class outside
-                # sentence_transformers.* is third-party code, and the consent scan above decides
-                # purely on auto_map (utils/security/consent.py: "no auto_map; trust_remote_code is
-                # a no-op"), so a repo whose only custom code is that module class is never
-                # fingerprinted and never CRITICAL-blocked. Forwarding consent here would let it be
-                # fetched and run unscanned, so the module scan stays closed until the preflight can
-                # discover and scan modules.json code too.
+                # Deliberately NOT config["trust_remote_code"]: the consent scan above decides purely
+                # on auto_map, so a modules.json module class is never scanned. Forwarding consent
+                # here would fetch and run that unscanned code.
                 trust_remote_code = False,
             )
         except Exception as error:
@@ -5169,13 +5165,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
-                # Deliberately NOT config["trust_remote_code"]. A modules.json module class outside
-                # sentence_transformers.* is third-party code, and the consent scan above decides
-                # purely on auto_map (utils/security/consent.py: "no auto_map; trust_remote_code is
-                # a no-op"), so a repo whose only custom code is that module class is never
-                # fingerprinted and never CRITICAL-blocked. Forwarding consent here would let it be
-                # fetched and run unscanned, so the module scan stays closed until the preflight can
-                # discover and scan modules.json code too.
+                # Deliberately False, as above.
                 trust_remote_code = False,
             )
     except Exception as e:
