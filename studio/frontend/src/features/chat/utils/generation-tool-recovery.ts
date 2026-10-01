@@ -458,8 +458,7 @@ export function createGenerationToolRecovery(
       if (!toolName) {
         return;
       }
-      // A save can already hold this start's card past its cursor; minting it again gives the
-      // message two parts with one key, which assistant-ui refuses to render.
+      // A save can hold this card past its cursor; minting it again duplicates the part key.
       const toolCallId = `${backendId || "tool"}:${runId}:${seq}`;
       entry ??= carried.find(({ part }) => {
         const card = record(part);
