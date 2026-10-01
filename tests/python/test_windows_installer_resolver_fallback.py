@@ -1986,7 +1986,8 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
         # the child the file handle itself, so this race is the parity host's, not the installer's.
         # A probe that really lost its answer comes back empty every time and still fails here.
         for _ in range(2):
-            if _lines(result, "ANSWER:") == ["ANSWER:nvml;12;8;8.9"]:
+            # Only the race's exact signature is retried; a wrong or duplicated answer fails at once.
+            if _lines(result, "ANSWER:") != ["ANSWER:"]:
                 break
             result = attempt()
         assert _lines(result, "ANSWER:") == ["ANSWER:nvml;12;8;8.9"], result.stdout
