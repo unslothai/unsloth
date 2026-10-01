@@ -2256,14 +2256,38 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
             # A binary asset (image, font) a widget reads through resources/read stays base64.
             text = ""
     text = str(text)
-    size = len(text) + len(blob or "")
+    # A widget's own resources/read gets every block, as the protocol returns them; one block is the fields above.
+    contents = []
+    for item in items if len(items) > 1 else ():
+        entry = {"uri": str(getattr(item, "uri", "") or uri)}
+        if _resource_mime(item):
+            entry["mimeType"] = str(_resource_mime(item))
+        if getattr(item, "text", None) is not None:
+            entry["text"] = str(item.text)
+        elif getattr(item, "blob", None) is not None:
+            entry["blob"] = str(item.blob)
+        else:
+            continue
+        contents.append(entry)
+    size = (
+        len(text)
+        + len(blob or "")
+        + sum(len(c.get("text") or c.get("blob") or "") for c in contents)
+    )
     if size > MAX_UI_RESOURCE_CHARS:
         raise ValueError(f"resource is {size} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
     # _meta.ui on the contents, not the tool: the template's CSP declaration.
     metas = (getattr(chosen, "meta", None), getattr(chosen, "_meta", None))
     ui = next((m["ui"] for m in metas if isinstance(m, dict) and isinstance(m.get("ui"), dict)), {})
     mime = str(_resource_mime(chosen) or "")
-    return {"uri": uri, "mime_type": mime, "text": text, "blob": blob, "ui": ui}
+    return {
+        "uri": uri,
+        "mime_type": mime,
+        "text": text,
+        "blob": blob,
+        "ui": ui,
+        "contents": contents,
+    }
 
 
 class _MCPCancelled(Exception):

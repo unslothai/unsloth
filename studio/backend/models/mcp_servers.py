@@ -106,6 +106,7 @@ class McpUiResourceResponse(BaseModel):
     # Base64, only for a resource that is not UTF-8 text.
     blob: Optional[str] = None
     ui: dict = Field(default_factory = dict)
+    contents: list[dict] = Field(default_factory = list)
 
 
 class McpUiToolCallRequest(BaseModel):

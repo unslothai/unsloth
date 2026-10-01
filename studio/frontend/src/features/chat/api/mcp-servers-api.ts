@@ -46,7 +46,9 @@ export interface BlenderMcpSettings {
   blender_path: string;
 }
 
-export function listMcpBuiltins(waitForPendingMutations = true): Promise<McpBuiltinConfig[]> {
+export function listMcpBuiltins(
+  waitForPendingMutations = true,
+): Promise<McpBuiltinConfig[]> {
   const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
   return waitForPendingMutations
     ? readAfterPendingMcpServerMutations(read)
@@ -61,11 +63,18 @@ export function updateBlenderMcp(
   );
 }
 
-export function testBlenderMcp(payload: BlenderMcpSettings & { consent: boolean }): Promise<McpServerProbeResult & {
-  blender_ready?: boolean;
-  blender_error?: string | null;
-}> {
-  return mcpRequest("/builtins/blender/test", { method: "POST", body: payload });
+export function testBlenderMcp(
+  payload: BlenderMcpSettings & { consent: boolean },
+): Promise<
+  McpServerProbeResult & {
+    blender_ready?: boolean;
+    blender_error?: string | null;
+  }
+> {
+  return mcpRequest("/builtins/blender/test", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export interface McpServerImportResult {
@@ -261,10 +270,7 @@ export function importMcpServers(
 }
 
 export type McpUiCspField =
-  | "connectDomains"
-  | "resourceDomains"
-  | "frameDomains"
-  | "baseUriDomains";
+  "connectDomains" | "resourceDomains" | "frameDomains" | "baseUriDomains";
 
 export interface McpUiResource {
   uri: string;
@@ -272,6 +278,8 @@ export interface McpUiResource {
   text: string;
   blob?: string | null;
   ui: { csp?: Partial<Record<McpUiCspField, string[]>> };
+  /** Every block resources/read returned, for a widget's own reads. */
+  contents?: { uri: string; mimeType?: string; text?: string; blob?: string }[];
 }
 
 export interface McpUiToolCallResult {

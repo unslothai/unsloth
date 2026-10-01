@@ -217,6 +217,7 @@ def test_resource_contents_picks_the_asked_uri_decodes_blobs_and_passes_csp():
         "text": "<p>hi</p>",
         "blob": None,
         "ui": ui_meta,
+        "contents": [],
     }
     assert _resource_contents([_contents(text = "<p/>")], UI)["ui"] == {}
 
@@ -510,3 +511,21 @@ def test_a_mounted_widget_can_still_call_after_the_server_is_toggled(routes, mon
     )
     assert _call(routes, tool_name = "get_stats", permission_mode = "off").is_error is False
     assert routes.get_cached_tools("s1") == [_APP]
+
+
+def test_a_widget_read_of_a_multi_block_resource_keeps_every_block():
+    from types import SimpleNamespace as Block
+
+    from core.inference.mcp_client import _resource_contents
+
+    blob = base64.b64encode(b"\x89PNG").decode()
+    blocks = [
+        Block(uri = "ui://w/a.txt", text = "a", mimeType = "text/plain"),
+        Block(uri = "ui://w/b.png", blob = blob, mimeType = "image/png"),
+    ]
+    out = _resource_contents(blocks, "ui://w/")
+    assert out["contents"] == [
+        {"uri": "ui://w/a.txt", "mimeType": "text/plain", "text": "a"},
+        {"uri": "ui://w/b.png", "mimeType": "image/png", "blob": blob},
+    ]
+    assert _resource_contents(blocks[:1], "ui://w/a.txt")["contents"] == []

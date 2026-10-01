@@ -245,6 +245,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
             threadId: now.threadId,
             sessionId: now.sessionId,
           });
+          if (res.contents?.length) return { contents: res.contents };
           const body = res.blob ? { blob: res.blob } : { text: res.text };
           return {
             contents: [{ uri: res.uri, mimeType: res.mime_type, ...body }],
