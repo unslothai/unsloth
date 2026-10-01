@@ -1,0 +1,21 @@
+{
+  "comment": "Reviewed sinks that a value from a downloaded artefact can reach. Regenerate with: python scripts/lint_untrusted_sinks.py --update",
+  "entries": {
+    "studio/backend/core/export/export.py::ExportBackend._convert_peft_dir_to_gguf::subprocess.run::1603cf8e92881a13": 1,
+    "studio/backend/core/export/worker.py::<assign>::trust_remote_code = True (assignment)::a751fa788de6b6e6": 1,
+    "studio/backend/core/inference/native_audio.py::_moss_transformers5_config_compat::trust_remote_code = True::9acb0bb5af068e24": 1,
+    "studio/backend/core/inference/worker.py::<assign>::trust_remote_code = True (assignment)::a751fa788de6b6e6": 1,
+    "studio/backend/core/training/trainer.py::_ensure_deepseek_ocr_installed::unpinned code fetch::a91f45765d90d84e": 1,
+    "studio/backend/utils/models/model_config.py::_is_vision_model_subprocess::subprocess.run::3076f9d91a3f52b3": 1,
+    "studio/backend/utils/process_lifetime.py::_group_member_pids::subprocess.run::0c59519f7e970257": 1,
+    "studio/backend/utils/process_lifetime.py::_pid_identity::subprocess.run::9817e1fd52e15784": 1,
+    "studio/backend/utils/process_lifetime.py::_pid_is_zombie::subprocess.run::70a5804abc4b0b8a": 1,
+    "studio/backend/utils/process_lifetime.py::_windows_terminate_pid::subprocess.run::37aa7192614957d2": 1,
+    "studio/backend/utils/security/__init__.py::preflight_remote_code_consent::trust_remote_code = True (default)::4fdef453c6150aca": 1,
+    "studio/backend/utils/security/__init__.py::preflight_remote_code_consent_for_targets::trust_remote_code = True (default)::78e71384bd597f60": 1,
+    "studio/backend/utils/transformers_version.py::_install_to_dir::subprocess.run::1ff15d9a92408b8c": 1,
+    "studio/backend/utils/transformers_version.py::_install_to_dir::subprocess.run::cf0776c7aba9e7f5": 1,
+    "unsloth/save.py::_quantize_q2_k_l::subprocess.Popen::3f2e8083a35892d6": 1,
+    "unsloth/save.py::_quantize_q2_k_l::subprocess.run::60b0be277de013cd": 1
+  }
+}

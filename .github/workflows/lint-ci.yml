@@ -166,6 +166,17 @@ jobs:
       - name: No exec, eval or compile of a value that is not written out
         run: python scripts/lint_exec_literals.py
 
+      - name: Untrusted-sink gate self-test
+        run: python scripts/lint_untrusted_sinks.py --self-test
+
+      # Covers what the exec/eval gate above cannot: sinks that are SUPPOSED to take a
+      # computed argument, where the question is whose value it is rather than whether it
+      # is a literal. Dynamic import, sys.path, module getattr, trust_remote_code and
+      # unpinned code fetches. New sites only; reviewed ones live in
+      # scripts/untrusted_sinks_baseline.json.
+      - name: No new untrusted value reaching an execution sink
+        run: python scripts/lint_untrusted_sinks.py
+
       - name: Scanner-shape gate self-test
         run: python scripts/lint_av_shapes.py --self-test
 
