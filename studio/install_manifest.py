@@ -27,6 +27,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
@@ -529,6 +530,29 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
         return _remove_manifest_locked(root, path, parked)
 
 
+# What "not there" looks like, which is what pathlib ignored before 3.14: the name is absent,
+# a path component is not a directory, the descriptor is bad, or a symlink chain does not land.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
+def manifest_is_present(path: Path) -> bool:
+    """Whether *path* is there, answering True when the filesystem refuses to say.
+
+    stat, not Path.exists(): 3.13 raises EACCES out of exists() and 3.14 returns False from it
+    (gh-101357), so exists() means "absent" on one and "unknown" on the other. Every caller here
+    is deciding whether a marker still blocks the pass, and a marker that cannot be read is
+    still a marker. Never raises: remove_manifest reported a refusal before this existed.
+    """
+    try:
+        path.stat()
+    except OSError as exc:
+        return exc.errno not in _ABSENT_ERRNOS
+    except ValueError:
+        # A path this interpreter cannot encode holds no manifest.
+        return False
+    return True
+
+
 def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> bool:
     try:
         os.replace(path, parked)
@@ -538,14 +562,14 @@ def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> b
         # reads it as evidence and refuses behind one it cannot clear -- on Windows after
         # setup.ps1's mutations. Losing a dead run's evidence only costs a full pass.
         consume_previous_manifest(root)
-        return not parked.exists()
+        return not manifest_is_present(parked)
     except OSError:
         # The rename was refused. Clear the reserved name and retry before falling back to
         # the unlink: setup.ps1 reads True as permission to replace pip, torch and triton, and
         # the pass refuses behind a parked copy it cannot clear. Dropping the live manifest
         # first would put that refusal after the mutations, on a venv that cannot verify.
         consume_previous_manifest(root)
-        if parked.exists():
+        if manifest_is_present(parked):
             return False
         try:
             os.replace(path, parked)
@@ -612,6 +636,9 @@ PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (
     "no_torch",
     "expected_torch_tag",
     "expected_torch_tag_pinned",
+    # Validated on write (NVIDIA's own https channel, no userinfo/query/fragment) and read back
+    # as an index to install from, so caller-composed evidence must not be able to name it.
+    "woa_torch_index",
 )
 
 
@@ -623,6 +650,7 @@ def write_manifest(
     no_torch: Optional[bool] = None,
     expected_torch_tag: Optional[str] = None,
     expected_torch_tag_pinned: Optional[bool] = None,
+    woa_torch_index: Optional[str] = None,
     extra: Optional[Dict[str, object]] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
@@ -656,6 +684,25 @@ def write_manifest(
     # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
+    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh shell cannot re-derive.
+    # Only NVIDIA's own channels, with no userinfo, query or fragment: a mirror is not persisted.
+    if woa_torch_index:
+        candidate = str(woa_torch_index).strip()
+        # urlsplit raises on a malformed authority, which would break the never-raises contract. Scheme and host compare case-insensitively (RFC 3986); the path keeps its case.
+        try:
+            parsed = urlsplit(candidate)
+            _woa_ok = (
+                parsed.scheme.lower() == "https"
+                and parsed.hostname == "pypi.nvidia.com"
+                and parsed.netloc.lower() == parsed.hostname
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            _woa_ok = False
+        # netloc, not hostname: hostname strips ":443", so a value with a port is refused. Equality drops userinfo with it.
+        if _woa_ok:
+            payload["woa_torch_index"] = "https://pypi.nvidia.com" + parsed.path.rstrip("/")
     # The dependency pass's own evidence (`pass_inputs`, `step_results`, `pip_check_ok`, ...):
     # additive, never authoritative, every consumer re-verifies on disk. None is dropped so "absent
     # means unknown" holds, and nothing may shadow a field verify_install reads.

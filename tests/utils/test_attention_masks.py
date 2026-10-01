@@ -20,6 +20,9 @@ import weakref
 
 import pytest
 import torch
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.utils import attention_dispatch
 from unsloth.utils import packing as packing_utils
@@ -236,7 +239,11 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 
 
 @pytest.mark.skipif(
-    torch.cuda.device_count() < 2 or packing_utils._XFormersBlockMask is None,
+    # The spoof answers device_count() with 1, so this skips today only because 1 < 2.
+    # Raise that stub to exercise a multi-GPU path and it un-skips on a box with no card.
+    not has_real_cuda()
+    or torch.cuda.device_count() < 2
+    or packing_utils._XFormersBlockMask is None,
     reason = "needs xFormers and two CUDA devices",
 )
 def test_real_xformers_packed_mask_validates_on_each_device():
@@ -712,3 +719,38 @@ def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
         cached_during_build
     ), "the previous mask was still alive while its replacement was allocated"
     attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or not attention_dispatch.HAS_XFORMERS, reason = "needs xformers on CUDA"
+)
+def test_real_xformers_without_mask_is_causal():
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.XFORMERS, n_kv_heads = 2, n_groups = 2
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 2,
+        q_len = 8,
+        kv_seq_len = 8,
+        n_heads = 4,
+        head_dim = 64,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    dtype = torch.bfloat16 if attention_dispatch.SUPPORTS_BFLOAT16 else torch.float16
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(2, 4, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    K = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    V = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    got = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    keep = torch.ones(8, 8, dtype = torch.bool, device = "cuda").tril()
+    want = torch.nn.functional.scaled_dot_product_attention(
+        Q.float(),
+        K.float().repeat_interleave(2, 1),
+        V.float().repeat_interleave(2, 1),
+        attn_mask = keep,
+    ).transpose(1, 2)
+    torch.testing.assert_close(got.float().reshape(want.shape), want, atol = 2e-2, rtol = 2e-2)

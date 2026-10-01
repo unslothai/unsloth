@@ -23,11 +23,10 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
-  DownloadIcon,
   EyeIcon,
   LayoutListIcon,
   PencilIcon,
@@ -85,6 +84,7 @@ import {
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
+import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -94,6 +94,7 @@ import {
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
+import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -124,10 +125,6 @@ async function downloadBlob(
   return downloadFile(content, filename, mimeType);
 }
 
-function csvEscape(val: string): string {
-  return `"${val.replace(/"/g, '""')}"`;
-}
-
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
   return downloadBlob(
     ndjsonBody([JSON.stringify({ name: entry.name, text: entry.text })]),
@@ -138,9 +135,9 @@ function exportPromptJsonl(entry: PromptEntry): Promise<void> {
 
 function exportPromptCsv(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
+    csvDocument(["name,text", `${csvEscape(entry.name)},${csvEscape(entry.text)}`]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -151,7 +148,7 @@ function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(csvDocument(["name,text", rows]), "prompts.csv", CSV_MIME);
 }
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
@@ -172,9 +169,9 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
   return downloadBlob(
-    `list_name,order,prompt_text\n${rows}`,
+    csvDocument(["list_name,order,prompt_text", rows]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -182,7 +179,7 @@ function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -237,6 +234,8 @@ async function loadConversationMessages(
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
   } = options;
+  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  const liveBranch = liveThreadBranch(threadId);
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -245,7 +244,13 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
+  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+  const storedIds = new Set(raw.map((m) => m.id));
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  const headId = liveBranch?.length
+    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
+    : undefined;
+  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
 }
 
 function exportTs(): string {
@@ -390,7 +395,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 
 // ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+  });
   if (!messages) return;
 
   const conversations: Array<{ from: string; value: string }> = [];
@@ -451,21 +458,27 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    rows.join("\n"),
+    csvDocument(rows),
     "conversation-" + exportTs() + ".csv",
-    "text/csv",
+    CSV_MIME,
   );
 }
+
+// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
+const loadDisplayedBranchMessages = (
+  threadId: string,
+  options: { emptyMessage?: string } = {},
+) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
-    loadMessages: loadConversationMessages,
+    loadMessages: loadDisplayedBranchMessages,
     renderMessage: messageToMarkdown,
   });
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadConversationMessages,
+  loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportTimestamp: exportTs,
@@ -480,7 +493,7 @@ async function saveConversationAsProjectSource(
   projectId: string,
   title: string,
 ): Promise<SaveSourceOutcome> {
-  const messages = await loadConversationMessages(threadId, {
+  const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
   });
   if (!messages) return "skipped";
@@ -606,7 +619,7 @@ function exportExt(format: ConvExportFormat): string {
 }
 
 function exportMime(format: ConvExportFormat): string {
-  return format === "csv" ? "text/csv" : "application/x-ndjson";
+  return format === "csv" ? CSV_MIME : "application/x-ndjson";
 }
 
 export async function exportBulkConversationsMerged(
@@ -631,7 +644,7 @@ export async function exportBulkConversationsMerged(
   if (parts.length === 0) { toast.info("No exportable content."); return; }
 
   const body = header
-    ? header + "\n" + parts.join("\n")
+    ? csvDocument([header, ...parts])
     : ndjsonBody(parts);
 
   await downloadBlob(
@@ -656,7 +669,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : ndjsonBody([content]);
+    const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
@@ -1188,7 +1201,7 @@ function ExportModal({
   return (
     <Dialog open onOpenChange={onClose}>
       {/* */}
-      <DialogContent className="sm:max-w-[520px] gap-0 p-0 overflow-hidden">
+      <DialogContent className="sm:max-w-[calc(520px*var(--ui-space-scale,1))] gap-0 p-0 overflow-hidden">
         <div className="flex flex-col gap-5 p-6">
           {/* */}
           <DialogTitle className="text-base font-semibold tracking-tight">Export</DialogTitle>
@@ -1302,7 +1315,7 @@ function ExportModal({
             Cancel
           </Button>
           <Button size="sm" onClick={handleExport}>
-            <DownloadIcon className="mr-1.5 size-3.5" />
+            <HugeiconsIcon icon={Download01Icon} className="mr-1.5 size-3.5" />
             Download
           </Button>
         </div>
@@ -1594,7 +1607,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -1774,6 +1787,9 @@ function PromptListDetail({
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
+  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
+  const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -1918,11 +1934,24 @@ function PromptListDetail({
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
         <button
           type="button"
+          onClick={() => togglePinnedList(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            isPinned
+              ? "text-primary hover:bg-primary/10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
+        <button
+          type="button"
           onClick={() => onExport(exportValue)}
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -2092,6 +2121,7 @@ export function PromptStorageDialog({
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
@@ -2429,7 +2459,7 @@ export function PromptStorageDialog({
                   onClick={openBulkExport}
                   className="h-8 gap-1.5 text-xs"
                 >
-                  <DownloadIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export
                 </Button>
                 <div className="ml-1 h-5 w-px bg-border/60 shrink-0" />
@@ -2503,7 +2533,7 @@ export function PromptStorageDialog({
               wraps on a narrow dialog. */}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
-            <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+            <div className="flex min-h-[calc(132px*var(--ui-space-scale,1))] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2559,6 +2589,11 @@ export function PromptStorageDialog({
                       selected={!showNewList && entry.id === selectedListId}
                       current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
+                      leading={
+                        pinnedListIds.includes(entry.id) ? (
+                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
                       onSelect={() => {
                         setShowNewList(false);
                         setSelectedListId(entry.id);
@@ -2586,7 +2621,7 @@ export function PromptStorageDialog({
             </div>
 
             {/* */}
-            <div className="min-h-[272px] rounded-xl border border-border/60 bg-card p-4">
+            <div className="min-h-[calc(272px*var(--ui-space-scale,1))] rounded-xl border border-border/60 bg-card p-4">
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm

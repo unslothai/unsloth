@@ -50,6 +50,12 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.n_parallel) {
     parts.push(plural(override.n_parallel, "parallel slot"));
   }
+  if (override.reasoning_budget !== undefined) {
+    parts.push(`reasoning budget ${override.reasoning_budget}`);
+  }
+  if (override.reasoning_budget_message) {
+    parts.push("custom reasoning budget message");
+  }
   if (override.n_batch) {
     parts.push(`batch ${override.n_batch}`);
   }

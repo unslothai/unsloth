@@ -13,6 +13,7 @@ pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
+    repair_in_flight: bool,
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -68,6 +69,7 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    cmd.env("UNSLOTH_PROGRESS_PERCENT_STEP", "5");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
@@ -233,7 +235,9 @@ fn stream_output(
 fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
     for _ in 0..MAX_WAIT_ITERATIONS {
-        let mut update = state.lock().map_err(|e| e.to_string())?;
+        let mut update = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let intentional = update.intentional_stop;
 
         match update.child.as_mut() {
@@ -412,6 +416,39 @@ pub fn is_update_running(state: &UpdateState) -> bool {
         .unwrap_or(false)
 }
 
+pub fn is_repair_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.repair_in_flight)
+        .unwrap_or(false)
+}
+
+/// Held for a whole repair: between its update and installer phases no child runs.
+pub struct RepairInFlight(UpdateState);
+
+impl RepairInFlight {
+    pub fn claim(state: &UpdateState) -> Result<Self, String> {
+        let mut update = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if update.child.is_some() || update.repair_in_flight {
+            return Err("An update or repair is already running.".to_string());
+        }
+        update.repair_in_flight = true;
+        Ok(Self(state.clone()))
+    }
+}
+
+impl Drop for RepairInFlight {
+    fn drop(&mut self) {
+        let mut update = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        update.repair_in_flight = false;
+    }
+}
+
 pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &DiagnosticsState) {
     let attempt = state
         .lock()
@@ -532,6 +569,18 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn a_repair_is_running_until_its_claim_drops() {
+        let state = new_update_state();
+        let repair = RepairInFlight::claim(&state).unwrap();
+        assert!(is_repair_running(&state));
+        assert!(RepairInFlight::claim(&state).is_err());
+
+        drop(repair);
+        assert!(!is_repair_running(&state));
+        assert!(RepairInFlight::claim(&state).is_ok());
+    }
+
+    #[test]
     fn tauri_backend_update_skips_the_web_frontend_build() {
         use std::ffi::OsStr;
 
@@ -543,7 +592,11 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
         }
-        for (name, expected) in [("UNSLOTH_TAURI_UPDATE", "1"), ("SKIP_STUDIO_FRONTEND", "1")] {
+        for (name, expected) in [
+            ("UNSLOTH_TAURI_UPDATE", "1"),
+            ("UNSLOTH_PROGRESS_PERCENT_STEP", "5"),
+            ("SKIP_STUDIO_FRONTEND", "1"),
+        ] {
             assert!(cmd.get_envs().any(|(key, value)| {
                 key == OsStr::new(name) && value == Some(OsStr::new(expected))
             }));
@@ -704,17 +757,19 @@ mod tests {
         let state = new_update_state();
         state.lock().unwrap().child = Some(child);
 
-        for _ in 0..50 {
-            if child_pid_file.is_file() {
-                break;
+        // Wait for a pid that PARSES, not merely for the path to appear: the redirection above
+        // creates the file before anything is written, so is_file() can win that race and read "".
+        let mut descendant = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&child_pid_file) {
+                if let Ok(pid) = text.trim().parse::<i32>() {
+                    descendant = Some(pid);
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let descendant = std::fs::read_to_string(&child_pid_file)
-            .unwrap()
-            .trim()
-            .parse::<i32>()
-            .unwrap();
+        let descendant = descendant.expect("the test child never wrote a usable descendant pid");
 
         stop_update(&state).unwrap();
 

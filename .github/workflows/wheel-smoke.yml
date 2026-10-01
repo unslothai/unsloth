@@ -30,6 +30,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
     paths:
@@ -40,6 +43,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -110,6 +116,13 @@ jobs:
                 "no frontend public":    not any("studio/frontend/public/" in s for s in n),
                 "no frontend src":       not any("studio/frontend/src/"    in s for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
+                # The installers read these out of site-packages before falling back to GitHub.
+                "shortcut icons shipped": all(
+                    any(s.endswith(f"studio/frontend/dist/{f}") for s in n)
+                    for f in ("rounded-512.png", "unsloth.ico")
+                ),
+                # setup.sh / setup.ps1 run `npm ci` against it in site-packages.
+                "oxc lockfile shipped":  any(s.endswith("oxc-validator/package-lock.json")   for s in n),
                 "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
                 "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
               }

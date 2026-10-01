@@ -1,0 +1,263 @@
+# syntax=docker/dockerfile:1.7
+# ---------------------------------------------------------------------------
+# Unsloth for AMD GPUs (ROCm).
+#
+# Default build: ROCm 7.2.4 base + the pytorch.org rocm7.2 wheels, which carry
+# RDNA2 (gfx1030), RDNA3 (gfx1100-1102), RDNA4 (gfx1200/1201) and CDNA
+# (gfx908/90a/942). gfx906 (Radeon VII, MI50) ended with ROCm 6.3 and has no
+# prebuilt bitsandbytes kernels, so it gets the 6.3 base without bitsandbytes:
+#   ROCM_GFX=gfx906 ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3 \
+#     bash docker/build.sh --rocm
+# Strix APUs (gfx1150/1151/1152) and RDNA4 get AMD's per-arch wheels, which fix
+# what the generic index below rocm7.13 lacks (the _grouped_mm segfault on
+# gfx1151 among them); the index becomes repo.amd.com/rocm/whl/<family>/ and
+# torch is pinned to 2.11, as install.sh routes them on a bare host:
+#   ROCM_GFX=gfx1151 bash docker/build.sh --rocm      # or --gfx gfx1151
+#
+# Single-stage: ROCm publishes no runtime-only base, so a split saves nothing.
+# Build host: Docker with buildkit, no GPU, amd64 only (no arm64 ROCm wheels).
+#
+# Build:
+#   bash docker/build.sh --rocm
+# build.sh freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to commits; a bare `docker build`
+# with the default "main" reuses the cached git-install layer after upstream
+# moves, so pass resolved shas when calling docker directly:
+#   docker build -f docker/Dockerfile.rocm --build-arg UNSLOTH_REF=<sha> \
+#     --build-arg UNSLOTH_ZOO_REF=<sha> -t unsloth-rocm:latest docker/
+# Run:
+#   bash docker/run.sh --rocm
+#   docker run --device /dev/kfd --device /dev/dri --group-add <video gid> \
+#              --group-add <render gid> --ipc=host \
+#              unsloth-rocm:latest python /workspace/smoke_test_rocm.py
+# ---------------------------------------------------------------------------
+
+ARG ROCM_VERSION=7.2.4
+ARG PYTHON_VERSION=3.12
+
+FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}
+
+ARG ROCM_VERSION
+ARG PYTHON_VERSION
+ARG UNSLOTH_REF=main
+ARG UNSLOTH_ZOO_REF=main
+# Matched to the base image: the rocmX.Y index has to be the ROCm the base ships.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2
+# Set to a gfx arch (gfx1150, gfx1151, gfx1152, gfx1200, gfx1201) for the
+# per-arch AMD wheels; TORCH_INDEX_URL is then ignored.
+ARG ROCM_GFX=
+
+LABEL org.opencontainers.image.title="Unsloth (AMD ROCm)" \
+      org.opencontainers.image.description="Unsloth fine-tuning for AMD RDNA2/RDNA3/RDNA4 and CDNA GPUs"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    ROCBLAS_USE_HIPBLASLT=1
+
+# Ubuntu 24.04's own python3.12 (the rocm/dev-ubuntu-22.04 image only has 3.10,
+# which is why PYTHON_VERSION was silently ignored there).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
+        python3-pip curl wget git \
+        cmake build-essential libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV VENV=/opt/unsloth-venv
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python${PYTHON_VERSION} -m venv ${VENV} \
+ && ${VENV}/bin/pip install -U pip wheel setuptools uv \
+ && ${VENV}/bin/python -c "import sys; assert sys.version_info[:2] == tuple(int(x) for x in '${PYTHON_VERSION}'.split('.')), sys.version"
+
+# Where torch comes from, resolved once and read by the later layers:
+#   generic:  TORCH_INDEX_URL as given, unpinned torch (the index is the pin)
+#   ROCM_GFX: AMD's per-arch index and the torch 2.11 line, as install.sh's
+#             Strix/RDNA4 reroute does (gfx1200/1201 share the gfx120X-all family)
+RUN set -eu; \
+    IDX="${TORCH_INDEX_URL}"; SPEC="torch torchvision torchaudio"; FAM=""; \
+    case "${ROCM_GFX}" in \
+        "") ;; \
+        gfx906) ;; \
+        gfx1200|gfx1201) FAM=gfx120X-all ;; \
+        gfx1150|gfx1151|gfx1152) FAM="${ROCM_GFX}" ;; \
+        *) echo "ROCM_GFX=${ROCM_GFX}: no per-arch wheel index (known: gfx1150 gfx1151 gfx1152 gfx1200 gfx1201; gfx906 = generic index without bitsandbytes)" >&2; exit 1 ;; \
+    esac; \
+    if [ -n "${FAM}" ]; then \
+        IDX="https://repo.amd.com/rocm/whl/${FAM}/"; \
+        SPEC="torch>=2.11.0,<2.12.0 torchvision>=0.26.0,<0.27.0 torchaudio>=2.11.0,<2.12.0"; \
+    fi; \
+    printf 'TORCH_INDEX_URL=%s\nTORCH_SPEC="%s"\nROCM_GFX=%s\nROCM_VERSION=%s\n' \
+        "$IDX" "$SPEC" "${ROCM_GFX}" "${ROCM_VERSION}" > /etc/unsloth-rocm-build; \
+    cat /etc/unsloth-rocm-build
+
+# The whole Python stack in ONE layer, resolved once. The obvious two-step
+# (torch from the ROCm index, then the rest) fails twice: unsloth-zoo bounds
+# torch (<2.13 now), so the second step swaps the 14 GB torch and the old one
+# stays as a dead layer (measured: 70 GB image, 16 GB live); and under
+# unsafe-best-match uv takes the highest version across indexes, so a newer
+# pypi torch wins as a CUDA build and drags in nvidia-* wheels.
+# So: resolve the stack, read its torch version, ask the ROCm index alone for
+# the torch family at or below it, resolve again under those constraints, and
+# install the lock. The build check below asserts torch.version.hip anyway.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    set -eu; . /etc/unsloth-rocm-build; \
+    UV="${VENV}/bin/uv"; PY="${VENV}/bin/python"; \
+    printf '%s\n' ${TORCH_SPEC} \
+        "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
+        "unsloth[huggingface] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}" \
+        "timm>=1.0.11" "addict" > /tmp/stack.in; \
+    $UV pip compile -q --python "$PY" --index-strategy unsafe-best-match \
+        --extra-index-url "${TORCH_INDEX_URL}" -o /tmp/stack.lock /tmp/stack.in; \
+    X="$(sed -nE 's/^torch==([0-9][^+ ]*).*/\1/p' /tmp/stack.lock)"; \
+    [ -n "$X" ] || { echo "the stack resolved without torch?" >&2; exit 1; }; \
+    echo "the stack wants torch ${X}"; \
+    { printf '%s\n' ${TORCH_SPEC}; echo "torch<=${X}"; } > /tmp/family.in; \
+    $UV pip compile -q --python "$PY" --index-url "${TORCH_INDEX_URL}" \
+        -o /tmp/family.lock /tmp/family.in; \
+    grep -E '^(torch|torchvision|torchaudio)==' /tmp/family.lock > /tmp/family.txt; \
+    echo "ROCm index torch family:"; cat /tmp/family.txt; \
+    grep -q '^torch==.*+rocm' /tmp/family.txt || { echo "no +rocm torch on ${TORCH_INDEX_URL} for torch<=${X}" >&2; exit 1; }; \
+    $UV pip compile -q --python "$PY" --index-strategy unsafe-best-match \
+        --extra-index-url "${TORCH_INDEX_URL}" -c /tmp/family.txt -o /tmp/stack.lock /tmp/stack.in; \
+    echo "resolved:"; grep -E '^(torch|torchvision|torchaudio|torchao|triton|unsloth|transformers|trl|peft)' /tmp/stack.lock; \
+    $UV pip install --python "$PY" --index-strategy unsafe-best-match \
+        --extra-index-url "${TORCH_INDEX_URL}" -r /tmp/stack.lock; \
+    cp /tmp/stack.lock ${VENV}/stack.lock.txt; rm -f /tmp/stack.in /tmp/stack.lock /tmp/family.in /tmp/family.lock /tmp/family.txt
+
+# Repair the triton tree. unsloth-zoo and cut-cross-entropy declare a bare
+# `triton` (pypi's NVIDIA wheel) while the ROCm torch pins its own build
+# (`triton-rocm` on pytorch.org, `triton` +rocm on repo.amd.com); both unpack
+# into site-packages/triton/, so the layer above leaves a spliced tree. Remove
+# every triton-named dist, then reinstall torch's pin from its own index.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    set -eu; . /etc/unsloth-rocm-build; \
+    PIN="$(${VENV}/bin/python -c "import re;from importlib.metadata import requires;print(next(re.split(r'[;]', r)[0].strip() for r in requires('torch') if re.match(r'(pytorch-)?triton', r)))")"; \
+    echo "torch pins ${PIN}"; \
+    for d in triton triton-rocm pytorch-triton-rocm; do \
+        ${VENV}/bin/uv pip uninstall --python ${VENV}/bin/python "$d" >/dev/null 2>&1 || true; \
+    done; \
+    rm -rf ${VENV}/lib/python${PYTHON_VERSION}/site-packages/triton; \
+    ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
+        --index-url "${TORCH_INDEX_URL}" --reinstall "${PIN}"
+
+# bitsandbytes via pip (uv refuses the pre-release wheel's filename/metadata
+# version mismatch) from the build with the ROCm 4-bit GEMV fix (bitsandbytes
+# PR #1887); the fallback is the first PyPI release with it, since 0.49.x and
+# below produce NaNs at decode shape on every AMD GPU. Same URL and fallback
+# as install.sh's _install_bnb_rocm(). No wheel carries gfx906 kernels, so a
+# gfx906 build ships without bitsandbytes (as install.sh does).
+RUN if grep -q '^ROCM_GFX=gfx906$' /etc/unsloth-rocm-build; then \
+        echo "gfx906: no prebuilt bitsandbytes kernels; removing bitsandbytes from the stack"; \
+        ${VENV}/bin/python -m pip uninstall -y bitsandbytes || true; \
+    else \
+        _BNB_WHL="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl" \
+        && (${VENV}/bin/python -m pip install \
+                --force-reinstall --no-cache-dir --no-deps "${_BNB_WHL}" \
+            || (echo "[WARN] bnb pre-release install failed; falling back to PyPI bitsandbytes>=0.50.0" >&2 \
+                && ${VENV}/bin/python -m pip install \
+                    --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0")); \
+    fi
+
+# Pin record (informational; the resolver's own lock is stack.lock.txt beside it).
+# Read with: docker run --rm <image> cat /opt/unsloth-venv/requirements.lock.txt
+RUN ${VENV}/bin/pip freeze --exclude-editable > ${VENV}/requirements.lock.txt \
+ && head -30 ${VENV}/requirements.lock.txt
+
+# Build-time verification (no GPU required). torch.version.hip is a string
+# constant baked into the ROCm wheel (None in CUDA builds), so it needs no device.
+RUN ${VENV}/bin/python - <<'PY'
+import re
+from importlib.metadata import PackageNotFoundError, distributions, requires, version
+
+import torch
+
+assert torch.version.hip is not None, (
+    f"Expected a ROCm torch wheel but got: {torch.__version__}. "
+    "Check that TORCH_INDEX_URL points to the ROCm index."
+)
+print(f"OK: torch {torch.__version__}  HIP {torch.version.hip}")
+
+BUILD_GFX = re.search(r"^ROCM_GFX=(.*)$", open("/etc/unsloth-rocm-build").read(), re.M).group(1)
+WANT_BNB = BUILD_GFX != "gfx906"
+REQUIRED = [
+    "torch", "unsloth", "unsloth-zoo",
+    "transformers", "trl", "peft", "accelerate",
+] + (["bitsandbytes"] if WANT_BNB else [])
+missing = []
+for pkg in REQUIRED:
+    try:
+        print(f"  {pkg:14s} {version(pkg)}")
+    except PackageNotFoundError:
+        missing.append(pkg)
+if missing:
+    raise SystemExit(f"FAIL: missing packages: {missing}")
+print("OK: all required packages present")
+
+# No CUDA runtime wheels: their presence means a pypi torch family member won.
+nvidia = sorted(d.metadata["Name"] for d in distributions() if (d.metadata["Name"] or "").startswith("nvidia-"))
+assert not nvidia, f"FAIL: CUDA wheels in a ROCm image: {nvidia}"
+
+# Exactly one triton-named dist, the one torch pins, and its files are what
+# `import triton` finds (the repair layer above is what this checks).
+import triton  # noqa: E402
+
+pin = next(r for r in requires("torch") if re.match(r"(pytorch-)?triton", r))
+pin_name = re.split(r"[=<>!~;\s]", pin, 1)[0]
+present = sorted(
+    d.metadata["Name"] for d in distributions()
+    if re.match(r"(pytorch-)?triton", d.metadata["Name"] or "")
+)
+assert present == [pin_name], f"FAIL: triton dists {present}, torch pins {pin_name}"
+# Base versions only: AMD's per-arch triton is 3.6.0+rocm7.13.0 by metadata but
+# reports 3.6.0 (measured on gfx1151); a pypi triton still differs in the base.
+assert version(pin_name).split("+")[0] == triton.__version__.split("+")[0], (
+    f"FAIL: {pin_name} {version(pin_name)} by metadata but triton.__version__ is {triton.__version__}"
+)
+import triton.backends  # noqa: E402
+
+backends = sorted(triton.backends.backends)
+assert "amd" in backends, f"FAIL: triton has no amd backend (has {backends})"
+print(f"OK: triton {triton.__version__} ({pin_name}) with backends {backends}")
+
+# Importing bitsandbytes here catches a broken or ABI-mismatched wheel at build
+# time instead of at the first training step on a real GPU.
+if WANT_BNB:
+    import bitsandbytes  # noqa: E402, F401
+
+    print(f"OK: bitsandbytes {bitsandbytes.__version__} imports on a no-GPU host")
+else:
+    try:
+        version("bitsandbytes")
+    except PackageNotFoundError:
+        print("OK: gfx906 build carries no bitsandbytes")
+    else:
+        raise SystemExit("FAIL: a gfx906 build must not carry bitsandbytes")
+PY
+
+# Strip __pycache__ and bundled test suites to shrink the layer.
+RUN find ${VENV} -depth -type d -name __pycache__ -exec rm -rf {} + \
+ && find ${VENV} -depth -type d -name tests \
+        ! -path "*numpy/_core/tests*" \
+        ! -path "*numpy/tests*" \
+        ! -path "*numpy/ma/tests*" \
+        -exec rm -rf {} + \
+ && rm -rf /root/.cache/pip /root/.cache/uv
+
+ENV PATH=/opt/unsloth-venv/bin:${PATH} \
+    HF_HOME=/workspace/.cache/huggingface \
+    TRITON_CACHE_DIR=/workspace/.cache/triton \
+    # so an extension that source-builds at runtime can find the toolkit
+    ROCM_HOME=/opt/rocm
+
+WORKDIR /workspace
+RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
+
+COPY smoke_test_rocm.py /workspace/smoke_test_rocm.py
+COPY entrypoint-rocm.sh /usr/local/bin/unsloth-entrypoint-rocm
+RUN chmod +x /usr/local/bin/unsloth-entrypoint-rocm
+
+# The entrypoint checks /dev/kfd, rocm-smi and torch.cuda before user code, and
+# names the fix for each. Bypass: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
+ENTRYPOINT ["/usr/local/bin/unsloth-entrypoint-rocm"]
+CMD ["python"]

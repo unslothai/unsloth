@@ -309,9 +309,9 @@ def test_the_installers_ask_for_the_scan():
     repo = Path(__file__).resolve().parents[3]
     for name in ("studio/setup.sh", "studio/setup.ps1"):
         text = (repo / name).read_text(encoding = "utf-8")
-        assert "verify_install(deep = True)" in text, f"{name} stopped asking for the scan"
+        assert "'deep': True" in text, f"{name} stopped asking for the scan"
         # and it must survive an older module that has no such keyword
-        assert "except TypeError:" in text, f"{name} lost its older-tree fallback"
+        assert "inspect.signature" in text, f"{name} lost its older-tree fallback"
 
 
 def test_the_desktop_boot_path_does_not_ask_for_the_scan():
@@ -658,8 +658,10 @@ def _installer_helper_probe() -> str:
 
     repo = Path(__file__).resolve().parents[3]
     setup = (repo / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    # Anchored on the probe itself, not on the `if !` that used to precede it: the same
+    # probe now lives in _setup_install_is_verified, which two callers share.
     match = re.search(
-        r'if ! "\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
+        r'"\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
     )
     assert match, "the manifest-helper probe moved; this test is reading the wrong block"
     return match.group(1)

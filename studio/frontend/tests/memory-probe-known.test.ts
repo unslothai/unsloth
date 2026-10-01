@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type * as GpuHooks from "../src/hooks/use-gpu-info.ts";
 import type * as SystemHooks from "../src/hooks/use-system.ts";
+import { normalizeDenseQuantSchemes } from "../src/lib/dense-quant-schemes.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 let snapshot: unknown = null;
@@ -20,6 +21,9 @@ const hooks = loadWithStubs<typeof GpuHooks>(
       useMemo: (read: () => unknown) => read(),
     },
     "./use-system": { getCachedSystemInfo: () => snapshot },
+    // Aliased, so the passthrough above cannot resolve it. The real implementation, since a
+    // hand-written normaliser would answer for the source rather than from it.
+    "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
   },
   { relativePassthrough: true },
 );
@@ -51,6 +55,30 @@ test("GPU and RAM probes distinguish zero from missing or invalid readings", () 
       assert.equal(hooks.useInferenceGpuInfo().systemRamAvailableKnown, known);
     }
   }
+});
+
+test("the dense quant schemes are read off the route, and default to none", () => {
+  const withSchemes = (schemes?: unknown) => {
+    snapshot = {
+      status: "ready",
+      device_backend: "cuda",
+      dense_quant_supported: true,
+      ...(schemes === undefined ? {} : { dense_quant_schemes: schemes }),
+      gpu: {
+        available: true,
+        backend: "cuda",
+        devices: [{ index: 0, index_kind: "physical", memory_total_gb: 24 }],
+      },
+      memory: { total_gb: 32, available_gb: 16 },
+    };
+    return hooks.useGpuInfo();
+  };
+  assert.deepEqual(withSchemes(["fp8"]).denseQuantSchemes, ["fp8"]);
+  assert.deepEqual(withSchemes(["INT8"]).denseQuantSchemes, ["int8"]);
+  const older = withSchemes();
+  assert.equal(older.denseQuantSupported, true);
+  assert.deepEqual(older.denseQuantSchemes, []);
+  assert.deepEqual(withSchemes([]).denseQuantSchemes, []);
 });
 
 test("resident refresh bypasses cached and in-flight pre-load memory", async () => {
