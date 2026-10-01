@@ -85,14 +85,31 @@ def test_wsl_windows_browser_hint_yields_to_lan_share_line(capsys):
 def test_startup_output_wsl_hint_gating(capsys, monkeypatch, host, mode, expected):
     import lan_access
     import run
+    from utils.paths import file_manager
 
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: mode)
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
     monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
     monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
     run._emit_startup_output(host, 8888, host)
     assert ("From the Windows host (WSL2):" in capsys.readouterr().out) is expected
+
+
+def test_startup_output_wsl_hint_skipped_in_container(capsys, monkeypatch):
+    import lan_access
+    import run
+    from utils.paths import file_manager
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
+    monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0")
+    assert "From the Windows host (WSL2):" not in capsys.readouterr().out
 
 
 def test_banner_prints_on_strict_cp1252_stdout(monkeypatch):
