@@ -1260,6 +1260,31 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
 
 
+def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
+    """Live free VRAM on the card a native H3 render runs on, read out of process (nvidia-smi / amd-smi, the source the
+    orchestrator's live-free check uses), so the no-torch runtime can answer and no CUDA context is attached here. None
+    when it cannot be read; None keeps the committed offload flags. No pin means sd.cpp's default, ordinal 0."""
+    if device != "cuda":
+        return None
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+        with gpu_query.fresh_reads():
+            devices = get_visible_gpu_utilization().get("devices", [])
+        want = 0 if ordinal is None else int(ordinal)
+        for entry in devices:
+            if entry.get("visible_ordinal") != want:
+                continue
+            total = entry.get("vram_total_gb")
+            used = entry.get("vram_used_gb")
+            if total is None or used is None:
+                return None
+            return max(0, int((float(total) - float(used)) * 1024**3))
+    except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
+        return None
+    return None
+
+
 def _h3_device_capacity_bytes(device: str) -> Optional[int]:
     """TOTAL VRAM on the card, or None when it cannot be read.
 
@@ -8507,12 +8532,33 @@ class VideoBackend:
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
         from .video_minimax_h3 import (
+            h3_native_render_flags,
+            h3_native_resident_bytes,
             inspect_video,
             stage_h3_references,
             transcode_video_to_mp4,
         )
 
         runtime = state.pipe
+        render_flags = list(runtime.offload_flags)
+        render_resident = False
+        if "--offload-to-cpu" in render_flags and state.memory_mode in (None, "auto"):
+            try:
+                files = runtime.files
+                file_bytes = sum(
+                    os.path.getsize(p)
+                    for p in (files.diffusion_model, files.llm, files.vae, files.audio_vae)
+                    if p
+                )
+                need = h3_native_resident_bytes(file_bytes, width, height, frames)
+            except Exception:  # noqa: BLE001 -- unknown size keeps the committed offload
+                need = None
+            render_flags, render_resident = h3_native_render_flags(
+                runtime.offload_flags,
+                memory_mode = state.memory_mode,
+                free_bytes = _h3_card_free_bytes(state.device, state.gpu_ordinal) if need else None,
+                need_bytes = need,
+            )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
         started = time.monotonic()
@@ -8623,7 +8669,7 @@ class VideoBackend:
                                 flow_shift = flow_shift,
                             ),
                             output_path = str(output_path),
-                            offload = list(runtime.offload_flags),
+                            offload = render_flags,
                             on_log = on_log,
                             cancel_event = cancel,
                         )
@@ -8671,7 +8717,8 @@ class VideoBackend:
                     "transformer_quant": state.transformer_quant,
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
-                    "offload_policy": state.offload_policy,
+                    # memory auto ran this render resident because the card held the whole bundle
+                    "offload_policy": "none" if render_resident else state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)
