@@ -27,7 +27,7 @@ test("only a non-hub pipeline pick skips the plan, so a cached hub pick still ge
   // still plans, since its companions can be missing.
   assert.match(
     source,
-    /if \(source !== "hub" && opts\.kind === "pipeline"\) return handleLoadRef\.current\(repoId, opts\);/,
+    /if \(source !== "hub" && opts\.kind === "pipeline"\) return handleLoadRef\.current\(repoId, opts, advanced\);/,
   );
   assert.doesNotMatch(source, /if \(isDownloaded !== false\) return handleLoadRef\.current/);
   // And the deferred choice re-enters loadOrStage rather than loading directly, so the plan
@@ -48,10 +48,11 @@ test("an on-device copy of the pipeline reaches the same dialog", () => {
   );
   // Not a Hub-id equality test any more: the local directory never matches one.
   assert.match(predicate, /split\("\/"\)\.at\(-1\)/);
+  assert.match(predicate, /familyOverride\?\.trim\(\)\.toLowerCase\(\) === "minimax-h3"/);
   assert.match(predicate, /H3_BF16_REPO\.split\("\/"\)\[1\]\.toLowerCase\(\)/);
   // And the generic local-pipeline branch consults it, not only the curated branch.
   assert.equal(
-    source.split('isH3PipelinePick(id, "pipeline")').length - 1,
+    source.split('isH3PipelinePick(id, "pipeline", nextFamilyOverride)').length - 1,
     1,
     "the local-pipeline branch must intercept an H3 pick exactly once",
   );

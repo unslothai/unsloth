@@ -158,6 +158,7 @@ import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
   buildExternalModelId,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 
@@ -3885,7 +3886,8 @@ export function ChatPage({
   );
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
-      [...externalProvidersForChat]
+      externalProvidersForChat
+        .filter((provider) => !isDecisionConnection(provider))
         .sort(
           (a, b) =>
             getExternalProviderDropdownRank(a.providerType) -

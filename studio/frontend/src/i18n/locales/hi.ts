@@ -1851,6 +1851,11 @@ export const hi = {
       autoScrollManual: "मैन्युअल",
       autoScrollKeywords:
         "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
+      scrollToBottomButton: "नीचे स्क्रॉल करने का बटन",
+      scrollToBottomButtonDescription:
+        "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
+      scrollToBottomButtonKeywords:
+        "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
@@ -2222,11 +2227,13 @@ export const hi = {
       revoking: "रद्द किया जा रहा है...",
       decisionApi: {
         title: "निर्णय API",
-        description: "लोकल Laya मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
+        description: "इस मशीन के मॉडल या कनेक्शन के किसी निर्णय मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
         enable: "अनुरोधों का जवाब दें",
         enableDescription: "/v1/systemone चलाता है। चालू करने पर मॉडल डाउनलोड होता है।",
+        enableRemoteDescription: "/v1/systemone चलाता है।",
         lockedByEnv: "{name} द्वारा सेट।",
         model: "मॉडल",
+        thisMachine: "यह मशीन",
         modelMultilingual: "बहुभाषी",
         modelEnglish: "अंग्रेज़ी",
         modelTypedDecisions: "टाइप्ड निर्णय",
@@ -2251,6 +2258,10 @@ export const hi = {
         downloadFailed: "डाउनलोड शुरू नहीं हो सका।",
         saveFailed: "निर्णय API की सेटिंग सेव नहीं हो सकी।",
         loadError: "निर्णय API की सेटिंग्स लोड नहीं हो सकीं।",
+        sendsTo: "अनुरोध {provider} को भेजे जाते हैं।",
+        connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
+        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
+        openConnections: "कनेक्शन खोलें",
       },
       usageNoModel:
         "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",

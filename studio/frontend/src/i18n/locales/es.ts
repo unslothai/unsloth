@@ -1874,6 +1874,11 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
+      scrollToBottomButton: "Botón para ir al final",
+      scrollToBottomButtonDescription:
+        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
+      scrollToBottomButtonKeywords:
+        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -2251,11 +2256,13 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
-        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo Laya local. Funciona con el SDK de TypeSafe.",
+        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
+        enableRemoteDescription: "Atiende /v1/systemone.",
         lockedByEnv: "Definido por {name}.",
         model: "Modelo",
+        thisMachine: "Este equipo",
         modelMultilingual: "Multilingüe",
         modelEnglish: "Inglés",
         modelTypedDecisions: "Decisiones tipadas",
@@ -2280,6 +2287,10 @@ export const es = {
         downloadFailed: "No se pudo iniciar la descarga.",
         saveFailed: "No se pudo guardar el ajuste de la API de decisiones.",
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
+        sendsTo: "Las solicitudes se envían a {provider}.",
+        connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
+        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
+        openConnections: "Abrir Conexiones",
       },
       usageNoModel:
         "Carga o descarga un modelo para ver ejemplos ejecutables. Este servidor todavía no tiene ningún modelo que indicar.",

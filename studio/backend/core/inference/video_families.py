@@ -413,6 +413,15 @@ def supported_video_family_names() -> tuple[str, ...]:
     return tuple(fam.name for fam in _FAMILIES)
 
 
+def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[VideoFamily, ...]:
+    from .diffusion_families import family_selectable
+    return tuple(
+        fam
+        for fam in _FAMILIES
+        if family_selectable(fam) and not (device == "mps" and fam.modular_workflow)
+    )
+
+
 def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
     """The companion diffusers repo: caller-supplied if given, else the family fallback."""
     base = (base_repo or "").strip()
