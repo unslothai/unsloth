@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   installLocalStorageFake,
+  readSrc,
+  readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -32,6 +33,8 @@ store.set(
     version: 0,
   }),
 );
+
+const AGENTS_TAB = readSrc("features/settings/tabs/agents-tab.tsx");
 
 const { useSettingsPanelPrefsStore, SETTINGS_PANEL_PREFS_STORAGE_KEY } =
   await import("../src/features/settings/stores/settings-panel-prefs-store.ts");
@@ -154,13 +157,9 @@ test("a record from a newer build falls back to defaults", () => {
 // Settling in a .finally let a superseded or failed poll release the retire
 // with no resident model recorded, which erased the saved model and quant.
 test("the status poll settles only on the read that applied", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/agents-tab.tsx", import.meta.url),
-    "utf8",
-  );
-  const sync = source.slice(
-    source.indexOf("const sync = ()"),
-    source.indexOf("const timer = window.setInterval"),
+  const sync = AGENTS_TAB.slice(
+    AGENTS_TAB.indexOf("const sync = ()"),
+    AGENTS_TAB.indexOf("const timer = window.setInterval"),
   );
   assert.ok(sync, "the status poll moved; this contract needs updating");
   assert.ok(
@@ -176,10 +175,7 @@ test("the status poll settles only on the read that applied", async () => {
 
 // Reset-all is the only in-app escape hatch from a bad pinned model.
 test("Reset all local preferences clears this key", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
     source.indexOf("const PREFS_KEYS"),
     source.indexOf("];", source.indexOf("const PREFS_KEYS")),
@@ -195,18 +191,14 @@ test("Reset all local preferences clears this key", async () => {
 // status endpoints can disagree on repo-id casing, so that scope check has to
 // normalize or the user's quant is dropped when the spelling differs.
 test("the remembered quant is scoped through modelKey, not an exact compare", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/agents-tab.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    source,
+    AGENTS_TAB,
     /modelKey\(chosen\.model\) === modelKey\(model\)/,
     "rememberedVariant must compare through modelKey",
   );
-  const exact = source
-    .split("\n")
-    .filter((line) => line.includes("chosenVariant.current?.model ==="));
+  const exact = AGENTS_TAB.split("\n").filter((line) =>
+    line.includes("chosenVariant.current?.model ==="),
+  );
   assert.deepEqual(
     exact,
     [],

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   sttEngineForRepoId,
@@ -11,14 +10,10 @@ import {
 } from "../src/features/audio/stt-artifacts.ts";
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 
-const pageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const catalogSource = readFileSync(
-  new URL("../src/features/audio/catalog.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const pageSource = readSrc("features/audio/audio-page.tsx");
+const catalogSource = readSrc("features/audio/catalog.ts");
 
 test("Hub discovery follows the active audio mode", () => {
   assert.match(

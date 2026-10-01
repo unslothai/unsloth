@@ -23,15 +23,12 @@
 // checks.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
-const markdown = source("components/assistant-ui/markdown-text.tsx");
-const thread = source("components/assistant-ui/thread.tsx");
+const markdown = readSrc("components/assistant-ui/markdown-text.tsx");
+const thread = readSrc("components/assistant-ui/thread.tsx");
 
 /** The body of the named function or component declaration, up to its closing brace. */
 function body(text: string, start: string, terminator = "\n}"): string {
@@ -60,13 +57,18 @@ test("a markdown block reads the render_html presence from context, not the stor
 
 test("the render_html scan happens once per message part, above the blocks", () => {
   const impl = body(markdown, "const MarkdownTextImpl = () => {", "\n};");
+  const renderer = body(
+    markdown,
+    "function MarkdownTextRenderer({",
+    "\nconst MarkdownTextImpl",
+  );
   assert.match(
     impl,
     /useAuiState\(\(\{ message \}\) =>\s*message\.parts\.some\(isRenderableRenderHtmlToolPart\),?\s*\)/,
   );
   // The value has to reach the blocks, or the context read above answers with its default.
   assert.match(
-    impl,
+    renderer,
     /<RenderHtmlToolPresenceContext\.Provider\s+value=\{messageHasRenderableRenderHtmlTool\}/,
   );
 });

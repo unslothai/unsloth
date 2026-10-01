@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Drive one coding agent against the running `unsloth run` server for the
 # Local Agent Guides CI. All failures from here are failure class (c)
 # "guide drift": the server preflight already passed and the agent CLI
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
-#
 # Self-updating: for all seven agents (claude, codex, hermes, openclaw,
 # opencode, pi, dsh) we obtain the exact env + command from
 # `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
 # exercised automatically.
-#
 # Every agent invocation is wrapped in `timeout` so a headless-TTY prompt
 # can never hang the runner -- a timeout is reported as guide drift with a
 # distinct message.
-#
 # Usage:
 #   agent-guides-drive.sh connection     <agent>
 #   agent-guides-drive.sh file-edit      <agent>
 #   agent-guides-drive.sh attribution-ab claude
-#
 # Required env (exported by serve-unsloth-run.sh):
 #   UNSLOTH_BASE_URL UNSLOTH_API_KEY UNSLOTH_MODEL_ID
 #   UNSLOTH_LLAMA_LOG_DIR  AGENT_INVOKE_TIMEOUT  UNSLOTH_SEED
@@ -79,7 +74,6 @@ CONNECT_REF="unsloth_cli/commands/start.py"
 # and restricting tools cuts the prefill to a few hundred tokens so it completes
 # quickly on CPU. These only shape the request size; the start.py recipe
 # (endpoint, auth, model) is still exercised end to end.
-#
 # The bulk of Claude Code's prompt is the built-in tool JSON schemas: measured
 # via `claude -p /context`, the default prompt is ~28k tokens of which ~18k is
 # "System tools" alone. --allowedTools/--disallowedTools only gate PERMISSION to
@@ -88,7 +82,6 @@ CONNECT_REF="unsloth_cli/commands/start.py"
 # (~16 tok/s) overran claude's own request timeout into a retry loop. --tools is
 # the flag that restricts which schemas are sent. (The ~8k "Memory files" chunk
 # is auto-loaded CLAUDE.md; the unsloth repo ships none, so it is 0 in CI.)
-#
 # Connection probe: --tools "" sends ZERO tool schemas, leaving ~20 tokens total
 # (a one-line --system-prompt-file + the user turn), which prefills instantly.
 CLAUDE_CONNECT_FLAGS=(
@@ -154,7 +147,6 @@ assert_reply() {
 # Blaming start.py for the second is wrong, so flag it and let the caller judge
 # the turn on its assertions. TIMED_OUT is global: callers with no assertion that
 # can rescue a partial turn (connection, resume, attribution-ab) treat it as fatal.
-#
 # Deciding that the cap was hit needs care. timeout(1) reports 124 when the
 # command dies on the TERM it sends, but a CLI that catches or ignores TERM is
 # not bounded at all without --kill-after (measured: a TERM-ignoring loop under
@@ -362,12 +354,14 @@ crosscheck_contract() {
         || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
       home="$(raw_env DSH_HOME)"
       [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
-      cfg="$home/settings.yaml"
-      if [ -f "$cfg" ]; then
-        grep -q 'openai-completions' "$cfg" \
-          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
-        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
-      fi
+      # A --patch overlay, not settings.yaml: dsh 0.1.7 imports that only after the first boot.
+      cfg="$home/unsloth.patch.yml"
+      [ -f "$cfg" ] || guide_fail "dsh patch $cfg missing (start.py write_dsh_patch)"
+      grep -qF -- "--patch $cfg" "$raw" \
+        || guide_fail "dsh launch command no longer passes --patch $cfg (start.py _dsh_command)"
+      grep -q 'openai-completions' "$cfg" \
+        || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_patch)"
+      cp "$cfg" "$REDACTED_DIR/dsh-patch.yml"
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true
@@ -501,7 +495,6 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   return "$rc"
 }
 
-# ═════════════════════════════════════════════════════════════════════════
 case "$MODE" in
   # ── connection: trivial prompt, assert a non-empty, error-free reply ────
   connection)

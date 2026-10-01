@@ -427,6 +427,28 @@ class TestConsentGate:
         assert d.blocked is True
         assert d.approvable is False
 
+    def test_managed_account_is_refused_before_the_scan(self, monkeypatch):
+        from utils.account_context import AccountContext, run_as
+
+        monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising = False)
+        with (
+            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(
+                consent, "repo_remote_code_files", return_value = {"m.py": "import torch\n"}
+            ),
+            patch.object(consent, "scan_remote_code_files") as scan,
+        ):
+            d = run_as(
+                AccountContext("b" * 32, "bob"),
+                evaluate_remote_code_consent_for_targets,
+                ["org/model"],
+                trust_remote_code = True,
+                approved_fingerprint = "anything",
+            )
+        assert d.blocked is True and d.approvable is False
+        assert d.reason == consent.MANAGED_REMOTE_CODE_REFUSAL
+        scan.assert_not_called()
+
     def test_medium_severity_blocks_pending_approval(self):
         # A MEDIUM finding is approvable but blocks until pinned, so trust_remote_code=True alone
         # cannot run flagged code. MEDIUM is rarely emitted, so the scan result is mocked.

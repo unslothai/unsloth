@@ -28,6 +28,13 @@ import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
 import utils.process_lifetime as process_lifetime  # noqa: E402
 
+
+class _Proc:
+    returncode = 0
+    stdout = "installed"
+    stderr = ""
+
+
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
 
@@ -346,6 +353,22 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     assert probes == {"resolve": 0, "version": 0}
 
 
+def test_status_source_build_skips_probe_when_update_checks_disabled(monkeypatch, tmp_path):
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+
+    def _resolve(*, force_refresh = False):
+        raise AssertionError("probed for a prebuilt despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", _resolve)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["source_build"] is False
+
+
 def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
     # Markerless build: get_installed_llama_version falls back to exec'ing
     # `llama-server --version`. While the updater swaps the tree that exec can
@@ -405,6 +428,24 @@ def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):
     assert res["reason"] == "no_prebuilt_available"
 
 
+def test_start_update_refuses_when_update_checks_disabled(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+
+    def _network(*args, **kwargs):
+        raise AssertionError("planned an update despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_plan_llama_phase", _network)
+    monkeypatch.setattr(upd, "_pending_backend_migration", _network)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", _network)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "update_checks_disabled"
+
+
 def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     # Markerless install + available prebuilt: install in place into the resolved
     # root, with the asset-derived ROCm forwarding and the resolved repo.
@@ -420,11 +461,6 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     )
 
     captured = {}
-
-    class _Proc:
-        returncode = 0
-        stdout = "installed"
-        stderr = ""
 
     def _fake_run(cmd, **kwargs):
         cmd = list(cmd)
@@ -464,11 +500,6 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
 
     captured = {}
-
-    class _Proc:
-        returncode = 0
-        stdout = "installed"
-        stderr = ""
 
     def _on_start(cmd):
         captured["cmd"] = cmd
@@ -942,11 +973,6 @@ def _capture_install_cmd(
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: latest)
 
     captured = {}
-
-    class _Proc:
-        returncode = 0
-        stdout = "installed"
-        stderr = ""
 
     def _fake_run(cmd, **kwargs):
         cmd = list(cmd)

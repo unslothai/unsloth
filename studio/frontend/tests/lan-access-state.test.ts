@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // lan-access-section.tsx pulls in hugeicons, so runtime tests stay on pure helpers.
@@ -19,16 +18,12 @@ import {
   validLanAccessPort,
 } from "../src/features/settings/api/lan-access-state.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const LAN = "http://192.168.1.24:8888";
 const SECOND = "http://10.0.0.7:8888";
 const PUBLIC = "http://64.227.100.5:8888";
-const SECTION_SOURCE = readFileSync(
-  new URL(
-    "../src/features/settings/components/lan-access-section.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const SECTION_SOURCE = readSrc("features/settings/components/lan-access-section.tsx");
 
 function apiStatus(over: Partial<ApiLanAccessStatus> = {}): ApiLanAccessStatus {
   return {
@@ -141,7 +136,7 @@ test("the port form is capability-gated and keeps its live error region mounted"
   );
   assert.match(
     SECTION_SOURCE,
-    /<\/div>\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
+    /below=\{\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
   );
   assert.doesNotMatch(
     SECTION_SOURCE,

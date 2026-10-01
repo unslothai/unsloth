@@ -27,10 +27,22 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // preserve inherited launch intent until the corresponding control changes.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const specDraftCacheDtype = useChatRuntimeStore(
@@ -51,6 +63,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const selectedGpuIndexKind = useChatRuntimeStore(
     (s) => s.selectedGpuIndexKind,
   );
+  const splitRatio = useChatRuntimeStore((s) => s.splitRatio);
 
   const isGguf = isServedByLlamaCpp({
     loadedIsGguf,
@@ -68,7 +81,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
 
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
-  const effectiveMlxKvBits = isMlx ? (mlxKvBits ?? null) : null;
+  const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -81,10 +94,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       // pin every reload to whatever the first load happened to get.
       maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
-      mlxKvBits: effectiveMlxKvBits,
+      mlxKvQuant: effectiveMlxKvQuant,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
+      reasoningBudget: isGguf ? reasoningBudget : -1,
+      reasoningBudgetMessage: isGguf ? reasoningBudgetMessage : "",
       nBatch: nBatch ?? null,
       nUbatch: nUbatch ?? null,
       specDraftCacheDtype: specDraftCacheDtype ?? null,
@@ -105,6 +120,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nCpuMoe,
       selectedGpuIds,
       selectedGpuIndexKind,
+      tensorSplit: splitRatio,
     };
   }, [
     checkpoint,
@@ -113,10 +129,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     maxSeqLength,
     customContextLength,
     kvCacheDtype,
-    effectiveMlxKvBits,
+    effectiveMlxKvQuant,
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
     nBatch,
     nUbatch,
     specDraftCacheDtype,
@@ -131,6 +149,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nCpuMoe,
     selectedGpuIds,
     selectedGpuIndexKind,
+    splitRatio,
   ]);
 
   return { checkpoint, isGguf, config };

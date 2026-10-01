@@ -267,20 +267,61 @@ def test_snapshot_options_offer_nothing_when_the_splits_disagree_on_a_format(tmp
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_treat_tsv_as_its_own_builder(tmp_path):
+@pytest.mark.parametrize(
+    "train_text, sibling_name, sibling_text",
+    [
+        # tsv carries a tab separator, so datasets sees two different builders.
+        pytest.param(
+            "text\nrow\n",
+            "test.tsv",
+            "text\trow\n",
+            id = "snapshot_options_treat_tsv_as_its_own_builder",
+        ),
+        pytest.param(
+            "",
+            "train2.csv",
+            "text\nrow\n",
+            id = "snapshot_options_reject_a_csv_split_holding_one_empty_file",
+        ),
+        # datasets prepares both splits, so the empty test file fails train as well.
+        pytest.param(
+            "text\nrow\n",
+            "test.csv",
+            "",
+            id = "snapshot_options_reject_every_split_when_a_sibling_is_empty",
+        ),
+    ],
+)
+def test_snapshot_options_rejects_unusable_splits(tmp_path, train_text, sibling_name, sibling_text):
     snapshot = _snapshot(tmp_path)
-    (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
-    (snapshot / "test.tsv").write_text("text\trow\n", encoding = "utf-8")
-
-    # tsv carries a tab separator, so datasets sees two different builders.
+    (snapshot / "train.csv").write_text(train_text, encoding = "utf-8")
+    (snapshot / sibling_name).write_text(sibling_text, encoding = "utf-8")
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_ignore_the_metadata_filenames_the_loader_drops(tmp_path):
+@pytest.mark.parametrize(
+    "filename, contents",
+    [
+        # FILES_TO_IGNORE drops these by basename, so the cache holds no data at all.
+        pytest.param(
+            "dataset_infos.json",
+            "{}",
+            id = "snapshot_options_ignore_the_metadata_filenames_the_loader_drops",
+        ),
+        pytest.param(
+            "README.md", "# Alpaca\n", id = "snapshot_options_stay_empty_for_a_readme_only_cache"
+        ),
+        pytest.param(
+            "train.jsonl", "", id = "snapshot_options_reject_a_split_whose_only_file_is_empty"
+        ),
+        pytest.param(
+            "train.csv", "text\n", id = "snapshot_options_offer_nothing_when_every_csv_is_header_only"
+        ),
+    ],
+)
+def test_snapshot_options_stay_empty_for_a_dataless_cache(tmp_path, filename, contents):
     snapshot = _snapshot(tmp_path)
-    (snapshot / "dataset_infos.json").write_text("{}", encoding = "utf-8")
-
-    # FILES_TO_IGNORE drops these by basename, so the cache holds no data at all.
+    (snapshot / filename).write_text(contents, encoding = "utf-8")
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -392,36 +433,108 @@ def test_snapshot_options_leave_a_declared_card_to_its_own_configs(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_leave_a_standalone_yaml_card_alone(tmp_path):
+@pytest.mark.parametrize(
+    "card_name, card_text, data_file",
+    [
+        pytest.param(
+            ".huggingface.yaml",
+            "configs:\n- config_name: foo\n",
+            "records.jsonl",
+            id = "snapshot_options_leave_a_standalone_yaml_card_alone",
+        ),
+        # DatasetCard.load raises on it, so nothing in the snapshot is loadable.
+        pytest.param(
+            "README.md",
+            "---\nconfigs: [\n---\n",
+            "train.jsonl",
+            id = "snapshot_options_offer_nothing_for_a_card_the_loader_cannot_parse",
+        ),
+        pytest.param(
+            ".huggingface.yaml",
+            "configs: [\n",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_an_unreadable_standalone_yaml",
+        ),
+        # datasets json.loads it while resolving configs and raises before any split exists.
+        pytest.param(
+            "dataset_infos.json",
+            "{not json",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_unparsable_legacy_metadata",
+        ),
+        # DatasetCardData updates a dict from it and raises on a scalar.
+        pytest.param(
+            ".huggingface.yaml",
+            "hello\n",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_a_non_mapping_standalone_yaml",
+        ),
+        pytest.param(
+            "dataset_infos.json",
+            "",
+            "train.jsonl",
+            id = "snapshot_options_stand_down_beside_an_empty_legacy_metadata_file",
+        ),
+    ],
+)
+def test_snapshot_options_stand_down_when_the_card_cannot_be_read(
+    tmp_path, card_name, card_text, data_file
+):
     snapshot = _snapshot(tmp_path)
-    (snapshot / ".huggingface.yaml").write_text("configs:\n- config_name: foo\n", encoding = "utf-8")
-    _rows(snapshot, "records.jsonl")
-
+    (snapshot / card_name).write_text(card_text, encoding = "utf-8")
+    _rows(snapshot, data_file)
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_offer_nothing_for_a_card_the_loader_cannot_parse(tmp_path):
+@pytest.mark.parametrize(
+    "card_name, card_text, data_file",
+    [
+        pytest.param(
+            "README.md",
+            "# Just prose\n",
+            "records.jsonl",
+            id = "snapshot_options_still_infer_beside_a_plain_readme",
+        ),
+        # The json builder skips an empty file as long as another still holds rows.
+        pytest.param(
+            "train.jsonl",
+            "",
+            "train2.jsonl",
+            id = "snapshot_options_keep_a_json_split_holding_one_empty_file",
+        ),
+        # The loader finds no config there either, so it resolves the files by pattern.
+        pytest.param(
+            ".huggingface.yaml",
+            "viewer: false\n",
+            "train.jsonl",
+            id = "snapshot_options_infer_beside_a_standalone_yaml_declaring_nothing",
+        ),
+        # 4.3.0 builds no config from dataset_info declared there, so it infers the files.
+        pytest.param(
+            ".huggingface.yaml",
+            "dataset_info:\n  features:\n  - name: text\n    dtype: string\n",
+            "train.jsonl",
+            id = "snapshot_options_infer_beside_standalone_yaml_dataset_info",
+        ),
+        # A card with no bytes declares nothing, so it blocks nothing.
+        pytest.param(
+            "README.md", "", "train.jsonl", id = "snapshot_options_infer_beside_an_empty_readme"
+        ),
+        pytest.param(
+            ".huggingface.yaml",
+            "",
+            "train.jsonl",
+            id = "snapshot_options_infer_beside_an_empty_standalone_yaml",
+        ),
+    ],
+)
+def test_snapshot_options_still_infer_when_the_card_declares_nothing(
+    tmp_path, card_name, card_text, data_file
+):
     snapshot = _snapshot(tmp_path)
-    (snapshot / "README.md").write_text("---\nconfigs: [\n---\n", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    # DatasetCard.load raises on it, so nothing in the snapshot is loadable.
-    assert local_options._snapshot_options(snapshot) == set()
-
-
-def test_snapshot_options_still_infer_beside_a_plain_readme(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "README.md").write_text("# Just prose\n", encoding = "utf-8")
-    _rows(snapshot, "records.jsonl")
-
+    (snapshot / card_name).write_text(card_text, encoding = "utf-8")
+    _rows(snapshot, data_file)
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
-def test_snapshot_options_stay_empty_for_a_readme_only_cache(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "README.md").write_text("# Alpaca\n", encoding = "utf-8")
-
-    assert local_options._snapshot_options(snapshot) == set()
 
 
 def test_snapshot_options_stay_empty_for_a_licence_only_subdirectory(tmp_path):
@@ -494,30 +607,6 @@ def test_snapshot_options_read_empty_front_matter_as_an_empty_card(tmp_path, fro
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
-def test_snapshot_options_reject_a_split_whose_only_file_is_empty(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "train.jsonl").write_text("", encoding = "utf-8")
-
-    assert local_options._snapshot_options(snapshot) == set()
-
-
-def test_snapshot_options_keep_a_json_split_holding_one_empty_file(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "train.jsonl").write_text("", encoding = "utf-8")
-    _rows(snapshot, "train2.jsonl")
-
-    # The json builder skips an empty file as long as another still holds rows.
-    assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
-def test_snapshot_options_reject_a_csv_split_holding_one_empty_file(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "train.csv").write_text("", encoding = "utf-8")
-    (snapshot / "train2.csv").write_text("text\nrow\n", encoding = "utf-8")
-
-    assert local_options._snapshot_options(snapshot) == set()
-
-
 def test_snapshot_options_stand_down_beside_a_card_too_large_to_read(tmp_path):
     snapshot = _snapshot(tmp_path)
     (snapshot / "README.md").write_text(
@@ -537,15 +626,6 @@ def test_snapshot_options_stand_down_beside_a_card_outside_the_cache(tmp_path):
     (snapshot / "README.md").symlink_to(outside / "README.md")
     _rows(snapshot, "records.jsonl")
 
-    assert local_options._snapshot_options(snapshot) == set()
-
-
-def test_snapshot_options_reject_every_split_when_a_sibling_is_empty(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
-    (snapshot / "test.csv").write_text("", encoding = "utf-8")
-
-    # datasets prepares both splits, so the empty test file fails train as well.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -570,23 +650,6 @@ def test_snapshot_options_stand_down_when_standalone_yaml_declares_a_config(tmp_
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_infer_beside_a_standalone_yaml_declaring_nothing(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / ".huggingface.yaml").write_text("viewer: false\n", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    # The loader finds no config there either, so it resolves the files by pattern.
-    assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
-def test_snapshot_options_stand_down_beside_an_unreadable_standalone_yaml(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / ".huggingface.yaml").write_text("configs: [\n", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    assert local_options._snapshot_options(snapshot) == set()
-
-
 def test_snapshot_options_infer_beside_dataset_info_naming_no_split(tmp_path):
     snapshot = _snapshot(tmp_path)
     _card(snapshot, "dataset_info:\n  features:\n  - name: text\n    dtype: string\n")
@@ -605,35 +668,6 @@ def test_snapshot_options_reject_a_split_holding_an_undecompressible_file(tmp_pa
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_infer_beside_standalone_yaml_dataset_info(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / ".huggingface.yaml").write_text(
-        "dataset_info:\n  features:\n  - name: text\n    dtype: string\n", encoding = "utf-8"
-    )
-    _rows(snapshot, "train.jsonl")
-
-    # 4.3.0 builds no config from dataset_info declared there, so it infers the files.
-    assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
-def test_snapshot_options_stand_down_beside_unparsable_legacy_metadata(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "dataset_infos.json").write_text("{not json", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    # datasets json.loads it while resolving configs and raises before any split exists.
-    assert local_options._snapshot_options(snapshot) == set()
-
-
-def test_snapshot_options_infer_beside_an_empty_readme(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "README.md").write_text("", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    # A card with no bytes declares nothing, so it blocks nothing.
-    assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
 def test_snapshot_options_count_bw_images_as_a_folder_builder(tmp_path):
     snapshot = _snapshot(tmp_path)
     (snapshot / "a.bw").write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -644,37 +678,12 @@ def test_snapshot_options_count_bw_images_as_a_folder_builder(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
-def test_snapshot_options_stand_down_beside_a_non_mapping_standalone_yaml(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / ".huggingface.yaml").write_text("hello\n", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    # DatasetCardData updates a dict from it and raises on a scalar.
-    assert local_options._snapshot_options(snapshot) == set()
-
-
-def test_snapshot_options_infer_beside_an_empty_standalone_yaml(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / ".huggingface.yaml").write_text("", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
-    assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
 def test_snapshot_options_reject_a_split_whose_module_needs_a_missing_codec(tmp_path):
     snapshot = _snapshot(tmp_path)
     (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
     (snapshot / "train2.jsonl.zst").write_bytes(b"\x28\xb5\x2f\xfd\x00\x00")
 
     # The inner .jsonl still votes, so datasets picks json and dies on the .zst.
-    assert local_options._snapshot_options(snapshot) == set()
-
-
-def test_snapshot_options_stand_down_beside_an_empty_legacy_metadata_file(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "dataset_infos.json").write_text("", encoding = "utf-8")
-    _rows(snapshot, "train.jsonl")
-
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -713,13 +722,6 @@ def test_snapshot_options_drop_a_header_only_csv_split(tmp_path):
 
     # The header alone yields no row, and datasets still builds train around it.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
-
-
-def test_snapshot_options_offer_nothing_when_every_csv_is_header_only(tmp_path):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "train.csv").write_text("text\n", encoding = "utf-8")
-
-    assert local_options._snapshot_options(snapshot) == set()
 
 
 def test_snapshot_options_stand_down_beside_an_empty_split_declaration(tmp_path):

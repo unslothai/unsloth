@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -89,7 +86,7 @@ def _rms_layernorm_backward(
     r += row_idx * r_row_stride
 
     if GEMMA:
-        dX += row_idx * dY_row_stride
+        dX += row_idx * dX_row_stride
     else:
         dX = dY
 
@@ -168,7 +165,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     ):
         shape = X.shape
         dim: int = shape[-1]
-        X = X.reshape(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
+        # kernels read W at unit stride, and this W is the one saved for backward.
+        W = W.contiguous()
         n_rows: int
         n_cols: int
         n_rows, n_cols = X.shape
@@ -207,7 +206,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def backward(ctx, dY: torch.Tensor):
         shape = dY.shape
         dim: int = shape[-1]
-        dY = dY.reshape(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
         n_rows: int
         n_cols: int

@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /** Minimal <html> stand-in: the applier only needs style, attributes, classes. */
 function stubDocument() {
@@ -243,20 +244,17 @@ test("a narrow valid band between custom and elevated surfaces is not skipped", 
     ...DEFAULT_CUSTOMIZATION,
     colors: {
       light: { ...DEFAULT_CUSTOMIZATION.colors.light, accent: null },
-      dark: { accent: "#44d088", background: "#4bba47", foreground: null },
+      dark: { accent: "#44d088", background: "#4ec24a", foreground: null },
     },
   };
   applyCustomizationToDocument(splitSurfaces, "dark");
   const corrected = vars.get("--primary") ?? "";
-  assert.ok(ratio(corrected, "#4bba47") >= 2.5);
-  assert.ok(ratio(corrected, "#212121") >= 2.5);
+  assert.ok(ratio(corrected, "#4ec24a") >= 2.5);
+  assert.ok(ratio(corrected, "#272727") >= 2.5);
 });
 
 test("resize-handle glows follow the primary token", () => {
-  const source = readFileSync(
-    new URL("../src/components/ui/resizable.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readSrc("components/ui/resizable.tsx");
   assert.doesNotMatch(source, /rgba\(23,\s*184,\s*139/);
   assert.equal(
     source.match(/color-mix\(in_srgb,var\(--primary\)_[0-9]+%,transparent\)/g)

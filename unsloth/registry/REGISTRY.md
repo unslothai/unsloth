@@ -99,7 +99,7 @@ Prints the following (abridged) output:
     - [x] MistralSmall
     - [x] Qwen2.5
     - [x] Qwen2.5-VL
-    - [ ] Qwen2.5 Coder
+    - [x] Qwen2.5 Coder
     - [x] QwenQwQ-32B
     - [x] Deepseek v3
     - [x] Deepseek R1

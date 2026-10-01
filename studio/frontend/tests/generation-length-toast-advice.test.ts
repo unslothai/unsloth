@@ -2,18 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // Asserted against the source like the other chat-adapter tests: importing the
 // module would drag in the stores and the toast layer for one catch block.
-const source = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const source = readSrc("features/chat/api/chat-adapter.ts");
 
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
 const TOAST_BRANCH =
@@ -43,12 +38,7 @@ test("the toast repeats the advice the error chose, not the Max Tokens advice", 
 test("the two remedies really are different text, so passing it through matters", () => {
   // Read rather than imported, as tests/padded-response.test.ts reads it: importing
   // chat-api pulls in the asset graph for two string literals.
-  const chatApi = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const chatApi = readSrc("features/chat/api/chat-api.ts");
 
   assert.match(chatApi, THE_ERROR_CLASS);
   assert.match(chatApi, CAP_REMEDY);

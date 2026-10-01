@@ -1,36 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Online (overlapped) dataset tokenization for the plain-text SFT path.
-
-TRL's ``_prepare_dataset`` maps over every row before ``train()`` may begin: the
-largest fixed startup cost (97s of 106s of preparation on 100k rows of
-OpenMathReasoning at ``dataset_num_proc = 8``), and all of it overlappable with
-the GPU.  This module moves it into the DataLoader workers.  Four pieces, all
-needed together:
-
-1. ``datasets.Dataset.with_transform`` attaches a per-batch tokenizer that runs
-   on ``__getitem__``.  It returns an immutable *view*; ``set_transform`` would
-   mutate the caller's object, which the preview/eval code also holds.
-2. TRL gets ``dataset_kwargs = {"skip_prepare_dataset": True}`` so it does not
-   map over the view, materialising the pass we are avoiding.  Unsloth already
-   uses that hook for the VLM branch.
-3. ``dataloader_num_workers`` > 0 with prefetch and persistent workers, so the
-   tokenizer runs overlapped with the GPU.
-4. A prewarm barrier pulls ``max(grad_accum, workers * prefetch)`` microbatches
-   before ``train()``: plain prefetch does not promise the first ``__next__``.
-
-The transform reproduces ``unsloth_zoo.dataset_utils.sft_prepare_dataset``'s
-tokenize step exactly (truncation, ``max_length``, double-BOS rule), so rows are
-byte-identical to the eager path.  Anything where that is not provable stays
-eager; see :func:`decide_online_tokenization`.
-
-Two costs worth stating.  The pass gate counts TRAIN passes only: a lazy eval
-split is re-tokenized on every evaluation where the eager map tokenized once,
-which scales with ``eval_steps``.  And the workers are persistent by design (the
-barrier's workers must survive into ``train()``), so they need explicit shutdown
-at the end; see :func:`release_train_dataloader`.
-"""
+"""Online (overlapped) dataset tokenization for the plain-text SFT path. TRL's ``_prepare_dataset`` maps over every row before ``train()`` may begin: the largest fixed startup cost (97s of 106s of preparation on 100k rows of OpenMathReasoning at ``dataset_num_proc = 8``), and all of it overlappable with the GPU, so this module moves it into the DataLoader workers. Four pieces, all needed together: ``datasets.Dataset.with_transform`` attaches a per-batch tokenizer that runs on ``__getitem__`` and returns an immutable *view* (``set_transform`` would mutate the caller's object, which the preview/eval code also holds); TRL gets ``dataset_kwargs = {"skip_prepare_dataset": True}`` so it does not map over the view and materialise the pass we are avoiding, the same hook Unsloth's VLM branch uses; ``dataloader_num_workers`` > 0 with prefetch and persistent workers runs the tokenizer overlapped with the GPU; and a prewarm barrier pulls ``max(grad_accum, workers * prefetch)`` microbatches before ``train()``, since plain prefetch does not promise the first ``__next__``. The transform reproduces ``unsloth_zoo.dataset_utils.sft_prepare_dataset``'s tokenize step exactly (truncation, ``max_length``, double-BOS rule), so rows are byte-identical to the eager path, and anything where that is not provable stays eager; see :func:`decide_online_tokenization`. Two costs worth stating: the pass gate counts TRAIN passes only, so a lazy eval split is re-tokenized on every evaluation where the eager map tokenized once, which scales with ``eval_steps``; and the workers are persistent by design (the barrier's workers must survive into ``train()``), so they need explicit shutdown at the end, see :func:`release_train_dataloader`."""
 
 from __future__ import annotations
 
@@ -44,38 +15,29 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-# Below this the eager map costs seconds and does not pay for four workers. 10k
-# is the smallest size the A/B measured a win at (first step 23.1s -> 12.1s).
+# Below this the eager map costs seconds and does not pay for four workers. 10k is the smallest size the A/B measured a win at (first step 23.1s -> 12.1s).
 MIN_ROWS_FOR_ONLINE = 10_000
 
 # Measured: four workers stayed ahead of a B200 on a 0.6B model; more only costs.
 MAX_ONLINE_WORKERS = 4
 
-# Fewer than this and the tokenizer falls behind the GPU: slower steps, not a
-# faster start.
+# Fewer than this and the tokenizer falls behind the GPU: slower steps, not a faster start.
 MIN_ONLINE_WORKERS = 2
 
 DEFAULT_PREFETCH_FACTOR = 4
 
 ENV_FLAG = "UNSLOTH_STUDIO_ONLINE_TOKENIZATION"
 
-# Presence means already tokenized, or a prompt/completion split the zoo
-# tokenizes with a different function.
+# Presence means already tokenized, or a prompt/completion split the zoo tokenizes with a different function.
 _PRETOKENIZED_COLUMNS = ("input_ids", "labels", "prompt", "completion")
 
-# Stamped on the view by :func:`attach_online_tokenization`; unsloth's
-# `max_length` scan reads it as proof every row is already truncated to that
-# width, instead of reading every row of a lazy split -- the eager pass again.
+# Stamped on the view by :func:`attach_online_tokenization`; unsloth's `max_length` scan reads it as proof every row is already truncated to that width, instead of reading every row of a lazy split, the eager pass again.
 TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
 
 
 @dataclass(frozen = True)
 class OnlineTokenizationDecision:
-    """Whether this run takes the online path, and with what settings.
-
-    ``enabled`` False means behave exactly as before; ``reason`` names the gate
-    that decided it, for the training log.
-    """
+    """Whether this run takes the online path, and with what settings. ``enabled`` False means behave exactly as before; ``reason`` names the gate that decided it, for the training log."""
 
     enabled: bool
     reason: str
@@ -95,12 +57,7 @@ class OnlineTokenizationDecision:
 
 
 def env_override() -> Optional[bool]:
-    """``UNSLOTH_STUDIO_ONLINE_TOKENIZATION``: 0/false forces off, 1/true forces on.
-
-    Unset returns None and the gates decide.  Forcing on only drops the heuristic
-    gates (row count, epoch count); correctness gates always stand, since the
-    lazy path on a VLM or pre-tokenized split does not train differently, it fails.
-    """
+    """``UNSLOTH_STUDIO_ONLINE_TOKENIZATION``: 0/false forces off, 1/true forces on. Unset returns None and the gates decide. Forcing on only drops the heuristic gates (row count, epoch count); correctness gates always stand, since the lazy path on a VLM or pre-tokenized split does not train differently, it fails."""
     raw = os.environ.get(ENV_FLAG)
     if raw is None:
         return None
@@ -113,13 +70,7 @@ def env_override() -> Optional[bool]:
 
 
 def dataloader_worker_start_method() -> Optional[str]:
-    """How DataLoader workers will actually start, read without fixing it.
-
-    ``get_start_method()`` with no argument RESOLVES and pins the default, after
-    which ``set_start_method()`` raises.  So: the explicitly set method if any,
-    else the platform default, which is ``get_all_start_methods()[0]`` and costs
-    nothing to read.
-    """
+    """How DataLoader workers will actually start, read without fixing it. ``get_start_method()`` with no argument RESOLVES and pins the default, after which ``set_start_method()`` raises, so: the explicitly set method if any, else the platform default, which is ``get_all_start_methods()[0]`` and costs nothing to read."""
     try:
         import multiprocessing
 
@@ -133,27 +84,14 @@ def dataloader_worker_start_method() -> Optional[str]:
 
 
 def platform_supports_dataloader_workers() -> bool:
-    """Fork, and only fork.
-
-    The hazard is ``spawn``, not the OS: a spawned worker re-imports the entry
-    point against a fresh ``sys.path``, and Unsloth's is modified in-process, so
-    the import fails (why ``trainer.py`` already forces 0 workers on Windows and
-    macOS, which default to spawn).  A Linux process set to ``spawn`` or
-    ``forkserver`` is the same hazard, and a platform check cannot see it.
-    """
+    """Fork, and only fork. The hazard is ``spawn``, not the OS: a spawned worker re-imports the entry point against a fresh ``sys.path``, and Unsloth's is modified in-process, so the import fails (why ``trainer.py`` already forces 0 workers on Windows and macOS, which default to spawn). A Linux process set to ``spawn`` or ``forkserver`` is the same hazard, and a platform check cannot see it."""
     if sys.platform in ("win32", "darwin"):
         return False
     return dataloader_worker_start_method() == "fork"
 
 
 def trl_supports_skip_prepare_dataset() -> bool:
-    """Feature-detect the ``skip_prepare_dataset`` hook.
-
-    ``SFTConfig`` must carry ``dataset_kwargs`` and ``SFTTrainer.__init__`` must
-    read the key.  If the source is unreadable (compiled or patched build) the
-    field alone decides: Unsloth's VLM branch has relied on this hook across every
-    supported TRL, so a missing source is not evidence of a missing hook.
-    """
+    """Feature-detect the ``skip_prepare_dataset`` hook. ``SFTConfig`` must carry ``dataset_kwargs`` and ``SFTTrainer.__init__`` must read the key. If the source is unreadable (compiled or patched build) the field alone decides: Unsloth's VLM branch has relied on this hook across every supported TRL, so a missing source is not evidence of a missing hook."""
     try:
         import dataclasses
 
@@ -177,11 +115,7 @@ def trl_supports_skip_prepare_dataset() -> bool:
 
 
 def dataset_supports_with_transform(dataset: Any) -> bool:
-    """A map-style ``datasets.Dataset`` with the lazy-view API.
-
-    Not a ``hasattr`` check: recent ``IterableDataset`` also has
-    ``with_transform``, and a stream is exactly what must not be touched.
-    """
+    """A map-style ``datasets.Dataset`` with the lazy-view API. Not a ``hasattr`` check: recent ``IterableDataset`` also has ``with_transform``, and a stream is exactly what must not be touched."""
     try:
         from datasets import Dataset as HfDataset
         from datasets import IterableDataset as HfIterableDataset
@@ -195,11 +129,7 @@ def dataset_supports_with_transform(dataset: Any) -> bool:
 
 
 def is_processor(processing_class: Any) -> bool:
-    """True for a multimodal processor rather than a plain tokenizer.
-
-    ``ProcessorMixin`` first, then the ``hasattr(x, "tokenizer")`` test
-    ``sft_prepare_dataset`` itself uses.
-    """
+    """True for a multimodal processor rather than a plain tokenizer. ``ProcessorMixin`` first, then the ``hasattr(x, "tokenizer")`` test ``sft_prepare_dataset`` itself uses."""
     try:
         from transformers import ProcessorMixin
         if isinstance(processing_class, ProcessorMixin):
@@ -210,12 +140,7 @@ def is_processor(processing_class: Any) -> bool:
 
 
 def model_needs_token_type_ids(model: Any, processing_class: Any) -> bool:
-    """Mirror of the zoo's ``_needs_token_type_ids`` probe.
-
-    Gemma-family modules build their causal mask from ``token_type_ids``, so the
-    zoo asks for them.  Rather than reproduce that column lazily, decline those
-    models and leave them eager.
-    """
+    """Mirror of the zoo's ``_needs_token_type_ids`` probe. Gemma-family modules build their causal mask from ``token_type_ids``, so the zoo asks for them; rather than reproduce that column lazily, decline those models and leave them eager."""
     marker = "create_" + "causal_mask_mapping"
     try:
         candidates = [model, getattr(model, "model", None)]
@@ -253,18 +178,7 @@ def dataset_column_names(dataset: Any) -> tuple:
 
 
 def text_column_defect(dataset: Any, text_field: str) -> Optional[str]:
-    """Why ``text_field`` cannot be tokenized lazily, or None when it can.
-
-    The eager map fails on a null or non-string row inside the constructor, in
-    seconds.  The lazy view fails only when the sampler draws that row, possibly
-    hours in with checkpoints behind it -- the one way this feature makes a
-    failing run worse rather than slower, so those shapes are refused up front.
-
-    Both checks are metadata, not rows: dtype off the schema, and Arrow's
-    per-chunk ``null_count``.  A ``select``ed split keeps the full backing table,
-    so its null count over-reports, vetoing a split that might have been fine and
-    never the other way round.
-    """
+    """Why ``text_field`` cannot be tokenized lazily, or None when it can. The eager map fails on a null or non-string row inside the constructor, in seconds; the lazy view fails only when the sampler draws that row, possibly hours in with checkpoints behind it, the one way this feature makes a failing run worse rather than slower, so those shapes are refused up front. Both checks are metadata, not rows: dtype off the schema, and Arrow's per-chunk ``null_count``. A ``select``ed split keeps the full backing table, so its null count over-reports, vetoing a split that might have been fine and never the other way round."""
     try:
         from datasets import Value
         features = getattr(dataset, "features", None) or {}
@@ -286,11 +200,7 @@ def text_column_defect(dataset: Any, text_field: str) -> Optional[str]:
 
 
 def resolve_worker_count(desired: Optional[int] = None) -> int:
-    """How many DataLoader workers this host can spare, 0 for "do not".
-
-    Sized by the same policy as ``dataset_num_proc`` (CPU affinity and cgroup
-    quota, not raw ``os.cpu_count()``), capped at :data:`MAX_ONLINE_WORKERS`.
-    """
+    """How many DataLoader workers this host can spare, 0 for "do not". Sized by the same policy as ``dataset_num_proc`` (CPU affinity and cgroup quota, not raw ``os.cpu_count()``), capped at :data:`MAX_ONLINE_WORKERS`."""
     if not platform_supports_dataloader_workers():
         return 0
     try:
@@ -304,20 +214,12 @@ def resolve_worker_count(desired: Optional[int] = None) -> int:
 
 
 def prewarm_batch_count(grad_accum: int, workers: int, prefetch_factor: int) -> int:
-    """Microbatches to pull before ``train()``.
-
-    ``grad_accum`` because step 1 needs that many, and ``workers *
-    prefetch_factor`` because that is the in-flight depth to fill.
-    """
+    """Microbatches to pull before ``train()``: ``grad_accum`` because step 1 needs that many, and ``workers * prefetch_factor`` because that is the in-flight depth to fill."""
     return max(1, int(grad_accum or 1), int(workers or 0) * int(prefetch_factor or 0))
 
 
 def _epoch_count(num_train_epochs: Optional[float], max_steps: Optional[int]) -> float:
-    """Epochs this run will actually perform.
-
-    ``max_steps > 0`` wins over ``num_train_epochs``, and a step-capped run is
-    not assumed to be one epoch: unknown (``inf``) unless the caller resolved it.
-    """
+    """Epochs this run will actually perform. ``max_steps > 0`` wins over ``num_train_epochs``, and a step-capped run is not assumed to be one epoch: unknown (``inf``) unless the caller resolved it."""
     if max_steps and int(max_steps) > 0:
         return float("inf")
     try:
@@ -351,11 +253,7 @@ def decide_online_tokenization(
     prefetch_factor: int = DEFAULT_PREFETCH_FACTOR,
     resolved_max_steps_epochs: Optional[float] = None,
 ) -> OnlineTokenizationDecision:
-    """Decide whether this run may tokenize online.  Pure, GPU-free, testable.
-
-    Every gate is a veto, correctness before cost, so the log reads "off (VLM)"
-    rather than "off (dataset too small)" when both are true.
-    """
+    """Decide whether this run may tokenize online. Pure, GPU-free, testable. Every gate is a veto, correctness before cost, so the log reads "off (VLM)" rather than "off (dataset too small)" when both are true."""
     checks: list = []
 
     def veto(reason: str) -> OnlineTokenizationDecision:
@@ -427,7 +325,6 @@ def decide_online_tokenization(
         return veto("not enough CPU workers to stay ahead of the GPU")
     checks.append(("correctness gates", True))
 
-    # ---- cost gates: the escape hatch may override these ----
     forced = override is True
 
     if row_count is None:
@@ -443,9 +340,7 @@ def decide_online_tokenization(
         if resolved_max_steps_epochs is not None
         else _epoch_count(num_train_epochs, max_steps)
     )
-    # The lazy view re-tokenizes every pass: +2.9% of steady-state time measured over 2.4 epochs, paid per epoch against
-    # a one-off 97s map, so anything past a single pass keeps the Arrow cache.
-    # Measured 237.2s eager against 244.1s online, identical loss.
+    # The lazy view re-tokenizes every pass: +2.9% of steady-state time measured over 2.4 epochs, paid per epoch against a one-off 97s map, so anything past a single pass keeps the Arrow cache. Measured 237.2s eager against 244.1s online, identical loss.
     if not forced and epochs > 1.0:
         detail = (
             "step-capped run of unknown length"
@@ -468,12 +363,7 @@ def decide_online_tokenization(
 
 
 def resolve_add_special_tokens(processing_class: Any, sample_text: Optional[str]) -> bool:
-    """The zoo's double-BOS rule, copied rather than re-derived (getting it wrong
-    shifts every row by a token).
-
-    ``sft_prepare_dataset`` turns ``add_special_tokens`` off when the rendered
-    text already starts with BOS, or when the chat template emits one.
-    """
+    """The zoo's double-BOS rule, copied rather than re-derived (getting it wrong shifts every row by a token): ``sft_prepare_dataset`` turns ``add_special_tokens`` off when the rendered text already starts with BOS, or when the chat template emits one."""
     tokenizer = getattr(processing_class, "tokenizer", None)
     chat_template = getattr(processing_class, "chat_template", "") or ""
     if not chat_template and tokenizer is not None:
@@ -496,15 +386,7 @@ def resolve_add_special_tokens(processing_class: Any, sample_text: Optional[str]
 def build_tokenizing_transform(
     tokenizer: Any, text_field: str, max_length: int, add_special_tokens: bool
 ):
-    """A batched ``with_transform`` callable equivalent to the zoo's ``_tokenize``.
-
-    ``with_transform`` passes a dict of column lists and wants the same row count
-    back, so the batch is encoded in one call, as the eager map does.
-
-    The tokenizer's whole output is passed through, not just ``input_ids``: the
-    eager map keeps it too (``remove_columns`` drops only original columns), and
-    the collator and attention dispatcher branch on which keys are present.
-    """
+    """A batched ``with_transform`` callable equivalent to the zoo's ``_tokenize``. ``with_transform`` passes a dict of column lists and wants the same row count back, so the batch is encoded in one call, as the eager map does. The tokenizer's whole output is passed through, not just ``input_ids``: the eager map keeps it too (``remove_columns`` drops only original columns), and the collator and attention dispatcher branch on which keys are present."""
 
     def transform(batch: dict) -> dict:
         texts = batch[text_field]
@@ -522,19 +404,7 @@ def build_tokenizing_transform(
 def attach_online_tokenization(
     dataset: Any, *, tokenizer: Any, text_field: str, max_length: int, add_special_tokens: bool
 ):
-    """Return an immutable lazily-tokenizing view of ``dataset``.
-
-    ``with_transform``, not ``set_transform``: the caller's object is also held by
-    the dataset preview and row-count checks, and mutating it in place would
-    silently change what those see.
-
-    ``columns = [text_field]`` avoids materialising large unused columns on every
-    ``__getitem__``.
-
-    The view is stamped with :data:`TRUNCATION_ATTESTATION_ATTR` so unsloth's
-    ``max_length`` enforcement trusts the cap instead of reading every row, which
-    on a lazy split is the eager tokenize pass again.
-    """
+    """Return an immutable lazily-tokenizing view of ``dataset``. ``with_transform``, not ``set_transform``: the caller's object is also held by the dataset preview and row-count checks, and mutating it in place would silently change what those see. ``columns = [text_field]`` avoids materialising large unused columns on every ``__getitem__``. The view is stamped with :data:`TRUNCATION_ATTESTATION_ATTR` so unsloth's ``max_length`` enforcement trusts the cap instead of reading every row, which on a lazy split is the eager tokenize pass again."""
     transform = build_tokenizing_transform(tokenizer, text_field, max_length, add_special_tokens)
     try:
         view = dataset.with_transform(transform, columns = [text_field])
@@ -566,12 +436,7 @@ def first_sample_text(dataset: Any, text_field: str) -> Optional[str]:
 
 
 def online_config_args(decision: OnlineTokenizationDecision) -> dict:
-    """The ``SFTConfig`` keys the online path needs, and nothing else.
-
-    ``remove_unused_columns`` must be False: ``_remove_unused_columns`` reads
-    ``column_names``, which on a transformed split reports the backing table, so
-    it would strip the column the transform reads.
-    """
+    """The ``SFTConfig`` keys the online path needs, and nothing else. ``remove_unused_columns`` must be False: ``_remove_unused_columns`` reads ``column_names``, which on a transformed split reports the backing table, so it would strip the column the transform reads."""
     return {
         "dataset_kwargs": {"skip_prepare_dataset": True},
         "remove_unused_columns": False,
@@ -582,18 +447,7 @@ def online_config_args(decision: OnlineTokenizationDecision) -> dict:
 
 
 def memoize_train_dataloader(trainer: Any) -> bool:
-    """Make the prewarmed train DataLoader the one ``train()`` actually uses.
-
-    transformers memoizes only the EVAL loaders (``_eval_dataloaders``); the train
-    loader is rebuilt every call, so without this ``train()`` discards the
-    barrier's warmed workers and forks four more.
-
-    ``_inner_training_loop`` calls ``get_train_dataloader()`` once, so a one-shot
-    memo changes no semantics and avoids preparing the dataset twice.  The cache
-    lives on the trainer, not only in the closure, so
-    :func:`release_train_dataloader` can reach the loader and shut it down.
-    Returns whether the memo was installed.
-    """
+    """Make the prewarmed train DataLoader the one ``train()`` actually uses. transformers memoizes only the EVAL loaders (``_eval_dataloaders``); the train loader is rebuilt every call, so without this ``train()`` discards the barrier's warmed workers and forks four more. ``_inner_training_loop`` calls ``get_train_dataloader()`` once, so a one-shot memo changes no semantics and avoids preparing the dataset twice. The cache lives on the trainer, not only in the closure, so :func:`release_train_dataloader` can reach the loader and shut it down. Returns whether the memo was installed."""
     getter = getattr(trainer, "get_train_dataloader", None)
     if getter is None or getattr(trainer, "_unsloth_online_memoized", False):
         return False
@@ -615,12 +469,7 @@ def memoize_train_dataloader(trainer: Any) -> bool:
 
 
 def _nested_loaders(loader: Any):
-    """``loader`` and whatever it wraps, outermost first.
-
-    ``accelerator.prepare`` returns a ``DataLoaderShard`` or a wrapper holding
-    ``base_dataloader`` depending on version; the workers belong to whichever
-    object owns ``_iterator``.
-    """
+    """``loader`` and whatever it wraps, outermost first. ``accelerator.prepare`` returns a ``DataLoaderShard`` or a wrapper holding ``base_dataloader`` depending on version; the workers belong to whichever object owns ``_iterator``."""
     seen: list = []
     current = loader
     for _ in range(4):  # a wrapper chain, not a graph: bounded on purpose
@@ -632,11 +481,7 @@ def _nested_loaders(loader: Any):
 
 
 def _shutdown_loader_workers(loader: Any, shut: list) -> int:
-    """Shut down every worker set ``loader`` (or a wrapper of it) still holds.
-
-    ``shut`` carries iterators already stopped: a wrapper and its inner loader
-    share one iterator, so count it once but clear the reference at every level.
-    """
+    """Shut down every worker set ``loader`` (or a wrapper of it) still holds. ``shut`` carries iterators already stopped: a wrapper and its inner loader share one iterator, so count it once but clear the reference at every level."""
     released = 0
     for candidate in _nested_loaders(loader):
         iterator = getattr(candidate, "_iterator", None)
@@ -655,27 +500,12 @@ def _shutdown_loader_workers(loader: Any, shut: list) -> int:
 
 
 def release_train_dataloader(trainer: Any) -> int:
-    """Shut down the online run's persistent DataLoader workers.  Returns how many.
-
-    Covers the prewarmed train loader and the eval loaders transformers memoized
-    in ``_eval_dataloaders``; both were built with the same worker settings.
-
-    ``dataloader_persistent_workers = True`` lets the barrier's workers survive
-    into ``train()``, and equally keeps them alive after it returns: memo holds
-    loader holds iterator holds the processes, so nothing drops the last
-    reference.  Unsloth then merges, quantizes and exports -- the most
-    memory-hungry part of a run -- with four forked children still resident, each
-    holding the parent's CUDA file descriptors.
-
-    Idempotent and never raises: called from a ``finally``, including where
-    training never started.
-    """
+    """Shut down the online run's persistent DataLoader workers. Returns how many. Covers the prewarmed train loader and the eval loaders transformers memoized in ``_eval_dataloaders``; both were built with the same worker settings. ``dataloader_persistent_workers = True`` lets the barrier's workers survive into ``train()``, and equally keeps them alive after it returns: memo holds loader holds iterator holds the processes, so nothing drops the last reference, and Unsloth then merges, quantizes and exports (the most memory-hungry part of a run) with four forked children still resident, each holding the parent's CUDA file descriptors. Idempotent and never raises: called from a ``finally``, including where training never started."""
     released = 0
     cache = getattr(trainer, "_unsloth_online_loader_cache", None)
     loader = cache.pop("loader", None) if isinstance(cache, dict) else None
 
-    # Restore the real bound method, so a reused trainer rebuilds instead of
-    # handing out a loader whose workers just went away.
+    # Restore the real bound method, so a reused trainer rebuilds instead of handing out a loader whose workers just went away.
     try:
         trainer.__dict__.pop("get_train_dataloader", None)
         trainer._unsloth_online_memoized = False
@@ -686,10 +516,7 @@ def release_train_dataloader(trainer: Any) -> int:
     shut: list = []
     released += _shutdown_loader_workers(loader, shut)
 
-    # The EVAL loader inherits the same workers and persistent_workers, and torch keeps its _iterator alive once
-    # iterated, so eval workers outlive train() just as the train ones do.
-    # Worker count is a TrainingArguments setting and transformers keeps the eval loader in `_eval_dataloaders`
-    # (unchanged 4.51.3 through 5.5.0). Drop the memo too, so a later eval rebuilds.
+    # The EVAL loader inherits the same workers and persistent_workers, and torch keeps its _iterator alive once iterated, so eval workers outlive train() just as the train ones do. Worker count is a TrainingArguments setting and transformers keeps the eval loader in `_eval_dataloaders` (unchanged 4.51.3 through 5.5.0). Drop the memo too, so a later eval rebuilds.
     memo = getattr(trainer, "_eval_dataloaders", None)
     if isinstance(memo, dict):
         for key in list(memo.keys()):
@@ -698,12 +525,7 @@ def release_train_dataloader(trainer: Any) -> int:
 
 
 def quiet_tokenizer_fork_warning() -> None:
-    """Silence the fast tokenizer's post-fork parallelism notice.
-
-    The Rust tokenizer has already run in parallel by the time workers fork, so
-    ``tokenizers`` warns and disables its threads in the child anyway.  Doing it
-    explicitly is the same outcome without the noise in the training log.
-    """
+    """Silence the fast tokenizer's post-fork parallelism notice. The Rust tokenizer has already run in parallel by the time workers fork, so ``tokenizers`` warns and disables its threads in the child anyway; doing it explicitly is the same outcome without the noise in the training log."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 

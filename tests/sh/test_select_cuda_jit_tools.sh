@@ -8,10 +8,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 ENTRYPOINT_SH="$SCRIPT_DIR/../../docker/entrypoint.sh"
-PASS=0
-FAIL=0
-
 # The fixtures assert through readlink, because retargeting that symlink is what the
 # function does -- and git-bash copies instead of symlinking unless
 # MSYS=winsymlinks:nativestrict and the user is elevated.
@@ -28,17 +26,6 @@ rm -rf "$_probe"
 
 _FUNC_FILE=$(mktemp)
 sed -n '/^select_cuda_jit_tools()/,/^}/p' "$ENTRYPOINT_SH" > "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # $1 = compute_cap(s) the mock nvidia-smi reports, ONE PER LINE ("none" = no
 # nvidia-smi, multi-line = a mixed-GPU host). $2 = the initial libnvrtc.so.12 target
@@ -99,6 +86,4 @@ assert_eq "B300 after B300 -> cu13 kept"        "UNSET libnvrtc.so.12.cu13"     
 
 rm -f "$_FUNC_FILE"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

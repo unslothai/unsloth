@@ -51,6 +51,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _has_answer_artifact,
 )
 from core.inference.tool_call_parser import INTENT_SIGNAL as _INTENT_SIGNAL  # noqa: E402
+import time
 
 
 # ── _INTENT_SIGNAL still matches plan-only stalls ──────────────────
@@ -645,6 +646,28 @@ def test_no_reprompt_on_crlf_complete_python_game():
 
 # ── ReDoS guards ───────────────────────────────────────────────────
 
+# What these guards are looking for is catastrophic backtracking, which costs seconds or
+# minutes, not a few extra milliseconds. A wall clock cannot tell a regressed quantifier from a
+# shared runner descheduling the process mid-match: the tilde case below measures about 11ms of
+# work and has been seen at 60.9ms on CI for that reason alone. The quantity the budget is about
+# is the regex's own CPU time, so measure that directly with process_time, which does not run
+# while this process is off the CPU. Best of several runs on top, for the contention
+# process_time cannot see: cache and memory pressure from a neighbour are real work here. A
+# genuine blow-up survives both, since every repeat pays it in full. Same pairing as
+# test_tool_loop_controller.py.
+_REDOS_BUDGET_MS = 50
+
+
+def _guard_ms(payload, repeats = 5):
+    best = None
+    for _ in range(repeats):
+        t0 = time.process_time()
+        _has_answer_artifact(payload)
+        elapsed_ms = (time.process_time() - t0) * 1000
+        if best is None or elapsed_ms < best:
+            best = elapsed_ms
+    return best
+
 
 def test_no_backtrack_on_crlf_spam():
     """10K of `\\r\\n` repeats must complete fast.
@@ -653,26 +676,18 @@ def test_no_backtrack_on_crlf_spam():
     O(n^2)-backtracked through embedded `\\r\\n` characters (~630 ms on
     10 KB). The current `[ \\t]*` indent restriction plus length-bounded
     `[\\s\\S]{...}?` runs keep every alternative linear."""
-    import time
-
     payload = "\r\n" * 5000
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
 
 
 def test_no_backtrack_on_open_html_spam():
     """Many `<html ` openings without `</html>` close must still complete
     quickly. Bounded `[\\s\\S]{0,4000}?` between the open and close caps
     the scan per occurrence."""
-    import time
-
     payload = "<html " * 200  # ~1200 chars, under _REPROMPT_MAX_CHARS
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on <html spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on <html spam"
 
 
 def test_no_backtrack_on_doctype_html_alternation_worst_case():
@@ -682,24 +697,16 @@ def test_no_backtrack_on_doctype_html_alternation_worst_case():
     gate the worst observed measurement was about 7 ms; assert a
     generous budget so future quantifier changes that drop the inner
     ``{0,4000}`` bound fail loudly."""
-    import time
-
     payload = ("<!doctype html><html foo " * 60)[:1999]
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
 
 
 def test_no_backtrack_on_tilde_fence_spam():
     """Open ``~~~`` fences without close must terminate quickly."""
-    import time
-
     payload = "~~~a\n" * 400  # ~2000 chars, near _REPROMPT_MAX_CHARS
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
 
 
 # ── Closing-fence-must-end-line edge cases ────────────────────────
