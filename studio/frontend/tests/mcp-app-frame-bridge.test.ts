@@ -86,7 +86,10 @@ test("the host advertises each server method the bridge proxies", () => {
     ["resources/read", "serverResources"],
   ]) {
     assert.match(frame, new RegExp(`case "${method}"`));
-    assert.match(frame, new RegExp(`${capability}: \\{ listChanged: false \\}`));
+    assert.match(
+      frame,
+      new RegExp(`${capability}: \\{ listChanged: false \\}`),
+    );
   }
 });
 
@@ -99,7 +102,10 @@ test("Always allow is granted only after the approved call went through", () => 
 });
 
 test("server-bound bridge requests are capped per frame", () => {
-  assert.match(frame, /const SERVER_METHODS = new Set\(\["tools\/call", "resources\/read"\]\);/);
+  assert.match(
+    frame,
+    /const SERVER_METHODS = new Set\(\["tools\/call", "resources\/read"\]\);/,
+  );
   assert.match(
     frame,
     /if \(counted && inFlight >= MAX_IN_FLIGHT_SERVER_CALLS\) \{\n\s*run = Promise\.reject\(new RpcError\("Too many requests in flight"\)\);/,
@@ -109,10 +115,24 @@ test("server-bound bridge requests are capped per frame", () => {
 
 test("a widget's session pairs its thread with the provider's project, as the adapter does", () => {
   const card = readFileSync(
-    new URL("../src/components/assistant-ui/tool-fallback.tsx", import.meta.url),
+    new URL(
+      "../src/components/assistant-ui/tool-fallback.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
   const widget = card.slice(card.indexOf("function ToolFallbackMcpApp"));
   assert.match(widget, /const projectId = useChatProjectScope\(\);/);
   assert.doesNotMatch(widget, /activeProjectId/);
+});
+
+test("a widget's link opens only from the user's Open click, never from the request", () => {
+  const openLinkCase = frame.slice(
+    frame.indexOf('case "ui/open-link"'),
+    frame.indexOf('case "ui/request-display-mode"'),
+  );
+  assert.doesNotMatch(openLinkCase, /openLink\(/);
+  assert.match(openLinkCase, /link: url,/);
+  assert.match(openLinkCase, /return opened \? \{\} : \{ isError: true \};/);
+  assert.match(frame, /if \(allow && asking\.link\) openLink\(asking\.link\);/);
 });

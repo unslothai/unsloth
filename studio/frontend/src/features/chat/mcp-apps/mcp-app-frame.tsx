@@ -62,6 +62,8 @@ interface PendingToolCall {
   argsPreview: string;
   scope: string;
   toolKey: string;
+  /** A ui/open-link request: opened from the Open click itself, so the browser sees a user gesture. */
+  link?: string;
   decide: (allow: boolean, always: boolean) => void;
 }
 
@@ -256,8 +258,24 @@ export function McpAppFrame(props: McpAppFrameProps) {
               INVALID_PARAMS,
             );
           }
-          openLink(url);
-          return {};
+          if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
+            throw new RpcError("Too many requests are waiting");
+          }
+          // Asked like a tool call: the widget is untrusted and Desktop has no popup blocker.
+          const opened = await new Promise<boolean>((done) =>
+            setQueue([
+              ...pendingRef.current,
+              {
+                name: url,
+                argsPreview: "",
+                scope: "",
+                toolKey: "",
+                link: url,
+                decide: (allow) => done(allow),
+              },
+            ]),
+          );
+          return opened ? {} : { isError: true };
         }
         case "ui/request-display-mode":
           return { mode: "inline" };
@@ -411,6 +429,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
     const rest = pendingRef.current.filter((call) => call !== asking);
     pendingRef.current = rest;
     setPendingCalls(rest);
+    if (allow && asking.link) openLink(asking.link);
     asking.decide(allow, always);
   };
 
@@ -437,8 +456,8 @@ export function McpAppFrame(props: McpAppFrameProps) {
           className="mt-1 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
         >
           <div>
-            This app wants to run{" "}
-            <span className="font-mono">{asking.name}</span>
+            {asking.link ? "This app wants to open " : "This app wants to run "}
+            <span className="font-mono break-all">{asking.name}</span>
             {pendingCalls.length > 1
               ? ` (+${pendingCalls.length - 1} more waiting)`
               : ""}
@@ -450,21 +469,23 @@ export function McpAppFrame(props: McpAppFrameProps) {
           ) : null}
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <Button size="xs" onClick={() => answer(true)}>
-              Allow
+              {asking.link ? "Open" : "Allow"}
             </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => answer(true, true)}
-            >
-              Always allow
-            </Button>
+            {asking.link ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => answer(true, true)}
+              >
+                Always allow
+              </Button>
+            )}
             <Button
               size="xs"
               variant="destructive"
               onClick={() => answer(false)}
             >
-              Deny
+              {asking.link ? "Cancel" : "Deny"}
             </Button>
           </div>
         </div>
