@@ -27,7 +27,7 @@ const notDownloaded = () => false;
 // The shape /api/system reports, after normalisation. Values mirror the backend table.
 const EXTRA = {
   "minimaxai/minimax-h3": [
-    { gpuGb: 11.5, systemRamGb: 66, requiresQuantisedStreaming: true },
+    { gpuGb: 14, systemRamGb: 66, requiresQuantisedStreaming: true },
   ],
 };
 
@@ -61,7 +61,6 @@ test("backend tiers make the Diffusers INT8 row the default where it runs", () =
     "a100_40",
     "g4",
     "card16",
-    "card12",
   ] as const) {
     const budget = {
       ...HOSTS[name],
@@ -87,6 +86,9 @@ test("GGUF stays the fallback when RAM, VRAM or streaming cannot fit", () => {
   const cases = [
     { gpuGb: 8, systemRamGb: 120, quantisedStreaming: true },
     { gpuGb: 48, systemRamGb: 40, quantisedStreaming: true },
+    // The page's default request (1344x768, default length) needs ~13.5 GiB, so a 12 GB card keeps GGUF as its
+    // default; the Diffusers row still renders 960x544 there when chosen.
+    { gpuGb: 12, systemRamGb: 88, quantisedStreaming: true },
     // A 64 GB RAM desktop (~58 GiB available) is under the measured 70 GB streamed-set floor.
     { gpuGb: 12, systemRamGb: 58, quantisedStreaming: true },
     { gpuGb: 24, systemRamGb: 58, quantisedStreaming: true },

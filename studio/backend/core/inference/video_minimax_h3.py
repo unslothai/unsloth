@@ -285,17 +285,33 @@ def h3_host_ram_shortfall(
 # capability the picker already reads.
 #
 # Derived from the behaviours that make the tier true, so each behaviour's own kill switch also withdraws its tier:
-#   - VRAM: with the conditioner streamed leaf by leaf (UNSLOTH_H3_TE_STREAM) and the denoiser streamed, 960x544x124
-#     renders in under 11 GB reserved (measured 10.0-10.9 GiB at a 12 GB budget), so a 12 GB card qualifies. Without
-#     it the conditioner rotates whole and the floor stays at the catalog's 30 GiB.
+#   - VRAM: with the conditioner streamed leaf by leaf (UNSLOTH_H3_TE_STREAM) and the denoiser streamed, the floor is
+#     the generate guard's own estimate for the page's DEFAULT request (first preset, default length; 13.5 GiB at
+#     1344x768x124), so the row the picker selects can render what the page asks for first. 960x544 still renders on
+#     a 12 GB card when chosen. Without streaming the conditioner rotates whole and the floor stays at the catalog's 30.
 #   - RAM: with the slab-arena pin (UNSLOTH_DIFFUSION_PIN_ARENA) the streamed denoiser holds one host copy, so the
 #     host floor is estimate_h3_diffusers_host_ram_gb with a single count (64.5 GB), or the measured 70 GB streamed-set
 #     floor while the conditioner streams too. Without it the floor is the double-counted 84.8 GB the catalog's 80 GiB
 #     tier already encodes.
 H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
-H3_DIFFUSERS_STREAMED_TIER_GPU_GIB = 11.5
 H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
 H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
+
+
+def _h3_streamed_default_request_gpu_gib() -> float:
+    from .video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    width, height = fam.resolution_presets[0]
+    floor_gb = estimate_h3_diffusers_vram_gb(
+        width,
+        height,
+        fam.default_num_frames,
+        transformer_streamed = True,
+        text_encoder_streamed = True,
+    )
+    # Total VRAM in GiB, rounded up to half a GiB.
+    return math.ceil(floor_gb * 1e9 / 2**30 * 2) / 2
 
 
 def _h3_streamed_host_floor_gib(
@@ -331,7 +347,7 @@ def h3_diffusers_fit_tiers() -> list[dict]:
     if not te_streamed and not single_copy:
         return []
     gpu_gib = (
-        H3_DIFFUSERS_STREAMED_TIER_GPU_GIB if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
+        _h3_streamed_default_request_gpu_gib() if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
     )
     ram_gib = (
         _h3_streamed_host_floor_gib(True, text_encoder_streamed = te_streamed)

@@ -117,7 +117,7 @@ def test_the_estimators_size_864x480_below_960x544(families):
         (
             None,
             None,
-            [{"gpu_gb": 11.5, "system_ram_gb": 66.0, "requires_quantised_streaming": True}],
+            [{"gpu_gb": 14.0, "system_ram_gb": 66.0, "requires_quantised_streaming": True}],
         ),
         (
             "0",
@@ -127,7 +127,7 @@ def test_the_estimators_size_864x480_below_960x544(families):
         (
             None,
             "0",
-            [{"gpu_gb": 11.5, "system_ram_gb": 80.0, "requires_quantised_streaming": True}],
+            [{"gpu_gb": 14.0, "system_ram_gb": 80.0, "requires_quantised_streaming": True}],
         ),
         ("0", "0", []),
     ],
@@ -135,7 +135,7 @@ def test_the_estimators_size_864x480_below_960x544(families):
 def test_each_widening_follows_the_kill_switch_of_the_behaviour_it_relies_on(
     monkeypatch, te_stream, arena, expected
 ):
-    # The 12 GB tier is only true while the conditioner streams, the 61 GiB RAM tier only while the streamed denoiser
+    # The 14 GiB tier is only true while the conditioner streams, the 61 GiB RAM tier only while the streamed denoiser
     # holds one host copy; turning either behaviour off must withdraw exactly the widening it made possible.
     monkeypatch.delenv("UNSLOTH_H3_DIFFUSERS_WIDE_TIERS", raising = False)
     for name, value in (
@@ -190,3 +190,33 @@ def test_the_guard_prices_a_streamed_conditioner_at_the_streamed_set_floor(monke
     assert h3.h3_host_ram_shortfall(30.0, **kw) is None
     message = h3.h3_host_ram_shortfall(30.0, text_encoder_streamed = True, **kw)
     assert message is not None and "70 GB" in message
+
+
+def test_the_vram_tier_admits_only_cards_that_render_the_default_request(monkeypatch):
+    """The picker's VRAM tier is the generate guard's floor for the page's default request (first preset, default
+    length), so the row it selects is never refused on the first render. A 12 GB card keeps GGUF as its default."""
+    monkeypatch.delenv("UNSLOTH_H3_DIFFUSERS_WIDE_TIERS", raising = False)
+    monkeypatch.delenv("UNSLOTH_H3_TE_STREAM", raising = False)
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_minimax_h3 import (
+        estimate_h3_diffusers_vram_gb,
+        h3_diffusers_fit_tiers,
+    )
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    width, height = fam.resolution_presets[0]
+    floor_gib = (
+        estimate_h3_diffusers_vram_gb(
+            width,
+            height,
+            fam.default_num_frames,
+            transformer_streamed = True,
+            text_encoder_streamed = True,
+        )
+        * 1e9
+        / 2**30
+    )
+    (tier,) = h3_diffusers_fit_tiers()
+    assert floor_gib <= tier["gpu_gb"] < floor_gib + 0.5
+    assert tier["gpu_gb"] > 12.0  # a 12 GB card keeps GGUF
+    assert tier["gpu_gb"] <= 15.99  # a 16 GB card still routes to the Diffusers row
