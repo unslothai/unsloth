@@ -215,7 +215,7 @@ def test_resource_contents_picks_the_asked_uri_decodes_blobs_and_passes_csp():
         "uri": UI,
         "mime_type": "text/html;profile=mcp-app",
         "text": "<p>hi</p>",
-        "blob": None,
+        "blob": blob,
         "ui": ui_meta,
         "contents": [],
     }
@@ -494,6 +494,8 @@ def test_a_binary_resource_stays_base64_for_the_widget():
     assert out["blob"] == png and out["text"] == "" and out["mime_type"] == "image/png"
     html = base64.b64encode(b"<p/>").decode()
     assert _resource_contents([_contents(blob = html)], UI)["text"] == "<p/>"
+    svg = base64.b64encode(b"<svg/>").decode()
+    assert _resource_contents([_contents(blob = svg, mimeType = "image/svg+xml")], UI)["blob"] == svg
 
 
 def test_a_mounted_widget_can_still_call_after_the_server_is_toggled(routes, monkeypatch):

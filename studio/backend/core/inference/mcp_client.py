@@ -2251,9 +2251,9 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"resource blob is not base64: {exc}") from exc
         try:
-            text, blob = raw.decode("utf-8"), None
+            # Decoded for the host to render a template; the widget still gets the server's blob.
+            text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            # A binary asset (image, font) a widget reads through resources/read stays base64.
             text = ""
     text = str(text)
     # A widget's own resources/read gets every block, as the protocol returns them; one block is the fields above.
