@@ -2026,6 +2026,9 @@ def call_tool_sync(
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth) as client:
+            # Connecting (OAuth included) can outlast an edit or delete of the server row.
+            if config_check is not None and not config_check():
+                raise RuntimeError("MCP server was updated or removed while connecting")
             # raise_on_error=False lets an is_error result (which may still carry image content) reach _flatten_result
             # instead of FastMCP raising ToolError and dropping the images. Transport failures still raise (handled
             # below).

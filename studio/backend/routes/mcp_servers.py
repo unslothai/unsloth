@@ -157,8 +157,12 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
 def _image_mappings_active(row: dict) -> bool:
     if not image_input_mappings(row):
         return False
+    from core.inference.tools import _mcp_tool_model_visible
+
     tools = get_cached_tools(row["id"])
-    return tools is None or any(image_mapping(row, tool) for tool in tools)
+    return tools is None or any(
+        image_mapping(row, tool) for tool in tools if _mcp_tool_model_visible(tool)
+    )
 
 
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
@@ -471,13 +475,18 @@ def list_mcp_server_tools(server_id: str, current_subject: str = Depends(get_cur
     """Cached tool names and input schemas, for choosing an image input mapping."""
     if not mcp_servers_db.get_server(server_id):
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    from core.inference.tools import _mcp_tool_model_visible
+
     tools = get_cached_tools(server_id)
     if tools is None:
         raise HTTPException(status_code = 409, detail = "Refresh this server's tools first")
+    # App-only tools never reach the model, so a mapping on one could never be used.
     return [
         {"name": tool["name"], "inputSchema": tool.get("inputSchema") or tool.get("input_schema")}
         for tool in tools
-        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        if isinstance(tool, dict)
+        and isinstance(tool.get("name"), str)
+        and _mcp_tool_model_visible(tool)
     ]
 
 

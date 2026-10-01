@@ -181,6 +181,48 @@ def test_a_mapping_revoked_before_dispatch_blocks_the_send(mapped_server, monkey
     assert checks == [False]
 
 
+def test_one_shot_calls_recheck_the_config_after_connecting(monkeypatch):
+    import contextlib
+
+    sent = []
+
+    class Client:
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = False,
+        ):
+            sent.append(args)
+
+    @contextlib.asynccontextmanager
+    async def fake_client(url, headers, use_oauth):
+        yield Client()
+
+    monkeypatch.setattr(mcp_client, "_client", fake_client)
+    out = mcp_client.call_tool_sync(
+        url = "https://trace.example/mcp",
+        headers = {},
+        name = "lookup",
+        args = {"image": "AAAA"},
+        use_oauth = True,
+        config_check = lambda: False,
+    )
+    assert out.startswith("Error:") and sent == []
+
+
+def test_app_only_tools_are_not_mapping_candidates(mapped_server):
+    from routes import mcp_servers as routes_mcp
+
+    app_only = {**LOOKUP, "_meta": {"ui": {"visibility": ["app"]}}}
+    mcp_client.cache_tools("srv1", [app_only])
+    assert routes_mcp.list_mcp_server_tools("srv1", current_subject = "u") == []
+    assert (
+        routes_mcp._row_to_response(mcp_servers_db.get_server("srv1")).image_mappings_active
+        is False
+    )
+
+
 def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {"image": ATTACHED_IMAGE}
