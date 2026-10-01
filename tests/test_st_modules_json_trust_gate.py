@@ -288,9 +288,7 @@ def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path
 
 
 def test_the_delegating_routes_gate_the_module_types_too(model_dir):
-    """for_inference and the fast encoder route return a stock SentenceTransformer directly and
-    never reach _load_modules, and sentence-transformers only gates module classes from 6.0, so
-    those routes imported the type on an older install. They validate first now."""
+    """These routes never reach _load_modules, and below 6.0 sentence-transformers has no gate."""
     model, witness = model_dir
 
     with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
@@ -300,7 +298,7 @@ def test_the_delegating_routes_gate_the_module_types_too(model_dir):
 
 
 def test_that_validation_passes_a_stock_module_list_untouched(tmp_path):
-    """The validator must be a no-op for a normal repo, since it runs on every delegated load."""
+    """A no-op for a normal repo: it runs on every delegated load."""
     model = tmp_path / "model"
     model.mkdir()
     (model / "modules.json").write_text(
@@ -333,7 +331,7 @@ def test_that_validation_passes_a_stock_module_list_untouched(tmp_path):
 
 
 def test_that_validation_is_silent_when_there_is_no_modules_json(tmp_path):
-    """A transformers-native encoder has no modules.json, and must still load."""
+    """A transformers-native encoder has no modules.json."""
     model = tmp_path / "model"
     model.mkdir()
 

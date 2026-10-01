@@ -1348,14 +1348,8 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
     ):
-        """Gate the modules.json "type" values before the load is handed to sentence-transformers.
-
-        The inference and fast encoder routes return a stock SentenceTransformer directly, so they
-        never reach _load_modules and its gate. sentence-transformers only started refusing a
-        module class outside its own namespace in 6.0, so on an older install those routes import
-        the dotted path a repo named, which is the whole defect for the encoder models that take
-        the fast route by default. Validation only: nothing is loaded here.
-        """
+        """Validate only. for_inference and the fast encoder route return a stock
+        SentenceTransformer without reaching _load_modules, and below 6.0 it has no gate."""
         modules_json_path = FastSentenceTransformer._module_path(
             model_name, token, cache_dir = cache_dir, revision = revision
         )
