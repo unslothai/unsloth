@@ -41,19 +41,25 @@ export function resolveAddress(input: string, engine: SearchEngineId): string | 
 
 /** Skip search engines' click-tracking hops, which only exist to redirect. */
 export function unwrapRedirect(url: string): string {
+  const target = redirectTarget(url);
+  // The hop's target is page-supplied; only follow it to another web page.
+  return target && isWebUrl(target) ? target : url;
+}
+
+function redirectTarget(url: string): string | null {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.replace(/^www\./, "");
-    if (host.endsWith("duckduckgo.com") && parsed.pathname === "/l/") {
-      return parsed.searchParams.get("uddg") ?? url;
+    if ((host === "duckduckgo.com" || host.endsWith(".duckduckgo.com")) && parsed.pathname === "/l/") {
+      return parsed.searchParams.get("uddg");
     }
     if (/^google\.[a-z.]+$/.test(host) && parsed.pathname === "/url") {
-      return parsed.searchParams.get("q") ?? parsed.searchParams.get("url") ?? url;
+      return parsed.searchParams.get("q") ?? parsed.searchParams.get("url");
     }
   } catch {
     // Not a URL; the fetch reports it.
   }
-  return url;
+  return null;
 }
 
 export function isWebUrl(url: string): boolean {

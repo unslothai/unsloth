@@ -123,8 +123,19 @@ function useImageBlob(image: ViewerImage | undefined): Loaded | null {
     let url: string | null = null;
     image
       .load()
-      .then((blob) => {
+      .then(async (blob) => {
         if (!live) return;
+        // A data: URL, so an opened SVG can't run as a page on Studio's origin.
+        if (/^image\/svg\+xml\b/i.test(blob.type)) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          if (live) setLoaded({ key: image.key, url: dataUrl, blob });
+          return;
+        }
         url = URL.createObjectURL(blob);
         setLoaded({ key: image.key, url, blob });
       })
@@ -337,7 +348,8 @@ export function ImageViewer() {
       onOpenChange={(next) => !next && useImageViewerStore.getState().close()}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 fixed inset-0 z-50 bg-black/75 duration-150 supports-backdrop-filter:backdrop-blur-sm" />
+        {/* No backdrop blur: it would redraw with the streaming chat. */}
+        <DialogPrimitive.Overlay className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 fixed inset-0 z-50 bg-black/80 duration-150" />
         <DialogPrimitive.Content className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 fixed inset-0 z-50 outline-none duration-150">
           {open ? <ViewerBody /> : null}
         </DialogPrimitive.Content>

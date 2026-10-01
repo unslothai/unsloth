@@ -14,7 +14,8 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-tauri = { version = "~2.11.5", features = ["tray-icon"] }
+# unstable: child webviews in the main window, for the browser panel's pages (browser_webview.rs).
+tauri = { version = "~2.11.5", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
@@ -32,6 +33,7 @@ log = "0.4"
 simplelog = "0.12"
 dirs = "6"
 regex = "1"
+url = "2"
 open = "5"
 process-wrap = { version = "9", features = ["std"] }
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
@@ -54,7 +56,10 @@ signal-hook = "0.4"
 objc2 = "0.6"
 
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString"] }
+# The browser panel's content rules (browser_webview.rs); wry already builds this crate.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKWebViewConfiguration"] }
+block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"

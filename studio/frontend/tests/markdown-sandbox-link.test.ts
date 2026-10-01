@@ -41,6 +41,8 @@ test("web links, anchors, words, app routes and escapes are not files", () => {
     "../other/secret.txt",
     "outputs/%2e%2e/x.txt",
     "//evil.example/x.txt",
+    "www.example.com",
+    "docs.unsloth.ai/get-started",
   ]) {
     assert.equal(sandboxFileForHref(href), null, href);
   }

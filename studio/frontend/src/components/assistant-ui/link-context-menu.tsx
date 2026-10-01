@@ -17,6 +17,7 @@ import {
 import { authFetch } from "@/features/auth";
 import {
   browserPanelAvailable,
+  browserTabType,
   openFileInBrowser,
   openUrlInBrowserPanel,
   saveLinkAs,
@@ -46,7 +47,17 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import type { ComponentProps, ReactElement, ReactNode } from "react";
+import { Slot } from "radix-ui";
+import {
+  type ComponentProps,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { sandboxFilePath, sandboxRoutePrefix } from "./sandbox-files";
 
 const CONTENT_CLASS = "min-w-60 rounded-[20px] p-1.5";
@@ -54,6 +65,67 @@ const CONTENT_CLASS = "min-w-60 rounded-[20px] p-1.5";
 // Passed through to the trigger, so a menu can sit inside another trigger (a dialog's) that uses asChild.
 type TriggerProps = Omit<ComponentProps<typeof ContextMenuTrigger>, "asChild" | "children">;
 const SUB_CLASS = "min-w-52 rounded-[20px] p-1.5";
+
+/**
+ * A context menu mounted on first right-click, which it then replays: every streamed link would
+ * otherwise carry a Radix menu re-rendered per token.
+ */
+function LazyContextMenu({
+  triggerProps,
+  content,
+  children,
+}: { triggerProps: TriggerProps; content: ReactNode; children: ReactElement }) {
+  const [live, setLive] = useState(false);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  // An outer trigger (a dialog's, through asChild) passes its own ref; keep both.
+  const { ref: outerRef, ...restTriggerProps } = triggerProps;
+  const setTrigger = useCallback(
+    (node: HTMLSpanElement | null) => {
+      triggerRef.current = node;
+      if (typeof outerRef === "function") outerRef(node);
+      else if (outerRef) outerRef.current = node;
+    },
+    [outerRef],
+  );
+  const replayRef = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const point = replayRef.current;
+    if (!live || !point) return;
+    replayRef.current = null;
+    // A frame later, once React has committed the menu.
+    const frame = requestAnimationFrame(() =>
+      triggerRef.current?.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: point.x, clientY: point.y }),
+      ),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [live]);
+  if (live) {
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger asChild={true} className="select-text" {...restTriggerProps} ref={setTrigger}>
+          {children}
+        </ContextMenuTrigger>
+        {content}
+      </ContextMenu>
+    );
+  }
+  return (
+    <Slot.Root
+      className="select-text"
+      {...triggerProps}
+      onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
+        triggerProps.onContextMenu?.(event as ReactMouseEvent<HTMLSpanElement>);
+        if (event.defaultPrevented) return;
+        event.preventDefault();
+        replayRef.current = { x: event.clientX, y: event.clientY };
+        setLive(true);
+      }}
+    >
+      {children}
+    </Slot.Root>
+  );
+}
 
 function ItemIcon({ icon }: { icon: IconSvgElement }) {
   return <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />;
@@ -88,58 +160,62 @@ export function WebLinkContextMenu({
   children,
   ...triggerProps
 }: { href: string; children: ReactElement } & TriggerProps) {
+  if (!/^https?:\/\//i.test(href)) return children;
+  return (
+    <LazyContextMenu triggerProps={triggerProps} content={<WebLinkMenuContent href={href} />}>
+      {children}
+    </LazyContextMenu>
+  );
+}
+
+function WebLinkMenuContent({ href }: { href: string }) {
   const t = useT();
   const openLinksInBrowser = useBrowserPrefsStore((state) => state.openLinksInBrowser);
-  if (!/^https?:\/\//i.test(href)) return children;
+  // Read on open: the link may render before the chat registers the panel.
   const inPanel = browserPanelAvailable();
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild={true} className="select-text" {...triggerProps}>
-        {children}
-      </ContextMenuTrigger>
-      <ContextMenuContent className={CONTENT_CLASS}>
-        {inPanel ? (
-          <ContextMenuItem onSelect={() => openUrlInBrowserPanel(href)}>
-            <ItemIcon icon={InternetIcon} />
-            {t("linkMenu.openInBrowser")}
-          </ContextMenuItem>
-        ) : null}
-        <ContextMenuItem onSelect={() => openExternalLink(href)}>
-          <ItemIcon icon={LinkSquare02Icon} />
-          {t("linkMenu.openExternal")}
+    <ContextMenuContent className={CONTENT_CLASS}>
+      {inPanel ? (
+        <ContextMenuItem onSelect={() => openUrlInBrowserPanel(href)}>
+          <ItemIcon icon={InternetIcon} />
+          {t("linkMenu.openInBrowser")}
         </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() =>
-            void copyWithToast(copyToClipboard(href), t("linkMenu.linkCopied"), t("linkMenu.copyFailed"))
-          }
-        >
-          <ItemIcon icon={Link01Icon} />
-          {t("linkMenu.copyLink")}
-        </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() =>
-            void saveLinkAs(href).catch((error) => {
-              if (!isDownloadCancelled(error)) toast.error(t("linkMenu.saveFailed"));
-            })
-          }
-        >
-          <ItemIcon icon={Download01Icon} />
-          {t("linkMenu.saveLinkAs")}
-        </ContextMenuItem>
-        {inPanel ? (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuCheckboxItem
-              checked={openLinksInBrowser}
-              onCheckedChange={(value) => useBrowserPrefsStore.getState().setOpenLinksInBrowser(value)}
-            >
-              {t("linkMenu.alwaysInBrowser")}
-            </ContextMenuCheckboxItem>
-          </>
-        ) : null}
-      </ContextMenuContent>
-    </ContextMenu>
+      ) : null}
+      <ContextMenuItem onSelect={() => openExternalLink(href)}>
+        <ItemIcon icon={LinkSquare02Icon} />
+        {t("linkMenu.openExternal")}
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem
+        onSelect={() =>
+          void copyWithToast(copyToClipboard(href), t("linkMenu.linkCopied"), t("linkMenu.copyFailed"))
+        }
+      >
+        <ItemIcon icon={Link01Icon} />
+        {t("linkMenu.copyLink")}
+      </ContextMenuItem>
+      <ContextMenuItem
+        onSelect={() =>
+          void saveLinkAs(href).catch((error) => {
+            if (!isDownloadCancelled(error)) toast.error(t("linkMenu.saveFailed"));
+          })
+        }
+      >
+        <ItemIcon icon={Download01Icon} />
+        {t("linkMenu.saveLinkAs")}
+      </ContextMenuItem>
+      {inPanel ? (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuCheckboxItem
+            checked={openLinksInBrowser}
+            onCheckedChange={(value) => useBrowserPrefsStore.getState().setOpenLinksInBrowser(value)}
+          >
+            {t("linkMenu.alwaysInBrowser")}
+          </ContextMenuCheckboxItem>
+        </>
+      ) : null}
+    </ContextMenuContent>
   );
 }
 
@@ -184,15 +260,20 @@ export function loadSandboxFile(sessionId: string, file: string): Promise<Blob> 
   });
 }
 
-// Types a blob URL can show without running anything in Studio's origin.
-const SAFE_TAB_TYPE = /^(application\/pdf|image\/(png|jpe?g|gif|webp|avif|bmp)|video\/|audio\/|text\/plain)/i;
-
 /** Right-click menu for a file link, as a desktop file manager has it. */
 export function FileContextMenu({
   file,
   children,
   ...triggerProps
-}: { file: ContextFile; children: ReactNode } & TriggerProps) {
+}: { file: ContextFile; children: ReactElement } & TriggerProps) {
+  return (
+    <LazyContextMenu triggerProps={triggerProps} content={<FileMenuContent file={file} />}>
+      {children}
+    </LazyContextMenu>
+  );
+}
+
+function FileMenuContent({ file }: { file: ContextFile }) {
   const t = useT();
   const navigate = useNavigate();
   const openInCanvas = useBrowserStore((state) => state.openInCanvas);
@@ -231,12 +312,13 @@ export function FileContextMenu({
       .then((code) => openInCanvas?.({ title: file.name.replace(/\.[^.]+$/, ""), code }))
       .catch(failed("linkMenu.openFailed"));
   // A tab in the user's own browser; text is retyped so it shows as text rather than runs.
-  const tabType = kind && kind !== "html" ? "text/plain" : contentType;
+  const tabType = browserTabType(file.name, contentType);
   const openInTab = () =>
     void file
       .load()
       .then((blob) => {
-        const url = URL.createObjectURL(new Blob([blob], { type: tabType || blob.type }));
+        if (!tabType) return;
+        const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
         window.open(url, "_blank", "noopener,noreferrer");
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       })
@@ -251,98 +333,93 @@ export function FileContextMenu({
   const sandbox = file.sandbox;
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild={true} className="select-text" {...triggerProps}>
-        {children}
-      </ContextMenuTrigger>
-      <ContextMenuContent className={CONTENT_CLASS}>
-        <ContextMenuItem onSelect={open}>
-          <ItemIcon icon={File01Icon} />
-          {t("linkMenu.openFile")}
+    <ContextMenuContent className={CONTENT_CLASS}>
+      <ContextMenuItem onSelect={open}>
+        <ItemIcon icon={File01Icon} />
+        {t("linkMenu.openFile")}
+      </ContextMenuItem>
+      {local && sandbox ? (
+        <ContextMenuItem
+          onSelect={() => void postSandbox(sandbox.sessionId, "open", sandbox.file).catch(failed("linkMenu.openFailed"))}
+        >
+          <ItemIcon icon={SquareArrowUpRightIcon} />
+          {t("linkMenu.openDefaultApp")}
         </ContextMenuItem>
-        {local && sandbox ? (
-          <ContextMenuItem
-            onSelect={() => void postSandbox(sandbox.sessionId, "open", sandbox.file).catch(failed("linkMenu.openFailed"))}
-          >
-            <ItemIcon icon={SquareArrowUpRightIcon} />
-            {t("linkMenu.openDefaultApp")}
-          </ContextMenuItem>
-        ) : null}
-        <ContextMenuSub>
-          <ContextMenuSubTrigger className="gap-2.5 rounded-[11px]">
-            <ItemIcon icon={ArrowUpRight01Icon} />
-            {t("linkMenu.openWith")}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent className={SUB_CLASS}>
-            {browserPanelAvailable() ? (
-              <ContextMenuItem onSelect={openInBrowser}>
-                <ItemIcon icon={InternetIcon} />
-                {t("linkMenu.unslothBrowser")}
-              </ContextMenuItem>
-            ) : null}
-            {kind === "html" && openInCanvas ? (
-              <ContextMenuItem onSelect={openCanvas}>
-                <ItemIcon icon={PaintBoardIcon} />
-                {t("linkMenu.canvas")}
-              </ContextMenuItem>
-            ) : null}
-            <ContextMenuItem onSelect={openInNewChat}>
-              <ItemIcon icon={BubbleChatAddIcon} />
-              {t("linkMenu.newChat")}
+      ) : null}
+      <ContextMenuSub>
+        <ContextMenuSubTrigger className="gap-2.5 rounded-[11px]">
+          <ItemIcon icon={ArrowUpRight01Icon} />
+          {t("linkMenu.openWith")}
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent className={SUB_CLASS}>
+          {browserPanelAvailable() ? (
+            <ContextMenuItem onSelect={openInBrowser}>
+              <ItemIcon icon={InternetIcon} />
+              {t("linkMenu.unslothBrowser")}
             </ContextMenuItem>
-            {/* A blob URL can't be handed to another app from the desktop app. */}
-            {!isTauri && (kind ? kind !== "html" : SAFE_TAB_TYPE.test(contentType)) ? (
-              <ContextMenuItem onSelect={openInTab}>
-                <ItemIcon icon={LinkSquare02Icon} />
-                {t("linkMenu.browserTab")}
-              </ContextMenuItem>
-            ) : null}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuItem onSelect={saveAs}>
-          <ItemIcon icon={Download01Icon} />
-          {t("linkMenu.saveAs")}
+          ) : null}
+          {kind === "html" && openInCanvas ? (
+            <ContextMenuItem onSelect={openCanvas}>
+              <ItemIcon icon={PaintBoardIcon} />
+              {t("linkMenu.canvas")}
+            </ContextMenuItem>
+          ) : null}
+          <ContextMenuItem onSelect={openInNewChat}>
+            <ItemIcon icon={BubbleChatAddIcon} />
+            {t("linkMenu.newChat")}
+          </ContextMenuItem>
+          {/* A blob URL can't be handed to another app from the desktop app. */}
+          {!isTauri && tabType ? (
+            <ContextMenuItem onSelect={openInTab}>
+              <ItemIcon icon={LinkSquare02Icon} />
+              {t("linkMenu.browserTab")}
+            </ContextMenuItem>
+          ) : null}
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+      <ContextMenuItem onSelect={saveAs}>
+        <ItemIcon icon={Download01Icon} />
+        {t("linkMenu.saveAs")}
+      </ContextMenuItem>
+      {(local && sandbox) || copyable ? <ContextMenuSeparator /> : null}
+      {local && sandbox ? (
+        <ContextMenuItem
+          onSelect={() =>
+            void copyWithToast(
+              copyToClipboardFrom(() => sandboxAbsolutePath(sandbox.sessionId, sandbox.file)),
+              t("linkMenu.pathCopied"),
+              t("linkMenu.copyFailed"),
+            )
+          }
+        >
+          <ItemIcon icon={Copy01Icon} />
+          {t("linkMenu.copyPath")}
         </ContextMenuItem>
-        {(local && sandbox) || copyable ? <ContextMenuSeparator /> : null}
-        {local && sandbox ? (
-          <ContextMenuItem
-            onSelect={() =>
-              void copyWithToast(
-                copyToClipboardFrom(() => sandboxAbsolutePath(sandbox.sessionId, sandbox.file)),
-                t("linkMenu.pathCopied"),
-                t("linkMenu.copyFailed"),
-              )
-            }
-          >
-            <ItemIcon icon={Copy01Icon} />
-            {t("linkMenu.copyPath")}
-          </ContextMenuItem>
-        ) : null}
-        {copyable ? (
-          <ContextMenuItem
-            onSelect={() =>
-              void copyWithToast(
-                copyToClipboardFrom(() => file.load().then((blob) => blob.text())),
-                t("linkMenu.contentsCopied"),
-                t("linkMenu.copyFailed"),
-              )
-            }
-          >
-            <ItemIcon icon={Copy01Icon} />
-            {t("linkMenu.copyContents")}
-          </ContextMenuItem>
-        ) : null}
-        {local && sandbox ? (
-          <ContextMenuItem
-            onSelect={() =>
-              void postSandbox(sandbox.sessionId, "reveal", sandbox.file).catch(failed("linkMenu.revealFailed"))
-            }
-          >
-            <ItemIcon icon={FolderOpenIcon} />
-            {t(revealLabelKey())}
-          </ContextMenuItem>
-        ) : null}
-      </ContextMenuContent>
-    </ContextMenu>
+      ) : null}
+      {copyable ? (
+        <ContextMenuItem
+          onSelect={() =>
+            void copyWithToast(
+              copyToClipboardFrom(() => file.load().then((blob) => blob.text())),
+              t("linkMenu.contentsCopied"),
+              t("linkMenu.copyFailed"),
+            )
+          }
+        >
+          <ItemIcon icon={Copy01Icon} />
+          {t("linkMenu.copyContents")}
+        </ContextMenuItem>
+      ) : null}
+      {local && sandbox ? (
+        <ContextMenuItem
+          onSelect={() =>
+            void postSandbox(sandbox.sessionId, "reveal", sandbox.file).catch(failed("linkMenu.revealFailed"))
+          }
+        >
+          <ItemIcon icon={FolderOpenIcon} />
+          {t(revealLabelKey())}
+        </ContextMenuItem>
+      ) : null}
+    </ContextMenuContent>
   );
 }

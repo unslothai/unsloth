@@ -9,6 +9,7 @@ import {
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
 import { AttachmentPreviewDialog } from "@/components/assistant-ui/attachment-preview";
+import { useT } from "@/i18n";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -273,14 +274,14 @@ const useAnnotationsAttachment = (): DocumentAnnotations | null => {
   return useMemo(() => annotationsOfFile(file) ?? parseAnnotationsContent(sentText), [file, sentText]);
 };
 
-const annotationCount = (count: number) => (count === 1 ? "1 annotation" : `${count} annotations`);
-
 /** "1 annotation", with what was marked and asked on hover, as ChatGPT shows it. */
 const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer: boolean }> = ({
   annotations,
   isComposer,
 }) => {
-  const label = annotationCount(annotations.items.length);
+  const t = useT();
+  const count = annotations.items.length;
+  const label = count === 1 ? t("browser.annotate.countOne") : t("browser.annotate.countMany", { count });
   const kind = attachmentFileKind(annotations.file, undefined);
   return (
     <AttachmentPrimitive.Root className="aui-attachment-root relative">
@@ -288,7 +289,7 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
         <HoverCardTrigger asChild={true}>
           <button
             type="button"
-            aria-label={`${label} on ${annotations.file}`}
+            aria-label={`${label}: ${annotations.file}`}
             className={cn(
               "aui-annotations-chip inline-flex h-9 cursor-default items-center gap-1.5 rounded-full px-3.5 text-sm transition-colors",
               CARD_EDGE,

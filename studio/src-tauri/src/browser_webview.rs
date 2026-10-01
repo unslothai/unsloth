@@ -1,0 +1,1117 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+//! The browser panel's web pages: a native child webview per tab, laid over the panel by the
+//! frontend, so bot checks, logins and web apps work as in a browser.
+//!
+//! Pages are untrusted:
+//! - Navigations (frames too) must be http(s) to a public host: local URLs reach the app's
+//!   commands, and loopback the backend. On macOS a content rule list also blocks subresources.
+//! - No IPC: capabilities are bound to `main`, and these commands only answer it.
+//! - Pages use their own profile, never the app's, which holds Studio's sign-in.
+//! - Popups become tabs; downloads get the OS quarantine mark.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
+    WebviewBuilder, WebviewUrl,
+};
+
+/// Labels of browser webviews; the tab id follows.
+const LABEL_PREFIX: &str = "unsloth-browser-";
+/// Event the panel listens to, sent to the main webview only.
+const EVENT: &str = "unsloth-browser";
+/// The app's own webview, the only caller these commands answer.
+const MAIN_WEBVIEW: &str = "main";
+/// How often the shown tab's address is polled, for pushState.
+const URL_POLL: Duration = Duration::from_millis(800);
+/// macOS 14+ data store for pages (fixed, so it persists).
+#[cfg(target_os = "macos")]
+const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
+
+/// Read after a load or title change. Pages can spoof it; it only feeds the panel's buttons.
+const STATE_SCRIPT: &str = r#"(() => {
+  try {
+    const nav = window.navigation;
+    const icon = document.querySelector("link[rel~='icon'][href], link[rel='apple-touch-icon'][href]");
+    return JSON.stringify({
+      back: nav && "canGoBack" in nav ? Boolean(nav.canGoBack) : history.length > 1,
+      forward: nav && "canGoForward" in nav ? Boolean(nav.canGoForward) : false,
+      icon: icon ? icon.href : new URL("/favicon.ico", location.href).href,
+    });
+  } catch { return ""; }
+})()"#;
+
+#[derive(Default)]
+pub struct BrowserViews {
+    inner: Mutex<ViewsState>,
+}
+
+#[derive(Default)]
+struct ViewsState {
+    /// The tab shown in the panel, if any.
+    shown: Option<String>,
+    /// Last address reported per tab.
+    urls: HashMap<String, String>,
+    /// Each download's path, by URL (macOS doesn't report it back).
+    downloads: HashMap<String, PathBuf>,
+    polling: bool,
+}
+
+pub fn new_browser_views() -> BrowserViews {
+    BrowserViews::default()
+}
+
+#[derive(Clone, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+enum BrowserEvent {
+    /// A load started or finished.
+    Load {
+        tab_id: String,
+        url: String,
+        loading: bool,
+    },
+    Title {
+        tab_id: String,
+        title: String,
+    },
+    /// The address changed without a load (history.pushState).
+    Url {
+        tab_id: String,
+        url: String,
+    },
+    History {
+        tab_id: String,
+        can_go_back: bool,
+        can_go_forward: bool,
+        /// The page's icon URL; the panel fetches it through the backend.
+        icon: Option<String>,
+    },
+    /// The page asked for a new window (target=_blank, window.open).
+    NewTab {
+        tab_id: String,
+        url: String,
+    },
+    /// A link only another app opens (mailto:); the panel asks first.
+    External {
+        tab_id: String,
+        url: String,
+    },
+    Download {
+        tab_id: String,
+        url: String,
+        name: String,
+        path: Option<String>,
+        size: Option<u64>,
+        done: bool,
+        success: bool,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    /// The main webview's size in CSS pixels, to scale the rect by its zoom.
+    viewport_width: f64,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Navigation policy
+
+/// Whether a page may navigate (or frame) this URL.
+pub(crate) fn navigation_allowed(url: &Url) -> bool {
+    match url.scheme() {
+        // Documents a page makes itself, with its origin or none.
+        "about" | "data" | "blob" => true,
+        "http" | "https" => url.host().is_some_and(|host| !host_is_private(&host)),
+        _ => false,
+    }
+}
+
+/// Hosts that are this machine, its network, or Studio itself.
+fn host_is_private(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Ipv4(ip) => ipv4_is_private(*ip),
+        url::Host::Ipv6(ip) => ipv6_is_private(*ip),
+        url::Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            // A dotless name only resolves locally.
+            !domain.contains('.')
+                || ["localhost", "local", "internal", "lan", "home.arpa", "intranet"]
+                    .iter()
+                    .any(|suffix| domain == *suffix || domain.ends_with(&format!(".{suffix}")))
+                // Written as a number the URL parser didn't normalise.
+                || domain.parse::<IpAddr>().is_ok_and(|ip| match ip {
+                    IpAddr::V4(ip) => ipv4_is_private(ip),
+                    IpAddr::V6(ip) => ipv6_is_private(ip),
+                })
+        }
+    }
+}
+
+fn ipv4_is_private(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || a == 0
+        // Carrier-grade NAT, used by some VPNs.
+        || (a == 100 && (64..128).contains(&b))
+}
+
+fn ipv6_is_private(ip: Ipv6Addr) -> bool {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return ipv4_is_private(v4);
+    }
+    let first = ip.segments()[0];
+    ip.is_loopback()
+        || ip.is_unspecified()
+        // Unique local (fc00::/7) and link-local (fe80::/10).
+        || (first & 0xfe00) == 0xfc00
+        || (first & 0xffc0) == 0xfe80
+}
+
+/// Links only other apps open, offered to the user.
+fn is_external_handoff(url: &Url) -> bool {
+    matches!(url.scheme(), "mailto" | "tel")
+}
+
+/// URL prefixes (WebKit content-rule regexes, which have no `|`) a page may not request.
+const BLOCKED_HOST_PREFIXES: &[&str] = &[
+    r"localhost[:/]",
+    r"[^/@]*\.localhost[:/]",
+    r"[^/@]*\.local[:/]",
+    r"127\.",
+    r"0\.",
+    r"10\.",
+    r"192\.168\.",
+    r"172\.1[6-9]\.",
+    r"172\.2[0-9]\.",
+    r"172\.3[01]\.",
+    r"169\.254\.",
+    r"100\.6[4-9]\.",
+    r"100\.[7-9][0-9]\.",
+    r"100\.1[01][0-9]\.",
+    r"100\.12[0-7]\.",
+    // IPv6 literals, private ones among them; public sites don't use them.
+    r"\[",
+];
+
+/// WebKit content rules blocking requests to private hosts (any scheme, with or without
+/// credentials) and the app's own schemes.
+fn content_rules_json() -> String {
+    let mut filters = Vec::new();
+    for prefix in BLOCKED_HOST_PREFIXES {
+        filters.push(format!("^[a-z]+://{prefix}"));
+        filters.push(format!("^[a-z]+://[^/@]*@{prefix}"));
+    }
+    for scheme in ["tauri", "ipc", "asset", "file"] {
+        filters.push(format!("^{scheme}:"));
+    }
+    let rules: Vec<_> = filters
+        .into_iter()
+        .map(|filter| {
+            serde_json::json!({
+                "trigger": { "url-filter": filter },
+                "action": { "type": "block" },
+            })
+        })
+        .collect();
+    serde_json::Value::Array(rules).to_string()
+}
+
+#[cfg(target_os = "macos")]
+mod content_rules {
+    use objc2::rc::Retained;
+    use objc2::MainThreadMarker;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKWebView};
+    use std::cell::RefCell;
+
+    type Then = Box<dyn FnOnce()>;
+
+    #[derive(Default)]
+    struct Rules {
+        compiled: Option<Retained<WKContentRuleList>>,
+        /// Views waiting on the first compile, with their first load.
+        waiting: Vec<(Retained<WKWebView>, Then)>,
+        compiling: bool,
+    }
+
+    thread_local! {
+        // WebKit objects live on the main thread, and so does this.
+        static RULES: RefCell<Rules> = RefCell::new(Rules::default());
+    }
+
+    /// Add the rules to `webview`, then run `then` (the first load). Main thread only.
+    pub fn protect(webview: Retained<WKWebView>, then: Then) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            then();
+            return;
+        };
+        let compiled = RULES.with(|rules| rules.borrow().compiled.clone());
+        if let Some(list) = compiled {
+            unsafe {
+                webview
+                    .configuration()
+                    .userContentController()
+                    .addContentRuleList(&list)
+            };
+            then();
+            return;
+        }
+        let start = RULES.with(|rules| {
+            let mut rules = rules.borrow_mut();
+            rules.waiting.push((webview, then));
+            !std::mem::replace(&mut rules.compiling, true)
+        });
+        if !start {
+            return;
+        }
+        let Some(store) = (unsafe { WKContentRuleListStore::defaultStore(mtm) }) else {
+            finish(None);
+            return;
+        };
+        let identifier = NSString::from_str("unsloth-browser-private-hosts");
+        let encoded = NSString::from_str(&super::content_rules_json());
+        let handler =
+            block2::RcBlock::new(move |list: *mut WKContentRuleList, error: *mut NSError| {
+                let list = unsafe { Retained::retain(list) };
+                if list.is_none() {
+                    let message = unsafe { error.as_ref() }
+                        .map(|error| error.localizedDescription().to_string())
+                        .unwrap_or_default();
+                    log::warn!("browser content rules failed to compile: {message}");
+                }
+                finish(list);
+            });
+        unsafe {
+            store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(
+                Some(&identifier),
+                Some(&encoded),
+                Some(&handler),
+            );
+        }
+    }
+
+    fn finish(list: Option<Retained<WKContentRuleList>>) {
+        let waiting = RULES.with(|rules| {
+            let mut rules = rules.borrow_mut();
+            rules.compiling = false;
+            rules.compiled = list.clone();
+            std::mem::take(&mut rules.waiting)
+        });
+        for (webview, then) in waiting {
+            if let Some(list) = &list {
+                unsafe {
+                    webview
+                        .configuration()
+                        .userContentController()
+                        .addContentRuleList(list)
+                };
+            }
+            // Without rules the navigation policy still holds; load rather than hang.
+            then();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Helpers
+
+fn label_for(tab_id: &str) -> Result<String, String> {
+    let valid = !tab_id.is_empty()
+        && tab_id.len() <= 64
+        && tab_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(format!("{LABEL_PREFIX}{tab_id}"))
+    } else {
+        Err("invalid tab id".into())
+    }
+}
+
+fn tab_of(label: &str) -> Option<&str> {
+    label.strip_prefix(LABEL_PREFIX)
+}
+
+fn require_main<R: Runtime>(caller: &Webview<R>) -> Result<(), String> {
+    if caller.label() == MAIN_WEBVIEW {
+        Ok(())
+    } else {
+        Err("not allowed from this webview".into())
+    }
+}
+
+fn parse_page_url(raw: &str) -> Result<Url, String> {
+    let url = Url::parse(raw.trim()).map_err(|_| "not a URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || !navigation_allowed(&url) {
+        return Err("only public web addresses open in the browser".into());
+    }
+    Ok(url)
+}
+
+fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
+    let _ = app.emit_to(MAIN_WEBVIEW, EVENT, event);
+}
+
+fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, String> {
+    let label = label_for(tab_id)?;
+    app.get_webview(&label).ok_or_else(|| "no such tab".into())
+}
+
+/// Ask the page for its history buttons' state.
+fn refresh_history<R: Runtime>(webview: &Webview<R>) {
+    let Some(tab_id) = tab_of(webview.label()).map(str::to_string) else {
+        return;
+    };
+    let app = webview.app_handle().clone();
+    let _ = webview.eval_with_callback(STATE_SCRIPT, move |result| {
+        // The script's value as JSON: a string holding our JSON.
+        let Ok(inner) = serde_json::from_str::<String>(&result) else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&inner) else {
+            return;
+        };
+        emit(
+            &app,
+            BrowserEvent::History {
+                tab_id: tab_id.clone(),
+                can_go_back: value.get("back").and_then(|v| v.as_bool()).unwrap_or(false),
+                can_go_forward: value
+                    .get("forward")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                icon: value
+                    .get("icon")
+                    .and_then(|v| v.as_str())
+                    .and_then(|icon| Url::parse(icon).ok())
+                    .filter(|icon| {
+                        matches!(icon.scheme(), "http" | "https") && navigation_allowed(icon)
+                    })
+                    .filter(|icon| icon.as_str().len() <= 2048)
+                    .map(String::from),
+            },
+        );
+    });
+}
+
+/// A free name in `dir` for a download, from the name the page suggested.
+fn download_destination(dir: &Path, suggested: &Path) -> PathBuf {
+    let name = suggested
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.chars()
+                .map(|c| {
+                    if c.is_control() || "/\\:".contains(c) {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect::<String>()
+        })
+        .filter(|name| !name.trim_matches('.').is_empty())
+        .unwrap_or_else(|| "download".into());
+    let candidate = dir.join(&name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(&name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = path.extension().and_then(|s| s.to_str());
+    (1..10_000)
+        .map(|n| match ext {
+            Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
+            None => dir.join(format!("{stem} ({n})")),
+        })
+        .find(|p| !p.exists())
+        .unwrap_or(candidate)
+}
+
+/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it.
+fn mark_downloaded(path: &Path, url: &Url) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let value = format!("0081;{now:08x};Unsloth;");
+        let (Ok(path), Ok(name)) = (
+            CString::new(path.as_os_str().as_bytes()),
+            CString::new("com.apple.quarantine"),
+        ) else {
+            return;
+        };
+        unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            );
+        }
+        let _ = url;
+    }
+    #[cfg(windows)]
+    {
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let _ = std::fs::write(
+            stream,
+            format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={url}\r\n"),
+        );
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = (path, url);
+}
+
+#[cfg(target_os = "macos")]
+fn macos_at_least(major: isize) -> bool {
+    use objc2_foundation::{NSOperatingSystemVersion, NSProcessInfo};
+    NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(NSOperatingSystemVersion {
+        majorVersion: major,
+        minorVersion: 0,
+        patchVersion: 0,
+    })
+}
+
+/// Pages' own profile, never the app's.
+fn with_page_profile<R: Runtime>(
+    builder: WebviewBuilder<R>,
+    app: &AppHandle<R>,
+) -> WebviewBuilder<R> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        // Before macOS 14 the only other store is a private one.
+        if macos_at_least(14) {
+            builder.data_store_identifier(PAGE_DATA_STORE)
+        } else {
+            builder.incognito(true)
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    match app.path().app_local_data_dir() {
+        Ok(dir) => builder.data_directory(dir.join("browser-profile")),
+        Err(_) => builder.incognito(true),
+    }
+}
+
+/// Poll the shown tab's address, which pushState changes without a load. Started once.
+fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<BrowserViews>();
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if inner.polling {
+            return;
+        }
+        inner.polling = true;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(URL_POLL).await;
+            let state = app.state::<BrowserViews>();
+            let Some(tab_id) = state.inner.lock().unwrap().shown.clone() else {
+                continue;
+            };
+            let Ok(webview) = view(&app, &tab_id) else {
+                continue;
+            };
+            let Ok(url) = webview.url() else {
+                continue;
+            };
+            let url = url.to_string();
+            let changed = {
+                let mut inner = state.inner.lock().unwrap();
+                let last = inner.urls.insert(tab_id.clone(), url.clone());
+                last.as_deref() != Some(url.as_str())
+            };
+            if changed {
+                emit(&app, BrowserEvent::Url { tab_id, url });
+                refresh_history(&webview);
+            }
+        }
+    });
+}
+
+fn create_view<R: Runtime>(
+    caller: &Webview<R>,
+    tab_id: &str,
+    url: Url,
+    bounds: &ViewBounds,
+) -> Result<Webview<R>, String> {
+    let app = caller.app_handle().clone();
+    let label = label_for(tab_id)?;
+    let tab = tab_id.to_string();
+
+    let nav_app = app.clone();
+    let nav_tab = tab.clone();
+    let load_tab = tab.clone();
+    let title_tab = tab.clone();
+    let window_app = app.clone();
+    let window_tab = tab.clone();
+    let download_tab = tab.clone();
+    let downloads_dir = app.path().download_dir().ok();
+
+    // On macOS the first page waits for the content rules (see `content_rules`).
+    #[cfg(target_os = "macos")]
+    let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
+    #[cfg(not(target_os = "macos"))]
+    let (initial, deferred): (Url, Option<Url>) = (url, None);
+
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(initial))
+        .on_navigation(move |url| {
+            if navigation_allowed(url) {
+                return true;
+            }
+            if is_external_handoff(url) {
+                emit(
+                    &nav_app,
+                    BrowserEvent::External {
+                        tab_id: nav_tab.clone(),
+                        url: url.to_string(),
+                    },
+                );
+            }
+            false
+        })
+        .on_page_load(move |webview, payload| {
+            let app = webview.app_handle();
+            // The blank page a view starts on before its first address.
+            if payload.url().scheme() == "about" {
+                return;
+            }
+            let url = payload.url().to_string();
+            let loading = matches!(payload.event(), PageLoadEvent::Started);
+            app.state::<BrowserViews>()
+                .inner
+                .lock()
+                .unwrap()
+                .urls
+                .insert(load_tab.clone(), url.clone());
+            emit(
+                app,
+                BrowserEvent::Load {
+                    tab_id: load_tab.clone(),
+                    url,
+                    loading,
+                },
+            );
+            if !loading {
+                refresh_history(&webview);
+            }
+        })
+        .on_document_title_changed(move |webview, title| {
+            emit(
+                webview.app_handle(),
+                BrowserEvent::Title {
+                    tab_id: title_tab.clone(),
+                    title,
+                },
+            );
+            refresh_history(&webview);
+        })
+        .on_new_window(move |url, _features| {
+            // A tab instead of a window, with no opener to script.
+            if navigation_allowed(&url) && matches!(url.scheme(), "http" | "https") {
+                emit(
+                    &window_app,
+                    BrowserEvent::NewTab {
+                        tab_id: window_tab.clone(),
+                        url: url.to_string(),
+                    },
+                );
+            }
+            NewWindowResponse::Deny
+        })
+        .on_download(move |webview, event| {
+            let app = webview.app_handle();
+            match event {
+                DownloadEvent::Requested { url, destination } => {
+                    let Some(dir) = downloads_dir.as_deref() else {
+                        return false;
+                    };
+                    let path = download_destination(dir, destination);
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    *destination = path.clone();
+                    app.state::<BrowserViews>()
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .downloads
+                        .insert(url.to_string(), path);
+                    emit(
+                        app,
+                        BrowserEvent::Download {
+                            tab_id: download_tab.clone(),
+                            url: url.to_string(),
+                            name,
+                            path: None,
+                            size: None,
+                            done: false,
+                            success: false,
+                        },
+                    );
+                    true
+                }
+                DownloadEvent::Finished { url, path, success } => {
+                    let recorded = app
+                        .state::<BrowserViews>()
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .downloads
+                        .remove(url.as_str());
+                    let path = path.or(recorded);
+                    if let (true, Some(path)) = (success, path.as_deref()) {
+                        mark_downloaded(path, &url);
+                    }
+                    emit(
+                        app,
+                        BrowserEvent::Download {
+                            tab_id: download_tab.clone(),
+                            url: url.to_string(),
+                            name: path
+                                .as_deref()
+                                .and_then(|p| p.file_name())
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            size: path
+                                .as_deref()
+                                .and_then(|p| std::fs::metadata(p).ok())
+                                .map(|m| m.len()),
+                            path: path.map(|p| p.to_string_lossy().into_owned()),
+                            done: true,
+                            success,
+                        },
+                    );
+                    true
+                }
+                _ => false,
+            }
+        })
+        .zoom_hotkeys_enabled(false)
+        .devtools(cfg!(debug_assertions))
+        .focused(false);
+    let builder = with_page_profile(builder, &app);
+
+    let (position, size) = logical_rect(caller, bounds);
+    let window = caller.window();
+    let webview = window
+        .add_child(builder, position, size)
+        .map_err(|error| error.to_string())?;
+    if let Some(url) = deferred {
+        load_when_protected(&webview, url);
+    }
+    start_url_poll(&app);
+    Ok(webview)
+}
+
+/// Load `url` once the page's requests to private hosts are blocked.
+#[cfg(target_os = "macos")]
+fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
+    // Off the main thread: `protect` can finish inside `with_webview`, which holds the lock
+    // `navigate` takes (and `run_on_main_thread` runs in place there).
+    let page = webview.clone();
+    let load = move || {
+        tauri::async_runtime::spawn(async move {
+            let _ = page.navigate(url);
+        });
+    };
+    let fallback = load.clone();
+    let result = webview.with_webview(move |platform| {
+        let raw = platform.inner() as *mut objc2_web_kit::WKWebView;
+        // Safety: wry's view, alive with its Tauri webview; retained for the callback.
+        match unsafe { objc2::rc::Retained::retain(raw) } {
+            Some(view) => content_rules::protect(view, Box::new(load)),
+            None => load(),
+        }
+    });
+    if result.is_err() {
+        fallback();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
+    let _ = webview.navigate(url);
+}
+
+/// The panel's rect in logical pixels: CSS pixels times the main webview's zoom.
+fn logical_rect<R: Runtime>(
+    caller: &Webview<R>,
+    bounds: &ViewBounds,
+) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+    let scale = caller
+        .bounds()
+        .ok()
+        .zip(caller.window().scale_factor().ok())
+        .map(|(rect, factor)| rect.size.to_logical::<f64>(factor).width)
+        .filter(|width| *width > 0.0 && bounds.viewport_width > 0.0)
+        .map(|width| width / bounds.viewport_width)
+        .unwrap_or(1.0);
+    let origin = caller
+        .bounds()
+        .ok()
+        .zip(caller.window().scale_factor().ok())
+        .map(|(rect, factor)| rect.position.to_logical::<f64>(factor))
+        .unwrap_or(LogicalPosition::new(0.0, 0.0));
+    (
+        LogicalPosition::new(origin.x + bounds.x * scale, origin.y + bounds.y * scale),
+        LogicalSize::new(
+            (bounds.width * scale).max(1.0),
+            (bounds.height * scale).max(1.0),
+        ),
+    )
+}
+
+fn browser_views<R: Runtime>(app: &AppHandle<R>) -> Vec<Webview<R>> {
+    app.webviews()
+        .into_iter()
+        .filter(|(label, _)| label.starts_with(LABEL_PREFIX))
+        .map(|(_, webview)| webview)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Commands
+
+/// Whether pages open in native webviews.
+#[tauri::command]
+pub fn browser_view_supported() -> bool {
+    true
+}
+
+/// Show a tab's page at `bounds` (created at `url` the first time) and hide the rest.
+/// `tab_id: None` hides all.
+#[tauri::command]
+pub fn browser_view_show<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+    tab_id: Option<String>,
+    url: Option<String>,
+    bounds: Option<ViewBounds>,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let app = webview.app_handle().clone();
+    let target = match (&tab_id, &bounds) {
+        (Some(tab_id), Some(bounds)) => {
+            let existing = app.get_webview(&label_for(tab_id)?);
+            let shown = match existing {
+                Some(view) => view,
+                None => {
+                    let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                    create_view(&webview, tab_id, url, bounds)?
+                }
+            };
+            let (position, size) = logical_rect(&webview, bounds);
+            shown
+                .set_position(position)
+                .map_err(|error| error.to_string())?;
+            shown.set_size(size).map_err(|error| error.to_string())?;
+            shown.show().map_err(|error| error.to_string())?;
+            Some(shown.label().to_string())
+        }
+        _ => None,
+    };
+    for view in browser_views(&app) {
+        if Some(view.label()) != target.as_deref() {
+            let _ = view.hide();
+        }
+    }
+    state.inner.lock().unwrap().shown = tab_id.filter(|_| target.is_some());
+    Ok(())
+}
+
+/// Load an address in a tab's page.
+#[tauri::command]
+pub fn browser_view_navigate<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    url: String,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let url = parse_page_url(&url)?;
+    view(webview.app_handle(), &tab_id)?
+        .navigate(url)
+        .map_err(|error| error.to_string())
+}
+
+/// Back, forward, reload or stop.
+#[tauri::command]
+pub fn browser_view_action<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    action: String,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let result = match action.as_str() {
+        "back" => page.eval("history.back()"),
+        "forward" => page.eval("history.forward()"),
+        "reload" => page.reload(),
+        "stop" => page.eval("window.stop()"),
+        "focus" => page.set_focus(),
+        _ => return Err("unknown action".into()),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn browser_view_zoom<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    zoom: f64,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    if !(0.25..=5.0).contains(&zoom) {
+        return Err("zoom out of range".into());
+    }
+    view(webview.app_handle(), &tab_id)?
+        .set_zoom(zoom)
+        .map_err(|error| error.to_string())
+}
+
+/// Find text in a tab's page; true when it matched.
+#[tauri::command]
+pub async fn browser_view_find<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    query: String,
+    backwards: bool,
+) -> Result<bool, String> {
+    require_main(&webview)?;
+    if query.is_empty() || query.len() > 1000 {
+        return Ok(false);
+    }
+    let page = view(webview.app_handle(), &tab_id)?;
+    let query = serde_json::to_string(&query).map_err(|error| error.to_string())?;
+    let script = format!(
+        "(() => {{ try {{ return Boolean(window.find({query}, false, {backwards}, true, false, false, false)); }} catch {{ return false; }} }})()"
+    );
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result.trim() == "true");
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn browser_view_close<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+    tab_id: String,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner.urls.remove(&tab_id);
+        if inner.shown.as_deref() == Some(tab_id.as_str()) {
+            inner.shown = None;
+        }
+    }
+    if let Ok(page) = view(webview.app_handle(), &tab_id) {
+        page.close().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Clear the pages' own cookies, storage and cache.
+#[tauri::command]
+pub async fn browser_view_clear_data<R: Runtime>(webview: Webview<R>) -> Result<(), String> {
+    require_main(&webview)?;
+    let app = webview.app_handle().clone();
+    if let Some(page) = browser_views(&app).into_iter().next() {
+        return page
+            .clear_all_browsing_data()
+            .map_err(|error| error.to_string());
+    }
+    // No page open: clear through a hidden one.
+    let builder = with_page_profile(
+        WebviewBuilder::new(
+            format!("{LABEL_PREFIX}clear"),
+            WebviewUrl::External(Url::parse("about:blank").unwrap()),
+        )
+        .focused(false),
+        &app,
+    );
+    let page = webview
+        .window()
+        .add_child(
+            builder,
+            LogicalPosition::new(0.0, 0.0),
+            LogicalSize::new(1.0, 1.0),
+        )
+        .map_err(|error| error.to_string())?;
+    let _ = page.hide();
+    let result = page
+        .clear_all_browsing_data()
+        .map_err(|error| error.to_string());
+    // The clear finishes asynchronously; close the view after a moment.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let _ = page.close();
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed(url: &str) -> bool {
+        navigation_allowed(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn only_public_web_pages_load() {
+        for url in [
+            "https://example.com/",
+            "https://93.184.216.34/",
+            "about:blank",
+            "data:,hi",
+        ] {
+            assert!(allowed(url), "{url}");
+        }
+        for url in [
+            "tauri://localhost/",
+            "http://ipc.localhost/plugin",
+            "http://localhost:8888/",
+            "http://127.1/",
+            "http://0x7f000001/",
+            "http://0.0.0.0:8080/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/",
+            "http://100.100.1.1/",
+            "http://[fd00::1]/",
+            "http://printer.local/",
+            "http://router/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+        ] {
+            assert!(!allowed(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn only_mail_and_phone_links_go_to_other_apps() {
+        assert!(is_external_handoff(&Url::parse("mailto:a@b.co").unwrap()));
+        assert!(is_external_handoff(&Url::parse("tel:+1555").unwrap()));
+        assert!(!is_external_handoff(&Url::parse("zoommtg://join").unwrap()));
+    }
+
+    #[test]
+    fn tab_ids_are_checked() {
+        assert_eq!(label_for("main").unwrap(), "unsloth-browser-main");
+        for bad in ["", "../x", "a b", &"x".repeat(65)] {
+            assert!(label_for(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn content_rules_block_private_hosts() {
+        let rules: serde_json::Value = serde_json::from_str(&content_rules_json()).unwrap();
+        let filters: Vec<regex::Regex> = rules
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| {
+                let filter = rule["trigger"]["url-filter"].as_str().unwrap();
+                // WebKit's rule regexes have no alternation or counted repetition.
+                assert!(!filter.contains('|') && !filter.contains('{'), "{filter}");
+                regex::RegexBuilder::new(filter)
+                    .case_insensitive(true)
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        let blocked = |url: &str| filters.iter().any(|filter| filter.is_match(url));
+        for url in [
+            "ws://127.0.0.1:8080/",
+            "https://user:pw@127.0.0.1/",
+            "http://studio.localhost/",
+            "http://172.20.0.1/",
+            "http://[::1]:8888/",
+            "tauri://localhost/index.html",
+        ] {
+            assert!(blocked(url), "{url}");
+        }
+        for url in [
+            "https://challenges.cloudflare.com/turnstile/v0/api.js",
+            "https://172.217.1.1/",
+            "https://localhost.example.com/",
+            "https://example.com/?next=http://127.0.0.1/",
+        ] {
+            assert!(!blocked(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn ipc_shapes_match_the_panel() {
+        let event = serde_json::to_value(BrowserEvent::History {
+            tab_id: "t1".into(),
+            can_go_back: true,
+            can_go_forward: false,
+            icon: None,
+        })
+        .unwrap();
+        assert_eq!(
+            event,
+            serde_json::json!({ "kind": "history", "tabId": "t1", "canGoBack": true, "canGoForward": false, "icon": null })
+        );
+        let bounds: ViewBounds = serde_json::from_value(serde_json::json!({
+            "x": 1, "y": 2, "width": 3, "height": 4, "viewportWidth": 5
+        }))
+        .unwrap();
+        assert_eq!(bounds.viewport_width, 5.0);
+    }
+
+    #[test]
+    fn downloads_get_a_free_safe_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = |suggested: &str| download_destination(dir.path(), Path::new(suggested));
+        std::fs::write(name("report.pdf"), b"x").unwrap();
+        assert_eq!(name("report.pdf"), dir.path().join("report (1).pdf"));
+        assert_eq!(name(".."), dir.path().join("download"));
+        assert_eq!(name("/x/evil\u{7}name.sh"), dir.path().join("evil_name.sh"));
+    }
+}

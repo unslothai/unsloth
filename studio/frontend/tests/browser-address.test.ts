@@ -38,3 +38,16 @@ test("a document without a title is named by its path", () => {
   assert.equal(fileNameFromUrl("https://example.com/files/My%20Report.pdf"), "My Report.pdf");
   assert.equal(fileNameFromUrl("https://example.com/"), "example.com");
 });
+
+test("a search engine's redirect hop is only followed to another web page", () => {
+  assert.equal(
+    unwrapRedirect("https://duckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F"),
+    "https://unsloth.ai/",
+  );
+  for (const target of ["javascript:alert(1)", "file:///etc/passwd"]) {
+    const hop = `https://duckduckgo.com/l/?uddg=${encodeURIComponent(target)}`;
+    assert.equal(unwrapRedirect(hop), hop, target);
+  }
+  const lookalike = "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F";
+  assert.equal(unwrapRedirect(lookalike), lookalike);
+});

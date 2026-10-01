@@ -460,11 +460,76 @@ DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
 )
 
 
+# How long staged "Open in default app" copies live.
+_OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
+
+
+def _prune_open_staging(root: Path) -> None:
+    import shutil
+    import time
+
+    cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.lstat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors = True)
+        except OSError:
+            continue
+
+
+def _stage_for_open(path: Path) -> Path:
+    """A name for *path*'s current file in a private directory, for the OS opener.
+
+    Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
+    it) between any check and the opener resolving the name. So the file is opened once without
+    following links, and the inode that open returned is hard-linked (or, across filesystems,
+    copied) into a fresh directory only Studio writes to. That name is what the OS opens.
+    """
+    import shutil
+    import stat as stat_module
+    import tempfile
+
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        handle = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    try:
+        info = os.fstat(handle)
+        if not stat_module.S_ISREG(info.st_mode):
+            raise FileNotFoundError(str(path))
+        root = cache_root() / "open-staging"
+        root.mkdir(parents = True, exist_ok = True)
+        _prune_open_staging(root)
+        target = Path(tempfile.mkdtemp(dir = root)) / path.name
+        try:
+            os.link(path, target, follow_symlinks = False)
+            linked = os.lstat(target)
+            # Swapped since the open: copy what was opened.
+            if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
+                target.unlink()
+                raise OSError("file changed")
+        except (OSError, NotImplementedError):
+            with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
+                shutil.copyfileobj(source, copy)
+        return target
+    finally:
+        os.close(handle)
+
+
 def open_in_default_app(path: Path) -> None:
     """Open the regular file *path* with the OS default app (best effort per platform).
 
     Refuses (``PermissionError``) anything outside ``DEFAULT_APP_OPEN_EXTENSIONS`` and raises
     ``FileNotFoundError`` when *path* is not a regular file; a symlink is refused like a missing file.
+    The opener gets a private name for the file (see ``_stage_for_open``), never *path* itself.
     """
     import stat as stat_module
     import subprocess
@@ -477,7 +542,7 @@ def open_in_default_app(path: Path) -> None:
         raise FileNotFoundError(str(path)) from exc
     if not stat_module.S_ISREG(entry.st_mode):
         raise FileNotFoundError(str(path))
-    target = str(path)
+    target = str(_stage_for_open(path))
     if sys.platform == "darwin":
         subprocess.Popen(["open", target])
     elif os.name == "nt":

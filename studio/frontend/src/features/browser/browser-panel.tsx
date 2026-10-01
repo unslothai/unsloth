@@ -84,9 +84,18 @@ import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { useBrowserHistoryStore } from "./history-store";
 import { AnnotateLayer } from "./annotate-layer";
-import { textFileKind } from "./file-view";
+import { browserTabType, textFileKind } from "./file-view";
 import { EnterFullViewIcon, ExitFullViewIcon, SplitPaneIcon } from "./icons";
 import { sendFrameCommand } from "./page-frame";
+import {
+  clearNativeBrowsingData,
+  hasNativeView,
+  nativeAction,
+  nativeBrowser,
+  nativeFind,
+  returnToNativePage,
+  startNativeViews,
+} from "./native-view";
 import { useBrowserPrefsStore } from "./prefs-store";
 import {
   type BrowserEntry,
@@ -110,25 +119,27 @@ function tabAddress(tab: BrowserTab | undefined): string {
   return "";
 }
 
+// Bidi controls can reverse the text after them, making one site's path read like another's.
+const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
 /** The address as shown when not editing: no scheme or bare trailing slash, and only the site and path
- *  unless the full URL is asked for. */
+ *  unless the full URL is asked for. From the parsed URL: punycode host, no credentials. */
 export function displayAddress(address: string, full: boolean): string {
   if (!/^https?:\/\//i.test(address)) return address;
-  let shown = address;
-  if (!full) {
-    try {
-      const url = new URL(address);
-      shown = url.host + url.pathname;
-    } catch {
-      // Show it as typed.
-    }
-  }
-  shown = shown.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  let shown: string;
   try {
-    return decodeURI(shown);
+    const url = new URL(address);
+    shown = url.host + url.pathname + (full ? url.search + url.hash : "");
   } catch {
-    return shown;
+    shown = address.replace(/^https?:\/\//i, "");
   }
+  shown = shown.replace(/\/$/, "");
+  try {
+    shown = decodeURI(shown);
+  } catch {
+    // Show it encoded.
+  }
+  return shown.replace(BIDI_CONTROLS, "");
 }
 
 /** "invoice_INV-6-1.pdf" -> "Invoice Inv 6 1", as the file button shows it. */
@@ -330,9 +341,14 @@ function TabStrip({
     state.setFullView(!state.fullView);
   });
   return (
-    <div className="flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]">
+    // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
+    <div
+      data-tauri-drag-region={true}
+      className="relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
+    >
       <div
         role="tablist"
+        data-tauri-drag-region={true}
         aria-label={t("browser.tabs")}
         className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none]"
       >
@@ -424,6 +440,9 @@ function TabStrip({
   );
 }
 
+// The last focusAddress request an address bar acted on.
+let handledFocusSequence = 0;
+
 function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const engine = useBrowserPrefsStore((state) => state.searchEngine);
@@ -436,9 +455,11 @@ function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
   const shown = editing ? value : address;
 
   useEffect(() => {
-    if (focusSequence === 0) return;
+    // Each request once: the bar remounts per tab, and refocusing would leave it editing.
+    if (focusSequence === handledFocusSequence) return;
     const input = inputRef.current;
     if (!input) return;
+    handledFocusSequence = focusSequence;
     input.focus();
     input.select();
   }, [focusSequence]);
@@ -635,7 +656,7 @@ export function ClearBrowsingDataDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{t("browser.clearData.title")}</AlertDialogTitle>
           <AlertDialogDescription>
-            {t("browser.clearData.description")}
+            {t(nativeBrowser ? "browser.native.clearDataDescription" : "browser.clearData.description")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -646,6 +667,7 @@ export function ClearBrowsingDataDialog({
               history.clearHistory();
               history.clearDownloads();
               clearPageCache();
+              clearNativeBrowsingData();
               toast.success(t("browser.clearData.done"));
             }}
           >
@@ -754,9 +776,32 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
+/** Whether the tab shows a native view, whose own history Back and Forward use first. */
+function nativePage(tab: BrowserTab | undefined): boolean {
+  return Boolean(nativeBrowser && tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
+}
+
 function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const { goBack, goForward, reload } = useBrowserStore.getState();
+  const native = nativePage(tab);
+  const canGoBack = Boolean(
+    tab && (tab.index > 0 || (native && (tab.nativeError || tab.nativeHistory?.back))),
+  );
+  const canGoForward = Boolean(
+    tab && (tab.index < tab.history.length - 1 || (native && tab.nativeHistory?.forward)),
+  );
+  const back = () => {
+    if (!tab) return;
+    if (native && tab.nativeError && returnToNativePage(tab.id)) return;
+    if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
+    else goBack(tab.id);
+  };
+  const forward = () => {
+    if (!tab) return;
+    if (native && tab.nativeHistory?.forward) nativeAction(tab.id, "forward");
+    else goForward(tab.id);
+  };
   return (
     <>
       <div
@@ -768,14 +813,14 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
         <IconButton
           label={t("browser.back")}
           icon={ArrowLeft02Icon}
-          disabled={!tab || tab.index === 0}
-          onClick={() => tab && goBack(tab.id)}
+          disabled={!canGoBack}
+          onClick={back}
         />
         <IconButton
           label={t("browser.forward")}
           icon={ArrowRight02Icon}
-          disabled={!tab || tab.index >= tab.history.length - 1}
-          onClick={() => tab && goForward(tab.id)}
+          disabled={!canGoForward}
+          onClick={forward}
         />
         <span
           aria-hidden={true}
@@ -784,7 +829,11 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
         <IconButton
           label={t("browser.reload")}
           disabled={!tab || currentEntry(tab).kind !== "web"}
-          onClick={() => tab && reload(tab.id)}
+          onClick={() => {
+            if (!tab) return;
+            if (native) nativeAction(tab.id, "reload");
+            else reload(tab.id);
+          }}
         >
           <RefreshGlyph strokeWidth={1.75} className="size-4" />
         </IconButton>
@@ -848,9 +897,11 @@ function FileToolbar({
       ],
     });
   };
+  // Null for HTML and SVG, which would run on Studio's origin from a blob URL.
+  const tabType = browserTabType(entry.name, entry.contentType || blob?.type || "");
   const openInBrowser = () => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
+    if (!blob || !tabType) return;
+    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
     window.open(url, "_blank", "noopener,noreferrer");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
@@ -921,7 +972,7 @@ function FileToolbar({
                 </DropdownMenuItem>
               ) : null}
               {/* A blob URL can't be handed to another app from the desktop app. */}
-              {isTauri ? null : (
+              {isTauri || !tabType ? null : (
                 <DropdownMenuItem onSelect={openInBrowser}>
                   <HugeiconsIcon
                     icon={InternetIcon}
@@ -1145,6 +1196,10 @@ function FindBar({ tab }: { tab: BrowserTab | undefined }) {
   }, []);
   const find = (backwards = false) => {
     if (!tab || !query) return;
+    if (nativePage(tab)) {
+      void nativeFind(tab.id, query, backwards).then((found) => setFindMiss(!found));
+      return;
+    }
     if (!sendFrameCommand(tab.id, { command: "find", query, backwards }))
       setFindMiss(true);
   };
@@ -1253,6 +1308,26 @@ function DeviceBar() {
 
 // Hidden pages still run scripts, so only the most recent tabs stay mounted.
 const MAX_MOUNTED_TABS = 4;
+// Hidden web pages run scripts on the chat's thread, so only the newest stays live.
+const MAX_HIDDEN_WEB_PAGES = 1;
+
+/** Mounted tabs: all, less hidden web pages past the newest few. */
+function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null): Set<string> {
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const live = new Set<string>();
+  let hiddenWeb = 0;
+  // Newest first.
+  for (const id of [...mounted].reverse()) {
+    const tab = byId.get(id);
+    if (!tab) continue;
+    if (id !== activeTabId && currentEntry(tab).kind === "web") {
+      if (hiddenWeb >= MAX_HIDDEN_WEB_PAGES) continue;
+      hiddenWeb += 1;
+    }
+    live.add(id);
+  }
+  return live;
+}
 
 /** The chat's in-app browser: tabs of web pages and opened files. Memoized so chat renders skip it. */
 export const BrowserPanel = memo(function BrowserPanel() {
@@ -1263,6 +1338,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
+  useEffect(() => (nativeBrowser ? startNativeViews() : undefined), []);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeEntry = activeTab ? currentEntry(activeTab) : null;
   // Mount tabs on first view. Most recent last.
@@ -1278,6 +1354,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
       ].slice(-MAX_MOUNTED_TABS),
     );
   }
+  const live = liveTabIds(mounted, tabs, activeTabId);
   // Files sit on the viewer's gray, with no line under the toolbar.
   const fileTab = activeEntry?.kind === "file";
   const documentShown = fileTab || Boolean(activeTab?.documentType);
@@ -1348,7 +1425,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
             }
           >
             {tabs.map((tab) =>
-              mounted.includes(tab.id) ? (
+              live.has(tab.id) ? (
                 <TabView
                   key={tab.id}
                   tab={tab}

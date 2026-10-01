@@ -28,20 +28,15 @@ const isUserAction = (message: FrameMessage) =>
   message.type === "external" ||
   message.type === "shortcut";
 
-// Activation outlives the click that loaded the page, so also rate limit.
+// Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
 const USER_ACTION_INTERVAL_MS = 1000;
-let lastUserAction = Number.NEGATIVE_INFINITY;
 
-/** True when the frame has focus and the user just clicked or typed. */
-function allowUserAction(frame: HTMLIFrameElement, message: FrameMessage): boolean {
+/** Whether the user just clicked or typed in the focused frame. Without the User Activation API,
+ *  focus alone opens a tab here but never the system browser. */
+function userActive(frame: HTMLIFrameElement, message: FrameMessage): boolean {
   if (document.activeElement !== frame) return false;
-  if (!(navigator.userActivation?.isActive ?? true)) return false;
-  // Shortcuts aren't rate limited.
-  if (message.type === "shortcut") return true;
-  const now = performance.now();
-  if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return false;
-  lastUserAction = now;
-  return true;
+  const active = navigator.userActivation?.isActive;
+  return active ?? message.type !== "external";
 }
 
 /** A page written into the sandbox shell (opaque origin, so it can't reach Studio's storage or API). */
@@ -74,12 +69,33 @@ export function PageFrame({
   const postedRef = useRef(false);
 
   useEffect(() => {
+    // A page loads and leaves once; repeats are spam.
+    let loaded = false;
+    let left = false;
+    let lastUserAction = Number.NEGATIVE_INFINITY;
     const listener = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
-      const message = parseFrameMessage(event.data);
+      let message = parseFrameMessage(event.data);
       if (!message) return;
-      if (isUserAction(message) && !allowUserAction(frame, message)) return;
+      if (isUserAction(message)) {
+        if (!userActive(frame, message)) return;
+        // Shortcuts move focus off the page or replace it, so they bound themselves.
+        if (message.type !== "shortcut") {
+          const now = performance.now();
+          if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return;
+          lastUserAction = now;
+        }
+      }
+      if (message.type === "loaded") {
+        if (loaded) message = { type: "title", title: message.title };
+        loaded = true;
+      } else if ((message.type === "navigate" && !message.newTab) || message.type === "reload") {
+        if (left) return;
+        left = true;
+        // An unrequested redirect replaces this page, as browsers keep it off Back.
+        if (message.type === "navigate" && !userActive(frame, message)) message = { ...message, replace: true };
+      }
       onMessageRef.current(message);
     };
     window.addEventListener("message", listener);

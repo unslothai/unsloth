@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 
 export type HistoryItem = { id: string; url: string; title: string; visitedAt: number };
 export type DownloadItem = {
@@ -17,6 +17,39 @@ export type DownloadItem = {
 
 const MAX_HISTORY = 1000;
 const MAX_DOWNLOADS = 200;
+// Pages pick their URLs and titles; cap them so history can't fill Studio's storage.
+const MAX_URL_CHARS = 2048;
+const MAX_TITLE_CHARS = 200;
+const PERSIST_DELAY_MS = 1000;
+
+/** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
+function deferredLocalStorage(): StateStorage {
+  const pending = new Map<string, string>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const flush = () => {
+    timer = null;
+    for (const [name, value] of pending) {
+      try {
+        localStorage.setItem(name, value);
+      } catch {
+        // Quota or private mode: keep the in-memory history.
+      }
+    }
+    pending.clear();
+  };
+  if (typeof window !== "undefined") window.addEventListener("pagehide", flush);
+  return {
+    getItem: (name) => pending.get(name) ?? localStorage.getItem(name),
+    setItem: (name, value) => {
+      pending.set(name, value);
+      timer ??= setTimeout(flush, PERSIST_DELAY_MS);
+    },
+    removeItem: (name) => {
+      pending.delete(name);
+      localStorage.removeItem(name);
+    },
+  };
+}
 
 let nextId = 0;
 const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
@@ -39,8 +72,10 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
     (set) => ({
       history: [],
       downloads: [],
-      recordVisit: (url, title) =>
+      recordVisit: (url, fullTitle) =>
         set((state) => {
+          if (url.length > MAX_URL_CHARS) return state;
+          const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const [latest, ...rest] = state.history;
           // A reload or title update of the same page is one visit.
           if (latest?.url === url) {
@@ -59,6 +94,10 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       clearHistory: () => set({ history: [] }),
       clearDownloads: () => set({ downloads: [] }),
     }),
-    { name: "unsloth_browser_history", version: 1 },
+    {
+      name: "unsloth_browser_history",
+      version: 1,
+      storage: createJSONStorage(deferredLocalStorage),
+    },
   ),
 );

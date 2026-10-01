@@ -3983,10 +3983,12 @@ html[data-chat-font] .aui-root {
 		will-change: opacity, transform;
 	}
 
+	/* No stacking context once shown, or the desktop titlebar's drag strip eats header clicks. */
 	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
 		pointer-events: auto;
 		opacity: 1;
-		transform: scale(1) translateY(0);
+		transform: none;
+		will-change: auto;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
@@ -5559,7 +5561,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 }
 
 /* Minimized to its button, it must not cover the page beside it. */
-.chat-artifact-split[data-browser-full-view] > #chat-thread:has(.chat-full-view-dock-minimized) {
+.chat-artifact-split[data-browser-full-view][data-chat-dock="minimized"] > #chat-thread {
 	width: auto !important;
 }
 

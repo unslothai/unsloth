@@ -68,6 +68,10 @@ export type BrowserTab = {
   openKey: string | null;
   /** Page zoom, kept across navigations like a browser's per-tab zoom. */
   zoom: number;
+  /** A native page's own history, used before the tab's. */
+  nativeHistory: { back: boolean; forward: boolean } | null;
+  /** Why a native page couldn't open, shown in its place. */
+  nativeError: string | null;
 };
 
 export type OpenFileInput = {
@@ -100,6 +104,13 @@ export function pageDownload(tabId: string): PageDownload | undefined {
 }
 
 const isWeb = (url: string) => /^https?:\/\//i.test(url.trim());
+
+// Set in the desktop app, where web pages are native views with their own history.
+let nativeWebHistory = false;
+
+export function setNativeWebHistory(native: boolean): void {
+  nativeWebHistory = native;
+}
 
 // Caps history for pages that keep redirecting.
 const MAX_HISTORY = 50;
@@ -148,6 +159,8 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     reloadKey: 0,
     openKey,
     zoom: 1,
+    nativeHistory: null,
+    nativeError: null,
   };
 }
 
@@ -203,7 +216,10 @@ type BrowserState = {
   closePanel: () => void;
   togglePanel: () => void;
   newTab: () => void;
-  openUrl: (url: string, options?: { newTab?: boolean; background?: boolean }) => void;
+  openUrl: (
+    url: string,
+    options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string },
+  ) => void;
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
@@ -215,7 +231,15 @@ type BrowserState = {
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
-  updateTab: (tabId: string, patch: Partial<Pick<BrowserTab, "title" | "favicon" | "documentType" | "displayUrl" | "loading">>) => void;
+  updateTab: (
+    tabId: string,
+    patch: Partial<
+      Pick<
+        BrowserTab,
+        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError"
+      >
+    >,
+  ) => void;
   focusAddress: () => void;
   openInternal: (page: InternalPage) => void;
   setZoom: (tabId: string, zoom: number) => void;
@@ -245,6 +269,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     displayUrl: null,
     loading: entry.kind === "web",
     openKey: null,
+    nativeError: null,
   };
 }
 
@@ -258,6 +283,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
+    nativeError: null,
   };
 }
 
@@ -326,6 +352,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
+      // A form posted to a new tab (target=_blank) keeps its body.
+      if (options?.method === "POST") {
+        openTab(createTab(webEntry(url, "POST", options.body ?? "")), options.background);
+        return;
+      }
       const target = unwrapRedirect(url);
       const openKey = `url:${target}`;
       const { activeTabId } = get();
@@ -354,7 +385,12 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (!isWeb(request.url)) return;
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) =>
-          pushEntry(tab, webEntry(request.url, request.method, request.body), options?.replace),
+          pushEntry(
+            tab,
+            webEntry(request.url, request.method, request.body),
+            // A native page keeps its own history.
+            options?.replace || (nativeWebHistory && currentEntry(tab).kind === "web"),
+          ),
         ),
       }));
     },

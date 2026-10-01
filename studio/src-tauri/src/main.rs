@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -2140,8 +2141,17 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
+        .manage(browser_webview::new_browser_views())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            browser_webview::browser_view_supported,
+            browser_webview::browser_view_show,
+            browser_webview::browser_view_navigate,
+            browser_webview::browser_view_action,
+            browser_webview::browser_view_zoom,
+            browser_webview::browser_view_find,
+            browser_webview::browser_view_close,
+            browser_webview::browser_view_clear_data,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,

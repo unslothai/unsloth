@@ -215,3 +215,51 @@ def test_the_shell_keeps_widget_links_and_popups_in_check():
     assert "if (title === lastTitle) return;" in shell
     assert "titleObserver.observe(document.head" in shell
     assert "observe(document.documentElement" not in shell
+
+
+def test_an_oversized_html_page_is_refused_not_sent_to_the_panel(monkeypatch):
+    big = b"<html><body>" + b"x" * (browser_mod._MAX_BROWSER_HTML_BYTES + 1) + b"</body></html>"
+    _fetch(monkeypatch, (None, big, "text/html"))
+    with pytest.raises(HTTPException) as caught:
+        _call(browser_mod.BrowserFetchRequest(url = "https://example.com/huge"))
+    assert caught.value.status_code == 502
+    assert "byte limit" in caught.value.detail
+
+
+def test_a_caller_can_ask_for_a_smaller_cap(monkeypatch):
+    calls = _fetch(monkeypatch, (None, b"\x89PNG", "image/png"))
+    _call(browser_mod.BrowserFetchRequest(url = "https://example.com/favicon.ico", max_bytes = 4096))
+    assert calls[0][1]["raw_bytes_max"] == 4096
+    with pytest.raises(Exception):
+        browser_mod.BrowserFetchRequest(
+            url = "https://example.com/", max_bytes = browser_mod._MAX_BROWSER_FETCH_BYTES + 1
+        )
+
+
+def test_a_bot_check_is_reported_as_one(monkeypatch):
+    _fetch(
+        monkeypatch,
+        ("Failed to fetch URL: HTTP 403 Forbidden", "", ""),
+        {"bot_check": True},
+    )
+    with pytest.raises(HTTPException) as caught:
+        _call(browser_mod.BrowserFetchRequest(url = "https://protected.example/"))
+    assert caught.value.status_code == 502
+    assert caught.value.detail == {"message": "Failed to fetch URL: HTTP 403 Forbidden", "botCheck": True}
+
+
+def test_bot_checks_are_told_apart_from_plain_refusals():
+    from email.message import Message
+
+    from core.inference.tools import _is_bot_check
+
+    def headers(**values):
+        message = Message()
+        for name, value in values.items():
+            message[name.replace("_", "-")] = value
+        return message
+
+    assert _is_bot_check(403, headers(cf_mitigated = "challenge"))
+    assert _is_bot_check(403, headers(x_datadome = "protected"))
+    assert not _is_bot_check(404, headers(Server = "cloudflare"))
+    assert not _is_bot_check(403, headers(Server = "nginx"))

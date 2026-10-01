@@ -6475,6 +6475,8 @@ def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkey
     inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
     (sandbox / "outputs" / "report.pdf").write_bytes(b"%PDF-1.4")
 
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+
     result = asyncio.new_event_loop().run_until_complete(
         inference.open_sandbox_file(
             "thread-1", request = None, file = "outputs/report.pdf", token = None, session = None
@@ -6482,7 +6484,34 @@ def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkey
     )
     assert result == {"status": "ok"}
     assert len(launched) == 1
-    assert launched[0][-1] == os.path.realpath(sandbox / "outputs" / "report.pdf")
+    # A private name for the same file, outside the sandbox.
+    opened = launched[0][-1]
+    assert not opened.startswith(os.path.realpath(sandbox))
+    assert os.path.basename(opened) == "report.pdf"
+    assert os.path.samefile(opened, sandbox / "outputs" / "report.pdf")
+
+
+def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    report = sandbox / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 checked")
+    app = tmp_path / "Evil.app"
+    app.write_text("x", encoding = "utf-8")
+    real_link = os.link
+
+    def swap_then_link(src, dst, **kwargs):
+        os.unlink(src)
+        os.symlink(app, src)
+        return real_link(src, dst, **kwargs)
+
+    monkeypatch.setattr(path_utils.os, "link", swap_then_link)
+    staged = path_utils._stage_for_open(report)
+    assert not staged.is_symlink()
+    assert staged.read_bytes() == b"%PDF-1.4 checked"
 
 
 def test_a_model_written_script_never_opens_in_the_default_app(tmp_path, monkeypatch):

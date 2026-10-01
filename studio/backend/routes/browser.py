@@ -42,13 +42,15 @@ EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER)
 
 # Cap for documents (PDFs, images), which come back whole.
 _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
+# HTML goes into srcdoc and the page cache; more would stall the renderer.
+_MAX_BROWSER_HTML_BYTES = 10 * 1024 * 1024
 _FETCH_TIMEOUT_S = 25
 _MAX_REFRESH_DELAY_S = 10
 # Fixed UA so a site's layout doesn't change between requests.
 _BROWSER_UA = _USER_AGENTS[1]
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
-# Own pool, so slow sites can't starve the default executor that chat inference uses.
-_FETCH_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-fetch")
+# Own pool, so slow sites can't starve chat inference's default executor.
+_FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
 
 _BASE_TAG_RE = re.compile(r"<base\b[^>]*>", re.IGNORECASE)
@@ -167,6 +169,18 @@ _FRAME_HTML = r"""<!doctype html>
           Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
         } catch {}
         const shellPathname = location.pathname;
+        // Report the latest changed address at most every 200 ms (some sites replaceState per scroll).
+        let reportedUrl = pageUrl;
+        let urlTimer = 0;
+        const reportUrl = () => {
+          if (urlTimer) return;
+          urlTimer = setTimeout(() => {
+            urlTimer = 0;
+            if (pageUrl === reportedUrl) return;
+            reportedUrl = pageUrl;
+            post({ type: "url", url: pageUrl });
+          }, 200);
+        };
         for (const [method, original] of [["pushState", originalPush], ["replaceState", originalReplace]]) {
           history[method] = function (state, title, url) {
             let next = url != null ? resolve(String(url)) : null;
@@ -176,7 +190,7 @@ _FRAME_HTML = r"""<!doctype html>
             catch { original.call(this, state, title); }
             if (next) {
               pageUrl = next;
-              post({ type: "url", url: next });
+              reportUrl();
             }
           };
         }
@@ -346,6 +360,8 @@ class BrowserFetchRequest(BaseModel):
     method: Literal["GET", "POST"] = "GET"
     # Urlencoded form body from the injected script.
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
+    # Smaller cap for favicons, so an icon can't be 50 MB.
+    max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
 
 
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
@@ -415,7 +431,7 @@ def _fetch(
             "Accept-Language": "en-US,en;q=0.9",
         },
         deadline = time.monotonic() + _FETCH_TIMEOUT_S,
-        raw_bytes_max = _MAX_BROWSER_FETCH_BYTES,
+        raw_bytes_max = request.max_bytes or _MAX_BROWSER_FETCH_BYTES,
         post_data = (request.body or "").encode() if request.method == "POST" else None,
         meta_out = meta,
         cancel_event = cancel_event,
@@ -429,6 +445,8 @@ def _build_response(
     """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
     if error is not None:
         logger.info("browser_fetch_failed", url = url, error = error)
+        if meta.get("bot_check"):
+            raise HTTPException(status_code = 502, detail = {"message": error, "botCheck": True})
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
@@ -436,6 +454,11 @@ def _build_response(
         (b"<!doctype html", b"<html")
     )
     if content_type in _HTML_TYPES or looks_html:
+        if len(body) > _MAX_BROWSER_HTML_BYTES:
+            raise HTTPException(
+                status_code = 502,
+                detail = f"(page exceeds the {_MAX_BROWSER_HTML_BYTES} byte limit for the panel)",
+            )
         page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
         payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
         return Response(

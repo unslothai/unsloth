@@ -7,10 +7,11 @@ import { type OpenFileInput, useBrowserStore } from "./store";
 export { BrowserPanel, ClearBrowsingDataDialog } from "./browser-panel";
 export { BrowserToggleButton } from "./browser-toggle";
 export { saveLinkAs } from "./downloads";
-export { textFileKind } from "./file-view";
+export { browserTabType, textFileKind } from "./file-view";
 export { FullViewChatBar, FullViewChatButton } from "./full-view-chat";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
 export { useBrowserHistoryStore } from "./history-store";
+export { nativeBrowser } from "./native-view";
 export { useBrowserPrefsStore } from "./prefs-store";
 export { type OpenFileInput, useBrowserStore } from "./store";
 

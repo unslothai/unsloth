@@ -14,20 +14,44 @@ export type BrowserPage =
     }
   | { kind: "raw"; url: string; blob: Blob; contentType: string };
 
-export type BrowserRequest = { url: string; method?: "GET" | "POST"; body?: string };
+export type BrowserRequest = {
+  url: string;
+  method?: "GET" | "POST";
+  body?: string;
+  /** Refuse bodies past this size (favicons); the backend's own cap otherwise. */
+  maxBytes?: number;
+};
+
+export class BrowserFetchError extends Error {
+  /** The site's bot check refused the proxy. */
+  readonly botCheck: boolean;
+
+  constructor(message: string, botCheck: boolean) {
+    super(message);
+    this.botCheck = botCheck;
+  }
+}
 
 /** Fetch a page via the backend, which can load sites that refuse framing. */
 export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSignal): Promise<BrowserPage> {
   const response = await authFetch("/api/browser/fetch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: request.url, method: request.method ?? "GET", body: request.body ?? null }),
+    body: JSON.stringify({
+      url: request.url,
+      method: request.method ?? "GET",
+      body: request.body ?? null,
+      max_bytes: request.maxBytes ?? null,
+    }),
     signal,
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-    const detail = typeof payload?.detail === "string" ? payload.detail : `HTTP ${response.status}`;
-    throw new Error(detail.replace(/^Failed to fetch URL:\s*/, ""));
+    const detail = payload?.detail;
+    const botCheck = typeof detail === "object" && detail !== null && (detail as { botCheck?: unknown }).botCheck === true;
+    const raw = botCheck ? (detail as { message?: unknown }).message : detail;
+    const message = typeof raw === "string" ? raw : `HTTP ${response.status}`;
+    throw new BrowserFetchError(message.replace(/^Failed to fetch URL:\s*/, ""), botCheck);
   }
   if (response.headers.get("X-Unsloth-Browser-Kind") === "html") {
     const page = (await response.json()) as Omit<Extract<BrowserPage, { kind: "html" }>, "kind">;

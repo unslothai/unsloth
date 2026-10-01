@@ -226,27 +226,49 @@ function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: 
   return { ready: !enabled || ready === file, release };
 }
 
+type PdfWorker = InstanceType<typeof pdfjs.PDFWorker>;
+
+// One PDF.js worker shared by every viewer, not one per thumbnail.
+let sharedWorker: { worker: PdfWorker; port: Worker; users: number } | null = null;
+
+function acquirePdfWorker(): PdfWorker {
+  if (!sharedWorker) {
+    const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
+    sharedWorker = { worker: pdfjs.PDFWorker.create({ port }), port, users: 0 };
+  }
+  sharedWorker.users += 1;
+  return sharedWorker.worker;
+}
+
+function releasePdfWorker(worker: PdfWorker): void {
+  if (sharedWorker?.worker !== worker) return;
+  sharedWorker.users -= 1;
+  if (sharedWorker.users > 0) return;
+  const { port } = sharedWorker;
+  sharedWorker = null;
+  // Deferred so the last Document tears down its loading task first.
+  window.setTimeout(() => {
+    worker.destroy();
+    port.terminate();
+  }, 0);
+}
+
 /**
- * One worker per document. unpdf sets globalThis.pdfjsWorker to its own PDF.js build, which PDF.js
- * then adopts and fails on (version mismatch). Passing a worker skips that lookup.
+ * The shared worker, held while enabled. Passing it also stops PDF.js adopting unpdf's mismatched
+ * globalThis.pdfjsWorker.
  */
-function usePdfWorker(enabled: boolean): InstanceType<typeof pdfjs.PDFWorker> | null {
-  const [worker, setWorker] = useState<InstanceType<typeof pdfjs.PDFWorker> | null>(null);
+function usePdfWorker(enabled: boolean): PdfWorker | null {
+  const [worker, setWorker] = useState<PdfWorker | null>(null);
   useEffect(() => {
     // Queued thumbnails and failed loads hold no worker.
     if (!enabled) return;
-    const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
-    const pdfWorker = pdfjs.PDFWorker.create({ port });
+    const pdfWorker = acquirePdfWorker();
     // External resource owned by this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setWorker(pdfWorker);
     return () => {
       setWorker(null);
-      // Deferred so the Document tears down its loading task first.
-      window.setTimeout(() => {
-        pdfWorker.destroy();
-        port.terminate();
-      }, 0);
+      releasePdfWorker(pdfWorker);
     };
   }, [enabled]);
   return worker;

@@ -273,6 +273,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isCoalescedHistoryEvent } from "./utils/chat-history-revision";
 import { attachmentsSample } from "./utils/pasted-text";
 import {
   type DocumentAnnotations,
@@ -413,15 +414,25 @@ function useStoredChatTitle(threadId: string | null): string | undefined {
     const load = () => {
       getStoredChatThread(threadId)
         .then((thread) => {
-          if (live && thread) setTitle({ id: threadId, title: thread.title });
+          if (!live || !thread) return;
+          // Same object back when nothing changed, so the chat doesn't re-render.
+          setTitle((current) =>
+            current?.id === threadId && current.title === thread.title
+              ? current
+              : { id: threadId, title: thread.title },
+          );
         })
         .catch(() => undefined);
     };
+    // Streaming saves fire this per chunk and never rename the chat.
+    const onHistoryUpdated = (event: Event) => {
+      if (!isCoalescedHistoryEvent(event)) load();
+    };
     load();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
     return () => {
       live = false;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
     };
   }, [threadId]);
   return title && title.id === threadId ? title.title : undefined;
@@ -787,6 +798,8 @@ const SingleContent = memo(function SingleContent({
             "[&>#chat-artifact]:order-1 [&>[data-slot=resizable-handle]]:order-2 [&>#chat-thread]:order-3",
         )}
         data-browser-full-view={browserFullView ? "true" : undefined}
+        // Not :has(), which re-walks the thread per token (thread-ancestor-has-scope.test.ts).
+        data-chat-dock={browserFullView ? chatDock : undefined}
       >
         <ResizablePanel
           id="chat-thread"

@@ -7,11 +7,12 @@ import { openExternalLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
 import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
-import { type BrowserPage, fetchBrowserPage } from "./api";
+import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
 import { FileView } from "./file-view";
 import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
+import { nativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
@@ -29,7 +30,7 @@ import {
 
 type LoadState =
   | { status: "loading" }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; botCheck: boolean }
   | { status: "ready"; page: BrowserPage };
 
 function sameOrigin(url: string, origin: string): boolean {
@@ -60,8 +61,16 @@ function useFrameMessages(tabId: string, origin: string | null) {
       const store = useBrowserStore.getState();
       switch (message.type) {
         case "navigate":
-          if (message.newTab) store.openUrl(message.url, { newTab: true, background: message.background });
-          else store.navigate(tabId, message, { replace: message.replace });
+          if (message.newTab) {
+            store.openUrl(message.url, {
+              newTab: true,
+              background: message.background,
+              method: message.method,
+              body: message.body,
+            });
+          } else {
+            store.navigate(tabId, message, { replace: message.replace });
+          }
           break;
         case "external":
           openExternalLink(message.url);
@@ -110,13 +119,26 @@ function useFrameMessages(tabId: string, origin: string | null) {
   );
 }
 
-function PageError({ url, message, onRetry }: { url: string; message: string; onRetry: () => void }) {
+function PageError({
+  url,
+  message,
+  botCheck = false,
+  onRetry,
+}: {
+  url: string;
+  message: string;
+  /** The site refused a non-browser; a retry won't help. */
+  botCheck?: boolean;
+  onRetry: () => void;
+}) {
   const t = useT();
   return (
     <div className="m-auto flex max-w-md flex-col items-center gap-3 px-6 text-center">
-      <p className="text-base font-medium text-foreground">{t("browser.error.title")}</p>
+      <p className="text-base font-medium text-foreground">
+        {t(botCheck ? "browser.error.botCheckTitle" : "browser.error.title")}
+      </p>
       <p className="text-sm text-muted-foreground">
-        {t("browser.error.description", { host: hostOf(url) })}
+        {t(botCheck ? "browser.error.botCheckDescription" : "browser.error.description", { host: hostOf(url) })}
       </p>
       <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
       <div className="mt-1 flex gap-2">
@@ -177,7 +199,11 @@ function WebPage({
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
-        setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
+        setState({
+          status: "error",
+          message: error instanceof Error ? error.message : String(error),
+          botCheck: error instanceof BrowserFetchError && error.botCheck,
+        });
         updateTab(tab.id, { loading: false, title: hostOf(url) });
       });
     return () => {
@@ -188,7 +214,9 @@ function WebPage({
 
   if (state.status === "loading") return <div className="size-full bg-background" />;
   if (state.status === "error") {
-    return <PageError url={url} message={state.message} onRetry={() => reload(tab.id)} />;
+    return (
+      <PageError url={url} message={state.message} botCheck={state.botCheck} onRetry={() => reload(tab.id)} />
+    );
   }
   const { page } = state;
   if (page.kind === "raw") {
@@ -208,6 +236,24 @@ function WebPage({
       onMessage={onFrameMessage}
     />
   );
+}
+
+/** Placeholder that startNativeViews lays the tab's native view over. */
+function NativePage({ tab, entry }: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }> }) {
+  const reload = useBrowserStore((store) => store.reload);
+  if (tab.nativeError) {
+    return (
+      <PageError
+        url={tab.displayUrl ?? entry.url}
+        message={tab.nativeError}
+        onRetry={() => {
+          useBrowserStore.getState().updateTab(tab.id, { nativeError: null });
+          reload(tab.id);
+        }}
+      />
+    );
+  }
+  return <div data-native-page={tab.id} className="size-full bg-background" />;
 }
 
 function LocalFile({ tab }: { tab: BrowserTab }) {
@@ -239,7 +285,11 @@ export const TabView = memo(function TabView({ tab, active }: { tab: BrowserTab;
       {entry.kind === "newtab" ? (
         <NewTabPage tabId={tab.id} />
       ) : entry.kind === "web" ? (
-        <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />
+        nativeBrowser ? (
+          <NativePage tab={tab} entry={entry} />
+        ) : (
+          <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />
+        )
       ) : entry.kind === "internal" ? (
         <InternalPageView page={entry.page} tabId={tab.id} />
       ) : (

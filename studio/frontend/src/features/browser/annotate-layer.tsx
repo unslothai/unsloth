@@ -327,7 +327,7 @@ export function AnnotateLayer({
       event.preventDefault();
       press = { x: event.clientX, y: event.clientY, dragging: false };
     };
-    const onMove = (event: PointerEvent) => {
+    const handleMove = (event: PointerEvent) => {
       moveBubble(event);
       if (press) {
         if (
@@ -354,7 +354,26 @@ export function AnnotateLayer({
       const next = blockAt(event.target, page);
       setHover((current) => (sameRanges(current, next) ? current : next));
     };
+    // Handle the latest pointer move once per frame.
+    let moveFrame = 0;
+    let lastMove: PointerEvent | null = null;
+    const onMove = (event: PointerEvent) => {
+      lastMove = event;
+      if (moveFrame) return;
+      moveFrame = requestAnimationFrame(() => {
+        moveFrame = 0;
+        const latest = lastMove;
+        lastMove = null;
+        if (latest) handleMove(latest);
+      });
+    };
+    const cancelMove = () => {
+      cancelAnimationFrame(moveFrame);
+      moveFrame = 0;
+      lastMove = null;
+    };
     const onUp = (event: PointerEvent) => {
+      cancelMove();
       if (!press) return;
       const { dragging } = press;
       const rect = areaFrom(event);
@@ -367,6 +386,7 @@ export function AnnotateLayer({
         mark(blockAt(event.target, page));
     };
     const onLeave = () => {
+      cancelMove();
       setHover(null);
       moveBubble(null);
     };
@@ -382,6 +402,7 @@ export function AnnotateLayer({
     page.addEventListener("pointerleave", onLeave);
     page.addEventListener("click", onClick, true);
     return () => {
+      cancelMove();
       page.classList.remove("browser-annotating");
       page.removeEventListener("pointerdown", onDown, true);
       page.removeEventListener("pointermove", onMove, true);

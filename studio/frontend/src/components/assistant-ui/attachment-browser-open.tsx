@@ -10,7 +10,16 @@ import { openFileInBrowser } from "@/features/browser";
 import { toast } from "@/lib/toast";
 import { useAuiState } from "@assistant-ui/react";
 import { Slot } from "radix-ui";
-import { type ComponentProps, type FC, type PropsWithChildren, type ReactElement, useContext } from "react";
+import {
+  type ComponentProps,
+  type FC,
+  type PropsWithChildren,
+  type ReactElement,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { AttachmentBrowserOpenContext } from "./attachment-browser-open-context";
 import { FileContextMenu } from "./link-context-menu";
 
@@ -58,6 +67,16 @@ function opener(source: AttachmentSource, attachmentId: string, load: () => Prom
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
 }
 
+/** Provides `open` under a stable identity, so the attachment's consumers don't re-render with it. */
+const OpenerProvider: FC<PropsWithChildren<{ open: () => void }>> = ({ open, children }) => {
+  const openRef = useRef(open);
+  useLayoutEffect(() => {
+    openRef.current = open;
+  });
+  const stable = useCallback(() => openRef.current(), []);
+  return <AttachmentBrowserOpenContext.Provider value={stable}>{children}</AttachmentBrowserOpenContext.Provider>;
+};
+
 const SentOriginalProvider: FC<PropsWithChildren<{ source: AttachmentSource; attachmentId: string }>> = ({
   source,
   attachmentId,
@@ -67,7 +86,7 @@ const SentOriginalProvider: FC<PropsWithChildren<{ source: AttachmentSource; att
   const open = opener(source, attachmentId, () =>
     fetchChatAttachmentBlob(messageId, attachmentId).then((blob) => ({ blob })),
   );
-  return <AttachmentBrowserOpenContext.Provider value={open}>{children}</AttachmentBrowserOpenContext.Provider>;
+  return <OpenerProvider open={open}>{children}</OpenerProvider>;
 };
 
 export const AttachmentBrowserOpenProvider: FC<PropsWithChildren<{ source: AttachmentSource }>> = ({
@@ -78,11 +97,7 @@ export const AttachmentBrowserOpenProvider: FC<PropsWithChildren<{ source: Attac
   if (!OPENS_IN_BROWSER.has(source.kind)) return children;
   const load = localLoader(source);
   if (load) {
-    return (
-      <AttachmentBrowserOpenContext.Provider value={opener(source, attachmentId, load)}>
-        {children}
-      </AttachmentBrowserOpenContext.Provider>
-    );
+    return <OpenerProvider open={opener(source, attachmentId, load)}>{children}</OpenerProvider>;
   }
   // Only sent documents have a stored original to fetch.
   if (source.kind === "document") {

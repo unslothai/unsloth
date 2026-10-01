@@ -15534,6 +15534,18 @@ def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str
     return None, host, pinned_ips
 
 
+def _is_bot_check(status: int, headers) -> bool:
+    """Whether a refusal came from a bot check (Cloudflare, DataDome, Akamai), not the site."""
+    if headers is None:
+        return False
+    if (headers.get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    if headers.get("x-datadome") or headers.get("x-dd-b"):
+        return True
+    server = (headers.get("Server") or "").lower()
+    return status in (403, 429, 503) and ("cloudflare" in server or "akamaighost" in server)
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -15548,7 +15560,8 @@ def _fetch_url_raw(
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
 
     ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
-    ``meta_out`` receives the final ``url`` and ``charset`` of a successful binary-mode fetch.
+    ``meta_out`` receives the final ``url`` and ``charset`` of a successful binary-mode fetch, and
+    ``bot_check`` on HTTP errors.
 
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
     or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
@@ -15647,6 +15660,8 @@ def _fetch_url_raw(
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
+                    if meta_out is not None:
+                        meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
                 location = e.headers.get("Location")
                 if not location:

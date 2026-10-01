@@ -6,16 +6,26 @@ import { fetchBrowserPage } from "./api";
 const MAX_ICON_BYTES = 256 * 1024;
 const MAX_ICONS = 64;
 
-// Favicon URL to a blob URL, oldest first.
+// Favicon URL to a data: URL, oldest first.
 const icons = new Map<string, Promise<string | null>>();
+
+function dataUrl(blob: Blob): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+}
 
 async function load(url: string): Promise<string | null> {
   try {
-    const page = await fetchBrowserPage({ url }, new AbortController().signal);
+    const page = await fetchBrowserPage({ url, maxBytes: MAX_ICON_BYTES }, new AbortController().signal);
     if (page.kind !== "raw" || !page.contentType.startsWith("image/") || page.blob.size > MAX_ICON_BYTES) {
       return null;
     }
-    return URL.createObjectURL(new Blob([page.blob], { type: page.contentType }));
+    // data:, not blob:, so eviction can't blank a tab and an SVG can't run on Studio's origin.
+    return dataUrl(new Blob([page.blob], { type: page.contentType }));
   } catch {
     return null;
   }
@@ -32,9 +42,8 @@ export function proxiedFavicon(url: string): Promise<string | null> {
     icon = load(url);
     icons.set(url, icon);
     if (icons.size > MAX_ICONS) {
-      const [oldest, evicted] = icons.entries().next().value!;
-      icons.delete(oldest);
-      void evicted.then((blobUrl) => blobUrl?.startsWith("blob:") && URL.revokeObjectURL(blobUrl));
+      const oldest = icons.keys().next().value;
+      if (oldest !== undefined) icons.delete(oldest);
     }
   }
   return icon;

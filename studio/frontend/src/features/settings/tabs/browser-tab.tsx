@@ -15,6 +15,7 @@ import {
   SEARCH_ENGINES,
   type SearchEngineId,
   browserPanelAvailable,
+  nativeBrowser,
   useBrowserPrefsStore,
   useBrowserStore,
 } from "@/features/browser";
@@ -123,7 +124,12 @@ export function BrowserTab() {
             {t("browser.manage")}
           </Button>
         </SettingsRow>
-        <SettingsRow label={t("browser.clearDataSetting")} description={t("browser.clearDataSettingDescription")}>
+        <SettingsRow
+          label={t("browser.clearDataSetting")}
+          description={t(
+            nativeBrowser ? "browser.native.clearDataSettingDescription" : "browser.clearDataSettingDescription",
+          )}
+        >
           <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>
             {t("browser.menu.clearData")}
           </Button>

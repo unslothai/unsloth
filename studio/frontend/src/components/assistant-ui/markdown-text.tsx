@@ -55,6 +55,7 @@ import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
+  type ReactNode,
   createContext,
   memo,
   useCallback,
@@ -323,17 +324,52 @@ const LINK_CLASS =
  */
 function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
   const { node: _node, ...dom } = props as ComponentProps<"a"> & { node?: unknown };
+  const file = href ? sandboxFileForHref(href) : null;
+  // Only file links subscribe to the chat's scope; links re-render per streamed token.
+  if (href && file !== null) {
+    return (
+      <SandboxFileLink href={href} file={file} dom={dom}>
+        {children}
+      </SandboxFileLink>
+    );
+  }
+  const link = (
+    <a
+      href={href}
+      rel="noopener noreferrer"
+      className={LINK_CLASS}
+      onClick={(e) => {
+        if (href && openLink(href)) {
+          e.preventDefault();
+        }
+      }}
+      {...dom}
+    >
+      {children}
+    </a>
+  );
+  return href ? <WebLinkContextMenu href={href}>{link}</WebLinkContextMenu> : link;
+}
+
+function SandboxFileLink({
+  href,
+  file,
+  dom,
+  children,
+}: {
+  href: string;
+  file: string;
+  dom: Omit<ComponentProps<"a">, "href" | "children">;
+  children: ReactNode;
+}) {
   const t = useT();
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
-  const file = href ? sandboxFileForHref(href) : null;
   const sessionId =
-    file === null || !href
-      ? undefined
-      : (sandboxSessionInSrc(href) ??
-        sandboxSessionIdFor(remoteId ?? activeThreadId ?? undefined, projectId));
-  if (file !== null && sessionId) {
+    sandboxSessionInSrc(href) ??
+    sandboxSessionIdFor(remoteId ?? activeThreadId ?? undefined, projectId);
+  if (sessionId) {
     const target: ContextFile = {
       name: file.slice(file.lastIndexOf("/") + 1),
       load: () => loadSandboxFile(sessionId, file),
@@ -372,22 +408,20 @@ function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
       </FileContextMenu>
     );
   }
-  const link = (
+  // No chat to resolve it against yet: a plain link, as before.
+  return (
     <a
       href={href}
       rel="noopener noreferrer"
       className={LINK_CLASS}
       onClick={(e) => {
-        if (href && openLink(href)) {
-          e.preventDefault();
-        }
+        if (openLink(href)) e.preventDefault();
       }}
       {...dom}
     >
       {children}
     </a>
   );
-  return href ? <WebLinkContextMenu href={href}>{link}</WebLinkContextMenu> : link;
 }
 
 const STREAMDOWN_COMPONENTS = {

@@ -195,8 +195,12 @@ export function sandboxFileForSrc(src: string): string | null {
  * The sandbox file a model-written markdown link points at, of any type: `[report](outputs/report.csv)`.
  * Only a path whose last segment has an extension counts, so `[intro](#intro)` or a bare word stays a link.
  */
+// A site without a scheme (`www.example.com`, `example.org/page`), not a sandbox path.
+const BARE_HOST_RE = /^(?:www\.[^/]+|[^/]+\.(?:com|org|net|edu|gov|io|ai|dev|app|co|me|info|xyz|uk|de|fr|jp|cn|ru|ca|au|in|us|eu))(?:[:/?#]|$)/i;
+
 export function sandboxFileForHref(href: string): string | null {
-  if (href.trim().startsWith("#")) return null;
+  const trimmed = href.trim();
+  if (trimmed.startsWith("#") || BARE_HOST_RE.test(trimmed)) return null;
   const file = sandboxPathForSrc(href);
   return file !== null && /[^/]\.[A-Za-z0-9]{1,8}$/.test(file) ? file : null;
 }

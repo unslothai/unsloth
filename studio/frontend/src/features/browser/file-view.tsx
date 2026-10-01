@@ -27,16 +27,26 @@ function mediaKind(name: string, contentType: string): Media | null {
   return null;
 }
 
-function useObjectUrl(blob: Blob, enabled: boolean): string | null {
+function useObjectUrl(blob: Blob, enabled: boolean, svg: boolean): string | null {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!enabled) return;
+    if (svg) {
+      // A data: URL, so an opened SVG can't run as a page on Studio's origin.
+      let live = true;
+      const reader = new FileReader();
+      reader.onload = () => live && typeof reader.result === "string" && setUrl(reader.result);
+      reader.readAsDataURL(new Blob([blob], { type: "image/svg+xml" }));
+      return () => {
+        live = false;
+      };
+    }
     const next = URL.createObjectURL(blob);
     // Created and revoked in the effect, so StrictMode never shows a revoked URL.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setUrl(next);
     return () => URL.revokeObjectURL(next);
-  }, [blob, enabled]);
+  }, [blob, enabled, svg]);
   return url;
 }
 
@@ -61,6 +71,17 @@ export function textFileKind(name: string, contentType: string, plainText = fals
   if (isHtml(name, contentType)) return "html";
   if (isMarkdown(name, contentType)) return "markdown";
   return attachmentTextLanguage(name, null) ? "code" : "text";
+}
+
+// Types a blob URL shows without running anything. Anchored, so SVG or smuggled params fail.
+const SAFE_TAB_TYPE =
+  /^(application\/pdf|image\/(png|jpe?g|gif|webp|avif|bmp)|video\/[\w.+-]+|audio\/[\w.+-]+|text\/plain)\s*(;|$)/i;
+
+/** Type to open a file as in the user's browser, or null if unsafe: a blob URL has Studio's origin. */
+export function browserTabType(name: string, contentType: string): string | null {
+  const kind = textFileKind(name, contentType);
+  if (kind) return kind === "html" ? null : "text/plain";
+  return SAFE_TAB_TYPE.test(contentType) ? contentType : null;
 }
 
 function TextFile({
@@ -181,7 +202,8 @@ export function FileView({
   const t = useT();
   const media = plainText ? null : mediaKind(name, contentType);
   const docKind = plainText ? null : documentKind(name, contentType);
-  const src = useObjectUrl(blob, media !== null);
+  const svg = media === "image" && (/^image\/svg\+xml\b/i.test(contentType) || /\.svg$/i.test(name));
+  const src = useObjectUrl(blob, media !== null, svg);
   const [failed, setFailed] = useState(false);
 
   if (docKind) {

@@ -205,6 +205,8 @@ const BUTTON_WASH = "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--cont
 
 type HistoryRange = "all" | "today" | "week" | "month";
 
+const HISTORY_PAGE_ROWS = 100;
+
 const RANGE_LABELS = {
   all: { menu: "browser.pages.allTime", heading: "browser.pages.allTimeHistory" },
   today: { menu: "browser.pages.today", heading: "browser.pages.today" },
@@ -387,20 +389,25 @@ function HistoryPage({ tabId }: { tabId: string }) {
   const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [clearOpen, setClearOpen] = useState(false);
   const needle = query.trim().toLowerCase();
-  const groups = useMemo(() => {
+  // A page of rows at a time; history holds 1000.
+  const [limit, setLimit] = useState(HISTORY_PAGE_ROWS);
+  const { groups, more } = useMemo(() => {
     const since = rangeStart(range);
     const dateFormat = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
     const days: { key: number; label: string; items: HistoryItem[] }[] = [];
+    let shown = 0;
     for (const item of history) {
       if (item.visitedAt < since) continue;
       if (needle && !item.title.toLowerCase().includes(needle) && !item.url.toLowerCase().includes(needle)) continue;
+      if (shown === limit) return { groups: days, more: true };
+      shown += 1;
       const key = startOfDay(item.visitedAt);
       const last = days[days.length - 1];
       if (last?.key === key) last.items.push(item);
       else days.push({ key, label: dateFormat.format(key), items: [item] });
     }
-    return days;
-  }, [history, needle, range, locale]);
+    return { groups: days, more: false };
+  }, [history, needle, range, locale, limit]);
   const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
   // Drop selected rows that are gone, e.g. removed from their own menu.
   const selected = useMemo(() => {
@@ -527,6 +534,18 @@ function HistoryPage({ tabId }: { tabId: string }) {
               />
             ))
           )}
+          {more ? (
+            <button
+              type="button"
+              onClick={() => setLimit((current) => current + HISTORY_PAGE_ROWS)}
+              className={cn(
+                "h-9 cursor-pointer self-center rounded-full px-4 text-ui-14 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                BUTTON_WASH,
+              )}
+            >
+              {t("browser.pages.showMore")}
+            </button>
+          ) : null}
         </div>
       </div>
       <ClearBrowsingDataDialog open={clearOpen} onOpenChange={setClearOpen} />
