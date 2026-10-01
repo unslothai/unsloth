@@ -169,34 +169,50 @@ pub(crate) fn ip_is_private(ip: IpAddr) -> bool {
     }
 }
 
+/// IPv4 ranges that aren't globally routable (IANA special-purpose, as the backend's
+/// `is_global`), plus multicast. Any of them can be routed to something local.
+const NON_GLOBAL_V4: &[(u32, u32)] = &[
+    (0x0000_0000, 8),  // this network
+    (0x0a00_0000, 8),  // private
+    (0x6440_0000, 10), // carrier-grade NAT
+    (0x7f00_0000, 8),  // loopback
+    (0xa9fe_0000, 16), // link-local
+    (0xac10_0000, 12), // private
+    (0xc000_0000, 24), // IETF protocol assignments
+    (0xc000_0200, 24), // documentation
+    (0xc0a8_0000, 16), // private
+    (0xc612_0000, 15), // benchmarking
+    (0xc633_6400, 24), // documentation
+    (0xcb00_7100, 24), // documentation
+    (0xe000_0000, 4),  // multicast
+    (0xf000_0000, 4),  // reserved, broadcast
+];
+
 fn ipv4_is_private(ip: Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        || a == 0
-        // Carrier-grade NAT, used by some VPNs.
-        || (a == 100 && (64..128).contains(&b))
+    let ip = u32::from(ip);
+    NON_GLOBAL_V4
+        .iter()
+        .any(|&(network, prefix)| ip >> (32 - prefix) == network >> (32 - prefix))
 }
 
+/// Only global unicast (2000::/3) outside its special-purpose blocks; IPv4 inside a mapped or
+/// NAT64 address is checked as IPv4.
 fn ipv6_is_private(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return ipv4_is_private(v4);
     }
     let segments = ip.segments();
-    // NAT64 (64:ff9b::/96) reaches the IPv4 address in its last 32 bits.
     if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
         let [.., high, low] = segments;
         return ipv4_is_private(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
     }
-    let first = segments[0];
-    ip.is_loopback()
-        || ip.is_unspecified()
-        // Unique local (fc00::/7) and link-local (fe80::/10).
-        || (first & 0xfe00) == 0xfc00
-        || (first & 0xffc0) == 0xfe80
+    let [first, second, ..] = segments;
+    (first & 0xe000) != 0x2000
+        // 2001::/23 (Teredo, benchmarking, ORCHID...), documentation, 6to4, documentation.
+        || (first == 0x2001 && second < 0x0200)
+        || (first == 0x2001 && second == 0x0db8)
+        || first == 0x2002
+        || (first & 0xfff0) == 0x3ff0
 }
 
 /// Links only other apps open, offered to the user.
@@ -1111,6 +1127,8 @@ mod tests {
         for url in [
             "https://example.com/",
             "https://93.184.216.34/",
+            "https://[2606:4700::1111]/",
+            "https://[64:ff9b::808:808]/",
             "about:blank",
             "data:,hi",
         ] {
@@ -1129,6 +1147,13 @@ mod tests {
             "http://100.100.1.1/",
             "http://[fd00::1]/",
             "http://[64:ff9b::7f00:1]/",
+            "http://198.18.0.1/",
+            "http://192.0.0.8/",
+            "http://224.0.0.1/",
+            "http://240.0.0.1/",
+            "http://[2001:db8::1]/",
+            "http://[2002:7f00:1::1]/",
+            "http://[ff02::1]/",
             "http://printer.local/",
             "http://router/",
             "file:///etc/passwd",

@@ -287,9 +287,9 @@ async function applyView(desired: Desired): Promise<void> {
   const loaded = views.get(tabId);
   try {
     await call("browser_view_show", { tabId, url, bounds });
-    views.set(tabId, entry);
-    // A new address for an existing view.
+    // A new address for an existing view. Recorded once it went through, so Retry tries again.
     if (existed && loaded !== entry) await call("browser_view_navigate", { tabId, url });
+    views.set(tabId, entry);
     if ((zooms.get(tabId) ?? 1) !== zoom) {
       zooms.set(tabId, zoom);
       await call("browser_view_zoom", { tabId, zoom });
