@@ -7,7 +7,7 @@ import type { EngineStatus } from "../src/features/model-picker/api/engines.ts";
 import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
-const { isEngineReady } = await import("../src/features/model-picker/api/engines.ts");
+const { isEngineReady, convertsToInteger } = await import("../src/features/model-picker/api/engines.ts");
 
 const installed: EngineStatus = {
   engine: "vllm", version: "new", installed_version: "old",
@@ -37,4 +37,12 @@ test("failed or cancelled repairs leave the restored installation loadable", () 
       ...installed, restored: true, job: { ...installed.job, state },
     }), true);
   }
+});
+
+test("SGLang 0.5.18 and newer offer no load-time INT8 or 4-bit conversion", () => {
+  assert.equal(convertsToInteger(installed), true);
+  const sglang = { ...installed, engine: "sglang" as const };
+  assert.equal(convertsToInteger({ ...sglang, installed_version: "0.5.17" }), true);
+  assert.equal(convertsToInteger({ ...sglang, installed_version: "0.5.20" }), false);
+  assert.equal(convertsToInteger({ ...sglang, installed_version: null, version: "0.5.20" }), false);
 });

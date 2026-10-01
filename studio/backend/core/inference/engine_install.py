@@ -34,20 +34,33 @@ from pathlib import Path
 
 PROFILES = {
     "vllm": {
-        "version": "0.26.0",
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
         # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
         "omit": ("flashinfer-cubin",),
+        # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
+        "releases": (
+            {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
+            {"version": "0.26.0", "torch": "2.11.0", "lock": "vllm-linux-cu130"},
+        ),
     },
     "sglang": {
-        "version": "0.5.17",
         "module": "sglang",
         "cuda": "cu130",
         "driver": 580,
         # Excluded: outlines-core 0.1.26 has no py3.13 wheel; only --grammar-backend outlines needs it.
         "omit": ("outlines", "outlines-core", "flashinfer-cubin"),
+        "releases": (
+            {
+                "version": "0.5.20",
+                "torch": "2.13.0",
+                "lock": "sglang-linux-cu130-torch213",
+                # cuda-tile 1.6.0rc5 is sdist-only and SGLang never imports it.
+                "omit": ("outlines", "outlines-core", "flashinfer-cubin", "cuda-tile"),
+            },
+            {"version": "0.5.17", "torch": "2.11.0", "lock": "sglang-linux-cu130"},
+        ),
     },
 }
 PYTHON = (3, 13)
@@ -99,15 +112,25 @@ def engine_root() -> Path:
     return studio_root() / "engines"
 
 
+def _release(engine: str) -> dict:
+    """The release built on Studio's own torch, so the engine can share it; otherwise the newest,
+    which then gets an isolated environment of its own."""
+    releases = PROFILES[engine]["releases"]
+    torch = _studio_packages().get("torch")
+    for release in releases:
+        if _same_build(torch, release["torch"], PROFILES[engine]["cuda"]):
+            return release
+    return releases[0]
+
+
 def profile(engine: str) -> dict:
     if engine not in PROFILES:
         raise ValueError("Unknown inference engine")
-    return PROFILES[engine]
+    return {**PROFILES[engine], **_release(engine)}
 
 
 def requirements(engine: str) -> Path:
-    profile(engine)
-    return _REQUIREMENTS / f"{engine}-linux-{profile(engine)['cuda']}.txt"
+    return _REQUIREMENTS / f"{profile(engine)['lock']}.txt"
 
 
 def profile_digest(engine: str) -> str:
@@ -139,13 +162,26 @@ def _studio_site() -> list[str]:
     return sorted({paths["purelib"], paths["platlib"]})
 
 
+_studio_seen: tuple[tuple, dict[str, str]] | None = None
+
+
 def _studio_packages() -> dict[str, str]:
-    """Distributions in Studio's own site-packages, excluding sidecars on sys.path."""
+    """Distributions in Studio's own site-packages, excluding sidecars on sys.path. Status polls
+    read this several times; the scan is redone only when an install changes a site directory."""
+    global _studio_seen
     import importlib.metadata as metadata
-    return {
-        _normalize(dist.metadata["Name"]): dist.version
-        for dist in metadata.distributions(path = _studio_site())
-    }
+
+    sites = _studio_site()
+    key = tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+    if _studio_seen is None or _studio_seen[0] != key:
+        _studio_seen = (
+            key,
+            {
+                _normalize(dist.metadata["Name"]): dist.version
+                for dist in metadata.distributions(path = sites)
+            },
+        )
+    return dict(_studio_seen[1])
 
 
 def _torch_runtime() -> set[str]:
@@ -178,14 +214,31 @@ def _same_build(installed: str | None, locked: str | None, cuda: str) -> bool:
     return installed is not None and installed in (locked, f"{locked}+{cuda}")
 
 
-def _compat(engine: str) -> dict[str, list[str]]:
-    """What the locked packages require of each other (engine_compat.py), or {} for a stale file."""
+def _compat_file(engine: str) -> dict:
+    """engine_compat.py's output for the lock, or {} for a missing or stale file."""
     path = requirements(engine).with_suffix(".compat.json")
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return {}
-    return data["requires"] if data.get("lock_sha256") == profile_digest(engine) else {}
+    return data if data.get("lock_sha256") == profile_digest(engine) else {}
+
+
+def _compat(engine: str) -> dict[str, list[str]]:
+    """What the locked packages require of each other."""
+    return _compat_file(engine).get("requires", {})
+
+
+def download_bytes(engine: str) -> int | None:
+    """Wheel bytes an install of the selected release downloads: the lock minus what Studio provides."""
+    sizes = _compat_file(engine).get("sizes")
+    if not sizes:
+        return None
+    provided = install_plan(engine)["provided"]
+    omit = set(profile(engine).get("omit", ()))
+    return sum(
+        size or 0 for name, size in sizes.items() if name not in provided and name not in omit
+    )
 
 
 # Not engine dependencies, so absent from the compat file: the configs Studio's adapters build
@@ -251,22 +304,39 @@ def _reusable(
 
 def install_plan(engine: str) -> dict:
     """Split the lock into packages Studio already provides and the ones to install."""
+    from packaging.specifiers import SpecifierSet
+
     lock = _pins(engine)
     studio = _studio_packages()
     cuda = profile(engine)["cuda"]
+    compat = _compat(engine)
+    runtime = _torch_runtime()
+
+    def fits(name: str) -> bool:
+        if _same_build(studio.get(name), lock.get(name, (None,))[0], cuda):
+            return True
+        # Torch is the exact build; a CUDA library torch takes as a range (nvjitlink) only has to
+        # satisfy every locked package's requirement, since the engine then loads Studio's copy.
+        specs = compat.get(name)
+        return bool(
+            name != "torch"
+            and name in lock
+            and name in studio
+            and specs
+            and all(SpecifierSet(spec).contains(studio[name], prereleases = True) for spec in specs)
+        )
+
     shared = (
         sys.implementation.name == "cpython"
         and sys.version_info[:2] == PYTHON
         and "torch" in studio
-        and all(
-            _same_build(studio.get(name), lock.get(name, (None,))[0], cuda)
-            for name in _torch_runtime()
-        )
+        and all(fits(name) for name in runtime)
     )
     provided = {
         name: studio[name]
         for name, (version, _) in lock.items()
-        if shared and _same_build(studio.get(name), version, cuda)
+        if shared
+        and (_same_build(studio.get(name), version, cuda) or (name in runtime and fits(name)))
     }
     if shared:
         provided |= _reusable(engine, lock, studio, provided)
@@ -575,10 +645,20 @@ def status(engine: str) -> dict:
             info and isinstance(info.get("previous"), dict) and not stale(info["previous"])
         ),
         "unsupported_reason": support_reason(engine, wait = False),
-        "download_bytes": None,
+        # Only priced while an install or update is on offer: the plan reads Studio's packages.
+        "download_bytes": None
+        if info and info.get("profile_digest") == profile_digest(engine) and not outdated
+        else _safe_download_bytes(engine),
         "additional_disk_bytes": None,
         "job": job,
     }
+
+
+def _safe_download_bytes(engine: str) -> int | None:
+    try:
+        return download_bytes(engine)
+    except Exception:
+        return None
 
 
 def _update(engine: str, **values) -> None:

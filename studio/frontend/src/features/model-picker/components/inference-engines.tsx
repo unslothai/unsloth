@@ -15,11 +15,13 @@ import { SettingsRow } from "@/features/settings/components/settings-row";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import { useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
+import { formatGiB } from "@/lib/memory/format";
 import { useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
   type InferenceEngine,
   changeEngine,
+  convertsToInteger,
   isEngineReady,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
@@ -157,10 +159,16 @@ function EngineInstall({
           className="space-y-3 rounded-lg border p-3"
         >
           <p>
-            {t("managedEngines.confirm", {
-              engine: names[engine.engine],
-              version: engine.version,
-            })}
+            {engine.download_bytes
+              ? t("managedEngines.confirmSized", {
+                  engine: names[engine.engine],
+                  version: engine.version,
+                  size: formatGiB(engine.download_bytes / 1024 ** 3),
+                })
+              : t("managedEngines.confirm", {
+                  engine: names[engine.engine],
+                  version: engine.version,
+                })}
           </p>
           <p>{t("managedEngines.background")}</p>
           <div className="flex gap-2">
@@ -392,8 +400,12 @@ export function InferenceEnginePicker({
                   </SelectItem>
                   <SelectItem value="bf16">BF16 (16-bit)</SelectItem>
                   <SelectItem value="fp16">FP16 (16-bit)</SelectItem>
-                  <SelectItem value="int4">4-bit</SelectItem>
-                  <SelectItem value="int8">INT8 (8-bit)</SelectItem>
+                  <SelectItem value="int4" disabled={!convertsToInteger(selected)}>
+                    4-bit
+                  </SelectItem>
+                  <SelectItem value="int8" disabled={!convertsToInteger(selected)}>
+                    INT8 (8-bit)
+                  </SelectItem>
                   <SelectItem value="fp8">FP8 (8-bit)</SelectItem>
                 </SelectContent>
               </Select>

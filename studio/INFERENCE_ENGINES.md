@@ -112,7 +112,19 @@ Engines run in their own processes from environments under the Studio home's
 process. Compiler caches, including Triton, are scoped to each engine profile, model,
 precision, context and GPU selection to avoid reusing incompatible kernels.
 The committed requirements profiles lock versions and wheel hashes for Python 3.13.
-Both profiles use PyTorch 2.11.0 with CUDA 13.0 and Transformers 5.6.0.
+Each engine has one locked release per PyTorch build it can share, newest first:
+
+| Engine | Release | PyTorch | Lock |
+|---|---|---|---|
+| vLLM | 0.30.0 | 2.13.0 (CUDA 13.0) | `vllm-linux-cu130-torch213.txt` |
+| vLLM | 0.26.0 | 2.11.0 (CUDA 13.0) | `vllm-linux-cu130.txt` |
+| SGLang | 0.5.20 | 2.13.0 (CUDA 13.0) | `sglang-linux-cu130-torch213.txt` |
+| SGLang | 0.5.17 | 2.11.0 (CUDA 13.0) | `sglang-linux-cu130.txt` |
+
+Studio installs the release built on its own PyTorch, so a new install (torch 2.13) and an
+existing default install (torch 2.11) both share. Any other PyTorch (2.10, 2.12, a CUDA 12 build)
+gets the newest release in a complete isolated environment, since no vLLM or SGLang release is
+built on it. Windows hosts install the newest release inside WSL.
 
 The engines cannot share Studio's site-packages: they pin Transformers and other
 packages at versions Studio does not use, and they conflict with each other. They
@@ -121,10 +133,10 @@ and its torch, together with the Triton and NVIDIA packages torch loads, is exac
 the version an engine is locked to, the engine environment uses Studio's
 interpreter and holds only the locked packages Studio lacks or has at another
 version. A `.pth` file adds Studio's site-packages after the engine's own, so the
-engine's pins win and multiprocessing workers see the same packages. A default
-Linux install with driver 580 or newer gets this torch build. Otherwise, for
-example with another torch version or CUDA build, the engine gets a complete
-isolated environment from the same lock.
+engine's pins win and multiprocessing workers see the same packages. A CUDA library torch accepts as a range (nvjitlink)
+only has to satisfy every locked package's requirement. Otherwise, for example with
+another torch version or CUDA build, the engine gets a complete isolated environment
+from the newest lock.
 
 A shared environment records the Studio packages it was checked against. If a
 Studio update changes any of them, or the Python version, the engine reports an
@@ -184,17 +196,21 @@ from a default Studio install first: uv prefers versions already in the output f
 which keeps each engine's own layer small.
 
 ```sh
-uv pip compile studio/backend/requirements/engines/vllm-linux-cu130.in --python-version 3.13 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes -o studio/backend/requirements/engines/vllm-linux-cu130.txt
-uv pip compile studio/backend/requirements/engines/sglang-linux-cu130.in --python-version 3.13 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes --excludes studio/backend/requirements/engines/sglang-linux-cu130.excludes -o studio/backend/requirements/engines/sglang-linux-cu130.txt
+cd studio/backend/requirements/engines
+for lock in vllm-linux-cu130-torch213 vllm-linux-cu130 sglang-linux-cu130-torch213 sglang-linux-cu130; do
+  uv pip compile $lock.in --python-version 3.13 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes --excludes $lock.excludes -o $lock.txt
+  python engine_compat.py $lock
+done
 ```
 
-Keep the torch, torchvision, torchaudio and CUDA pins equal to Studio's default
-install, or no installation can share them. SGLang's excludes file drops `outlines`,
+Keep each lock's torch, torchvision, torchaudio and CUDA pins equal to the Studio
+install it serves, or no installation can share them. `engine_compat.py` also records
+each wheel's download size, which the install prompt shows. SGLang's excludes file drops `outlines`,
 whose `outlines-core` pin has no Python 3.13 wheel; SGLang only imports it for
 `--grammar-backend outlines`.
 
-Update `PROFILES` and `PYTHON` in `engine_install.py` when changing the runtime
-baseline. SGLang's requirements explicitly pin its required Flash
+Add a release to `PROFILES` (newest first) and `PYTHON` in `engine_install.py` when
+changing the runtime baseline. SGLang's requirements explicitly pin its required Flash
 Attention beta and a Transformers-compatible `kernels` release. Do not enable
 prereleases globally. Regeneration must refresh hashes when changing indexes.
 

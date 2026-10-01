@@ -347,7 +347,10 @@ class ManagedEngine:
                             memory_fraction,
                             len(gpu_ids or [0]),
                             **(
-                                {"options": options, "trust_remote_code": trust_remote_code}
+                                {
+                                    "options": {**options, "engine_version": info.get("version")},
+                                    "trust_remote_code": trust_remote_code,
+                                }
                                 if options
                                 else {}
                             ),

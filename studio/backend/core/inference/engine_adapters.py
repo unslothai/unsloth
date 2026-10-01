@@ -32,6 +32,14 @@ def tool_parser_for_template(template, engine):
     return None
 
 
+def _release_at_least(version: str | None, floor: str) -> bool:
+    from packaging.version import InvalidVersion, Version
+    try:
+        return version is not None and Version(version) >= Version(floor)
+    except InvalidVersion:
+        return False
+
+
 @dataclass(frozen = True)
 class EngineAdapter:
     name: str
@@ -95,6 +103,15 @@ class EngineAdapter:
             )
         precision = options.get("precision", "auto")
         precision_args = []
+        legacy_torchao = not (
+            self.name == "sglang" and _release_at_least(options.get("engine_version"), "0.5.18")
+        )
+        if not legacy_torchao and precision in ("int8", "int4"):
+            # SGLang 0.5.18 removed --torchao-config, the only load-time INT8 / INT4 path it had.
+            raise ValueError(
+                f"SGLang {options.get('engine_version')} cannot convert weights to "
+                f"{precision.upper()} when loading. Choose FP8 or Model default, or use vLLM."
+            )
         if precision in ("bf16", "fp16"):
             precision_args = ["--dtype", "bfloat16" if precision == "bf16" else "float16"]
         elif self.name == "vllm" and (
@@ -141,7 +158,7 @@ class EngineAdapter:
         elif precision == "fp8":
             precision_args = (
                 ["--torchao-config", "fp8wo"]
-                if options.get("disable_cuda_graph")
+                if options.get("disable_cuda_graph") and legacy_torchao
                 else ["--quantization", "fp8"]
             )
         if self.name == "sglang" and "--torchao-config" in precision_args:
@@ -152,6 +169,14 @@ class EngineAdapter:
                 ["--enforce-eager"]
                 if self.name == "vllm"
                 else ["--disable-cuda-graph", "--disable-piecewise-cuda-graph"]
+                if legacy_torchao
+                # 0.5.18 folded both into per-phase backends and removed the piecewise flag.
+                else [
+                    "--cuda-graph-backend-decode",
+                    "disabled",
+                    "--cuda-graph-backend-prefill",
+                    "disabled",
+                ]
             )
         if self.name == "sglang":
             entrypoint = [
