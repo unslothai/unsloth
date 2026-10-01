@@ -3904,6 +3904,7 @@ def _load_h3_native_offload(
     help_text,
     accelerator = True,
     memory_mode = None,
+    speed_mode = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -3961,6 +3962,7 @@ def _load_h3_native_offload(
         repo_id = "leejet/MiniMax-H3-GGUF",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
         memory_mode = memory_mode,
+        speed_mode = speed_mode,
     )
     assert backend._state is not None
     return backend._state, list(backend._state.pipe.offload_flags)
@@ -4002,6 +4004,39 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
     assert "--offload-to-cpu" not in offload
     assert offload[-2:] == ["--max-vram", "-1"]
     assert "--stream-layers" not in offload
+
+
+_SAGE_HELP = _GRAPH_CUT_HELP + "  --sage-attn           use native CUDA SageAttention\n"
+
+
+def test_h3_native_sage_attention_only_on_speed_max(monkeypatch, tmp_path):
+    """SageAttention is lossy (INT8 QK^T), so it rides only on an explicit speed_mode="max"."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    assert offload[-1] == "--sage-attn"
+    assert state.attention_backend == "sage"
+    for mode in (None, "default", "off"):
+        state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode)
+        assert "--sage-attn" not in offload, mode
+        assert state.attention_backend == "flash"
+
+
+def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatch, tmp_path):
+    """An older prebuilt (u13b9d92) has no --sage-attn, and sd-cli exits on an unknown option."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, speed_mode = "max")
+    assert "--sage-attn" not in offload
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    assert "--sage-attn" not in offload
+
+
+def test_h3_native_sage_attention_never_on_the_cpu_build(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, accelerator = False, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
 
 
 def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):

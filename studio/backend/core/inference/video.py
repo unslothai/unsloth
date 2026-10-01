@@ -2995,6 +2995,9 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
         # NAMED so a static step-skip ask can be recorded as declined: sd.cpp runs every step itself.
         transformer_cache: Optional[str] = None,
+        # NAMED so speed_mode="max" can opt this runtime into SageAttention (see below); every other value keeps the
+        # exact flash-attention path.
+        speed_mode: Optional[str] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in through _run_load's kwargs,
         # and swallowed it meant the four-file bundle, the sizing metadata and the sd-cli install were all fetched by a
         # load that promised no downloads.
@@ -3030,6 +3033,7 @@ class VideoBackend:
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_supports_graph_cut,
+            sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
@@ -3312,6 +3316,15 @@ class VideoBackend:
             # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose
             # between.
             supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
+            # SageAttention (INT8 QK^T, FP16 PV) only on an explicit speed_mode="max": it is lossy. Measured on H3
+            # 960x544x124, UD-Q3_K_XL, 20 steps, same seed: LPIPS 0.069 vs the flash-attention render (B200), and
+            # 7.23 vs 11.80 s/step on an RTX PRO 6000 Blackwell (Colab G4). UNSLOTH_H3_SAGE_ATTN=0 vetoes it.
+            h3_sage = (
+                native_device != "cpu"
+                and str(speed_mode or "").strip().lower() == "max"
+                and os.environ.get("UNSLOTH_H3_SAGE_ATTN", "").strip().lower() not in ("0", "false", "no", "off")
+                and sd_cpp_supports_sage_attn(binary)
+            )
             # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal would outlive the
             # decision and be committed against a runtime that never used it.
             native_ordinal = None if native_device == "cpu" else gpu_ordinal
@@ -3359,6 +3372,8 @@ class VideoBackend:
             native_offload += GRAPH_CUT_VRAM_FLAGS
             if "--offload-to-cpu" in native_offload:
                 native_offload += GRAPH_CUT_STREAM_FLAGS
+        if h3_sage:
+            native_offload += ("--sage-attn",)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3409,14 +3424,16 @@ class VideoBackend:
                         offload_policy = policy,
                         vae_tiling = False,
                         memory_mode = requested_mode,
-                        attention_backend = "flash",
+                        attention_backend = "sage" if h3_sage else "flash",
                         resolved = build_resolved_record(
                             {
                                 "memory_mode": (memory_mode, policy, "native model offload"),
                                 "attention_backend": (
                                     None,
-                                    "flash",
-                                    "sd.cpp diffusion flash attention",
+                                    "sage" if h3_sage else "flash",
+                                    "sd.cpp SageAttention (speed_mode=max)"
+                                    if h3_sage
+                                    else "sd.cpp diffusion flash attention",
                                 ),
                                 **(
                                     {

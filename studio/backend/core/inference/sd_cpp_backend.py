@@ -342,6 +342,16 @@ def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
     return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
 
 
+def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
+    """True only when ``binary``'s ``--help`` lists ``--sage-attn``. Fails closed like
+    ``sd_cpp_supports_graph_cut``: the flag is ADDED to the command line, and sd-cli exits non-zero on an option it
+    does not know (the u13b9d92 prebuilt predates it)."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and "--sage-attn" in text
+
+
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     """True unless ``binary`` demonstrably enumerates the CPU ggml device and nothing else.
 
