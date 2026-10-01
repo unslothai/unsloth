@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatDownloadBytes } from "@/features/hub/download-manager/required-assets";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
@@ -867,26 +868,17 @@ function SizeText({ value }: { value: string }) {
  *  small explanation affordance, since their checkpoint is only part of what is kept on disk. */
 export function GgufDownloadFootprint({
   checkpointBytes,
-  companionBytes,
 }: {
   checkpointBytes: number;
   companionBytes: number;
 }) {
-  const totalBytes = checkpointBytes + companionBytes;
-  // Whole-GB rounding is too lossy for a sum ("2.6 GB + 8.2 GB = 11 GB" looks contradictory),
-  // so keep one decimal through GB/TB.
-  const totalLabel =
-    totalBytes >= 1_000_000_000 && totalBytes < 1_000_000_000_000
-      ? `${(totalBytes / 1_000_000_000).toFixed(1)} GB`
-      : totalBytes >= 1_000_000_000_000
-        ? `${(totalBytes / 1_000_000_000_000).toFixed(1)} TB`
-        : formatBytes(totalBytes);
   return (
     <span
       data-model-download-footprint={true}
       className="flex items-center gap-1 whitespace-nowrap text-muted-foreground"
     >
-      <SizeText value={totalLabel} />
+      <SizeText value={formatBytes(checkpointBytes)} />
+      <span className="font-sans">file</span>
       <span
         data-model-download-footprint-help={true}
         aria-hidden={true}
@@ -1922,9 +1914,6 @@ function GgufVariantExpander({
   // it for this quant/model family. Absence is authoritative text-only
   // evidence, while presence remains unknown until load.
   const variantVisionHint = hasVision === false ? false : undefined;
-  // The prefix test cannot see a marker-less relative directory like "models/my-image-model",
-  // so whether the checkpoint is on disk is asked of the listing, not of the spelling.
-  const checkpointIsLocal = isLocalPath || resolvedLocally;
 
   const handleVariantClick = useCallback(
     // `filename` is required: the diffusion pages gate their GGUF branch on meta.ggufFilename, so
@@ -2130,12 +2119,14 @@ function GgufVariantExpander({
     }
     return Array.from(byKey.values());
   }, [displayVariants, recommendedQuantForVariant]);
+  const [missingAssetsByKey, setMissingAssetsByKey] = useState<Map<string, number | undefined>>(() => new Map());
   const [companionBytesByKey, setCompanionBytesByKey] = useState<
     Map<string, number>
   >(() => new Map());
   useEffect(() => {
     let cancelled = false;
     setCompanionBytesByKey(new Map());
+    setMissingAssetsByKey(new Map());
     // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
     // larger half, so suppressing the request understated a local row by many gigabytes.
     if (!resolveDownloadFootprint) {
@@ -2157,15 +2148,10 @@ function GgufVariantExpander({
         isGguf: true,
       })
         .then((footprint) => {
-          if (cancelled || !footprint) return;
-          // A checkpoint already on disk is not part of required_bytes, so nothing may be subtracted for it:
-          // subtracting drove the total to zero and hid a multi-GB companion set. Only a hub pick carries
-          // its checkpoint inside the total; expectedBytes stands in when the planner could not size it.
-          const checkpoint = checkpointIsLocal
-            ? 0
-            : footprint.checkpointBytes > 0
-              ? footprint.checkpointBytes
-              : expectedBytes;
+          if (cancelled) return;
+          setMissingAssetsByKey(previous => new Map(previous).set(dependencyKey, footprint?.missingAssetBytes));
+          if (!footprint) return;
+          const checkpoint = footprint.checkpointBytes > 0 ? footprint.checkpointBytes : expectedBytes;
           const companion = footprint.requiredBytes - checkpoint;
           if (Number.isFinite(companion) && companion > 0) {
             // A fresh Map per resolution: React compares state by identity and the groups resolve
@@ -2178,6 +2164,7 @@ function GgufVariantExpander({
           }
         })
         .catch(() => {
+          if (!cancelled) setMissingAssetsByKey(previous => new Map(previous).set(dependencyKey, undefined));
           // The checkpoint size stays useful when an older backend or a Hub failure cannot provide the
           // companion footprint.
         });
@@ -2186,7 +2173,6 @@ function GgufVariantExpander({
       cancelled = true;
     };
   }, [
-    checkpointIsLocal,
     footprintVariants,
     isLocalPath,
     repoId,
@@ -2283,6 +2269,19 @@ function GgufVariantExpander({
             </span>
           </div>
         )}
+      {resolveDownloadFootprint && (
+        <div className="px-2 py-1 text-ui-10 text-muted-foreground">
+          {missingAssetsByKey.size < footprintVariants.length
+            ? "Checking required files…"
+            : [...missingAssetsByKey.values()].some(bytes => bytes === undefined)
+              ? "Required files will be checked before loading."
+              : [...missingAssetsByKey.values()].some(bytes => (bytes ?? 0) > 0)
+                ? missingAssetsByKey.size === 1
+                  ? `Required files missing · ${formatDownloadBytes([...missingAssetsByKey.values()][0] ?? 0)}`
+                  : "Some quantizations need additional required files."
+                : "Required files downloaded"}
+        </div>
+      )}
       {displayVariants.map((v) => {
         const group = displayVariantGroups.find((candidate) =>
           candidate.variants.some((variant) => variant.filename === v.filename),
@@ -2367,12 +2366,12 @@ function GgufVariantExpander({
                 }
               />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-                {companionBytes === null ? (
-                  <SizeText value={formatBytes(v.size_bytes)} />
+                {!resolveDownloadFootprint ? (
+                  <><SizeText value={formatBytes(v.size_bytes)} />{resolveDownloadFootprint && <span className="ml-1 font-sans">file</span>}</>
                 ) : (
                   <GgufDownloadFootprint
                     checkpointBytes={v.size_bytes}
-                    companionBytes={companionBytes}
+                    companionBytes={companionBytes ?? 0}
                   />
                 )}
               </span>

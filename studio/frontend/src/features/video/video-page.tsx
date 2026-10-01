@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { RequiredAssetsDownloadDialog } from "@/features/hub/download-manager/required-assets-dialog";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -2582,6 +2583,7 @@ function VideoGenerator({
       if (requiredBytes <= 0) return null;
       return {
         requiredBytes,
+        missingAssetBytes: plan.plan_failed || plan.entries.some(e => e.checkpoint === false && e.bytes <= 0) ? undefined : plan.entries.filter(e => e.checkpoint === false).reduce((sum, e) => sum + Math.max(0, e.bytes), 0),
         checkpointBytes: plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
       };
     },
@@ -2725,7 +2727,7 @@ function VideoGenerator({
     },
     [pickGuard, revertPick, pickToast],
   );
-  const { stage, progress: stagedProgress } = useStagedDownload({
+  const { stage, progress: stagedProgress, assetDownloadPrompt } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
       if (!active) {
@@ -2782,7 +2784,7 @@ function VideoGenerator({
       pickToast.dismissAll();
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      if (source !== "hub" && opts.kind === "pipeline") return handleLoadRef.current(repoId, opts);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = pickToast.show();
 
@@ -2818,6 +2820,7 @@ function VideoGenerator({
         // incompatible pairing can be caught before the download it would waste. The check is the FLUX.2
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
         // the shared envelope's half of the contract rather than a live path.
+        if (plan.plan_failed) throw new Error("Required file information is incomplete. Please try again.");
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
           pendingStagedLoad.current = {
@@ -2848,8 +2851,11 @@ function VideoGenerator({
           pickToast.setPhase(pickToastId, "downloading", staged);
           return true;
         }
-      } catch {
-        // No plan (older backend, metadata hiccup): fall back to the load's own download.
+      } catch (error) {
+        if (pick !== pickSeq.current || !owns()) return true;
+        pickToast.dismiss(pickToastId);
+        toast.error("Could not check required files", { description: error instanceof Error ? error.message : "Please try again." });
+        return false;
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (pick !== pickSeq.current || !owns()) {
@@ -3606,6 +3612,7 @@ function VideoGenerator({
       <MediaRailResizeHandle kind="video" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
+      {active && <RequiredAssetsDownloadDialog {...assetDownloadPrompt} />}
       <AlertDialog
         open={active && clearConfirmOpen}
         onOpenChange={(open) => {

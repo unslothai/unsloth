@@ -5,6 +5,7 @@
 // The page stays mounted across tab switches (see __root.tsx), so `active` gates polling, popovers and the
 // recorder rather than lifecycle.
 
+import { RequiredAssetsDownloadDialog } from "@/features/hub/download-manager/required-assets-dialog";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   AudioWave01Icon,
@@ -1209,7 +1210,7 @@ export function AudioPage({
       stopAndDiscardRecording,
     ],
   );
-  const { stage: stageTtsDownload } = useStagedDownload({
+  const { stage: stageTtsDownload, assetDownloadPrompt } = useStagedDownload({
     scopeId: "audio",
     onReady: () => {
       const pending = pendingStagedTtsLoad.current;
@@ -1240,6 +1241,10 @@ export function AudioPage({
         pending.remoteCodeApproval,
         pending.isGguf,
       );
+    },
+    onCancelled: () => {
+      pendingStagedTtsLoad.current = null;
+      stagedTtsLoadDeferred.current = false;
     },
   });
 
@@ -1327,17 +1332,6 @@ export function AudioPage({
           );
         } catch (error) {
           if (generation !== stagedTtsGeneration.current) return;
-          if (meta.isDownloaded === true) {
-            void loadTtsModelRef.current(
-              repoId,
-              ggufFilename,
-              meta.loadId,
-              meta.audioType,
-              remoteCodeApproval,
-              meta.isGguf,
-            );
-            return;
-          }
           toast.error(
             error instanceof Error
               ? error.message
@@ -2672,6 +2666,7 @@ export function AudioPage({
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
+      {active && <RequiredAssetsDownloadDialog {...assetDownloadPrompt} />}
       {/* Keep the tabs centered over the preview at every width. The model rail holds at its
           (draggable) width when space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">

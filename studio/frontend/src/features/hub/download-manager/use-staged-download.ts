@@ -3,6 +3,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { additionalAssetDownloads } from "./required-assets";
+
 import { toast } from "@/lib/toast";
 
 import { DOWNLOAD_KIND } from "./constants";
@@ -37,12 +39,16 @@ export function useStagedDownload({
   scopeId,
   onReady,
   onCancelled,
+  confirmAssets = true,
 }: {
   scopeId: string;
+  confirmAssets?: boolean;
   onReady: () => void;
   /** Clears the consumer's pending auto-load when the plan ends without every entry on disk: leaving it behind lets a later completion load a model nobody asked for. */
   onCancelled?: () => void;
 }) {
+  const downloadOnly = useRef(false);
+  const [pendingAssets, setPendingAssets] = useState<StagedDownloadEntry[] | null>(null);
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   // Keep the original total as completed entries leave the queue.
   const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
@@ -81,7 +87,13 @@ export function useStagedDownload({
       inFlight.current = null;
       const remaining = (queue ?? []).slice(1);
       advance();
-      if (remaining.length === 0) onReady();
+      if (remaining.length === 0) {
+        if (downloadOnly.current) {
+          downloadOnly.current = false;
+          onCancelled?.(); // Clear the pending load, including its optimistic picker label.
+          toast.success("Required files downloaded", { description: "Select the model when you are ready to load it." });
+        } else onReady();
+      }
     },
     onError: (variant) => {
       if (!isOurs(variant)) return;
@@ -147,15 +159,22 @@ export function useStagedDownload({
   }, [current, activeVariant, scopeId]);
 
   const stage = useCallback((entries: StagedDownloadEntry[]): number => {
+    downloadOnly.current = false;
     generation.current += 1;
     inFlight.current = null;
-    setQueue(entries.length > 0 ? entries : null);
+    if (confirmAssets && additionalAssetDownloads(entries).length > 0) {
+      setQueue(null);
+      setPendingAssets(entries);
+    } else {
+      setPendingAssets(null);
+      setQueue(entries.length > 0 ? entries : null);
+    }
     setStaged({
       bytes: entries.reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0),
       plan: generation.current,
     });
     return generation.current;
-  }, []);
+  }, [confirmAssets]);
 
   const remainingBytes = (queue ?? []).reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0);
   const currentBytes = current
@@ -169,5 +188,18 @@ export function useStagedDownload({
     [downloadedBytes, totalBytes, plan],
   );
 
-  return { stage, staging: queue !== null, progress };
+  const assetDownloadPrompt = {
+    entries: pendingAssets,
+    onConfirm: () => {
+      downloadOnly.current = true;
+      setPendingAssets(null);
+      setQueue(pendingAssets);
+    },
+    onCancel: () => {
+      if (!pendingAssets) return;
+      setPendingAssets(null);
+      onCancelledRef.current?.();
+    },
+  };
+  return { stage, remaining: queue, staging: queue !== null || pendingAssets !== null, progress, assetDownloadPrompt };
 }

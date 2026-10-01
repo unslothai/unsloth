@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { AssetRuntime } from "./use-required-assets-download";
 import type { ModelInventoryFormat } from "../inventory";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";
@@ -31,6 +32,7 @@ export function DownloadSection({
   onChange,
   showMemoryBar = true,
   mediaRuntime = false,
+  assetRuntime,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -58,6 +60,7 @@ export function DownloadSection({
    *  llama.cpp and so have nothing the KV estimator can say about them. */
   showMemoryBar?: boolean;
   mediaRuntime?: boolean;
+  assetRuntime?: AssetRuntime;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -78,11 +81,13 @@ export function DownloadSection({
         onChange={onChange}
         showMemoryBar={showMemoryBar}
         mediaRuntime={mediaRuntime}
+        assetRuntime={assetRuntime}
       />
     );
   }
   return (
     <SafetensorsDownloadCard
+      assetRuntime={assetRuntime}
       repoId={repoId}
       isDownloaded={isDownloaded}
       isPartial={isPartial}

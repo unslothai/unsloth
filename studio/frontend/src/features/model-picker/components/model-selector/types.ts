@@ -87,6 +87,8 @@ export interface ModelSelectorChangeMeta {
  *  (text encoders, VAE, tokenizer/config files). */
 export interface ModelDownloadFootprint {
   requiredBytes: number;
+  /** Missing shared assets only; undefined means metadata unavailable. */
+  missingAssetBytes?: number;
   checkpointBytes: number;
 }
 
