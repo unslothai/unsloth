@@ -2685,7 +2685,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
             stack_mod._nvidia_smi_usable_candidates
         )
         assert "_nvidia_smi_usable_candidates()" in inspect.getsource(
-            stack_mod._detect_cuda_torch_index_url
+            stack_mod._detect_cuda_torch_index_family
         )
 
     def test_a_which_result_is_trusted_without_an_isfile_check(self, monkeypatch):
@@ -2778,7 +2778,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         # about the host, which is how the family came off the wrong driver twice.
         assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
         assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(
-            stack_mod._detect_cuda_torch_index_url
+            stack_mod._detect_cuda_torch_index_family
         )
 
     def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
@@ -2821,19 +2821,11 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu118"
 
     def test_the_driver_family_probe_mirrors_the_index_url(self, monkeypatch):
-        # The helper reads _detect_cuda_torch_index_url's leaf, so an ancient-driver "cpu"
-        # URL has to come back as "" rather than as a family named "cpu".
-        monkeypatch.setattr(
-            stack_mod,
-            "_detect_cuda_torch_index_url",
-            lambda: "https://download.pytorch.org/whl/cpu",
-        )
+        # The helper reads _detect_cuda_torch_index_family, so an ancient-driver "cpu"
+        # family has to come back as "" rather than as a family named "cpu".
+        monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "cpu")
         assert stack_mod._driver_cuda_torch_flavor_tag() == ""
-        monkeypatch.setattr(
-            stack_mod,
-            "_detect_cuda_torch_index_url",
-            lambda: "https://download.pytorch.org/whl/cu126/",
-        )
+        monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "CU126")
         assert stack_mod._driver_cuda_torch_flavor_tag() == "cu126"
 
     def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):
