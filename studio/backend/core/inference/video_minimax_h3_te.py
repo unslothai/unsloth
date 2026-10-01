@@ -522,9 +522,10 @@ def h3_te_stream_enabled() -> bool:
     )
 
 
-def h3_te_pin_allowed() -> bool:
-    """Whether to pin in place (net cost one arena, the pageable copy is converted). Honours the group offload pin
-    switch and the ~1 GiB pinned cap of Windows / WSL. Never raises."""
+def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
+    """Whether ``payload_bytes`` (at least one arena) may be pinned. The full payload, not one arena: the hosted
+    weights are mmap views already counted as available, so pinning them takes that much. Honours the group offload
+    pin switch and the ~1 GiB pinned cap of Windows / WSL. Never raises."""
     try:
         import os
 
@@ -538,9 +539,19 @@ def h3_te_pin_allowed() -> bool:
         if _pinned_memory_capped():
             return False
         budget = _pin_budget_mib()
-        return budget is not None and budget >= (_PIN_ARENA_BYTES >> 20)
+        return budget is not None and budget >= max(_PIN_ARENA_BYTES, int(payload_bytes)) >> 20
     except Exception:  # noqa: BLE001 -- unanswerable: stream unpinned
         return False
+
+
+def _module_payload_bytes(module: Any) -> int:
+    seen: set = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) not in seen and tensor.device.type == "cpu":
+            seen.add(id(tensor))
+            total += tensor.numel() * tensor.element_size()
+    return total
 
 
 def _round_up(value: int, multiple: int) -> int:
@@ -645,7 +656,7 @@ def stream_h3_text_encoder(
 
     params = inspect.signature(apply_group_offloading).parameters
     if pin is None:
-        pin = h3_te_pin_allowed()
+        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder))
     if pin:
         try:
             pin_module_in_place(text_encoder)

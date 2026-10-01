@@ -333,3 +333,19 @@ def test_an_image_prompt_encodes_through_the_streamed_conditioner(monkeypatch):
             **{k: v.cuda() if torch.is_tensor(v) else v for k, v in kwargs.items()}
         )
     torch.testing.assert_close(got.hidden_states[-1], expected.hidden_states[-1])
+
+
+def test_pinning_is_budgeted_on_the_whole_payload_not_one_arena(monkeypatch):
+    """The hosted weights are mmap views already counted as available, so pinning them takes the full payload. A host
+    with room for one arena but not the 27 GB conditioner must stream it unpinned instead of exhausting RAM at load."""
+    import core.inference.diffusion_memory as dm
+    from core.inference.video_minimax_h3_te import h3_te_pin_allowed
+
+    monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 20 * 1024)
+    assert h3_te_pin_allowed()  # one arena fits
+    assert h3_te_pin_allowed(5 * 2**30)  # the VAEs
+    assert not h3_te_pin_allowed(27 * 2**30)  # the conditioner does not
+    monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
+    assert h3_te_pin_allowed(27 * 2**30)

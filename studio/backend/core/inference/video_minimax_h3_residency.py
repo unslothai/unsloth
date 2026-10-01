@@ -379,14 +379,14 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
         return False
     from .video_minimax_h3_te import h3_te_pin_allowed
 
-    # Honours the pin-nothing override and the Windows / WSL cap the lazily pinned blocks need.
-    if not h3_te_pin_allowed():
+    top, blocks = h3_offload_groups(transformer)
+    # Honours the pin-nothing override, the host budget and the Windows / WSL cap the lazily pinned blocks need.
+    if not h3_te_pin_allowed(group_payload_bytes(top) if top is not None else 0):
         if logger is not None:
             logger.info(
                 "video.h3_top_group: left as diffusers built it (pinning not allowed on this host)"
             )
         return False
-    top, blocks = h3_offload_groups(transformer)
     stream = next(
         (getattr(g, "stream", None) for g in blocks if getattr(g, "stream", None) is not None), None
     )
@@ -470,9 +470,9 @@ def install_pinned_swap(
         return False
     import torch
 
-    from .video_minimax_h3_te import h3_te_pin_allowed, pin_module_in_place
+    from .video_minimax_h3_te import _module_payload_bytes, h3_te_pin_allowed, pin_module_in_place
 
-    if not torch.cuda.is_available() or not h3_te_pin_allowed():
+    if not torch.cuda.is_available() or not h3_te_pin_allowed(_module_payload_bytes(module)):
         return False
     tensors = list(module.parameters()) + list(module.buffers())
     if not tensors or any(t.device.type != "cpu" for t in tensors):
