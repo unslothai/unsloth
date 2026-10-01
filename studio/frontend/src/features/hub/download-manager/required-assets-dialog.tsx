@@ -87,7 +87,7 @@ function DownloadChoice({
     : formatDownloadBytes(downloadBytes(assets));
   const total = includeAssets ? fullSize : modelSize;
   return (
-    <AlertDialogContent className="sm:max-w-[490px]">
+    <AlertDialogContent className="sm:max-w-[calc(490px*var(--ui-space-scale,1))]">
       <AlertDialogHeader
         className={
           mode === "download"
@@ -112,7 +112,7 @@ function DownloadChoice({
             : "Download the missing files before loading this model."}
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <div className="relative min-h-[246px] text-sm" aria-busy={checking}>
+      <div className="relative min-h-[calc(246px*var(--ui-space-scale,1))] text-sm" aria-busy={checking}>
         {checking && (
           <div
             role="status"
