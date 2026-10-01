@@ -75,6 +75,12 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import {
+  type McpUiToolResult,
+  extractMcpUiEnvelope,
+  isMcpUiToolResult,
+  mcpUiReplayImages,
+} from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
   type McpImage,
@@ -1048,6 +1054,7 @@ export function toolResultModelText(
   toolName?: string,
 ): unknown {
   if (
+    isMcpUiToolResult(result, toolName) ||
     isMcpImageToolResult(result) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, toolName)
@@ -1078,10 +1085,16 @@ export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
-  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  const v = val as {
+    text?: unknown;
+    images?: unknown;
+    sessionId?: unknown;
+    ui?: unknown;
+  };
   return (
     typeof v.text === "string" &&
     v.sessionId === undefined &&
+    v.ui === undefined &&
     Array.isArray(v.images) &&
     v.images.length > 0 &&
     v.images.every(
@@ -1111,6 +1124,7 @@ function serializeToolResultPart(
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
+    isMcpUiToolResult(result, tc.toolName ?? "") ||
     // The wrapper the live parser builds -- {text, images} and nothing else -- from an
     // MCP result, or from any tool whose raw output ends in a valid envelope. Those
     // are unwrapped by shape, since JSON.stringify below would replay the whole base64
@@ -1133,6 +1147,9 @@ function serializeToolResultPart(
     // envelope would hand its bytes to the model as image input.
     if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
       content += mcpImagesEnvelope(result.images);
+    } else if (isMcpToolName(tc.toolName)) {
+      const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
+      if (uiImages.length > 0) content += mcpImagesEnvelope(uiImages);
     }
   } else {
     try {
@@ -7180,10 +7197,16 @@ export function createOpenAIStreamAdapter(
                     const rawEvent = (toolEvent.result as string) ?? "";
                     // Pulled out first, ahead of __IMAGES__, so the image slice below is unchanged. Only from the
                     // tools that emit it: elsewhere that line is content.
-                    const { text: rawResult, files: createdFiles } =
+                    const { text: withUi, files: createdFiles } =
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)
                         : { text: rawEvent, files: [] as SandboxFile[] };
+                    // Ahead of the image slice, which parses to end of string.
+                    const { text: rawResult, ui: mcpUi } =
+                      extractMcpUiEnvelope(
+                        withUi,
+                        toolCallParts[idx].toolName ?? "",
+                      );
                     // Same rule: only from the tool that emits it.
                     const { text: searchText, images: webImages } =
                       toolCallParts[idx].toolName === SEARCH_IMAGE_TOOL
@@ -7207,6 +7230,7 @@ export function createOpenAIStreamAdapter(
                           files?: SandboxFile[];
                         }
                       | McpImageToolResult
+                      | McpUiToolResult
                       | SearchImagesToolResult
                       | {
                           image_b64: string;
@@ -7275,6 +7299,17 @@ export function createOpenAIStreamAdapter(
                       parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
+                    }
+                    if (mcpUi) {
+                      parsedResult = isMcpImageToolResult(parsedResult)
+                        ? { ...parsedResult, ui: mcpUi }
+                        : {
+                            text:
+                              typeof parsedResult === "string"
+                                ? parsedResult
+                                : rawResult,
+                            ui: mcpUi,
+                          };
                     }
                     const nextArgs =
                       toolEvent.arguments &&

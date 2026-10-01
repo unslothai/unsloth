@@ -73,6 +73,8 @@ from core.inference.mcp_client import (
     probe_timeout,
     record_probe_failure,
     stdio_mcp_enabled,
+    tool_ui_resource_uri,
+    tool_visible_to,
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
@@ -13317,7 +13319,7 @@ def _mcp_tool_schema_text(display: str, tool: dict) -> str:
 
 def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     for tool in get_cached_tools(server["id"]) or []:
-        if tool.get("name") == tool_name and _mcp_tool_model_visible(tool):
+        if tool.get("name") == tool_name and tool_visible_to(tool, "model"):
             return tool
     return None
 
@@ -13441,24 +13443,6 @@ def _mcp_listing_compacted(name: str) -> bool:
     return name in _MCP_COMPACTED_WINDOWS.get(key, frozenset())
 
 
-def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for MCP Apps tools marked app-only (_meta.ui.visibility without "model"): those exist
-    for a server-rendered widget to call, not the LLM."""
-    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
-    for key in ("meta", "_meta"):
-        meta = tool.get(key)
-        if not isinstance(meta, dict):
-            continue
-        ui = meta.get("ui")
-        visibility = ui.get("visibility") if isinstance(ui, dict) else None
-        if visibility is None:
-            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
-            visibility = meta.get("ui/visibility")
-        if isinstance(visibility, (list, tuple)):
-            return "model" in visibility
-    return True
-
-
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     """Composed function name -> raw MCP name, for the tools this server ships to a model.
 
@@ -13468,7 +13452,7 @@ def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
     prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
     raw_names = [
-        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+        tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
     ]
     names: dict[str, str] = {}
     for raw_name in raw_names:
@@ -13507,7 +13491,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not _mcp_tool_model_visible(tool):
+        if not tool_visible_to(tool, "model"):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = names_by_raw.get(raw_name)
@@ -13646,6 +13630,22 @@ async def get_enabled_mcp_tools() -> list[dict]:
             continue
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed)
+
+
+def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
+    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    tools = get_cached_tools(server_id) or ()
+    return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
+
+
+def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
+    """Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
+    id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
+    percent-quote the parts so ids can't collide or ":" merge conversations."""
+    if not thread_id:
+        return None
+    quote = urllib.parse.quote
+    return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
 _TIMEOUT_UNSET = object()
@@ -13860,16 +13860,7 @@ def execute_tool(
                     _mcp_tool_schema_text(display, tool),
                     0,
                 )
-        # Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
-        # id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
-        # percent-quote the parts so ids can't collide or ":" merge conversations.
-        if thread_id:
-            mcp_scope = "s={}:t={}".format(
-                urllib.parse.quote(session_id or "", safe = ""),
-                urllib.parse.quote(thread_id, safe = ""),
-            )
-        else:
-            mcp_scope = None
+        mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
@@ -13898,6 +13889,7 @@ def execute_tool(
             cancel_event = cancel_event,
             scope = mcp_scope,
             config_check = _config_current,
+            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
         if tool is not None and isinstance(result, str) and result.startswith("Error:"):
             return _mcp_schema_page(
