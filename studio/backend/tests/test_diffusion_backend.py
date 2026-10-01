@@ -6673,6 +6673,7 @@ def test_diffusion_status_response_carries_resolved():
             "status": "applied",
             "reason": "blackwell",
             "artifact": None,
+            "replaced": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -6695,7 +6696,7 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == {
-        "transformer_quant": {**rec["transformer_quant"], "artifact": None}
+        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None}
     }
 
 
@@ -14235,3 +14236,21 @@ def test_gguf_route_prequant_seed_lands_on_the_host_when_the_plan_offloads(
     assert scheme == "int8"
     assert loaded["placement_device"] == ("cpu" if placed_on_host else None)
     assert assembled == ["cpu" if placed_on_host else "cuda:0"]
+
+
+def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
+    # Pydantic drops undeclared keys: without the field no API client could see that the GGUF it picked did not run.
+    from models.inference import DiffusionStatusResponse
+
+    rec = {
+        "transformer_quant": {
+            "value": "int8",
+            "source": "auto",
+            "reason": "the Q4_K_M GGUF pick was replaced",
+            "artifact": "prequant:o/r/f.safetensors",
+            "replaced": "gguf:m-Q4_K_M.gguf",
+        }
+    }
+    dumped = DiffusionStatusResponse(loaded = True, resolved = rec).model_dump()["resolved"]["transformer_quant"]
+    assert dumped["replaced"] == "gguf:m-Q4_K_M.gguf"
+    assert dumped["artifact"] == "prequant:o/r/f.safetensors"

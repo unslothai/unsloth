@@ -12,7 +12,7 @@ with three extra conditions of its own:
 - the swap only ever loads a hosted / local pre-quantised checkpoint, never the dense bf16 build (that would page a
   second, larger denoiser through the host and quantise it there);
 - an ``auto`` request only takes a checkpoint that is already cached (a GGUF pick never downloads a second
-  denoiser), and only when the GGUF is a lower-precision quant than the checkpoint (see ``gguf_outranks_scheme``);
+  denoiser), and only when the GGUF is less accurate than the checkpoint (5-bit and below, see ``gguf_outranks_scheme``);
 - ``UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT=0`` restores the resident-only rule.
 
 Device eligibility is the caller's: the whole branch sits behind ``dense_transformer_supported`` (CUDA bf16 only, so
@@ -27,10 +27,13 @@ from typing import Any, Optional
 # Kill switch: "0" restores the resident-only rule (a GGUF pick whose quantised swap offloads loads the GGUF).
 GGUF_OFFLOAD_PREQUANT_ENV = "UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT"
 
-# GGUF quants at least as accurate as the per-channel W8A8 int8 / fp8 checkpoints: an auto request keeps these under
-# offload rather than trading accuracy for speed. 8-bit and wider only; every 2-6 bit K / IQ quant is the lower
-# precision side of the swap.
-_GGUF_TOKENS_KEPT_UNDER_OFFLOAD = frozenset(("Q8_0", "Q8_1", "Q8_K", "F16", "BF16", "F32"))
+# GGUF quants at least as accurate as the hosted W8A8 int8 checkpoint, which an auto request keeps under offload rather
+# than trading accuracy for speed. Measured on Qwen-Image-2.1 (1024 px, 25 steps, 8 prompts, LPIPS alex vs Studio's own
+# bf16, repeat floor 0.005): Q4_K_M 0.117, Q5_K_M 0.077, int8 0.059, Q6_K 0.042, Q8_0 0.019. So 6-bit and wider keep the
+# GGUF; 5-bit and below (K, IQ, MXFP4, legacy Q4_0 / Q5_0) are the less accurate side of the swap.
+_GGUF_PREFIXES_KEPT_UNDER_OFFLOAD = ("Q6", "Q8", "F16", "BF16", "F32")
+# Every other scheme (fp8: 0.10-0.11 on the same family at 40 steps) only replaces 4-bit and narrower picks.
+_GGUF_PREFIXES_KEPT_OTHER_SCHEMES = ("Q5", *_GGUF_PREFIXES_KEPT_UNDER_OFFLOAD)
 
 
 def gguf_offload_prequant_enabled() -> bool:
@@ -60,7 +63,10 @@ def gguf_outranks_scheme(gguf_filename: Optional[str], scheme: Optional[str]) ->
     token = gguf_quant_token(gguf_filename)
     if token is None:
         return True
-    return token in _GGUF_TOKENS_KEPT_UNDER_OFFLOAD
+    if token.startswith("UD-"):
+        token = token[3:]
+    kept = _GGUF_PREFIXES_KEPT_UNDER_OFFLOAD if str(scheme) == "int8" else _GGUF_PREFIXES_KEPT_OTHER_SCHEMES
+    return token.startswith(kept)
 
 
 def gguf_offload_prequant_placement(
