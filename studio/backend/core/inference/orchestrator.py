@@ -3317,6 +3317,7 @@ class InferenceOrchestrator:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         extra_audio_arrays: Optional[list] = None,
@@ -3327,6 +3328,7 @@ class InferenceOrchestrator:
             audio_type = "whisper",
             messages = [],
             system_prompt = "",
+            use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             extra_audio_arrays = extra_audio_arrays,
