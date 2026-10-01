@@ -162,8 +162,12 @@ def _word_aligned(W):
     return (W.storage_offset() * W.element_size()) % 4 == 0
 
 
+# Compute capabilities with their own large-weight config on Triton 3.7 (see _gemv_config).
+_NARROW_CAPS = ((7, 5), (8, 9))
+
+
 @functools.lru_cache(maxsize = None)
-def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, force):
+def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, force):
     """(use the words kernel, grid, BLOCK_N, BLOCK_K, num_warps).
 
     Kernel time (CUDA graphs) over Llama 1B to 70B shapes: before Triton 3.7 the words kernel at
@@ -177,6 +181,10 @@ def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, for
         # T4, L4 and A100 (interleaved CUDA graph timing; T4 throttles, so sweeps must interleave).
         return True, (N,), 1, block_k, 1
     if force is None:
+        if capability in _NARROW_CAPS and N * K > 1 << 25 and K >= 4096:
+            # T4 and L4 on Triton 3.7: the Llama 8B MLP weights run 3% to 9% faster at BLOCK_K 1024
+            # and 2 warps (L4 4096x14336 would otherwise trail bitsandbytes); A100 and B200 do not.
+            return False, (-(-N // 4),), 4, max(blocksize, 1024), 2
         return False, (-(-N // 4),), 4, block_k, 4
     # Forced byte kernel (tests): the pre-3.7 byte config.
     block_k = max(blocksize, min(1024, triton.next_power_of_2(K)))
@@ -185,8 +193,8 @@ def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, for
 
 
 @functools.lru_cache(maxsize = None)
-def _major(index):
-    return torch.cuda.get_device_capability(index)[0]
+def _capability(index):
+    return torch.cuda.get_device_capability(index)
 
 
 def _launch(
@@ -207,7 +215,7 @@ def _launch(
 ):
     nested = code2 is not None
     use_words, grid, block_n, block_k, num_warps = _gemv_config(
-        N, K, blocksize, _major(X.device.index), _word_aligned(W), _FORCE_KERNEL
+        N, K, blocksize, _capability(X.device.index), _word_aligned(W), _FORCE_KERNEL
     )
     kernel = kernels[1] if use_words else kernels[0]
     args = (

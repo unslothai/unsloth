@@ -234,6 +234,18 @@ def test_every_launch_config_is_exact(shape, words, evict, lut_mode, monkeypatch
                 assert _bytes_equal(dequantize_nf4(*_args(q, s)), ref), (dtype, blocksize, target)
 
 
+def test_every_table_config_is_exact_here(monkeypatch):
+    # Each GPU's table entry, run on this GPU: exactness does not depend on the GPU it was tuned on.
+    configs = {row[1:] for table in nf4_mod._CONFIGS.values() for row in table}
+    for shape in [(17, 33), (1024, 4096)]:
+        for dtype in (torch.float16, torch.bfloat16):
+            q, s = _quantize(shape, dtype, 64)
+            ref = bnb_functional.dequantize_4bit(q, s)
+            for config in sorted(configs):
+                monkeypatch.setattr(nf4_mod, "_CONFIG_OVERRIDE", config)
+                assert _bytes_equal(dequantize_nf4(*_args(q, s)), ref), (shape, dtype, config)
+
+
 def test_compile_cache_key_covers_the_kernel_source():
     """Inductor's FX graph cache keys a triton_op call without the Triton source behind it: with a
     warm cache, an edited kernel came back as the previous kernel's code. The kernel files' hashes

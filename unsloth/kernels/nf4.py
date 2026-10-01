@@ -178,6 +178,9 @@ _CONFIGS = {
         (None, 1024, 2, True, True, 2),
     ),
 }
+if Version(triton.__version__) >= Version("3.7.0"):
+    # T4 on Triton 3.7: 5% to 7% faster at every Llama 1B / 8B shape (not on Triton 3.6).
+    _CONFIGS[(7, 5)] = ((None, 512, 8, True, True, 0),)
 # tl.gather on a register table fails to compile on Triton 3.3; older Triton uses the L1 load.
 _HAS_TL_GATHER = Version(triton.__version__) >= Version("3.6.0")
 # Tests and the sweep script set this to a (target, num_warps, words, evict, lut_mode) tuple.

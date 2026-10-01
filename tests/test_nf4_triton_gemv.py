@@ -64,10 +64,17 @@ def _rel_err(a, ref):
 TOL = {torch.float16: 2e-3, torch.bfloat16: 1.2e-2}
 
 
-@pytest.fixture(params = [None, "bytes", "words"], ids = ["auto", "bytes", "words"])
+@pytest.fixture(params = [None, "narrow", "bytes", "words"], ids = ["auto", "narrow", "bytes", "words"])
 def kernel(request, monkeypatch):
-    # Both kernel forms, whichever this Triton version and GPU would pick on its own.
-    monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", request.param)
+    # Both kernel forms, whichever this Triton version and GPU would pick on its own, and the
+    # T4 / L4 large-weight config on this GPU.
+    if request.param == "narrow":
+        capability = torch.cuda.get_device_capability()
+        monkeypatch.setattr(nf4_gemv, "_NARROW_CAPS", (capability,))
+        nf4_gemv._gemv_config.cache_clear()
+        request.addfinalizer(nf4_gemv._gemv_config.cache_clear)
+    else:
+        monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", request.param)
     return request.param
 
 

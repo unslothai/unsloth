@@ -13,6 +13,7 @@ import torch
 from unsloth_zoo.utils import Version
 from .utils import (
     _maybe_fake_quantize_activations,
+    addmm_,
     fast_dequantize,
     QUANT_STATE,
     get_lora_parameters,
@@ -195,12 +196,12 @@ class LoRA_MLP(torch.autograd.Function):
         # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
-        dX.addmm_(up_dB, upA.t(), alpha = upS)
+        addmm_(dX, up_dB, upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        dX.addmm_(de, gateW.t())
+        addmm_(dX, de, gateW.t())
         del gateW
-        dX.addmm_(gate_dB, gateA.t(), alpha = gateS)
+        addmm_(dX, gate_dB, gateA.t(), alpha = gateS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -484,17 +485,17 @@ class LoRA_QKV(torch.autograd.Function):
         QW = fast_dequantize(QW.t(), QW_quant)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
-        dX.addmm_(q_dB, QA.t(), alpha = QS)
+        addmm_(dX, q_dB, QA.t(), alpha = QS)
 
         KW = fast_dequantize(KW.t(), KW_quant)
-        dX.addmm_(dK, KW.t())
+        addmm_(dX, dK, KW.t())
         del KW
-        dX.addmm_(k_dB, KA.t(), alpha = KS)
+        addmm_(dX, k_dB, KA.t(), alpha = KS)
 
         VW = fast_dequantize(VW.t(), VW_quant)
-        dX.addmm_(dV, VW.t())
+        addmm_(dX, dV, VW.t())
         del VW
-        dX.addmm_(v_dB, VA.t(), alpha = VS)
+        addmm_(dX, v_dB, VA.t(), alpha = VS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -618,7 +619,7 @@ class LoRA_W(torch.autograd.Function):
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
-        dX.addmm_(y_dB, A.t(), alpha = S)
+        addmm_(dX, y_dB, A.t(), alpha = S)
 
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 

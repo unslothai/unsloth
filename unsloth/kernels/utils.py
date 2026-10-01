@@ -1426,6 +1426,38 @@ def fast_linear_forward(
     return out
 
 
+# Traced, x.addmm_(a, b) becomes an out-of-place addmm that first copies x; as a custom op that
+# mutates x, Inductor runs it in place. The op has no derivative, so only with grad disabled
+# (inside an autograd.Function's forward or backward).
+_HAS_ADDMM_OP = hasattr(torch.library, "custom_op")
+if _HAS_ADDMM_OP:
+
+    @torch.library.custom_op("unsloth::addmm_", mutates_args = ["out"])
+    def _addmm_op(
+        out: torch.Tensor, A: torch.Tensor, B: torch.Tensor, alpha: float, beta: float
+    ) -> None:
+        out.addmm_(A, B, alpha = alpha, beta = beta)
+
+
+def addmm_(
+    out,
+    A,
+    B,
+    alpha = 1.0,
+    beta = 1.0,
+):
+    """out.addmm_(A, B, alpha = alpha, beta = beta), in place when traced too."""
+    if (
+        _HAS_ADDMM_OP
+        and torch.compiler.is_compiling()
+        and not torch.is_grad_enabled()
+        and type(alpha) in (int, float)
+    ):
+        torch.ops.unsloth.addmm_(out, A, B, alpha, beta)
+        return out
+    return out.addmm_(A, B, alpha = alpha, beta = beta)
+
+
 def matmul_lora(
     X,
     W,
@@ -1468,6 +1500,6 @@ def matmul_lora(
     if A is not None:
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
-        out.addmm_(XA, B.to(dtype), alpha = s)
+        addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out
