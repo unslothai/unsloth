@@ -94,3 +94,10 @@ test("shadowed menus scroll an inner viewport, not their rounded surface", () =>
   assert.match(presets, /gap-0 overflow-hidden rounded-xl border-border\/70 p-0 shadow-xl/);
   assert.match(presets, /max-h-48 min-h-0 overflow-y-auto overscroll-contain p-2/);
 });
+
+test("MCP Servers takes the shared dialog cap, so the collapsed list does not scroll", () => {
+  // 85dvh left it a few px short of its collapsed content on an ordinary laptop window.
+  const mcp = readSrc("features/chat/chat-mcp-servers-dialog.tsx");
+  assert.match(mcp, /<DialogContent\s+className="max-w-2xl overflow-y-auto"/);
+  assert.doesNotMatch(mcp, /max-h-\[85dvh\]/);
+});

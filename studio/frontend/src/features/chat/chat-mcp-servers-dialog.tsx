@@ -884,8 +884,10 @@ export function ChatMcpServersDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
+      {/* DialogContent's own cap (the window less 2rem), not 85dvh: that left the collapsed list a
+          few px short on an ordinary laptop window, so it scrolled before anything was opened. */}
       <DialogContent
-        className="max-w-2xl max-h-[85dvh] overflow-y-auto"
+        className="max-w-2xl overflow-y-auto"
         showCloseButton={!blenderBusy && !(saving && !codecPending) && busyIds.size === 0}
         aria-busy={decodingCommand}
       >
