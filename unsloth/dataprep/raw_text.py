@@ -191,8 +191,7 @@ class RawTextDataLoader:
                 break
             start_idx += chunk_size - stride
 
-        # Stride 0 + exact multiple leaves a lone-EOS chunk: overlap one token rather than move it,
-        # since a chunk's first token is never a label.
+        # Stride 0 + exact multiple leaves a lone-EOS chunk: overlap (not move) one token to keep its label.
         if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
             bounds[-1][0] -= 1
 

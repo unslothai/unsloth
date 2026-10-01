@@ -861,9 +861,7 @@ def test_text_chunks_reserve_space_for_the_final_eos():
 
 
 def test_chunk_size_one_keeps_the_final_eos_overflow():
-    # A one-token chunk cannot hold a token and the EOS, so nothing is reserved there and the
-    # last chunk stays two long, as it has always been. Reserving would only move the problem:
-    # it would hand back a chunk holding nothing but the EOS.
+    # Reserving here would only produce a lone-EOS chunk.
     loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = 1, stride = 0)
     for count in (1, 2, 3):
         chunks = loader.chunk_text(" ".join(map(str, range(count))))
