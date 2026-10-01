@@ -67,10 +67,6 @@ APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ("install.ps1", "start unsloth studio now?"): (
         "Windows half of the sanctioned launch prompt above."
     ),
-    ("install.sh", "install a systemd user service for auto-start on boot and crash recovery?"): (
-        "Linux opt-in for a systemd user unit, asked only with a user bus and a TTY, "
-        "default no; UNSLOTH_INSTALL_SYSTEMD / UNSLOTH_SKIP_SYSTEMD answer it unattended."
-    ),
     ("install.sh", "accept?"): (
         "Consent before `sudo apt-get install` of missing system packages, "
         "not a preference. Declining prints the command to run by hand."

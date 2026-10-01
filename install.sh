@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_SKIP_SYSTEMD, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -43,7 +43,6 @@ _NO_ROLLBACK=false
 # Set by the discard itself, so the disk-full remedy can describe what happened rather than what was requested.
 _VENV_DISCARDED=false
 _VENV_DISCARD_LEFTOVER=""
-_SKIP_SYSTEMD=false
 _INSTALL_SYSTEMD=false
 _SYSTEMD_STARTED=false
 _VERBOSE=false
@@ -87,7 +86,6 @@ case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 case "${UNSLOTH_INSTALL_NO_ROLLBACK:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_ROLLBACK=true ;; esac
-case "${UNSLOTH_SKIP_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_SYSTEMD=true ;; esac
 case "${UNSLOTH_INSTALL_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_SYSTEMD=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
@@ -1475,35 +1473,17 @@ _resolve_systemd_install_script() {
         2>/dev/null || true
 }
 
-_systemd_user_session_available() {
-    command -v systemctl >/dev/null 2>&1 || return 1
-    systemctl --user show-environment >/dev/null 2>&1
-}
-
-_offer_systemd_user_service() {
-    [ "$OS" = "linux" ] || return 0
-    [ "$_SKIP_SYSTEMD" = true ] && return 0
-
-    _sd_script=$(_resolve_systemd_install_script)
-    [ -n "$_sd_script" ] && [ -f "$_sd_script" ] || return 0
-
-    # No user bus: ask nothing, so the launch prompt below is unchanged.
-    if [ "$_INSTALL_SYSTEMD" != true ] && ! _systemd_user_session_available; then
+# Only with UNSLOTH_INSTALL_SYSTEMD set; without it the install is unchanged.
+_install_systemd_user_service() {
+    if [ "$OS" != "linux" ]; then
+        step "systemd" "UNSLOTH_INSTALL_SYSTEMD is Linux only; skipped" "$C_WARN"
         return 0
     fi
-
-    _sd_wants=false
-    if [ "$_INSTALL_SYSTEMD" = true ]; then
-        _sd_wants=true
-    elif [ -t 1 ] && _can_read_tty; then
-        echo ""
-        printf "  Install a systemd user service for auto-start on boot and crash recovery? [y/N] "
-        read -r _sd_reply </dev/tty || _sd_reply="n"
-        case "${_sd_reply:-n}" in
-            [Yy]*) _sd_wants=true ;;
-        esac
+    _sd_script=$(_resolve_systemd_install_script)
+    if [ -z "$_sd_script" ] || [ ! -f "$_sd_script" ]; then
+        step "systemd" "service helper not found in this install; skipped" "$C_WARN"
+        return 0
     fi
-    [ "$_sd_wants" = true ] || return 0
 
     set -- --unsloth-exe "$VENV_DIR/bin/unsloth" \
         --host "${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}" --port "${UNSLOTH_SYSTEMD_PORT:-8888}" --enable --start
@@ -3203,7 +3183,6 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
     [ -n "${UNSLOTH_MIRROR_FALLBACK:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_MIRROR_FALLBACK=$(_rr_q "$UNSLOTH_MIRROR_FALLBACK")"
     [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
-    [ "$_SKIP_SYSTEMD" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_SYSTEMD=1"
     [ "$_INSTALL_SYSTEMD" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_INSTALL_SYSTEMD=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
@@ -8742,8 +8721,12 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-_offer_systemd_user_service
-[ "$_SYSTEMD_STARTED" = true ] && _SKIP_AUTOSTART=true
+if [ "$_INSTALL_SYSTEMD" = true ]; then
+    _install_systemd_user_service
+    if [ "$_SYSTEMD_STARTED" = true ]; then
+        _SKIP_AUTOSTART=true
+    fi
+fi
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes. Prompt only when something can answer: `test -r` passes on the unopenable /dev/tty found in containers, leaving a dangling question in the log.
