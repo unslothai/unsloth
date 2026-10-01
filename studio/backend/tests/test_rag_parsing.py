@@ -337,7 +337,8 @@ _DOCX_XMLNS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
-    'xmlns:v="urn:schemas-microsoft-com:vml"'
+    'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
 )
 
 
@@ -443,6 +444,34 @@ def test_docx_reads_one_branch_of_alternate_content(tmp_path):
         "</mc:AlternateContent></w:p>",
     )
     assert text == "Preferred"
+
+
+def _m(text):
+    return f'<m:r><w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>{text}</m:t></m:r>'
+
+
+def test_docx_keeps_equations_where_they_appear(tmp_path):
+    half = f"<m:f><m:fPr><m:ctrlPr><w:rPr><w:i/></w:rPr></m:ctrlPr></m:fPr><m:num>{_m('1')}</m:num><m:den>{_m('2')}</m:den></m:f>"
+    squared = f"<m:sSup><m:e>{_m('v')}</m:e><m:sup>{_m('2')}</m:sup></m:sSup>"
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('The kinetic energy is ')}<m:oMath>{_m('E=')}{half}{_m('m')}{squared}</m:oMath>{_r(' joules.')}</w:p>",
+        f"<w:p><m:oMathPara><m:oMathParaPr/><m:oMath>{_m('F=ma')}</m:oMath></m:oMathPara></w:p>",
+    )
+    assert text == "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.\nF=ma"
+
+
+def test_docx_table_cells_keep_equations_without_deleted_parts(tmp_path):
+    root = f"<m:rad><m:radPr><m:degHide m:val=\"1\"/></m:radPr><m:deg/><m:e>{_m('x')}</m:e></m:rad>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Work')}</w:p></w:tc>"
+        f"<w:tc><w:p><m:oMath>{_m('W=F')}<m:d><m:e>{_m('a+b')}</m:e></m:d>"
+        f'<w:del w:id="1" w:author="a">{_m("+c")}</w:del>{root}</m:oMath></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Work | W=F(a+b)\\sqrt{x}"
 
 
 def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):

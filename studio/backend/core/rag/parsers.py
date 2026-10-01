@@ -465,6 +465,8 @@ def render_pdf_pages(
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+_M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+_DOCX_MATH = frozenset((_M + "oMathPara", _M + "oMath"))
 # Runs not shown as body text; text boxes are read as blocks of their own.
 _DOCX_SKIP_RUNS_UNDER = frozenset(
     (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
@@ -528,11 +530,71 @@ def _docx_blocks(element, parent):
             yield from _docx_blocks(child if content is None else content, parent)
 
 
+def _docx_math_text(element) -> str:
+    tag = element.tag
+    if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
+        return ""
+    if tag == _W + "r":
+        return element.text
+    if tag == _M + "t":
+        return element.text or ""
+    name = tag[len(_M) :] if tag.startswith(_M) else ""
+
+    def arg(key):
+        child = element.find(_M + key)
+        return "" if child is None else _docx_math_text(child)
+
+    def prop(key, default):
+        node = element.find(f"{_M}{name}Pr/{_M}{key}")
+        return default if node is None else node.get(_M + "val", "")
+
+    def scripts(sub, sup):
+        return (f"_{{{sub}}}" if sub else "") + (f"^{{{sup}}}" if sup else "")
+
+    if name == "f":
+        return f"\\frac{{{arg('num')}}}{{{arg('den')}}}"
+    if name in ("sSub", "sSup", "sSubSup"):
+        return arg("e") + scripts(arg("sub"), arg("sup"))
+    if name == "sPre":
+        return "{}" + scripts(arg("sub"), arg("sup")) + arg("e")
+    if name == "limLow":
+        return arg("e") + scripts(arg("lim"), "")
+    if name == "limUpp":
+        return arg("e") + scripts("", arg("lim"))
+    if name == "nary":
+        return prop("chr", "\u222b") + scripts(arg("sub"), arg("sup")) + arg("e")
+    if name == "rad":
+        deg = arg("deg")
+        return f"\\sqrt[{deg}]{{{arg('e')}}}" if deg else f"\\sqrt{{{arg('e')}}}"
+    if name == "acc":
+        return arg("e") + prop("chr", "\u0302")
+    if name == "func":
+        return f"{arg('fName')} {arg('e')}"
+    if name == "d":
+        return (
+            prop("begChr", "(")
+            + prop("sepChr", "|").join(_docx_math_text(e) for e in element.iterchildren(_M + "e"))
+            + prop("endChr", ")")
+        )
+    rows = {
+        "oMathPara": ("oMath", "\n"),
+        "eqArr": ("e", "\n"),
+        "m": ("mr", " \\\\ "),
+        "mr": ("e", " & "),
+    }
+    if name in rows:
+        child, sep = rows[name]
+        return sep.join(_docx_math_text(c) for c in element.iterchildren(_M + child))
+    return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
+
+
 def _docx_paragraph_text(paragraph) -> str:
     """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag."""
     p = paragraph._p
     return "".join(
-        run.text for run in p.iter(_W + "r") if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER)
+        _docx_math_text(run) if run.tag in _DOCX_MATH else run.text
+        for run in p.iter(_W + "r", *_DOCX_MATH)
+        if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER | _DOCX_MATH)
     )
 
 
