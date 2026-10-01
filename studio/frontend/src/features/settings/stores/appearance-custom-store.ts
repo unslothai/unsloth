@@ -322,6 +322,7 @@ export const CONTRAST_PANEL_TARGET_VAR = "--contrast-panel-target";
 /** Multipliers for the hand-written washes that stand in for those tokens. */
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
 export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
+export const CONTRAST_SEAM_GAIN_VAR = "--contrast-seam-gain";
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -1063,6 +1064,10 @@ export function applyCustomizationToDocument(
     // chrome you aim at. Raising doubles it, level with the state tokens.
     setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 1 : 0.4));
     setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
+    setVar(
+      CONTRAST_SEAM_GAIN_VAR,
+      (1 - distance * (raising ? 0.9 : 0.15)).toFixed(3),
+    );
   } else {
     el.removeAttribute("data-contrast-adjust");
     setVar("--contrast-target", null);
@@ -1078,6 +1083,7 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_INK_MIX_VAR, null);
     setVar(CONTRAST_WASH_GAIN_VAR, null);
     setVar(CONTRAST_EDGE_GAIN_VAR, null);
+    setVar(CONTRAST_SEAM_GAIN_VAR, null);
   }
 
   el.classList.toggle("pointer-cursors", c.pointerCursors);

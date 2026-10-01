@@ -652,20 +652,14 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute inset-x-0 '
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
-    # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
-    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border",' in decoration
-    # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
+    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-0",' in decoration
     assert re.search(
         r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
-        r"rounded-tl-\[12px\] border-l ",
+        r'rounded-tl-\[12px\] border-l"',
         decoration,
     )
-    assert re.search(
-        r"usesDesktopTitlebar && !usesNativeMacTitlebar && pinned &&\s*"
-        r'"\[&_\[data-sidebar=sidebar\]\]:border-r-0"',
-        APP_SIDEBAR.read_text(encoding = "utf-8"),
-    )
     assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
+    assert "style={{ left: cornerLeft }}" in decoration
     # The sidebar-coloured mask outside the corner only appears when pinned.
     assert decoration.count("{pinned && (") == 1
     assert "transparent_11px,var(--color-sidebar)_12px" in decoration
@@ -872,10 +866,17 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
-def test_collapsed_mac_sidebar_hides_divider():
+def test_sidebar_draws_its_edge_unless_the_titlebar_outline_does():
     source = _ui_source(APP_SIDEBAR)
+    inner = _ui_source(SIDEBAR_PRIMITIVE).split('data-slot="sidebar-inner"', 1)[1].split(">", 1)[0]
 
-    assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
+    assert "border-r" not in inner
+    assert re.search(
+        r'!\(usesCustomTitlebar && pinned\) &&\s*"\[&_\[data-sidebar=sidebar\]\]:border-r '
+        r"\[&_\[data-sidebar=sidebar\]\]:border-sidebar-edge "
+        r'dark:\[&_\[data-sidebar=sidebar\]\]:border-r-0"',
+        source,
+    )
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
