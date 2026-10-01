@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 # PNG text-chunk key holding our structured recipe JSON.
 _META_KEY = "unsloth"
-# Bump when additive recipe keys change; absent on PNGs written before schema_version existed.
+# Absent on PNGs written before it existed.
 RECIPE_SCHEMA_VERSION = 1
 # Image ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -63,8 +63,7 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     from PIL.PngImagePlugin import PngInfo
 
     info = PngInfo()
-    payload = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
-    info.add_text(_META_KEY, json.dumps(payload))
+    info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
     buf = io.BytesIO()
     image.save(buf, format = "PNG", pnginfo = info)
@@ -74,6 +73,7 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
+    meta = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
     data = _png_bytes(image, meta)

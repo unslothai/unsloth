@@ -762,6 +762,7 @@ def test_recipe_e2e_generate_response_png_and_file_endpoint_agree(recipe_e2e_cli
     assert gen.status_code == 200, gen.text
     wire = gen.json()["images"][0]
     image_id = wire["id"]
+    assert wire["schema_version"] == RECIPE_SCHEMA_VERSION
 
     for key, expected in (
         ("speed_mode", "default"),

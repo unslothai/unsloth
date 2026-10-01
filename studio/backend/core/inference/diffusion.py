@@ -9189,8 +9189,7 @@ class DiffusionBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
-                    # Generation-time build knobs, read after deferred speed / step-cache toggles so the recipe
-                    # records what actually ran, not the load request or an earlier generation's profile.
+                    # Read after the deferred speed / step-cache toggles, so this is what ran.
                     "speed_mode": state.speed_mode,
                     "attention_backend": state.attention_backend,
                     "transformer_cache": state.transformer_cache,
