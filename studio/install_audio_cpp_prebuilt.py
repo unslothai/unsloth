@@ -69,12 +69,13 @@ else:
         _safe_extractall,
     )
 
-# The Unsloth fork publishes the bundles Studio pins; UNSLOTH_AUDIO_CPP_REPO overrides it.
-DEFAULT_REPO = "Etherll/audio.cpp"
+# The Unsloth fork publishes the bundles Studio pins (CI: .github/workflows/unsloth-prebuilt.yml there,
+# like unslothai/whisper.cpp); UNSLOTH_AUDIO_CPP_REPO overrides it.
+DEFAULT_REPO = "unslothai/audio.cpp"
 UPSTREAM_FALLBACK_REPO = "0xShug0/audio.cpp"
 # Pinned for reproducibility; UNSLOTH_AUDIO_CPP_TAG overrides ('' tracks latest). The fork's tags carry
-# the Unsloth packaging (static eSpeak-ng, multi-arch Linux CUDA); upstream never publishes them.
-DEFAULT_TAG = "v0.8.2-unsloth.2"
+# the Unsloth packaging (static eSpeak-ng, lean multi-arch Linux CUDA); upstream never publishes them.
+DEFAULT_TAG = "v0.8.2-audio8-perf-hotfix-unsloth.1"
 # The upstream release the fork tag is built from, tried when the fork cannot serve this host.
 UPSTREAM_FALLBACK_TAG = "v0.8.2-audio8-perf-hotfix"
 
@@ -122,7 +123,7 @@ _ARCH_TOKENS = {
     "arm64": "arm64",
     "aarch64": "arm64",
 }
-# "-cuda12.8" (upstream, Etherll) or "-cuda12" (unslothai/audio.cpp: one bundle per major line).
+# "-cuda12.8" (upstream) or "-cuda12" (unslothai/audio.cpp: one lean bundle per CUDA major line).
 _CUDA_LINE = re.compile(r"-cuda(\d+)(?:\.(\d+))?(?=[-.]|$)")
 
 

@@ -1084,3 +1084,62 @@ def test_the_staged_server_never_sees_secrets(monkeypatch, tmp_path):
             else ("DYLD_LIBRARY_PATH" if M.sys.platform == "darwin" else "LD_LIBRARY_PATH")
         ]
     )
+
+
+# The asset set unslothai/audio.cpp's prebuilt CI publishes (v0.8.2-audio8-perf-hotfix-unsloth.1).
+_FORK_T = "v0.8.2-audio8-perf-hotfix-unsloth.1"
+_FORK_ASSETS = [
+    f"audio-{_FORK_T}-bin-{n}"
+    for n in (
+        "macos-arm64-metal.tar.gz",
+        "macos-x64-metal.tar.gz",
+        "ubuntu-arm64-cpu.tar.gz",
+        "ubuntu-x64-cpu-portable.tar.gz",
+        "ubuntu-x64-cpu.tar.gz",
+        "ubuntu-x64-cuda12.tar.gz",
+        "ubuntu-x64-cuda13.tar.gz",
+        "ubuntu-x64-vulkan.tar.gz",
+        "windows-x64-cpu-portable.zip",
+        "windows-x64-cpu.zip",
+        "windows-x64-cuda12.zip",
+        "windows-x64-cuda13.zip",
+        "windows-x64-vulkan.zip",
+    )
+] + [f"audio-{_FORK_T}-cudart-windows-x64-cuda{m}.zip" for m in (12, 13)]
+
+
+@pytest.mark.parametrize(
+    "system, machine, accel, driver, prefer, want, cudart",
+    [
+        ("Linux", "x86_64", "cpu", None, None, "ubuntu-x64-cpu-portable.tar.gz", None),
+        ("Linux", "x86_64", "vulkan", None, None, "ubuntu-x64-vulkan.tar.gz", None),
+        ("Linux", "x86_64", "cuda", (13, 1), 13, "ubuntu-x64-cuda13.tar.gz", None),
+        ("Linux", "x86_64", "cuda", (13, 1), 12, "ubuntu-x64-cuda12.tar.gz", None),
+        ("Linux", "x86_64", "cuda", (12, 4), None, "ubuntu-x64-cuda12.tar.gz", None),
+        ("Linux", "x86_64", "cuda", (11, 8), None, None, None),
+        ("Linux", "aarch64", "cpu", None, None, "ubuntu-arm64-cpu.tar.gz", None),
+        ("Linux", "aarch64", "cuda", (13, 0), 13, None, None),
+        ("Windows", "AMD64", "cpu", None, None, "windows-x64-cpu-portable.zip", None),
+        ("Windows", "AMD64", "vulkan", None, None, "windows-x64-vulkan.zip", None),
+        ("Windows", "AMD64", "cuda", (13, 2), None, "windows-x64-cuda13.zip", "cuda13"),
+        ("Windows", "AMD64", "cuda", (12, 8), 12, "windows-x64-cuda12.zip", "cuda12"),
+        ("Darwin", "arm64", "metal", None, None, "macos-arm64-metal.tar.gz", None),
+        ("Darwin", "x86_64", "metal", None, None, "macos-x64-metal.tar.gz", None),
+    ],
+)
+def test_the_fork_release_covers_every_host(system, machine, accel, driver, prefer, want, cudart):
+    got = M.resolve_release_asset(
+        _FORK_ASSETS,
+        system = system,
+        machine = machine,
+        accelerator = accel,
+        driver_cuda = driver,
+        prefer_cuda_major = prefer,
+    )
+    if want is None:
+        # No bundle: resolve_for_request falls back to the CPU build for an auto request.
+        assert got is None
+        return
+    assert got == f"audio-{_FORK_T}-bin-{want}"
+    rt = M.cudart_asset_for(_FORK_ASSETS, got)
+    assert rt == (f"audio-{_FORK_T}-cudart-windows-x64-{cudart}.zip" if cudart else None)
