@@ -48,6 +48,8 @@ export function useStagedDownload({
   onCancelled?: () => void;
 }) {
   const downloadOnly = useRef(false);
+  const confirmAssetsRef = useRef(confirmAssets);
+  confirmAssetsRef.current = confirmAssets;
   const [pendingAssets, setPendingAssets] = useState<StagedDownloadEntry[] | null>(null);
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   // Keep the original total as completed entries leave the queue.
@@ -162,7 +164,7 @@ export function useStagedDownload({
     downloadOnly.current = false;
     generation.current += 1;
     inFlight.current = null;
-    if (confirmAssets && additionalAssetDownloads(entries).length > 0) {
+    if (confirmAssetsRef.current && additionalAssetDownloads(entries).length > 0) {
       setQueue(null);
       setPendingAssets(entries);
     } else {
@@ -174,7 +176,7 @@ export function useStagedDownload({
       plan: generation.current,
     });
     return generation.current;
-  }, [confirmAssets]);
+  }, []);
 
   const remainingBytes = (queue ?? []).reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0);
   const currentBytes = current
