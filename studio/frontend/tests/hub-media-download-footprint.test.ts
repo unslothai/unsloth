@@ -97,10 +97,16 @@ test("companions are the uncached plan entries beyond the checkpoint", async () 
   // A cached checkpoint leaves its repo's missing companions unflagged.
   planBody = plan([entry(GGUF_REPO, 7)]);
   assert.equal(await resolve(), 7);
-  // An older backend sends no checkpoint flag.
-  const unflagged = { ...entry(GGUF_REPO, GGUF_BYTES + 7), files: ["q5.gguf"] };
-  planBody = plan([{ ...unflagged, checkpoint: undefined }]);
-  assert.equal(await resolve(), 7);
+  // Without the flag (older backend) the bytes cannot be attributed: a scoped
+  // file list names the GGUF whether or not it is cached.
+  planBody = plan([
+    {
+      ...entry(GGUF_REPO, GGUF_BYTES + 7),
+      files: ["q5.gguf"],
+      checkpoint: undefined,
+    },
+  ]);
+  assert.equal(await resolve(), null);
   // The listed size stands in for a checkpoint the planner could not size.
   planBody = plan([entry(GGUF_REPO, GGUF_BYTES + 7, true)], {
     // biome-ignore lint/style/useNamingConvention: API schema

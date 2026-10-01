@@ -75,13 +75,14 @@ export async function resolveCompanionBytes(
       : await getDiffusionDownloadPlan(request);
   // Rejected, not null, so the per-card cache drops it and a later rerun retries.
   if (plan.plan_failed) throw new Error("Download plan incomplete");
+  // A backend without the per-entry flag cannot say which bytes are the checkpoint's.
+  if (plan.entries.some((entry) => entry.checkpoint === undefined)) return null;
   const checkpointBytes = plan.checkpoint_bytes || sizeBytes;
   // Entries hold only uncached files; required_bytes would count cached companions too.
   const companionBytes = plan.entries.reduce(
     (sum, entry) =>
       sum +
-      // An older backend omits the flag; the pages infer it from the file list the same way.
-      ((entry.checkpoint ?? entry.files.includes(filename))
+      (entry.checkpoint
         ? Math.max(0, entry.bytes - checkpointBytes)
         : entry.bytes),
     0,
