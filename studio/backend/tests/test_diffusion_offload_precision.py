@@ -91,7 +91,11 @@ SURVIVAL = {
         s: {v: (True, OFFLOAD_MODEL) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
     "model_too_big": {
-        "int8": {T016: (False, None), T017: (True, OFFLOAD_STREAMING), T018: (True, OFFLOAD_STREAMING)},
+        "int8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "fp8": {
             T016: (False, None),
             T017: (True, OFFLOAD_STREAMING),
@@ -100,7 +104,11 @@ SURVIVAL = {
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
     "streaming": {
-        "int8": {T016: (False, None), T017: (True, OFFLOAD_STREAMING), T018: (True, OFFLOAD_STREAMING)},
+        "int8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "fp8": {
             T016: (False, None),
             T017: (True, OFFLOAD_STREAMING),

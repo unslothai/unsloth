@@ -30,7 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference.diffusion_auto_policy import format_generation_for_log
+from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -53,6 +53,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
     supported_family_names,
+    _family_override_resolved,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -340,6 +341,14 @@ def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
     if text is None:
         return False
     return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+
+
+def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
+    """Fails closed: sd-cli exits non-zero on an unknown option (u13b9d92 predates --sage-attn)."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and "--sage-attn" in text
 
 
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
@@ -801,6 +810,48 @@ def _installer_module():
 # has no asset for would re-resolve (and re-download) on every single load, because the wrong-accelerator binary it
 # keeps still does not match the request.
 _failed_accelerator_upgrades: set[str] = set()
+
+
+# (pin, accelerator class) upgrades that failed this process: keep the old bundle instead of retrying every load.
+_failed_pin_upgrades: set[tuple[str, str]] = set()
+_PIN_UPGRADE_ENV = "UNSLOTH_SD_CPP_AUTO_UPGRADE"
+
+
+def _pin_upgrade_disabled() -> bool:
+    return os.environ.get(_PIN_UPGRADE_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _pin_moved(binary: str, accelerator: str) -> bool:
+    """True when ``binary`` is a managed install made for an older pin. Unknown answers False."""
+    if _pin_upgrade_disabled():
+        return False
+    root = owning_managed_root(binary)
+    if root is None:
+        return False
+    if _managed_tree_in_use():
+        return False
+    try:
+        mod = _installer_module()
+        want = mod._pinned_tag()
+        if not want or (want, mod.accelerator_class(accelerator)) in _failed_pin_upgrades:
+            return False
+        return bool(mod.install_is_stale(root))
+    except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary
+        return False
+
+
+def _note_failed_pin_upgrade(accelerator: str) -> None:
+    try:
+        mod = _installer_module()
+        want = mod._pinned_tag()
+        if want:
+            _failed_pin_upgrades.add((want, mod.accelerator_class(accelerator)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _needs_reinstall(binary: str, accelerator: str) -> bool:
+    return _accelerator_changed(binary, accelerator) or _pin_moved(binary, accelerator)
 
 
 def _note_failed_upgrade(accelerator: str) -> None:
@@ -1589,7 +1640,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
     try:
         mod = _installer_module()
         want = mod.accelerator_class(accelerator)
-        if not _record_mismatch(mod, root, want) or _record_mismatch(mod, current, want):
+        # Superseded = built for another accelerator, or (with the pin upgrade on) for an older pin.
+        legacy_stale = _record_mismatch(mod, root, want) or (
+            not _pin_upgrade_disabled() and mod.install_is_stale(root)
+        )
+        if (
+            not legacy_stale
+            or _record_mismatch(mod, current, want)
+            or mod.install_is_stale(current)
+        ):
             return False
         return mod.installed_ships_server(current) is False
     except Exception:  # noqa: BLE001 -- cannot tell
@@ -1826,14 +1885,14 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
     diffusers."""
     found = find_sd_cpp_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
-    if usable and not _accelerator_changed(found, accelerator):
+    if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
     with _install_lock:
         found = find_sd_cpp_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
-        if usable and not _accelerator_changed(found, accelerator):
+        if usable and not _needs_reinstall(found, accelerator):
             return found
         # A usable binary of the wrong accelerator is still better than none, so an install that cannot deliver the
         # right one (no such asset for this host, no network) keeps it.
@@ -1866,6 +1925,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None:
                     _note_failed_upgrade(accelerator)
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
 
 
@@ -1885,7 +1945,7 @@ def ensure_sd_server_binary(
     # not downloaded again on every later load.
     if usable and _superseded_legacy_server(found, accelerator):
         return None
-    if usable and not _accelerator_changed(found, accelerator):
+    if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
@@ -1894,7 +1954,7 @@ def ensure_sd_server_binary(
         usable = bool(found) and _usable_or_discard_managed(found)
         if usable and _superseded_legacy_server(found, accelerator):
             return None
-        if usable and not _accelerator_changed(found, accelerator):
+        if usable and not _needs_reinstall(found, accelerator):
             return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched
         fallback = found if usable else None
@@ -1920,6 +1980,7 @@ def ensure_sd_server_binary(
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
         installed = find_sd_server_binary()
         # The finder also probes the tree an older build left beside the Unsloth home, so when the bundle just
@@ -1927,7 +1988,7 @@ def ensure_sd_server_binary(
         # None, not the fallback: an install just completed, so the router's next step resolves the sd-cli it landed,
         # and a one-shot run on the right build beats a resident server on the wrong one. The fallback stays for the
         # failure path above, where no matching binary was fetched at all.
-        if installed and _accelerator_changed(installed, accelerator):
+        if installed and _needs_reinstall(installed, accelerator):
             return None
         return installed or fallback
 
@@ -1943,6 +2004,7 @@ class _SdState:
     family: DiffusionFamily
     device: str
     files: SdCppModelFiles
+    display_repo_id: Optional[str] = None
     vae_format: Optional[str] = None
     native_speed: str = "off"
     offload_flags: tuple[str, ...] = ()
@@ -1953,6 +2015,7 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
+    resolved: Optional[dict] = None
     # The GGUF basename this load committed: some variants pick their encoder by filename, and a local *klein-9B*.gguf
     # carries that keyword only in the basename.
     gguf_filename: Optional[str] = None
@@ -2445,6 +2508,7 @@ class SdCppDiffusionBackend:
         # BINARY, which is a separate managed tree with its own install policy; a background load may still install
         # one, exactly as it does today.
         local_files_only: bool = False,
+        display_repo_id: Optional[str] = None,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -2556,10 +2620,12 @@ class SdCppDiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
                 fam = fam,
+                family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
@@ -2578,9 +2644,11 @@ class SdCppDiffusionBackend:
         self,
         *,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         gguf_filename: str,
         base: str,
         fam: DiffusionFamily,
+        family_override: Optional[str] = None,
         hf_token: Optional[str],
         # Cache-only when set: every Hub call below is either skipped or told to resolve from disk, so a load nobody
         # asked for cannot pull bytes. See begin_load for what it does not cover.
@@ -2919,6 +2987,7 @@ class SdCppDiffusionBackend:
                 )
                 state = _SdState(
                     repo_id = repo_id,
+                    display_repo_id = display_repo_id,
                     base_repo = base,
                     family = fam,
                     device = device,
@@ -2934,6 +3003,9 @@ class SdCppDiffusionBackend:
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
+                    resolved = build_resolved_record(
+                        {"family_override": _family_override_resolved(family_override, fam)}
+                    ),
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image, long after this
@@ -3666,7 +3738,7 @@ class SdCppDiffusionBackend:
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants
                     # make different pixels.
                     "model_kind": "gguf",
@@ -3683,6 +3755,8 @@ class SdCppDiffusionBackend:
                     "offload_policy": (
                         "active" if without_device_backend_flags(state.offload_flags) else "none"
                     ),
+                    "speed_mode": state.native_speed,
+                    "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
                     "workflow": workflow if conditioned else "txt2img",
                     "reference_resolution": None,
                     "localized_edit": getattr(localized_edit, "mode", None)
@@ -4129,6 +4203,7 @@ class SdCppDiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -4144,6 +4219,7 @@ class SdCppDiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "resolved": None,
                 "engine": "sd_cpp",
                 "native_mode": None,
                 "supports_lora": False,
@@ -4183,6 +4259,7 @@ class SdCppDiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,
@@ -4206,6 +4283,7 @@ class SdCppDiffusionBackend:
             "transformer_quant": None,
             "attention_backend": None,
             "transformer_cache": None,
+            "resolved": state.resolved,
             "engine": "sd_cpp",
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "sd_cpp",

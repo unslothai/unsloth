@@ -38,7 +38,9 @@ BACKEND = Path(__file__).resolve().parents[1]
 # Qwen-Image-2.1 auto (int8 DiT + fp8 TE) as the planner prices it, and as it loads.
 DENSE = dict(model_dense_mib = 19630, companion_dense_mib = 12182, text_encoder_dense_mib = 10847)
 # The explicit transformer_quant=int8 path prices the encoder dense (16.7 GB) while it loads fp8 (9.0 GB).
-DENSE_EXPLICIT = dict(model_dense_mib = 31566, companion_dense_mib = 18024, text_encoder_dense_mib = 16689)
+DENSE_EXPLICIT = dict(
+    model_dense_mib = 31566, companion_dense_mib = 18024, text_encoder_dense_mib = 16689
+)
 TE_LOADED_MIB = 8960
 VAE_LOADED_MIB = 645
 DIT_LOADED_MIB = 7448
@@ -59,7 +61,11 @@ CARD_12 = _card(11888, 12288)
 CARD_8 = _card(7788, 8188)
 
 
-def _plan(card, mode = None, sizes = DENSE):
+def _plan(
+    card,
+    mode = None,
+    sizes = DENSE,
+):
     return plan_diffusion_memory(
         target = _Target(),
         device_memory = card,
@@ -72,7 +78,9 @@ def _plan(card, mode = None, sizes = DENSE):
 def _module(mib):
     m = torch.nn.Module()
     # meta: sized like the loaded component, allocates nothing
-    m.w = torch.nn.Parameter(torch.empty(mib * MIB, dtype = torch.uint8, device = "meta"), requires_grad = False)
+    m.w = torch.nn.Parameter(
+        torch.empty(mib * MIB, dtype = torch.uint8, device = "meta"), requires_grad = False
+    )
     return m
 
 
@@ -102,7 +110,11 @@ def _clean_env(monkeypatch):
 
 @pytest.mark.parametrize("card", [CARD_8, CARD_12, CARD_16])
 def test_offloading_auto_plan_seeds_int8_on_the_host(card):
-    plan = dm.torchao_streaming_plan(_plan(card)) if _plan(card).offload_policy == OFFLOAD_MODEL else _plan(card)
+    plan = (
+        dm.torchao_streaming_plan(_plan(card))
+        if _plan(card).offload_policy == OFFLOAD_MODEL
+        else _plan(card)
+    )
     assert plan.offload_policy != OFFLOAD_NONE
     assert not dm.plan_keeps_transformer_resident(plan)
     assert prequant_seed_device(plan, "cuda", "int8") == "cpu"
@@ -148,7 +160,11 @@ def test_denoiser_seed_forwards_the_placement(monkeypatch):
     monkeypatch.setattr(dp, "denoiser_prequant_source", lambda *a, **k: object())
     monkeypatch.setattr(diffusers, "QwenImage21Transformer2DModel", object, raising = False)
     out = dp.denoiser_prequant_pipe_kwargs(
-        _Fam(), "Qwen/Qwen-Image-2.1", scheme = "int8", dtype = torch.bfloat16, device = "cuda",
+        _Fam(),
+        "Qwen/Qwen-Image-2.1",
+        scheme = "int8",
+        dtype = torch.bfloat16,
+        device = "cuda",
         placement_device = "cpu",
     )
     assert out
@@ -165,16 +181,25 @@ def test_loader_materialises_on_the_placement_device():
 def test_pipeline_seed_call_passes_the_plan_placement():
     tree = ast.parse((BACKEND / "core/inference/diffusion.py").read_text())
     calls = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "denoiser_prequant_pipe_kwargs"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "denoiser_prequant_pipe_kwargs"
     ]
     assert calls, "pipeline seed call not found"
     for call in calls:
         kw = {k.arg: k.value for k in call.keywords}
         assert "placement_device" in kw
         value = kw["placement_device"]
-        assert isinstance(value, ast.Call) and getattr(value.func, "id", None) == "prequant_seed_device"
-        assert [getattr(a, "id", None) for a in value.args] == ["plan", "device", "pipeline_seed_scheme"]
+        assert (
+            isinstance(value, ast.Call)
+            and getattr(value.func, "id", None) == "prequant_seed_device"
+        )
+        assert [getattr(a, "id", None) for a in value.args] == [
+            "plan",
+            "device",
+            "pipeline_seed_scheme",
+        ]
 
 
 # ---------------------------------------------------------------- 2. balanced fit check
@@ -201,7 +226,9 @@ def test_balanced_16gb_streams_the_text_encoders(sizes):
 
 def test_balanced_12gb_drops_to_whole_module_offload():
     plan = _plan(CARD_12, "balanced", DENSE_EXPLICIT)
-    out = refine_memory_plan_for_components(_Pipe(), refine_balanced_plan_for_components(_Pipe(), plan))
+    out = refine_memory_plan_for_components(
+        _Pipe(), refine_balanced_plan_for_components(_Pipe(), plan)
+    )
     # the 9.0 GB encoder fits the 9.8 GB budget whole, so whole-module offload stays
     assert out.offload_policy == OFFLOAD_MODEL
     assert out.vae_tiling
@@ -209,7 +236,9 @@ def test_balanced_12gb_drops_to_whole_module_offload():
 
 def test_balanced_8gb_streams_granularly():
     plan = _plan(CARD_8, "balanced", DENSE_EXPLICIT)
-    out = refine_memory_plan_for_components(_Pipe(), refine_balanced_plan_for_components(_Pipe(), plan))
+    out = refine_memory_plan_for_components(
+        _Pipe(), refine_balanced_plan_for_components(_Pipe(), plan)
+    )
     assert out.offload_policy == OFFLOAD_STREAMING
 
 
@@ -231,4 +260,17 @@ def test_balanced_kill_switch_and_scope(monkeypatch):
 
 def test_balanced_refinement_is_wired_before_component_refinement():
     src = (BACKEND / "core/inference/diffusion.py").read_text()
-    assert "refine_memory_plan_for_components(\n                        pipe, refine_balanced_plan_for_components(pipe, plan)\n" in src
+    assert (
+        "refine_memory_plan_for_components(\n                        pipe, refine_balanced_plan_for_components(pipe, plan)\n"
+        in src
+    )
+
+
+def test_measured_placement_honours_the_legacy_cpu_offload_flag():
+    # cpu_offload=True without a memory_mode asks for offload; the measured refinement must not make that load resident
+    src = (BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8")
+    call = src.index("plan = refine_plan_from_loaded_weights(")
+    guard = src.rindex("\n", 0, src.rindex("\n", 0, call))
+    assert (
+        "if not cpu_offload or normalize_memory_mode(memory_mode) is not None:" in src[guard:call]
+    )

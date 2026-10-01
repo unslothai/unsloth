@@ -125,7 +125,12 @@ class _Module:
         return iter(self.weights)
 
 
-STREAM_KWARGS = {"use_stream": True, "non_blocking": True, "record_stream": True, "low_cpu_mem_usage": False}
+STREAM_KWARGS = {
+    "use_stream": True,
+    "non_blocking": True,
+    "record_stream": True,
+    "low_cpu_mem_usage": False,
+}
 
 
 @pytest.fixture
@@ -137,7 +142,11 @@ def _apply_env(monkeypatch):
 def test_v1_int8_keeps_the_copy_stream_once_its_pin_ops_exist(monkeypatch, _apply_env):
     monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: True, raising = False)
     out = mem._torchao_group_offload_kwargs(_Module(_V1Weight), dict(STREAM_KWARGS), [0])
-    assert out["use_stream"] is True and out.get("record_stream") is True and out.get("non_blocking") is True
+    assert (
+        out["use_stream"] is True
+        and out.get("record_stream") is True
+        and out.get("non_blocking") is True
+    )
 
 
 def test_v1_int8_without_its_pin_ops_falls_back_to_synchronous(monkeypatch, _apply_env):
@@ -181,7 +190,12 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
     assert mem.install_torchao_v1_int8_pin_ops() is True
     torch.manual_seed(0)
     blocks = torch.nn.Sequential(
-        *[torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)) for _ in range(3)]
+        *[
+            torch.nn.Sequential(
+                torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)
+            )
+            for _ in range(3)
+        ]
     ).to(torch.bfloat16)
     offloaded = copy.deepcopy(blocks)
     # set_inductor_config = False as Studio builds it: the bare config sets float32 matmul precision process-wide
@@ -207,3 +221,47 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
         want = resident(x)
         for _ in range(3):
             assert torch.equal(offloaded(x), want)
+
+
+def test_v1_int8_payload_returns_to_the_host_after_each_forward():
+    """The streamed v1 payload (int8 data + scales) must leave the GPU on offload, else the whole denoiser accumulates
+    there: diffusers restores torchao weights through ``tensor_data_names``, which the v1 classes do not declare."""
+    torch = _v1_int8_stack()
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    assert mem.install_torchao_v1_int8_pin_ops() is True
+    torch.manual_seed(0)
+    blocks = torch.nn.Sequential(
+        *[
+            torch.nn.Sequential(
+                torch.nn.Linear(1024, 1024), torch.nn.GELU(), torch.nn.Linear(1024, 1024)
+            )
+            for _ in range(4)
+        ]
+    ).to(torch.bfloat16)
+    quantize_(blocks, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
+    blocks.requires_grad_(False)
+    kwargs = mem._torchao_group_offload_kwargs(
+        blocks,
+        {
+            "onload_device": torch.device("cuda"),
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": 1,
+            **STREAM_KWARGS,
+        },
+        [0],
+    )
+    assert kwargs["use_stream"] is True
+    apply_group_offloading(blocks, **kwargs)
+    x = torch.randn(2, 16, 1024, dtype = torch.bfloat16, device = "cuda")
+    with torch.no_grad():
+        for _ in range(2):
+            blocks(x)
+    torch.cuda.synchronize()
+    for block in blocks:
+        for linear in (block[0], block[2]):
+            impl = linear.weight.original_weight_tensor.tensor_impl
+            assert impl.int_data.device.type == "cpu"
+            assert impl.scale.device.type == "cpu"

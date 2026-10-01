@@ -1116,8 +1116,7 @@ def load_prequantized_transformer(
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
-    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` still selects
-    device-specific kernels. An offloading plan passes "cpu" so the denoiser never lands on the GPU whole.
+    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
@@ -1241,7 +1240,7 @@ def load_prequantized_transformer(
                 dtype = getattr(
                     torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
                 )
-                # Warm the COMPUTE device's cache: a host-placed (offloaded) module runs on ``device``.
+                # a host-placed module still computes on ``device``
                 warm_rotation_cache(
                     transformer,
                     on.device if on is not None and placement_device is None else device,
