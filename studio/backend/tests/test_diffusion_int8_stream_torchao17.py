@@ -184,7 +184,8 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
         *[torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)) for _ in range(3)]
     ).to(torch.bfloat16)
     offloaded = copy.deepcopy(blocks)
-    quantize_(offloaded, Int8DynamicActivationInt8WeightConfig())
+    # set_inductor_config = False as Studio builds it: the bare config sets float32 matmul precision process-wide
+    quantize_(offloaded, Int8DynamicActivationInt8WeightConfig(set_inductor_config = False))
     offloaded.requires_grad_(False)
     assert type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor"
     resident = copy.deepcopy(offloaded).cuda()
