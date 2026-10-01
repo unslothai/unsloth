@@ -44,7 +44,6 @@ class ModelInfo:
     description: str = None
 
     def __post_init__(self):
-        # search_models compares quant_type by equality, so None must become QuantType.NONE.
         if self.quant_type is None:
             self.quant_type = QuantType.NONE
         self.name = self.name or self.construct_model_name(
@@ -63,7 +62,7 @@ class ModelInfo:
 
     @staticmethod
     def append_quant_type(key: str, quant_type: QuantType = None):
-        # register_model reaches here with a raw None default; QUANT_TAG_MAP has no None key.
+        # register_model passes the raw None default here, before __post_init__ normalizes it.
         if quant_type is not None and quant_type != QuantType.NONE:
             key = "-".join([key, QUANT_TAG_MAP[quant_type]])
         return key

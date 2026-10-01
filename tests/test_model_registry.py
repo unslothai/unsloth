@@ -110,7 +110,6 @@ def test_all_model_registration():
 
 
 def test_unquantized_default_quant_type_is_usable():
-    # The None default used to raise KeyError: None out of QUANT_TAG_MAP.
     assert ModelInfo.append_quant_type("Llama-3.1-8B") == "Llama-3.1-8B"
     assert ModelInfo.append_quant_type("Llama-3.1-8B", None) == "Llama-3.1-8B"
 
@@ -134,7 +133,6 @@ def test_register_model_defaults_to_no_quantization():
         register_model(LlamaModelInfo, org = "unsloth", base_name = "Llama", version = "9.9", size = 1)
         assert key in MODEL_REGISTRY
         assert MODEL_REGISTRY[key].quant_type == QuantType.NONE
-        # The default has to be searchable as unquantized, not just constructible.
         assert key in [m.model_path for m in search_models(quant_types = [QuantType.NONE])]
     finally:
         MODEL_REGISTRY.pop(key, None)
