@@ -248,6 +248,7 @@ export type AppearanceCustomization = {
   codeFontSize: number | null;
   /** 0–100; 50 is neutral (no adjustment). */
   contrast: number;
+  showMascots: boolean;
   pointerCursors: boolean;
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
@@ -280,6 +281,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFontSize: null,
   codeFontSize: null,
   contrast: 50,
+  showMascots: true,
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
@@ -500,6 +502,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
     codeFontSize: sanitizeSize(source.codeFontSize, CODE_FONT_SIZE_RANGE),
     contrast,
+    showMascots: source.showMascots !== false,
     pointerCursors: source.pointerCursors === true,
     reduceMotion:
       source.reduceMotion === "on" || source.reduceMotion === "off"

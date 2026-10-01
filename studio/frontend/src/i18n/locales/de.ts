@@ -1450,6 +1450,12 @@ export const de = {
           on: "Ein",
           off: "Aus",
         },
+        mascots: {
+          label: "Dekorative Maskottchen",
+          description: "Dekorative Faultierbilder in der gesamten App anzeigen. Avatare und Markenlogos bleiben sichtbar.",
+          keywords: "Maskottchen Faultier Dekoration Illustration ausblenden anzeigen",
+          greetingDisabled: "Aktiviere dekorative Maskottchen unter Erscheinungsbild, um das Faultier in der Chatbegrüßung anzuzeigen.",
+        },
         pointerCursors: {
           label: "Hand-Cursor verwenden",
           description:
