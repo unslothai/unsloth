@@ -136,10 +136,10 @@ runs:
       #     does `from transformers.utils import sentencepiece_model_pb2`,
       #     which imports `google.protobuf`. Not pulled by transformers'
       #     base install.
-      #   - triton: unsloth/_gpu_init.py:232 does an unconditional
-      #     `import triton`. The triton PyPI wheel installs cleanly on
-      #     Linux x86_64 even without CUDA (the import succeeds; runtime
-      #     GPU work is what would fail, which we never do here).
+      #   - triton: unsloth/kernels and unsloth_zoo's compiler and loss_utils
+      #     import it at module scope, so `import unsloth` needs it even though
+      #     _gpu_init.py treats it as optional. The PyPI wheel imports fine on
+      #     Linux x86_64 without CUDA; only runtime GPU work would fail.
       # transformers + trl are matrix-parameterized.
       shell: bash
       run: |

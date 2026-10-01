@@ -88,7 +88,7 @@ def _build_browse_allowlist(
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
-        logger.debug("browse-folders: studio roots unavailable: %s", exc)
+        logger.debug("browse-folders: Unsloth roots unavailable: %s", exc)
     try:
         for folder in list_scan_folders():
             p = folder.get("path")

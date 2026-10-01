@@ -101,6 +101,8 @@ def _install_lightweight_backend_stubs(monkeypatch):
     # routes/models.py imports this alongside get_current_subject; a stub missing it
     # fails the import with "unknown location", which reads like a path problem.
     auth_mod.allow_ambient_hf_token = lambda: True
+    # Same reason: the cached-model routes take the caller class.
+    auth_mod.authenticated_via_api_key = lambda: False
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 

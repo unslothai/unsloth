@@ -5,19 +5,26 @@ from pathlib import Path
 from typing import Literal, Optional, List
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+
+def _lower_str(value):
+    return value.strip().lower() if isinstance(value, str) else value
 
 
 class DataConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
-    format_type: Literal["auto", "alpaca", "chatml", "sharegpt"] = "auto"
+    # raw and conversational are handled by format_and_template_dataset (raw = continued pretraining).
+    format_type: Literal["auto", "alpaca", "chatml", "sharegpt", "conversational", "raw"] = "auto"
+
+    _normalize_format_type = field_validator("format_type", mode = "before")(_lower_str)
 
 
 class TrainingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
@@ -36,9 +43,26 @@ class TrainingConfig(BaseModel):
     train_on_completions: bool = False
     gradient_checkpointing: Literal["unsloth", "true", "none"] = "unsloth"
 
+    _normalize_training_type = field_validator("training_type", mode = "before")(_lower_str)
+
+    @field_validator("gradient_checkpointing", mode = "before")
+    @classmethod
+    def _normalize_gradient_checkpointing(cls, value):
+        # Same spellings the trainer's normalize_gradient_checkpointing accepts, incl. YAML booleans.
+        if isinstance(value, bool):
+            return "true" if value else "none"
+        text = _lower_str(value)
+        if text == "":
+            return "unsloth"
+        if text in ("1", "yes"):
+            return "true"
+        if text in ("false", "0", "no", "off"):
+            return "none"
+        return text
+
 
 class LoraConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     lora_r: int = 64
     lora_alpha: int = 16
@@ -55,7 +79,7 @@ class LoraConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     enable_wandb: bool = False
     wandb_project: str = "unsloth-training"
@@ -66,7 +90,7 @@ class LoggingConfig(BaseModel):
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
 
     model: Optional[str] = None
     data: DataConfig = Field(default_factory = DataConfig)
@@ -76,16 +100,24 @@ class Config(BaseModel):
 
     def apply_overrides(self, **kwargs):
         """Apply CLI overrides by matching arg names to config fields."""
+        errors = []
         for key, value in kwargs.items():
             if value is None:
                 continue
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                for section in (self.data, self.training, self.lora, self.logging):
-                    if hasattr(section, key):
-                        setattr(section, key, value)
-                        break
+            try:
+                if hasattr(self, key):
+                    setattr(self, key, value)
+                else:
+                    for section in (self.data, self.training, self.lora, self.logging):
+                        if hasattr(section, key):
+                            setattr(section, key, value)
+                            break
+            except ValidationError as error:
+                flag = "--" + key.replace("_", "-")
+                for err in error.errors():
+                    errors.append(f"  - {flag}: {err.get('msg', 'invalid value')}")
+        if errors:
+            raise ConfigError("\n".join(["Invalid command line options:", *errors]))
 
     def model_kwargs(self, use_lora: bool, is_vision: bool) -> dict:
         """Return kwargs for trainer.prepare_model_for_training()."""

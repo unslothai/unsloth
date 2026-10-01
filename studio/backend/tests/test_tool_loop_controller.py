@@ -32,6 +32,7 @@ from core.inference.tool_loop_controller import (
     is_tool_error,
     status_for_tool,
     strip_result_for_model,
+    tool_call_limit_nudge,
     tool_event_provenance,
 )
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
@@ -719,3 +720,11 @@ def test_failed_workspace_execution_invalidates_previous_reads(tool_name):
     controller.record_result(controller.prepare_call(write), "Error: failed after writing")
     assert controller.prepare_call(read).action == "execute"
     assert controller.prepare_call(write).action == "execute"
+
+
+def test_tool_call_limit_nudge_keeps_long_arguments_whole():
+    code = "print(1)\n" * 60
+    notice = tool_call_limit_nudge(
+        [{"function": {"name": "python", "arguments": json.dumps({"code": code})}}], 8
+    )
+    assert json.dumps({"code": code}) in notice["content"]
