@@ -4872,6 +4872,20 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background-clip: padding-box;
 }
 
+/* Dialogs scroll their own rounded box, and a scrollbar running its full height covers the
+   right-hand corners. Start and end the track where the corners do. Same reset as above, since
+   the thin standard scrollbar has no track to inset. */
+@supports selector(::-webkit-scrollbar) {
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])::-webkit-scrollbar-track {
+	margin-block: var(--radius-4xl);
+}
+
 /* Attachment card page previews: drop the viewer's gray backdrop, padding and
    scrollbars so the first page fills the card. */
 .attachment-card-preview-page > * {
