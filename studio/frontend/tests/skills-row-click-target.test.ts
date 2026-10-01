@@ -9,29 +9,17 @@ import { readSrc } from "./helpers/kit.ts";
 const DIALOG = readSrc("features/chat/components/chat-skills-dialog.tsx");
 
 const SKILL_ROW = /\nfunction SkillRow\([\s\S]*?\n\}\n/;
-const ROW_BUTTON =
-  /<button\b[^>]*?onClick=\{onOpen\}[^>]*?className="absolute inset-0\b[^>]*?\/>/;
-const CLASSED_TAG = /<(\w+)\b[^>]*?className="([^"]*)"/g;
-const PAINTS_ABOVE =
-  /(?:^|\s)(?:-?translate-|relative|absolute|fixed|sticky|z-)/;
-const CLICK_THROUGH = /\bpointer-events-none\b/;
-const INTERACTIVE = new Set(["Switch", "button", "a", "input"]);
+const ROW_ROOT = /return \(\s*<div\s+className=\{cn\(\s*"([^"]*)"/;
+const TAKES_POINTER = /<(\w+)\b([^<]*?)\bpointer-events-auto\b/g;
+const CLICK_THROUGH = /(?:^|\s)pointer-events-none(?:\s|$)/;
 
-test("nothing painted over a skill row swallows the click that opens it", () => {
+test("only the details button and the switch take clicks in a skill row", () => {
   const row = SKILL_ROW.exec(DIALOG)?.[0];
   assert.ok(row, "SkillRow not found");
-  const cover = ROW_BUTTON.exec(row);
-  assert.ok(cover, "the full-row details button not found");
+  assert.match(ROW_ROOT.exec(row)?.[1] ?? "", CLICK_THROUGH);
 
-  const after = row.slice(cover.index + cover[0].length);
-  for (const [, tag, classes] of after.matchAll(CLASSED_TAG)) {
-    if (INTERACTIVE.has(tag) || !PAINTS_ABOVE.test(classes)) {
-      continue;
-    }
-    assert.match(
-      classes,
-      CLICK_THROUGH,
-      `<${tag} className="${classes}"> blocks the row`,
-    );
-  }
+  const targets = [...row.matchAll(TAKES_POINTER)].map(([, tag, attrs]) =>
+    tag === "button" && attrs.includes("onClick={onOpen}") ? "details" : tag,
+  );
+  assert.deepEqual(targets, ["details", "Switch"]);
 });
