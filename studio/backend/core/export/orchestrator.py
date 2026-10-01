@@ -211,7 +211,6 @@ class ExportOrchestrator:
         # MiniMax-H3 sd-server holds (VRAM and pinned host RAM); the next video render reloads it.
         try:
             from core.inference.video_minimax_h3 import release_h3_native_servers
-
             release_h3_native_servers("export subprocess starting")
         except Exception as exc:  # noqa: BLE001 - never block an export on this
             logger.warning("Could not release the idle video sd-server for export: %s", exc)

@@ -75,7 +75,6 @@ def _evict_diffusion() -> None:
 def _release_idle_video_servers(reason: str) -> None:
     try:
         from core.inference.video_minimax_h3 import release_h3_native_servers
-
         release_h3_native_servers(reason)
     except Exception as exc:  # noqa: BLE001 - never block an acquire on this
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)

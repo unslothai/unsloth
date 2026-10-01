@@ -1364,7 +1364,9 @@ class H3NativeServerSlot:
                 return self._server
             if self._server is not None:
                 # Dead, or alive with another memory / speed / model signature: the next render must not inherit it.
-                self._stop_locked("signature changed" if self._server.is_alive() else "server exited")
+                self._stop_locked(
+                    "signature changed" if self._server.is_alive() else "server exited"
+                )
             server = SdCppServer(self.server_binary)
             # Before start: the spawn itself is a process running out of the tree.
             managed = is_managed_binary(self.server_binary)
@@ -1467,7 +1469,6 @@ class H3NativeServerSlot:
         self.last_release_reason = reason
         try:
             import logging
-
             logging.getLogger(__name__).info("h3 native sd-server stopped: %s", reason)
         except Exception:  # noqa: BLE001
             pass

@@ -1268,7 +1268,9 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
 
 
-def _h3_card_memory_bytes(device: Optional[str], ordinal: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+def _h3_card_memory_bytes(
+    device: Optional[str], ordinal: Optional[int]
+) -> tuple[Optional[int], Optional[int]]:
     """(free, total) VRAM on the card a native H3 render runs on, read out of process (nvidia-smi / amd-smi, the source
     the orchestrator's live-free check uses), so the no-torch runtime can answer and no CUDA context is attached here.
     (None, None) when it cannot be read. No pin means sd.cpp's default, ordinal 0."""
@@ -8759,9 +8761,16 @@ class VideoBackend:
                 slot = getattr(runtime, "server_slot", None)
                 live = slot.alive_signature() if slot is not None else None
                 resident_flags, _ = h3_native_render_flags(
-                    runtime.offload_flags, memory_mode = state.memory_mode, free_bytes = need, need_bytes = need
+                    runtime.offload_flags,
+                    memory_mode = state.memory_mode,
+                    free_bytes = need,
+                    need_bytes = need,
                 )
-                if live is not None and live[2] == tuple(resident_flags) and "--offload-to-cpu" not in live[2]:
+                if (
+                    live is not None
+                    and live[2] == tuple(resident_flags)
+                    and "--offload-to-cpu" not in live[2]
+                ):
                     free = need
                 else:
                     free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
