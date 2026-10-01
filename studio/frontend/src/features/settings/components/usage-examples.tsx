@@ -436,7 +436,10 @@ function useExampleModelName(keylessOnly: boolean): string | null {
       ])
         .then(([models, settings]) => {
           if (cancelled) return true;
-          if (models !== null) setCatalog(models);
+          // Linked-instance models ("@name/...") run elsewhere, tools included; the
+          // examples describe this server.
+          if (models !== null)
+            setCatalog(models.filter((m) => !m.id.startsWith("@")));
           if (settings !== null) {
             setAutoSwitch(settings);
           }
