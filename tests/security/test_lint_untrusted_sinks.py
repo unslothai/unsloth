@@ -1410,3 +1410,96 @@ def test_an_annotated_constructor_is_tracked(tmp_path):
         "    return importlib.import_module('x.' + parser.parse(blob))\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_tainted_subprocess_executable_is_reported(tmp_path):
+    """`executable=` names the program that actually runs.
+
+    A fixed argv with a tainted executable runs the tainted one, and only `args` was
+    inspected.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    return subprocess.run(['safe-command'], executable = json.loads(blob)['binary'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_module_level_sink_alias_reaches_a_function(tmp_path):
+    """`loader = importlib.import_module` at module scope.
+
+    The alias map lived on the visitor that scanned the module body and was discarded
+    before any function was scanned, so a function calling it read as clean while the
+    identical local alias was caught.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    return loader('x.' + json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_module_level_instance_reaches_a_function(tmp_path):
+    """The same gap for a module-scope construction, which shares the mechanism."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Parser:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['model_type']\n"
+        "parser = Parser()\n"
+        "def load(blob):\n"
+        "    return importlib.import_module('x.' + parser.parse(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_container_mutated_by_update_is_tainted(tmp_path):
+    """`settings.update(json.loads(blob))` is an assignment into the container.
+
+    Only assignments were handled, so a configuration filled in by a mutating call
+    arrived clean at the sink.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    settings = {}\n"
+        "    settings.update(json.loads(blob))\n"
+        "    return importlib.import_module(settings['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_list_mutated_by_append_is_tainted(tmp_path):
+    """The same shape for a command list built up by appending."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    cmd = ['tool']\n"
+        "    cmd.append(json.loads(blob)['flag'])\n"
+        "    return subprocess.run(cmd)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_trust_remote_code_through_the_dict_constructor_is_reported(tmp_path):
+    """`kwargs = dict(trust_remote_code = True)` splats into a loader like the literal.
+
+    It is a Call rather than a Dict, so neither the dict scan nor the call-site keyword
+    check saw it.
+    """
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    kwargs = dict(trust_remote_code = True)\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)

@@ -246,11 +246,13 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # Shell. A tainted argv[0] or a tainted command string is execution.
     "os.system": ((0,), frozenset()),
     "os.popen": ((0,), frozenset()),
-    "subprocess.run": ((0,), frozenset({"args"})),
-    "subprocess.call": ((0,), frozenset({"args"})),
-    "subprocess.check_call": ((0,), frozenset({"args"})),
-    "subprocess.check_output": ((0,), frozenset({"args"})),
-    "subprocess.Popen": ((0,), frozenset({"args"})),
+    # executable beside args: it names the program that actually runs, so a fixed argv
+    # with a tainted executable executes the tainted one. Only args was inspected.
+    "subprocess.run": ((0,), frozenset({"args", "executable"})),
+    "subprocess.call": ((0,), frozenset({"args", "executable"})),
+    "subprocess.check_call": ((0,), frozenset({"args", "executable"})),
+    "subprocess.check_output": ((0,), frozenset({"args", "executable"})),
+    "subprocess.Popen": ((0,), frozenset({"args", "executable"})),
     # Deserialisers that construct arbitrary objects.
     "pickle.load": ((0,), frozenset()),
     "pickle.loads": ((0,), frozenset()),
@@ -468,7 +470,14 @@ class _FileFacts:
         self.bases: dict = {}
         # qualname -> names it declares global, so a write lands in module state
         self.globals_declared: dict = {}
+        # Module-scope `loader = importlib.import_module` and `parser = Parser()`. These
+        # were recorded on the visitor that scanned the module body and discarded before
+        # any function was scanned, so a function calling the alias read as clean while
+        # the identical local alias was caught.
+        self.module_sink_aliases: dict = {}
+        self.module_instances: dict = {}
         self._collect()
+        self._collect_module_bindings()
 
     def _collect(self) -> None:
         scope: list[str] = []
@@ -531,6 +540,38 @@ class _FileFacts:
                 walk(child)
 
         walk(self.tree)
+
+    def _collect_module_bindings(self) -> None:
+        """Module-scope aliases of sinks and constructions, after imports are known."""
+        for node in ast.iter_child_nodes(self.tree):
+            if isinstance(node, ast.AnnAssign):
+                targets, value = ([node.target], node.value)
+            elif isinstance(node, ast.Assign):
+                targets, value = (node.targets, node.value)
+            else:
+                continue
+            if value is None:
+                continue
+            names = [t.id for t in targets if isinstance(t, ast.Name)]
+            if not names:
+                continue
+            if isinstance(value, ast.Call):
+                constructed = _call_name(value.func)
+                for candidate in (constructed, constructed.rpartition(".")[2]):
+                    if candidate and candidate in self.classes:
+                        for name in names:
+                            self.module_instances.setdefault(name, candidate)
+                        break
+                continue
+            referenced = _call_name(value)
+            if not referenced:
+                continue
+            sink = _matches_any(self.canonicals(referenced), SINKS)
+            if sink is None and _matches_any(self.canonicals(referenced), {"getattr"}):
+                sink = "getattr"
+            if sink is not None:
+                for name in names:
+                    self.module_sink_aliases.setdefault(name, sink)
 
     def _bind_import(self, alias: str, target: str) -> None:
         self.imports.setdefault(alias, set()).add(target)
@@ -724,9 +765,9 @@ class _TaintPass(ast.NodeVisitor):
         for name in sorted(state.named_params.get(key, set())):
             self.local_reasons.setdefault(name, NAMED_PARAM_REASON)
         # local name -> class it was constructed from, for `parser = Parser()`
-        self.instance_types: dict[str, str] = {}
+        self.instance_types: dict[str, str] = dict(facts.module_instances)
         # local name -> the sink it refers to, for `loader = importlib.import_module`
-        self.sink_aliases: dict[str, str] = {}
+        self.sink_aliases: dict[str, str] = dict(facts.module_sink_aliases)
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
@@ -1116,7 +1157,13 @@ class _TaintPass(ast.NodeVisitor):
 
     # -- sinks -------------------------------------------------------------------------
 
+    # Methods that put their argument inside the receiver. `settings.update(parsed)` is
+    # an assignment into the container written as a call, and only assignments were
+    # handled, so a config filled in this way arrived clean at the sink.
+    _MUTATORS = frozenset({"update", "extend", "append", "add", "insert", "setdefault"})
+
     def visit_Call(self, node: ast.Call) -> None:
+        self._note_mutation(node)
         self._propagate_into_callee(node)
         self._check_sink(node)
         self._check_remote_code(node)
@@ -1134,6 +1181,18 @@ class _TaintPass(ast.NodeVisitor):
         """
         if bound.get(name, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
             bound[name] = reason
+
+    def _note_mutation(self, node: ast.Call) -> None:
+        """`settings.update(json.loads(blob))` taints `settings`."""
+        if not isinstance(node.func, ast.Attribute):
+            return
+        if node.func.attr not in self._MUTATORS:
+            return
+        for argument in list(node.args) + [k.value for k in node.keywords]:
+            reason = self.tainted(argument)
+            if reason:
+                self._assign(node.func.value, reason)
+                return
 
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
@@ -1445,6 +1504,17 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                     and value.value is True
                 ):
                     record(node, "dict", _short(node))
+        elif isinstance(node, ast.Call) and _call_name(node.func).rpartition(".")[2] == "dict":
+            # `kwargs = dict(trust_remote_code = True)` is the same thing as the literal
+            # and splats into a loader the same way, but it is a Call rather than a Dict,
+            # so neither this scan nor the call-site keyword check saw it.
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "trust_remote_code"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                ):
+                    record(node, "dict call", _short(node))
         elif isinstance(node, ast.Assign):
             if not (isinstance(node.value, ast.Constant) and node.value.value is True):
                 continue
