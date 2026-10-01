@@ -4,6 +4,7 @@ import io
 import dataclasses
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -3179,11 +3180,11 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
-    assert (
-        "_remove_agent_instruction_files \\\n"
-        '    "$SCRIPT_DIR/frontend/node_modules" \\\n'
-        '    "$_OXC_DIR/node_modules"'
-    ) in setup_sh
+    assert re.search(
+        r'_remove_agent_instruction_files \\\n\s+"\$SCRIPT_DIR/frontend/node_modules" \\\n'
+        r'\s+"\$_OXC_DIR/node_modules"',
+        setup_sh,
+    )
     assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' not in setup_sh
     assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh
     assert "-name 'CLAUDE.md'" in setup_sh
