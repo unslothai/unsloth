@@ -5133,10 +5133,14 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
-                # Carry the consent decision into the modules.json module scan: a repo-declared
-                # module class outside sentence_transformers.* imports third-party code, so it
-                # loads only when the user opted in and the scan above cleared the repo.
-                trust_remote_code = config.get("trust_remote_code", False),
+                # Deliberately NOT config["trust_remote_code"]. A modules.json module class outside
+                # sentence_transformers.* is third-party code, and the consent scan above decides
+                # purely on auto_map (utils/security/consent.py: "no auto_map; trust_remote_code is
+                # a no-op"), so a repo whose only custom code is that module class is never
+                # fingerprinted and never CRITICAL-blocked. Forwarding consent here would let it be
+                # fetched and run unscanned, so the module scan stays closed until the preflight can
+                # discover and scan modules.json code too.
+                trust_remote_code = False,
             )
         except Exception as error:
             if not model_local_only:
@@ -5165,10 +5169,14 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
-                # Carry the consent decision into the modules.json module scan: a repo-declared
-                # module class outside sentence_transformers.* imports third-party code, so it
-                # loads only when the user opted in and the scan above cleared the repo.
-                trust_remote_code = config.get("trust_remote_code", False),
+                # Deliberately NOT config["trust_remote_code"]. A modules.json module class outside
+                # sentence_transformers.* is third-party code, and the consent scan above decides
+                # purely on auto_map (utils/security/consent.py: "no auto_map; trust_remote_code is
+                # a no-op"), so a repo whose only custom code is that module class is never
+                # fingerprinted and never CRITICAL-blocked. Forwarding consent here would let it be
+                # fetched and run unscanned, so the module scan stays closed until the preflight can
+                # discover and scan modules.json code too.
+                trust_remote_code = False,
             )
     except Exception as e:
         event_queue.put(
