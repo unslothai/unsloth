@@ -8,11 +8,11 @@
 //! - No IPC (capabilities bound to `main`); own profile, never the app's (holds sign-in).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
@@ -57,6 +57,8 @@ struct ViewsState {
     urls: HashMap<String, String>,
     /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
     downloads: HashMap<String, Vec<PathBuf>>,
+    /// When each tab's recent downloads started, for `download_allowed`.
+    download_starts: HashMap<String, VecDeque<Instant>>,
     polling: bool,
 }
 
@@ -456,6 +458,26 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     });
 }
 
+// Pages can start downloads without a click: a few at once and a few a minute, so one can't fill
+// the disk in the background.
+const MAX_DOWNLOADS_IN_FLIGHT: usize = 3;
+const DOWNLOADS_PER_WINDOW: usize = 5;
+const DOWNLOAD_WINDOW: Duration = Duration::from_secs(60);
+
+fn download_allowed(in_flight: usize, starts: &mut VecDeque<Instant>, now: Instant) -> bool {
+    while starts
+        .front()
+        .is_some_and(|start| now.duration_since(*start) >= DOWNLOAD_WINDOW)
+    {
+        starts.pop_front();
+    }
+    if in_flight >= MAX_DOWNLOADS_IN_FLIGHT || starts.len() >= DOWNLOADS_PER_WINDOW {
+        return false;
+    }
+    starts.push_back(now);
+    true
+}
+
 /// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
 /// destinations of downloads still in flight, which don't exist on disk yet.
 fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>) -> PathBuf {
@@ -750,6 +772,30 @@ fn create_view<R: Runtime>(
                         // macOS reports no path when a download finishes, so two of one URL at
                         // once couldn't be told apart (and quarantined right): one at a time.
                         if cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str()) {
+                            return false;
+                        }
+                        let in_flight = inner.downloads.values().map(Vec::len).sum();
+                        let starts = inner
+                            .download_starts
+                            .entry(download_tab.clone())
+                            .or_default();
+                        if !download_allowed(in_flight, starts, Instant::now()) {
+                            drop(inner);
+                            emit(
+                                app,
+                                BrowserEvent::Download {
+                                    tab_id: download_tab.clone(),
+                                    url: url.to_string(),
+                                    name: destination
+                                        .file_name()
+                                        .map(|name| name.to_string_lossy().into_owned())
+                                        .unwrap_or_default(),
+                                    path: None,
+                                    size: None,
+                                    done: true,
+                                    success: false,
+                                },
+                            );
                             return false;
                         }
                         let path = {
@@ -1121,6 +1167,7 @@ pub fn browser_view_close<R: Runtime>(
     {
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
+        inner.download_starts.remove(&tab_id);
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             inner.shown = None;
         }
@@ -1312,6 +1359,22 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(bounds.viewport_width, 5.0);
+    }
+
+    #[test]
+    fn pages_get_a_few_downloads_at_once_and_a_minute() {
+        let start = Instant::now();
+        let mut starts = VecDeque::new();
+        assert!(!download_allowed(
+            MAX_DOWNLOADS_IN_FLIGHT,
+            &mut starts,
+            start
+        ));
+        for _ in 0..DOWNLOADS_PER_WINDOW {
+            assert!(download_allowed(0, &mut starts, start));
+        }
+        assert!(!download_allowed(0, &mut starts, start));
+        assert!(download_allowed(0, &mut starts, start + DOWNLOAD_WINDOW));
     }
 
     #[test]
