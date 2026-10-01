@@ -556,7 +556,7 @@ def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
     assert "Name |  | END" in text
 
 
-def test_docx_numbers_notes_by_reference_and_marks_the_body(tmp_path):
+def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
     document, docx, parsers = _shared_setup_1()
     from docx.opc.constants import CONTENT_TYPE as CT, RELATIONSHIP_TYPE as RT
     from docx.opc.packuri import PackURI
@@ -580,7 +580,8 @@ def test_docx_numbers_notes_by_reference_and_marks_the_body(tmp_path):
     section = document.element.body[-1]
     section.addprevious(
         parse_xml(
-            f"<w:p {_DOCX_XMLNS}>{_r('First.')}{ref('footnote', 2)}"
+            f"<w:p {_DOCX_XMLNS}><w:del w:id=\"9\">{ref('footnote', 4)}</w:del>"
+            f"{_r('First.')}{ref('footnote', 2)}"
             f"{_r(' Second.')}{ref('footnote', 1)}{ref('endnote', 1)}</w:p>"
         )
     )
@@ -591,7 +592,8 @@ def test_docx_numbers_notes_by_reference_and_marks_the_body(tmp_path):
             RT.FOOTNOTES,
             note("footnote", 1, "Source: LATER")
             + note("footnote", 2, "Source: EARLIER")
-            + note("footnote", 3, "Source: UNREFERENCED"),
+            + note("footnote", 3, "Source: UNREFERENCED")
+            + note("footnote", 4, "Source: DELETED"),
         ),
         ("endnote", CT.WML_ENDNOTES, RT.ENDNOTES, note("endnote", 1, "Source: ENDNOTEBODY")),
     ):

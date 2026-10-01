@@ -1044,7 +1044,7 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
   );
 });
 
-test("markDocxNotes numbers notes by reference order and marks the body", () => {
+test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const note = (kind: string, id: number, text: string) =>
     `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
@@ -1064,7 +1064,8 @@ test("markDocxNotes numbers notes by reference order and marks the body", () => 
       "[Content_Types].xml": strToU8("<Types/>"),
       "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
       "word/document.xml": strToU8(
-        `<w:document ${w}><w:body><w:p><w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+        `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
+          `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
           `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}</w:p></w:body></w:document>`,
       ),
       "word/_rels/document.xml.rels": relationships([
@@ -1075,7 +1076,8 @@ test("markDocxNotes numbers notes by reference order and marks the body", () => 
         "footnote",
         note("footnote", 1, "Source: LATER") +
           note("footnote", 2, "Source: EARLIER") +
-          note("footnote", 3, "Source: UNREFERENCED"),
+          note("footnote", 3, "Source: UNREFERENCED") +
+          note("footnote", 4, "Source: DELETED"),
       ),
       "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
     }),
@@ -1084,13 +1086,15 @@ test("markDocxNotes numbers notes by reference order and marks the body", () => 
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
     const marked = markDocxNotes(archive);
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(marked.archive),
+    });
     assert.equal(
-      marked.notes,
-      "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n\nEndnotes\n[i] Source: ENDNOTEBODY",
-    );
-    assert.match(
-      strFromU8(unzipSync(marked.archive)["word/document.xml"]),
-      /First\.<\/w:t><\/w:r><w:r><w:footnoteReference w:id="2"\/><w:t>\[1\]<\/w:t><\/w:r>.* Second\.<\/w:t><\/w:r><w:r><w:footnoteReference w:id="1"\/><w:t>\[2\]<\/w:t><\/w:r><w:r><w:endnoteReference w:id="1"\/><w:t>\[i\]<\/w:t>/,
+      marked.label(value),
+      "First.[1] Second.[2][i]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n\n" +
+        "Endnotes\n[i] Source: ENDNOTEBODY",
     );
   } finally {
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
@@ -1126,7 +1130,7 @@ test("markDocxNotes skips move sources, deletions and text box fallbacks", () =>
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
     assert.equal(
-      markDocxNotes(archive).notes,
+      markDocxNotes(archive).label(""),
       "Footnotes\n[1] Keep COVID-19 MOVED BOX",
     );
   } finally {

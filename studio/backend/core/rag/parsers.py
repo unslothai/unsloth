@@ -583,7 +583,7 @@ def _docx(path: str) -> list[Page]:
     document = docx.Document(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
-    notes = _docx_mark_notes(document)
+    label_notes = _docx_mark_notes(document)
     # Walk body content in document order: paragraphs alone drop tables entirely.
     for block in _docx_blocks(document.element.body, document):
         if isinstance(block, Paragraph):
@@ -592,8 +592,7 @@ def _docx(path: str) -> list[Page]:
                 lines.append(text)
         elif isinstance(block, Table):
             lines.extend(_docx_table_rows(block))
-    lines.extend(notes)
-    return [_page("\n".join(lines), None)]
+    return [_page(label_notes("\n".join(lines)), None)]
 
 
 def _roman(n: int) -> str:
@@ -607,14 +606,18 @@ def _roman(n: int) -> str:
     return out
 
 
-def _docx_mark_notes(document) -> list[str]:
-    """Numbers notes in body reference order as Word does (footnotes 1, 2; endnotes i, ii),
-    writes each label after its body reference, and returns the note lines."""
+_DOCX_NOTE_SENTINEL = re.compile("\ue000(\\d+)\ue001")
+
+
+def _docx_mark_notes(document):
+    """Puts a sentinel after each body note reference; the returned function numbers the
+    references that survived extraction as Word does (footnotes 1, 2; endnotes i, ii),
+    swaps in the labels and appends the notes."""
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
     from docx.oxml import OxmlElement, parse_xml
     from docx.table import Table
 
-    lines: list[str] = []
+    kinds = []
     for kind, reltype, label in (
         ("footnote", RT.FOOTNOTES, str),
         ("endnote", RT.ENDNOTES, _roman),
@@ -640,26 +643,49 @@ def _docx_mark_notes(document) -> list[str]:
                 else:
                     texts.append(" ".join(_docx_paragraph_text(block).split()))
             bodies[note.get(_W + "id")] = " ".join(t for t in texts if t)
-        numbers: dict[str, int] = {}
+        if bodies:
+            kinds.append((kind, label, bodies))
+    if not kinds:
+        return lambda text: text
+
+    refs: list[tuple[int, str]] = []
+    referenced: list[set[str]] = [set() for _ in kinds]
+    for k, (kind, _, bodies) in enumerate(kinds):
         for ref in document.element.body.iter(_W + kind + "Reference"):
             note_id = ref.get(_W + "id")
-            if note_id not in bodies:
-                continue
-            number = numbers.setdefault(note_id, len(numbers) + 1)
-            marker = OxmlElement("w:t")
-            marker.text = f"[{label(number)}]"
-            ref.addnext(marker)
-        # Notes no reference points at still carry text: keep them after the referenced ones.
-        for note_id in bodies:
-            numbers.setdefault(note_id, len(numbers) + 1)
-        notes = [
-            f"[{label(number)}] {bodies[note_id]}"
-            for note_id, number in sorted(numbers.items(), key = lambda item: item[1])
-            if bodies[note_id]
-        ]
-        if notes:
-            lines += [kind.capitalize() + "s", *notes]
-    return lines
+            if note_id in bodies:
+                referenced[k].add(note_id)
+                marker = OxmlElement("w:t")
+                marker.text = f"\ue000{len(refs)}\ue001"
+                refs.append((k, note_id))
+                ref.addnext(marker)
+
+    def label_notes(text: str) -> str:
+        numbers: list[dict[str, int]] = [{} for _ in kinds]
+
+        def label(match) -> str:
+            k, note_id = refs[int(match.group(1))]
+            number = numbers[k].setdefault(note_id, len(numbers[k]) + 1)
+            return f"[{kinds[k][1](number)}]"
+
+        text = _DOCX_NOTE_SENTINEL.sub(label, text)
+        lines = [text] if text else []
+        for k, (kind, label_of, bodies) in enumerate(kinds):
+            # A note no reference points at still carries text; one referenced only from deleted
+            # or moved-away text is gone from the document Word shows.
+            for note_id in bodies:
+                if note_id not in referenced[k]:
+                    numbers[k].setdefault(note_id, len(numbers[k]) + 1)
+            notes = [
+                f"[{label_of(number)}] {bodies[note_id]}"
+                for note_id, number in sorted(numbers[k].items(), key = lambda item: item[1])
+                if bodies[note_id]
+            ]
+            if notes:
+                lines += [kind.capitalize() + "s", *notes]
+        return "\n".join(lines)
+
+    return label_notes
 
 
 def _declared_charset(data: bytes) -> str | None:

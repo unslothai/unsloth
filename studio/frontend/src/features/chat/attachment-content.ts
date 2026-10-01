@@ -806,14 +806,17 @@ function romanNumeral(n: number): string {
   return out;
 }
 
+const DOCX_NOTE_SENTINEL_RE = /\uE000(\d+)\uE001/g;
+
 /**
- * Numbers notes in body reference order as Word does (footnotes 1, 2; endnotes i, ii),
- * writes each label after its reference in the main document (extractRawText drops the
- * reference itself) and returns that archive with the note text to append.
+ * Puts a sentinel after each note reference in the main document; `label` numbers the
+ * references that survived extraction as Word does (footnotes 1, 2; endnotes i, ii),
+ * swaps in the labels and appends the notes. extractRawText drops the references and
+ * the notes, and skips deleted or moved text, so only it knows which references show.
  */
 export function markDocxNotes(archive: Uint8Array): {
   archive: Uint8Array;
-  notes: string;
+  label: (text: string) => string;
 } {
   const names = new Set<string>();
   const read = (name: string) =>
@@ -839,7 +842,7 @@ export function markDocxNotes(archive: Uint8Array): {
     heading,
     label,
     bodies: new Map<string, string>(),
-    numbers: new Map<string, number>(),
+    referenced: new Set<string>(),
   });
   const kinds = {
     footnote: notesOf("Footnotes", String),
@@ -869,11 +872,11 @@ export function markDocxNotes(archive: Uint8Array): {
     }
   }
   if (!kinds.footnote.bodies.size && !kinds.endnote.bodies.size) {
-    return { archive, notes: "" };
+    return { archive, label: (text) => text };
   }
 
+  const refs: { kind: keyof typeof kinds; id: string }[] = [];
   const mainXml = read(main);
-  let marked = false;
   const markedXml = mainXml
     ? strFromU8(mainXml).replace(
         DOCX_NOTE_REFERENCE_RE,
@@ -884,34 +887,49 @@ export function markDocxNotes(archive: Uint8Array): {
           attributes: string,
         ) => {
           const id = DOCX_NOTE_ID_RE.exec(attributes)?.[1];
-          const notes = kinds[kind];
-          if (id === undefined || !notes.bodies.has(id)) return reference;
-          if (!notes.numbers.has(id)) notes.numbers.set(id, notes.numbers.size + 1);
-          marked = true;
+          if (id === undefined || !kinds[kind].bodies.has(id)) return reference;
+          kinds[kind].referenced.add(id);
           const t = prefix ? `${prefix}:t` : "t";
-          return `${reference}<${t}>[${notes.label(notes.numbers.get(id)!)}]</${t}>`;
+          refs.push({ kind, id });
+          return `${reference}<${t}>\uE000${refs.length - 1}\uE001</${t}>`;
         },
       )
     : "";
-  const sections: string[] = [];
-  for (const notes of Object.values(kinds)) {
-    // Notes no reference points at still carry text: keep them after the referenced ones.
-    for (const id of notes.bodies.keys()) {
-      if (!notes.numbers.has(id)) notes.numbers.set(id, notes.numbers.size + 1);
+  const label = (text: string) => {
+    const numbers = {
+      footnote: new Map<string, number>(),
+      endnote: new Map<string, number>(),
+    };
+    const body = text.replace(DOCX_NOTE_SENTINEL_RE, (_, index: string) => {
+      const { kind, id } = refs[Number(index)];
+      const seen = numbers[kind];
+      if (!seen.has(id)) seen.set(id, seen.size + 1);
+      return `[${kinds[kind].label(seen.get(id)!)}]`;
+    });
+    const sections: string[] = [];
+    for (const [kind, notes] of Object.entries(kinds)) {
+      const seen = numbers[kind as keyof typeof kinds];
+      // A note no reference points at still carries text; one referenced only from deleted
+      // or moved-away text is gone from the document Word shows.
+      for (const id of notes.bodies.keys()) {
+        if (!notes.referenced.has(id) && !seen.has(id)) {
+          seen.set(id, seen.size + 1);
+        }
+      }
+      const lines = [...seen]
+        .sort((a, b) => a[1] - b[1])
+        .filter(([id]) => notes.bodies.get(id))
+        .map(
+          ([id, number]) => `[${notes.label(number)}] ${notes.bodies.get(id)}`,
+        );
+      if (lines.length) sections.push([notes.heading, ...lines].join("\n"));
     }
-    const lines = [...notes.numbers]
-      .sort((a, b) => a[1] - b[1])
-      .filter(([id]) => notes.bodies.get(id))
-      .map(([id, number]) => `[${notes.label(number)}] ${notes.bodies.get(id)}`);
-    if (lines.length) sections.push([notes.heading, ...lines].join("\n"));
-  }
-  if (!marked) return { archive, notes: sections.join("\n\n") };
+    return body + sections.join("\n\n");
+  };
+  if (!refs.length) return { archive, label };
   const entries = unzipSync(archive);
   entries[main] = strToU8(markedXml);
-  return {
-    archive: zipSync(entries, { level: 0 }),
-    notes: sections.join("\n\n"),
-  };
+  return { archive: zipSync(entries, { level: 0 }), label };
 }
 
 const XML_TOKEN_RE =
@@ -1225,7 +1243,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   const { value } = await mammoth.extractRawText({
     arrayBuffer: toArrayBuffer(marked.archive),
   });
-  return value + marked.notes;
+  return marked.label(value);
 }
 
 const HTML_PRESCAN_BYTES = 1024;
