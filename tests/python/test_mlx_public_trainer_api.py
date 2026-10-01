@@ -436,12 +436,7 @@ def test_mlx_training_arguments_accept_output_dir_positional():
 
 
 def test_mlx_training_arguments_normalize_optim_and_object_aliases():
-    """Common notebook optimizer names and object aliases should normalize.
-
-    `adamw_8bit` is the one the notebooks set and MLX implements it, so it has to
-    survive; the aliases MLX has no optimizer for are collapsed in the two tests
-    below.
-    """
+    """Common notebook optimizer names and object aliases should normalize."""
     unsloth = _import_mlx_unsloth()
 
     class Scheduler:
