@@ -1083,3 +1083,16 @@ def test_reloading_a_kept_model_leaves_the_primarys_npu_model_loaded(
 
     asyncio.run(reload_kept())
     assert unloaded == []
+
+
+def test_an_api_key_status_does_not_leak_a_local_path_through_serving():
+    from hub.utils.host_paths import redact_host_paths
+
+    local = "/home/alice/models/my-finetune"
+    status = InferenceStatusResponse(
+        active_model = local, loaded = [local], serving = [local, "org/B-GGUF"]
+    )
+    redacted = redact_host_paths(status, via_api_key = True)
+    assert local not in redacted["active_model"] and local not in redacted["loaded"]
+    assert local not in redacted["serving"] and "org/B-GGUF" in redacted["serving"]
+    assert redact_host_paths(status, via_api_key = False).serving == [local, "org/B-GGUF"]
