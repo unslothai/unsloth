@@ -654,7 +654,11 @@ def stream_h3_text_encoder(
         from diffusers.hooks import apply_group_offloading
     except Exception:  # noqa: BLE001 -- no group offloading in this diffusers
         return None
-    from .diffusion_memory import _remove_group_offload_hooks, install_group_offload_buffer_restore
+    from .diffusion_memory import (
+        _pin_vision_embedding_device,
+        _remove_group_offload_hooks,
+        install_group_offload_buffer_restore,
+    )
     from .diffusion_prequant import _evict_rotation_hook, _unhook_from_manager
 
     params = inspect.signature(apply_group_offloading).parameters
@@ -688,6 +692,9 @@ def stream_h3_text_encoder(
         # The int8 projections hold their weights as BUFFERS, which stock diffusers leaves on the device after offload.
         install_group_offload_buffer_restore()
         apply_group_offloading(target, **kwargs)
+        # Image / keyframe / reference prompts run the Qwen3-VL vision tower, whose position interpolation reads the
+        # offloaded embedding's CPU device (transformers 5.5).
+        _pin_vision_embedding_device(target)
     except Exception as exc:  # noqa: BLE001 -- keep the rotation
         _remove_group_offload_hooks(target)
         if logger is not None:

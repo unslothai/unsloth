@@ -271,6 +271,27 @@ class H3Residency:
         return top, n
 
 
+def release_all(residency: "H3Residency", *, logger: Any = None) -> None:
+    """Return every group of ``residency`` to streaming, including one whose onload failed partway. Never raises."""
+    import torch
+
+    groups = list(reversed(residency.blocks))
+    if residency.top is not None:
+        groups.append(residency.top)
+    for group in groups:
+        try:
+            if is_resident(group):
+                demote(group)
+            else:
+                # Offload only re-points at the host copy, so it is safe on a group that never reached the device.
+                group.offload_()
+        except Exception as exc:  # noqa: BLE001
+            if logger is not None:
+                logger.warning("video.h3_residency: could not release a group: %s", exc)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def h3_held_host_bytes(*modules: Any) -> dict[str, int]:
     """Host bytes the given loaded components hold, split into pinned and pageable, de-duplicated by storage.
 
@@ -402,6 +423,16 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
     pinned and restored by diffusers' own torchao paths, which is why #12389's top-level pin (plain tensors only) does
     not cover this checkpoint. ``UNSLOTH_H3_TOP_GROUP_PIN=0`` keeps diffusers' group."""
     if str(os.environ.get(H3_TOP_GROUP_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return False
+    from .video_minimax_h3_te import h3_te_pin_allowed
+
+    # The pin-nothing override and the Windows / WSL pinned cap: a permanent pinned copy would eat the allowance the
+    # lazily pinned blocks need on every onload.
+    if not h3_te_pin_allowed():
+        if logger is not None:
+            logger.info(
+                "video.h3_top_group: left as diffusers built it (pinning not allowed on this host)"
+            )
         return False
     top, blocks = h3_offload_groups(transformer)
     stream = next(

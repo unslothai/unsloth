@@ -7027,6 +7027,12 @@ class VideoBackend:
                                 logger.warning(
                                     "video.h3_residency: staying fully streamed: %s", exc
                                 )
+                                if residency is not None:
+                                    # A fit that failed partway left a prefix resident with no-op hooks; without the
+                                    # controller nothing would ever demote it.
+                                    from .video_minimax_h3_residency import release_all
+
+                                    release_all(residency, logger = logger)
                                 residency = None
                     else:
                         denoiser_pinned = pin_prequantized_module(

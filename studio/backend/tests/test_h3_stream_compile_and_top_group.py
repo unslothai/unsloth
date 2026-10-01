@@ -155,6 +155,9 @@ class _FakeGroup:
 
 def test_the_top_level_group_gets_a_pinned_copy_and_the_block_stream(monkeypatch):
     import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda: True)
 
     stream = object()
     top, block = _FakeGroup(None), _FakeGroup(stream)
@@ -168,6 +171,9 @@ def test_the_top_level_group_gets_a_pinned_copy_and_the_block_stream(monkeypatch
 
 def test_the_top_level_pin_kill_switch_and_unstreamed_blocks(monkeypatch):
     import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda: True)
 
     top = _FakeGroup(None)
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(None)]))
@@ -180,6 +186,9 @@ def test_the_top_level_pin_kill_switch_and_unstreamed_blocks(monkeypatch):
 
 def test_a_refused_pin_restores_the_group(monkeypatch):
     import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda: True)
 
     top = _FakeGroup(None)
 
@@ -197,6 +206,18 @@ def test_a_refused_pin_restores_the_group(monkeypatch):
         and top.non_blocking
         and top.cpu_param_dict == {}
     )
+
+
+def test_the_top_level_pin_honours_the_host_pin_policy(monkeypatch):
+    """The pin-nothing override and the Windows / WSL pinned cap leave the top-level group pageable."""
+    import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    top = _FakeGroup(None)
+    monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(object())]))
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda: False)
+    assert not res.pin_streamed_top_level_group(object())
+    assert top.stream is None and top.low_cpu_mem_usage and top.cpu_param_dict == {}
 
 
 def _swap_ready(monkeypatch):

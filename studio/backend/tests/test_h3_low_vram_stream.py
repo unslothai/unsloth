@@ -204,6 +204,30 @@ def test_residency_demotes_the_tail_for_a_bigger_request_and_promotes_it_back(mo
     )
 
 
+def test_a_fit_that_fails_partway_releases_what_it_promoted(monkeypatch):
+    """An allocation failure on the third promotion must not leave the top and two blocks resident with no-op hooks
+    and no controller (the load then claims to be fully streamed)."""
+    from core.inference import video_minimax_h3_residency as res
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    r = _residency(400, [100] * 10)
+
+    def oom():
+        r.blocks[2].where = "cuda"  # partly onloaded
+        raise RuntimeError("CUDA out of memory")
+
+    r.blocks[2].onload_ = oom
+    with pytest.raises(RuntimeError):
+        r.fit(10_000, initial = True)
+    assert res.is_resident(r.top) and r.resident_blocks() == 2
+    res.release_all(r)
+    assert r.resident_bytes() == 0
+    assert r.top.where == "cpu" and all(g.where == "cpu" for g in r.blocks)
+    # streaming hooks are live again
+    r.blocks[0].onload_()
+    assert r.blocks[0].where == "cuda"
+
+
 def test_residency_kill_switch(monkeypatch):
     from core.inference.video_minimax_h3_residency import h3_dit_resident_enabled
 
@@ -235,3 +259,77 @@ def test_held_host_bytes_dedupes_storage():
     m.register_buffer("b", base[500:])
     held = h3_held_host_bytes(m, None)
     assert held == {"pinned": 0, "pageable": 4000}
+
+
+def _tiny_qwen3_vl():
+    transformers = pytest.importorskip("transformers")
+    config_cls = getattr(transformers, "Qwen3VLConfig", None)
+    model_cls = getattr(transformers, "Qwen3VLForConditionalGeneration", None)
+    if config_cls is None or model_cls is None:
+        pytest.skip("this transformers has no Qwen3-VL (the H3 conditioner's architecture)")
+    config = config_cls(
+        text_config = dict(
+            vocab_size = 256,
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+        ),
+        vision_config = dict(
+            depth = 2,
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_heads = 4,
+            out_hidden_size = 16,
+            deepstack_visual_indexes = [1],
+        ),
+        image_token_id = 250,
+        vision_start_token_id = 251,
+        vision_end_token_id = 252,
+    )
+    torch.manual_seed(0)
+    return model_cls(config).eval()
+
+
+def test_an_image_prompt_encodes_through_the_streamed_conditioner(monkeypatch):
+    """Keyframe / reference prompts run the Qwen3-VL vision tower inside the streamed conditioner. Its position
+    interpolation reads the offloaded embedding's device (CPU under group offload; transformers 5.5), which raised a
+    cuda / cpu device mismatch. The streamed encode must match the whole-module one."""
+    import copy
+    import inspect
+
+    if not torch.cuda.is_available():
+        pytest.skip("group offload streams onto a CUDA device; nothing to stream onto here")
+    import core.inference.diffusion_prequant as prequant
+    from core.inference.video_minimax_h3_te import stream_h3_text_encoder
+
+    monkeypatch.setattr(prequant, "_unhook_from_manager", lambda *a, **k: True)
+    monkeypatch.setattr(
+        prequant, "_evict_rotation_hook", lambda manager, onload: (lambda *a, **k: None)
+    )
+    reference = _tiny_qwen3_vl()
+    streamed = copy.deepcopy(reference)
+    assert stream_h3_text_encoder(object(), streamed, "cuda", pin = False) == "stream_lazy"
+
+    vision = reference.config.vision_config
+    grid = torch.tensor([[1, 4, 4]])
+    patches = int(grid.prod())
+    pixels = torch.randn(
+        patches, vision.in_channels * vision.temporal_patch_size * vision.patch_size**2
+    )
+    image_tokens = patches // vision.spatial_merge_size**2
+    ids = torch.tensor([[1, 2, 3, 251] + [250] * image_tokens + [252, 4]])
+    kwargs = dict(
+        input_ids = ids, pixel_values = pixels, image_grid_thw = grid, output_hidden_states = True
+    )
+    if "mm_token_type_ids" in inspect.signature(type(reference.model).forward).parameters:
+        kwargs["mm_token_type_ids"] = (ids == 250).long()
+    with torch.inference_mode():
+        expected = reference.cuda().model(
+            **{k: v.cuda() if torch.is_tensor(v) else v for k, v in kwargs.items()}
+        )
+        got = streamed.model(
+            **{k: v.cuda() if torch.is_tensor(v) else v for k, v in kwargs.items()}
+        )
+    torch.testing.assert_close(got.hidden_states[-1], expected.hidden_states[-1])
