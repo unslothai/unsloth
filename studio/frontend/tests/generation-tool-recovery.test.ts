@@ -20,6 +20,9 @@ const parser = await import(
 const { createGenerationToolRecovery } = await import(
   "../src/features/chat/utils/generation-tool-recovery.ts"
 );
+const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
+  "../src/features/chat/utils/run-checkpoint-scheduler.ts"
+);
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -364,6 +367,7 @@ async function recoverRun(
     ...recovery,
     ...parser,
     createGenerationToolRecovery,
+    RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
     useChatRuntimeStore: { getState: () => runtime },
     cancelChatGenerationRun: async () => {},
@@ -457,6 +461,21 @@ test("the recovery scheduler persists later tool events between reasoning groups
       .map((part) => part.text),
     ["before", "after"],
   );
+});
+
+test("reopening a run that finished without the tab saves and renders only its end", async () => {
+  // The harness yields every update twice, allowing two settlements; production stops at one.
+  const payloads = Array.from({ length: 400 }, (_, index) => ({
+    choices: [{ delta: { content: `w${index} ` } }],
+  }));
+  const text = payloads.map((payload) => payload.choices[0].delta.content).join("");
+  const { snapshots, imports } = await recoverRun([], payloads);
+  assert.ok(snapshots.length <= 2, `saved ${snapshots.length} times`);
+  for (const snapshot of snapshots) {
+    assert.equal(snapshot.metadata.generationSettled, true);
+    assert.equal(snapshot.content.map((part) => part.text).join(""), text);
+  }
+  assert.ok(imports.length <= 2, `rendered ${imports.length} times`);
 });
 
 test("a recovered turn keeps the reasoning cut the backend reported", async () => {

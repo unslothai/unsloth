@@ -95,6 +95,36 @@ export function generationIsSettled(
   return status !== null && TERMINAL.has(status) && cursor >= lastEventSeq;
 }
 
+/** Publish after catch-up; save at checkpoint intervals and on settlement.
+ * Server events remain available to replay any unsaved progress. */
+export function createRecoveryPublishSchedule(
+  intervalMs: number,
+  now: () => number = Date.now,
+): {
+  /** Set the cursor replay must reach before publishing. */
+  attach(lastEventSeq: number): void;
+  shouldPublish(cursor: number, settled: boolean): boolean;
+  /** Allow a save if due or settled, and record its time. */
+  takeSave(settled: boolean): boolean;
+} {
+  let attachSeq = 0;
+  let lastSaveAt = Number.NEGATIVE_INFINITY;
+  return {
+    attach(lastEventSeq) {
+      attachSeq = lastEventSeq;
+    },
+    shouldPublish(cursor, settled) {
+      return settled || cursor >= attachSeq;
+    },
+    takeSave(settled) {
+      const at = now();
+      if (!settled && at - lastSaveAt < intervalMs) return false;
+      lastSaveAt = at;
+      return true;
+    },
+  };
+}
+
 export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
   threadId: string,
   listActiveRuns: (id: string) => Promise<TRun[]>,
@@ -701,6 +731,29 @@ const liveGenerationThreads = new Map<string, string>();
  *  lands the thread's checkpoints are its only persistence, and the create retries until
  *  aborted, so the await can outlast the cap. */
 const provisionalGenerationRuns = new Set<string>();
+
+// Recovered runs need server cancellation because they have no local adapter run.
+const recoveredRunStops = new Map<string, () => void>();
+
+/** Register Stop and return cleanup that preserves newer registrations. */
+export function registerRecoveredRunStop(
+  threadId: string,
+  stop: () => void,
+): () => void {
+  recoveredRunStops.set(threadId, stop);
+  return () => {
+    if (recoveredRunStops.get(threadId) === stop) {
+      recoveredRunStops.delete(threadId);
+    }
+  };
+}
+
+/** Cancel the thread's recovered run; return false if none is registered. */
+export function stopRecoveredRun(threadId: string | null | undefined): boolean {
+  const stop = threadId ? recoveredRunStops.get(threadId) : undefined;
+  stop?.();
+  return stop !== undefined;
+}
 
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
 export function claimLiveGenerationRun(

@@ -142,6 +142,9 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsCorroboratedLive,
+  generationIsSettled,
+  createRecoveryPublishSchedule,
+  registerRecoveredRunStop,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
   requestParsesThinkTags,
@@ -227,6 +230,7 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import {
+  RUN_CHECKPOINT_INTERVAL_MS,
   type RunCheckpointScheduler,
   createRunCheckpointScheduler,
 } from "./utils/run-checkpoint-scheduler";
@@ -1229,6 +1233,7 @@ function scheduleGenerationRecovery(
     };
     const runtime = useChatRuntimeStore.getState();
     runtime.registerThreadServerCancel(threadId, serverCancel);
+    const unregisterStop = registerRecoveredRunStop(threadId, serverCancel);
     runtime.setThreadRunning(threadId, true, {
       local: true,
       owner: serverCancel,
@@ -1257,21 +1262,23 @@ function scheduleGenerationRecovery(
     const commit = async (
       nextMetadata: Record<string, unknown>,
       running: boolean,
+      save = true,
     ) => {
       currentMetadata = nextMetadata;
       const content = rebuild();
-      await saveStoredChatMessage({
-        id: storedMessage.id,
-        threadId,
-        parentId: storedMessage.parentId ?? null,
-        role: "assistant",
-        content,
-        metadata: nextMetadata,
-        createdAt: storedMessage.createdAt,
-      }).catch(() => {
-        // The producer may have committed a newer status between the event and this write. Keep
-        // following; the terminal publish carries all content.
-      });
+      if (save) {
+        await saveStoredChatMessage({
+          id: storedMessage.id,
+          threadId,
+          parentId: storedMessage.parentId ?? null,
+          role: "assistant",
+          content,
+          metadata: nextMetadata,
+          createdAt: storedMessage.createdAt,
+        }).catch(() => {
+          // A newer server status can reject this save; settlement retries with full content.
+        });
+      }
 
       for (const view of views) {
         if (view.threadListItem().getState().remoteId !== threadId) continue;
@@ -1307,6 +1314,7 @@ function scheduleGenerationRecovery(
       }
     };
 
+    const schedule = createRecoveryPublishSchedule(RUN_CHECKPOINT_INTERVAL_MS);
     const publish = async (run: ChatGenerationRun) => {
       const status = run.status;
       const runModel = useChatRuntimeStore
@@ -1343,8 +1351,18 @@ function scheduleGenerationRecovery(
           toolCalls: toolNames(rebuild()),
         });
       }
-      await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
+      const settled = nextMetadata.generationSettled === true;
+      await commit(
+        nextMetadata,
+        generationNeedsRecovery(nextMetadata),
+        schedule.takeSave(settled),
+      );
     };
+    const caughtUp = (run: ChatGenerationRun) =>
+      schedule.shouldPublish(
+        cursor,
+        generationIsSettled(run.status, cursor, run.lastEventSeq),
+      );
 
     try {
       let lastPublishedStatus = "";
@@ -1413,6 +1431,7 @@ function scheduleGenerationRecovery(
                 parseThinkTags: parseThink,
               };
             }
+            schedule.attach(update.run.lastEventSeq);
             identityValidated = true;
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
@@ -1454,8 +1473,10 @@ function scheduleGenerationRecovery(
                   currentMetadata,
                   chunk._reasoningDurationMs,
                 );
-                lastPublishedStatus = update.run.status;
-                await publish(update.run);
+                if (caughtUp(update.run)) {
+                  lastPublishedStatus = update.run.status;
+                  await publish(update.run);
+                }
                 continue;
               }
               if (generationChunkCountsTowardTiming(chunk)) {
@@ -1504,10 +1525,14 @@ function scheduleGenerationRecovery(
             }
           }
           const shouldPublish =
-            (update.event?.type === "chunk" && advanced) ||
-            update.run.status !== lastPublishedStatus ||
-            (["cancelled", "completed", "failed"].includes(update.run.status) &&
-              cursor >= update.run.lastEventSeq);
+            caughtUp(update.run) &&
+            ((update.event?.type === "chunk" && advanced) ||
+              update.run.status !== lastPublishedStatus ||
+              generationIsSettled(
+                update.run.status,
+                cursor,
+                update.run.lastEventSeq,
+              ));
           if (shouldPublish) {
             lastPublishedStatus = update.run.status;
             await publish(update.run);
@@ -1537,6 +1562,8 @@ function scheduleGenerationRecovery(
         await commit(
           {
             ...currentMetadata,
+            // Catch-up can advance content past the last published cursor.
+            generationSeq: cursor,
             incomplete: { reason: "interrupted" as const },
             // The run row may still be non-terminal, so without this marker generationNeedsRecovery stays
             // true and the next trigger starts another follower. history.load clears it if
@@ -1553,6 +1580,7 @@ function scheduleGenerationRecovery(
       // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
       // Joined first because the arming is no longer awaited at its call site, so without this a
       // late arm lands after the disarm and leaves the card up on a finished run.
+      unregisterStop();
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
