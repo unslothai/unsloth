@@ -31,6 +31,9 @@ import shutil
 import subprocess
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
+
+from unsloth_pwsh_runner import run_pwsh
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
@@ -69,7 +72,7 @@ def _says(proc: subprocess.CompletedProcess, phrase: str) -> bool:
 
 def _run_pwsh(body: str) -> subprocess.CompletedProcess:
     script = f"$ErrorActionPreference = 'Stop'\n. '{SCRIPT}'\n{body}"
-    return subprocess.run(
+    return run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
@@ -199,7 +202,7 @@ def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path)
         (tmp_path / f"d{i}").mkdir()
     holder = tmp_path / "small.ps1"
     holder.write_text(small, encoding = "utf-8")
-    proc = subprocess.run(
+    proc = run_pwsh(
         [
             PWSH,
             "-NoProfile",
@@ -234,7 +237,7 @@ def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) 
         f"$env:TMP = '{tmp_path}'\n"
         "(Get-StudioTempArtifacts).Files | ForEach-Object { Write-Output (Split-Path -Leaf $_) }\n"
     )
-    proc = subprocess.run(
+    proc = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,

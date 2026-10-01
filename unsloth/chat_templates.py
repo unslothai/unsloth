@@ -648,6 +648,19 @@ DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message
 
+qwen25_coder_ollama = _ollama_template("qwen-25-coder")
+CHAT_TEMPLATES["qwen-2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen-25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-25-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen25-coder"] = qwen25_default_system_message
+
 # "{{ bos_token }}"\ # Phi-4 removes BOS?
 # =========================================== Phi-4
 phi4_template = \
@@ -1792,8 +1805,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 # =========================================== Liquid-LFM2
 liquid_lfm2_template = \
-'''
-{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+'''{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}'''
@@ -1811,10 +1823,10 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
-    {{ 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
+    {{- 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
 {%- endfor %}
 {%- if add_generation_prompt %}
-    {{ 'GPT4 Correct Assistant:' }}
+    {{- 'GPT4 Correct Assistant:' }}
 {%- endif %}"""
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
@@ -1829,12 +1841,10 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 # =========================================== Yi-chat
 
 yi_chat_template = \
-"""
-{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+"""{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}
-"""
+' }}{% endif %}"""
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 yi_chat_ollama = _ollama_template("yi-chat")
@@ -2084,13 +2094,6 @@ def get_chat_template(
     if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
 
-    # The spliced ShareGPT values land inside Jinja literals, so escape them.
-    new_chat_template = chat_template\
-        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
-        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
-        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
-        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
-
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper: that import path pulls Torch/GPU-specific
         # modules in before MLX training.
@@ -2102,14 +2105,22 @@ def get_chat_template(
 
     # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
+        role, content, user, assistant = (
+            "'" + _escape_jinja_literal(mapping[key]) + "'"
+            for key in ("role", "content", "user", "assistant")
+        )
         chat_template = \
-            "{% if 'role' in messages[0] %}" + \
-            chat_template + \
-            "{% else %}" + \
-            new_chat_template + \
-            "{% endif %}"
-    else:
-        chat_template = new_chat_template
+            "{%- if 'role' not in messages[0] -%}" + \
+            "{%- set sharegpt = namespace(messages = []) -%}" + \
+            "{%- for message in messages -%}" + \
+            "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
+            ".get(message[" + role + "], message[" + role + "]) -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + " + \
+            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
+            "{%- endfor -%}" + \
+            "{%- set messages = sharegpt.messages -%}" + \
+            "{%- endif %}" + \
+            chat_template
 
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
@@ -2133,6 +2144,8 @@ def get_chat_template(
     # tokenizer and remapped eos. The loader mirrors these onto the processor
     # (models/vision.py), so refresh them here or that copy goes stale.
     if _processor is not None:
+        # GGUF export unwraps the processor before it builds the Ollama Modelfile.
+        tokenizer._ollama_modelfile = ollama_modelfile
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):

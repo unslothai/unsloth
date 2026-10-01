@@ -167,7 +167,7 @@ export function ExecutionsView({
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
-                className="h-24 w-auto max-w-[260px] rounded-md border border-border/60 bg-muted/20 object-contain"
+                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
               />
             </div>
           );
@@ -182,7 +182,7 @@ export function ExecutionsView({
         const value = formatCellValue(rawValue);
         const isWide = wideColumns.has(name);
         return (
-          <div className={cn(isWide ? "min-w-[48rem]" : "min-w-[12rem]")}>
+          <div className={cn(isWide ? "min-w-[calc(48rem*var(--ui-space-scale,1))] max-md:min-w-[calc(20rem*var(--ui-space-scale,1))]" : "min-w-[calc(12rem*var(--ui-space-scale,1))]")}>
             <p className="whitespace-pre-wrap break-all">{value}</p>
           </div>
         );
@@ -393,7 +393,7 @@ export function ExecutionsView({
   }, [terminalLines.length]);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 max-md:w-full max-md:flex-col">
       <ExecutionSidebar
         executions={executions}
         selectedExecutionId={selectedExecutionId}

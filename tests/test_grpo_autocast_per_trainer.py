@@ -209,6 +209,8 @@ def _generate(trainer, env, has_bf16):
         "nullcontext": nullcontext,
         "self": trainer,
         "seen": [],
+        # The generated trainer gets this from rl.py's preamble, so the header resolves it there too.
+        "DEVICE_TYPE_TORCH": "cuda",
     }
     helpers = _autocast_helper_source()
     if helpers:
@@ -329,7 +331,11 @@ def test_an_unstamped_model_still_takes_the_environments_finetuning_mode():
 
 
 def test_the_loaders_stamp_the_full_finetuning_answer_on_the_model():
-    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
+    for rel in (
+        "unsloth/models/loader.py",
+        "unsloth/models/vision.py",
+        "unsloth/models/sentence_transformer.py",
+    ):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
         assert "_mark_full_finetuning(" in src, rel
 
