@@ -25,7 +25,9 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
     environ = os.environ if env is None else env
     configured = environ.get("UNSLOTH_CPU_THREADS", "").strip()
     if not configured:
-        environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+        # OpenBLAS reads a blank value as 0 (one thread per core), so blank counts as unset.
+        if not environ.get("OPENBLAS_NUM_THREADS", "").strip():
+            environ["OPENBLAS_NUM_THREADS"] = "1"
         return
 
     try:
