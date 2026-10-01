@@ -725,6 +725,14 @@ fn create_view<R: Runtime>(
                         url: url.to_string(),
                     },
                 );
+            } else if is_external_handoff(&url) {
+                emit(
+                    &window_app,
+                    BrowserEvent::External {
+                        tab_id: window_tab.clone(),
+                        url: url.to_string(),
+                    },
+                );
             }
             NewWindowResponse::Deny
         })

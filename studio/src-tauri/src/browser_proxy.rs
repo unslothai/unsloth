@@ -14,6 +14,8 @@ use url::{Host, Position, Url};
 
 const MAX_HEAD: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
+// One address's share of it, so a dead first answer leaves time for the next.
+const ADDRESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 static ADDRESS: OnceLock<Result<SocketAddr, String>> = OnceLock::new();
 
@@ -100,8 +102,15 @@ fn parse(head: &str) -> Option<Request> {
     })
 }
 
-/// Connect to a public address of `host`, refusing it if any answer is private.
+/// Connect to a public address of `host`, refusing it if any answer is private. One deadline covers
+/// the lookup and every address, so a host with many dead answers can't hold a task for long.
 async fn connect(host: &str, port: u16) -> Result<TcpStream, Refusal> {
+    tokio::time::timeout(TIMEOUT, connect_within(host, port))
+        .await
+        .unwrap_or(Err(Refusal::Unreachable))
+}
+
+async fn connect_within(host: &str, port: u16) -> Result<TcpStream, Refusal> {
     let parsed = Host::parse(host).map_err(|_| Refusal::Unreachable)?;
     let borrowed = match &parsed {
         Host::Domain(name) => Host::Domain(name.as_str()),
@@ -123,7 +132,9 @@ async fn connect(host: &str, port: u16) -> Result<TcpStream, Refusal> {
         return Err(Refusal::Private);
     }
     for address in addresses {
-        if let Ok(Ok(stream)) = tokio::time::timeout(TIMEOUT, TcpStream::connect(address)).await {
+        if let Ok(Ok(stream)) =
+            tokio::time::timeout(ADDRESS_TIMEOUT, TcpStream::connect(address)).await
+        {
             return Ok(stream);
         }
     }

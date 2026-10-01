@@ -15725,6 +15725,8 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
+            # A refresh is a new GET, like a browser's.
+            pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
                 website_policy,
