@@ -362,7 +362,6 @@ def test_safetensors_loop_always_asks_before_sending_the_image(mapped_server, de
     assert starts[0]["awaiting_confirmation"] is True
     assert starts[0]["image_disclosure"]["server"] == "Trace"
     assert [getattr(s, "data", None) for s in seen] == ([image.data] if decision == "allow" else [])
-    # The fingerprint covers the server's headers, so it is never streamed.
     assert "recipient" not in starts[0]["image_disclosure"]
     assert all(s.recipient for s in seen)
 

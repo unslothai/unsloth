@@ -25,11 +25,9 @@ export function isMcpToolOnly(value: unknown): boolean {
   );
 }
 
-/** Whether attached images go to MCP tools instead of the model. */
 export function mcpImageMappingsEnabled(
   servers: readonly McpServerConfig[],
 ): boolean {
-  // image_mappings_active is false when no mapping still matches a cached tool schema.
   return servers.some(
     (server) =>
       server.is_enabled &&
