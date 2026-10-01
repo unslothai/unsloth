@@ -1033,6 +1033,39 @@ def prequant_seed_device(plan: Any, device: str, scheme: Optional[str] = None) -
 
 # Oldest torchao measured bit-exact under streamed group offload; 0.17 int8 (v1, no copy stream) ran 14x slower.
 _TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
+# torchao 0.17 already ships the pinnable ``Int8Tensor`` (0.18 only made it the int8 config's default): the hosted int8
+# checkpoints load as it on 0.17 too and stream bit-identically, and the v1 weights a 0.17 runtime quantise produces
+# are rebuilt as it before streaming (_torchao_group_offload_kwargs). A fresh install pins torch < 2.12, so torchao 0.17,
+# and without this the 0.18 floor gave every offloading install the fp8 transformer instead of int8.
+# UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17=0 restores the 0.18 floor.
+INT8_STREAM_TORCHAO17_ENV = "UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17"
+_TORCHAO17_INT8_STREAM_MIN = (0, 17)
+
+
+def _int8_tensor_pinnable() -> bool:
+    """Whether the installed torchao's ``Int8Tensor`` implements the pin ops the stream needs (0.17+)."""
+    try:
+        from torchao.quantization.quantize_.workflows.int8 import int8_tensor
+        import torch
+
+        table = getattr(int8_tensor.Int8Tensor, "_ATEN_OP_TABLE", None)
+        if isinstance(table, dict):
+            ops = set()
+            for value in table.values():
+                ops.update(value.keys() if isinstance(value, dict) else ())
+            if ops:
+                return torch.ops.aten._pin_memory.default in ops and torch.ops.aten.is_pinned.default in ops
+        return True  # no readable op table: the class exists, which is what 0.17 added
+    except Exception:  # noqa: BLE001 - no Int8Tensor: keep the 0.18 floor
+        return False
+
+
+def _int8_stream_floor() -> tuple:
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return _TORCHAO_GROUP_OFFLOAD_MIN["int8"]
+    if not _int8_tensor_pinnable():
+        return _TORCHAO_GROUP_OFFLOAD_MIN["int8"]
+    return _TORCHAO17_INT8_STREAM_MIN
 _TORCHAO_STREAM_SAFE_CLASSES = frozenset(("Int8Tensor", "Float8Tensor"))
 # Before 0.38 diffusers moved only the torchao wrapper, leaving quantised data on the host.
 _DIFFUSERS_TORCHAO_GROUP_OFFLOAD_MIN = (0, 38)
@@ -1176,6 +1209,8 @@ def torchao_scheme_streams(scheme: Optional[str], *, torchao_version: Any = _UNS
     floor = _TORCHAO_GROUP_OFFLOAD_MIN.get(str(scheme))
     if floor is None:
         return False
+    if str(scheme) == "int8":
+        floor = _int8_stream_floor()
     diffusers_version = _installed_diffusers_version()
     if diffusers_version is None or diffusers_version < _DIFFUSERS_TORCHAO_GROUP_OFFLOAD_MIN:
         return False
@@ -1221,6 +1256,8 @@ def _torchao_group_offload_kwargs(
     install_group_offload_torchao_swap_retry()
     if not kwargs.get("use_stream"):
         return kwargs
+    if not classes <= _TORCHAO_STREAM_SAFE_CLASSES and "LinearActivationQuantizedTensor" in classes:
+        classes = _rebuild_v1_int8_for_stream(module, classes)
     if classes <= _TORCHAO_STREAM_SAFE_CLASSES:
         if not kwargs.get("low_cpu_mem_usage"):
             return kwargs
@@ -1246,6 +1283,25 @@ def _torchao_group_offload_kwargs(
     }
     safe["use_stream"] = False
     return safe
+
+
+def _rebuild_v1_int8_for_stream(module: Any, classes: set) -> set:
+    """torchao <= 0.17 v1 int8 (``LinearActivationQuantizedTensor``) has no ``is_pinned``, so it could only stream with
+    synchronous copies (~14x slower). Rebuild it as the pinnable ``Int8Tensor`` (same int8 weights and scales; the
+    dynamic activation quant is 0.18's, so outputs move by int8 rounding, not bit-identical to the v1 kernel) before the
+    hooks are built. All or nothing; a weight that fails validation keeps v1 and the synchronous copies. Off with the
+    same switch as the 0.17 int8 stream."""
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return classes
+    try:
+        from .prequant_legacy_int8 import convert_legacy_int8_weights
+
+        if convert_legacy_int8_weights(module):
+            _freeze_torchao_weights(module)
+            return _torchao_weight_classes(module)
+    except Exception:  # noqa: BLE001 - keep the v1 weights and the synchronous fallback
+        pass
+    return classes
 
 
 def _freeze_torchao_weights(module: Any) -> None:
