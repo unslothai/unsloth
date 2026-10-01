@@ -146,7 +146,6 @@ export function useRequiredAssetsDownload({
       <RequiredAssetsDownloadDialog
         entries={pending}
         checking={checking}
-        mode="download"
         modelLabel={modelLabel ?? repoId}
         onCancel={() => {
           ++sequence.current;

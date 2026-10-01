@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { RequiredAssetsDownloadDialog } from "@/features/hub/download-manager/required-assets-dialog";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import {
@@ -2953,7 +2952,7 @@ export function ImagesPage({
   const pendingLoadEntries = useRef<StagedDownloadEntry[] | null>(null);
   const stagedPlan = useRef<"download" | { token: number } | null>(null);
 
-  const { stage, progress: stagedProgress, assetDownloadPrompt } = useStagedDownload({
+  const { stage, progress: stagedProgress } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
       if (stagedPlan.current === "download") {
@@ -3125,7 +3124,7 @@ export function ImagesPage({
       }
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
-      if (source !== "hub" && opts.kind === "pipeline" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
+      if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
@@ -3195,7 +3194,7 @@ export function ImagesPage({
           });
           return true;
         }
-        // No plan (offline, older backend, metadata hiccup): the load pulls what it needs inline.
+        // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
@@ -4649,7 +4648,6 @@ export function ImagesPage({
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      {active && <RequiredAssetsDownloadDialog {...assetDownloadPrompt} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at its
           (draggable) width when space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { RequiredAssetsDownloadDialog } from "@/features/hub/download-manager/required-assets-dialog";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -2757,7 +2756,7 @@ function VideoGenerator({
     },
     [pickGuard, revertPick, pickToast],
   );
-  const { stage, progress: stagedProgress, assetDownloadPrompt } = useStagedDownload({
+  const { stage, progress: stagedProgress } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
       if (!active) {
@@ -2816,7 +2815,7 @@ function VideoGenerator({
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
-      if (source !== "hub" && opts.kind === "pipeline") return handleLoadRef.current(repoId, opts, advanced);
+      if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
       // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = pickToast.show();
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
@@ -2868,7 +2867,7 @@ function VideoGenerator({
           return true;
         }
       } catch {
-        // No plan (offline, older backend, metadata hiccup): fall back to the load's own download.
+        // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (pick !== pickSeq.current || !owns()) {
@@ -3643,7 +3642,6 @@ function VideoGenerator({
       <MediaRailResizeHandle kind="video" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      {active && <RequiredAssetsDownloadDialog {...assetDownloadPrompt} />}
       <AlertDialog
         open={active && clearConfirmOpen}
         onOpenChange={(open) => {

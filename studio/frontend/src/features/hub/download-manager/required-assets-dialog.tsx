@@ -25,7 +25,6 @@ export function RequiredAssetsDownloadDialog({
   entries,
   onConfirm,
   onCancel,
-  mode = "load",
   modelLabel,
   checking = false,
 }: {
@@ -33,7 +32,6 @@ export function RequiredAssetsDownloadDialog({
   entries: readonly PlannedDownloadEntry[] | null;
   onConfirm: (includeAssets: boolean) => void;
   onCancel: () => void;
-  mode?: "load" | "download";
   modelLabel?: string;
 }) {
   // Keep one portal/content mounted through the metadata check.
@@ -49,7 +47,6 @@ export function RequiredAssetsDownloadDialog({
           entries={entries ?? []}
           checking={checking}
           onConfirm={onConfirm}
-          mode={mode}
           modelLabel={modelLabel}
         />
       )}
@@ -60,13 +57,11 @@ function DownloadChoice({
   checking,
   entries,
   onConfirm,
-  mode,
   modelLabel,
 }: {
   checking: boolean;
   entries: readonly PlannedDownloadEntry[];
   onConfirm: (includeAssets: boolean) => void;
-  mode: "load" | "download";
   modelLabel?: string;
 }) {
   const [includeAssets, setIncludeAssets] = useState(true);
@@ -88,31 +83,16 @@ function DownloadChoice({
   const total = includeAssets ? fullSize : modelSize;
   return (
     <AlertDialogContent className="sm:max-w-[calc(490px*var(--ui-space-scale,1))]">
-      <AlertDialogHeader
-        className={
-          mode === "download"
-            ? "flex flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2 text-left sm:group-data-[size=default]/alert-dialog-content:place-items-center"
-            : undefined
-        }
-      >
-        <AlertDialogTitle className="shrink-0">
-          {mode === "download"
-            ? "Download model"
-            : "Required files are missing"}
-        </AlertDialogTitle>
-        <AlertDialogDescription
-          className={
-            mode === "download"
-              ? "min-w-0 text-xs break-words sm:ml-auto sm:text-right"
-              : undefined
-          }
-        >
-          {mode === "download"
-            ? (displayName ?? "Choose which files to download.")
-            : "Download the missing files before loading this model."}
+      <AlertDialogHeader className="flex flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2 text-left sm:group-data-[size=default]/alert-dialog-content:place-items-center">
+        <AlertDialogTitle className="shrink-0">Download model</AlertDialogTitle>
+        <AlertDialogDescription className="min-w-0 text-xs break-words sm:ml-auto sm:text-right">
+          {displayName ?? "Choose which files to download."}
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <div className="relative min-h-[calc(246px*var(--ui-space-scale,1))] text-sm" aria-busy={checking}>
+      <div
+        className="relative min-h-[calc(246px*var(--ui-space-scale,1))] text-sm"
+        aria-busy={checking}
+      >
         {checking && (
           <div
             role="status"
@@ -134,47 +114,38 @@ function DownloadChoice({
               </span>
             </div>
           )}
-          {mode === "download" ? (
-            <div className="flex items-center gap-3">
-              <CheckboxPrimitive.Root
-                id={choiceId}
-                checked={includeAssets}
-                onCheckedChange={(checked) =>
-                  setIncludeAssets(checked === true)
-                }
-                className="relative flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          <div className="flex items-center gap-3">
+            <CheckboxPrimitive.Root
+              id={choiceId}
+              checked={includeAssets}
+              onCheckedChange={(checked) => setIncludeAssets(checked === true)}
+              className="relative flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                width="16"
+                height="16"
+                className="block size-4 shrink-0 overflow-visible"
               >
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 16 16"
-                  width="16"
-                  height="16"
-                  className="block size-4 shrink-0 overflow-visible"
-                >
-                  <circle
-                    cx="8"
-                    cy="8"
-                    r="7.5"
-                    className={
-                      includeAssets
-                        ? "fill-emerald-600 stroke-emerald-600"
-                        : "fill-transparent stroke-input"
-                    }
-                  />
-                  {includeAssets && <circle cx="8" cy="8" r="3" fill="white" />}
-                </svg>
-              </CheckboxPrimitive.Root>
-              <label htmlFor={choiceId} className="cursor-pointer">
-                Include required files
-              </label>
-              <span className="ml-auto shrink-0 tabular-nums">{assetSize}</span>
-            </div>
-          ) : (
-            <div className="flex justify-between text-foreground">
-              <span>Required files</span>
-              <span>{assetSize}</span>
-            </div>
-          )}
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="7.5"
+                  className={
+                    includeAssets
+                      ? "fill-emerald-600 stroke-emerald-600"
+                      : "fill-transparent stroke-input"
+                  }
+                />
+                {includeAssets && <circle cx="8" cy="8" r="3" fill="white" />}
+              </svg>
+            </CheckboxPrimitive.Root>
+            <label htmlFor={choiceId} className="cursor-pointer">
+              Include required files
+            </label>
+            <span className="ml-auto shrink-0 tabular-nums">{assetSize}</span>
+          </div>
           <ul className="mt-3 h-12 space-y-2 overflow-y-auto pl-7 text-xs text-muted-foreground">
             {assets.map((entry, i) => (
               <li
@@ -195,11 +166,9 @@ function DownloadChoice({
             <span>Total download</span>
             <span className="tabular-nums">{total}</span>
           </div>
-          {mode === "download" && (
-            <p className="text-xs text-muted-foreground">
-              Downloading will not load this model or switch your current model.
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground">
+            Downloading will not load this model or switch your current model.
+          </p>
         </div>
       </div>
       <AlertDialogFooter>
