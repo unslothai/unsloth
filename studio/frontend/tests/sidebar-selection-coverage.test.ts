@@ -223,8 +223,7 @@ test("the shared menu items are written against the injected family", () => {
     );
     assert.match(body, /<P\.Item/);
   }
-  // The helper these bodies call takes the family too, rather than hardcoding the dropdown.
-  assert.match(APP_SIDEBAR, /<OpenChatFolderUnavailableItem Item=\{P\.Item\} \/>/);
+  assert.doesNotMatch(APP_SIDEBAR, /OpenChatFolder/);
 });
 
 

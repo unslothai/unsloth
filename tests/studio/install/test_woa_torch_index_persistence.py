@@ -3691,7 +3691,7 @@ class TestATransientProbeFailureKeepsTheCudaBundle:
     selector with no NVIDIA evidence, which installs the CPU bundle instead."""
 
     def test_the_persisted_cuda_index_counts_as_evidence(self):
-        assert "$_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv)" in SETUP_SRC
+        assert "$_nvidiaEvidence = $HasNvidiaDriverEvidence -or ((Test-WinArm64Venv)" in SETUP_SRC
         assert "elseif ($_nvidiaEvidence) { $_nvidiaKinds }" in SETUP_SRC
 
     def test_only_a_persistable_index_counts(self):

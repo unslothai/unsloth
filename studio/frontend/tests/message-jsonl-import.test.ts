@@ -190,3 +190,15 @@ test("assistant images are represented explicitly in JSONL exports", () => {
     [{ role: "assistant", content: "Chart\n\n[image attachment]" }],
   );
 });
+
+test("imports without message send times mark their ordering timestamps as estimated", () => {
+  for (const [filename, source] of [
+    ["messages.jsonl", '{"messages":[{"role":"user","content":"Hello"}]}'],
+    ["sharegpt.jsonl", '{"created_at":1700000000000,"conversations":[{"from":"human","value":"Hello"}]}'],
+    ["messages.csv", "role,content\nuser,Hello"],
+  ]) {
+    const conversation = parseImportText(source, filename)[0];
+    assert.ok(conversation, filename);
+    assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true, filename);
+  }
+});

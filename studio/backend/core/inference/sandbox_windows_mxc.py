@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 
-from . import mxc_adapter, mxc_policy, mxc_probe, mxc_runtime
+from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_probe, mxc_read_grants, mxc_runtime
 from .os_sandbox import (
     PreparedSandboxLaunch,
     SandboxBuildError,
@@ -24,6 +24,22 @@ from .os_sandbox import (
 
 
 logger = logging.getLogger(__name__)
+
+CMD_PROFILE_LIMITATION = "terminal_cmd_profile_git_hooks_pager_editor_disabled"
+
+
+def _workdir_alias(plan):
+    """(lease, limitations) for a cmd Terminal launch: stock git needs the workdir as a drive root."""
+    if plan.execution_kind != "terminal" or not mxc_policy.is_cmd_argv(plan.argv):
+        return None, ()
+    try:
+        workdir = mxc_policy._safe_canonical_path(plan.workdir, directory = True)
+    except Exception:
+        return None, ()  # build_launch_request refuses the same workdir with the real reason
+    lease = mxc_drive_alias.acquire(workdir)
+    if lease is None:
+        return None, (mxc_drive_alias.LIMITATION_UNAVAILABLE,)
+    return lease, (CMD_PROFILE_LIMITATION,)
 
 
 def _capability_fingerprint(identity: str, execution_kind: str, selected_executable: str) -> str:
@@ -61,6 +77,9 @@ def capability_snapshot(
             remediation = "Select a supported native Windows runtime.",
             limitations = ("unsupported_execution_kind",),
         )
+    if not (mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()):
+        # Here too: a host with only the DACL tier stops at this capability and never builds a launch.
+        mxc_read_grants.revoke_recorded()
     available, reason = mxc_probe.probe(
         selected_executable,
         execution_kind = execution_kind,
@@ -82,6 +101,8 @@ def capability_snapshot(
     )
     if dacl:
         limitations += ("mxc_tier3_dacl_host_permission_changes",)
+        if mxc_read_grants.enabled():
+            limitations += ("mxc_tier3_persistent_runtime_read_grants",)
     shell_incompatible = reason == mxc_probe.MSYS_NAMESPACE_REASON
     if shell_incompatible:
         remediation = (
@@ -98,7 +119,10 @@ def capability_snapshot(
             "Install the pinned Microsoft WXC runtime and enable BaseContainer/PSEC. On Windows "
             f"builds without it, set {mxc_policy.DACL_FALLBACK_ENV}=1 to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
-            "on exit, and needs a one-time administrator host preparation plus one per reboot."
+            "on exit, and needs a one-time administrator host preparation plus one per reboot. "
+            "Studio's own Python runtime folders get a permanent read-only entry instead, so "
+            f"launches stay fast; set {mxc_read_grants.PERSISTENT_GRANTS_ENV}=0 to keep every "
+            "entry temporary."
         )
     # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
     host_prep = (
@@ -123,11 +147,18 @@ def capability_snapshot(
 
 
 def prepare(plan, capability):
+    lease, alias_limitations = _workdir_alias(plan)
     try:
-        request = mxc_policy.build_launch_request(plan)
+        request = (
+            mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
+            if lease
+            else mxc_policy.build_launch_request(plan)
+        )
     except Exception as exc:
+        if lease is not None:
+            lease.release()
         raise SandboxBuildError(f"Windows MXC policy construction failed: {exc}") from exc
-    launch_limitations = tuple(request.get("launchLimitations", ()))
+    launch_limitations = tuple(request.get("launchLimitations", ())) + alias_limitations
     record = _record(
         plan,
         capability,
@@ -159,6 +190,9 @@ def prepare(plan, capability):
         execution_record = record,
         launch_limitations = launch_limitations,
     )
+    if lease is not None:
+        # Runs on every exit path, spawned or not; release_runtime drops it first once the workload is gone.
+        prepared.cleanup_callbacks.append(lease.release)
 
     def launch(_prepared, kwargs):
         try:
@@ -173,6 +207,8 @@ def prepare(plan, capability):
             proc = mxc_adapter.spawn(request, cancel_event = plan.cancel_event, popen_kwargs = kwargs)
         except Exception as exc:
             may_have_started = bool(getattr(exc, "may_have_started", False))
+            if lease is not None and not may_have_started:
+                lease.release()
             cancelled = isinstance(exc, mxc_adapter.MxcLaunchCancelled)
             refused = getattr(exc, "stage", None) == "policy"
             if plan.requested_mode == "auto" and not (may_have_started or cancelled or refused):
@@ -182,7 +218,7 @@ def prepare(plan, capability):
                     "env": with_session_packages(kwargs.get("env") or plan.env, plan.workdir),
                 }
                 try:
-                    proc = subprocess.Popen(plan.argv, **kwargs)
+                    proc = subprocess.Popen(mxc_policy.host_spawn_args(plan.argv), **kwargs)
                 except OSError as fallback_exc:
                     raise SandboxBuildError(
                         f"Windows MXC and software-safeguard launches both failed: {fallback_exc}"
@@ -231,6 +267,8 @@ def prepare(plan, capability):
             execution_status = "dispatched",
             backend_tier = str(getattr(proc, "_mxc_backend_tier", "unknown")),
         )
+        if lease is not None:
+            proc._mxc_drive_alias = lease
         prepared.cleanup_callbacks.append(lambda: mxc_adapter.release_runtime(proc))
         return proc
 
