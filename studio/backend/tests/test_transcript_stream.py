@@ -85,7 +85,7 @@ def test_transformers_progress_uses_existing_audio_windows(monkeypatch):
 
         def transcribe_window(self, pcm, kwargs, cancel):
             self.calls += 1
-            return f"part {self.calls}"
+            return f"part {self.calls}", len(pcm) // 4
 
     worker = Worker()
     sidecar = WhisperSttSidecar()

@@ -381,7 +381,7 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
             _cancel_event = None,
         ):
             calls.append(generate_kwargs)
-            return "hello"
+            return "hello", 160
 
     sidecar = WhisperSttSidecar()
     monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
@@ -399,6 +399,37 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
 
     assert text == "hello"
     assert calls == [{"condition_on_prev_tokens": False, "num_beams": 1}]
+
+
+def test_long_audio_resumes_each_window_where_the_last_complete_segment_ended(monkeypatch):
+    starts = []
+    calls = []
+
+    class FakeWorker:
+        generation_config = SimpleNamespace(is_multilingual = True)
+
+        def transcribe_window(
+            self,
+            pcm,
+            generate_kwargs,
+            _cancel_event = None,
+        ):
+            window = np.frombuffer(pcm, dtype = np.float32)
+            starts.append(int(window[0]))
+            calls.append(generate_kwargs)
+            consumed = 454400 if not calls[1:] else len(window)
+            return f"part {len(calls)}", consumed
+
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
+
+    text = sidecar._transcribe_decoded(
+        "small", np.arange(50 * 16000, dtype = np.float32), {"num_beams": 5}
+    )
+
+    assert text == "part 1 part 2"
+    assert starts == [0, 454400]
+    assert all(kwargs["return_timestamps"] is True for kwargs in calls)
 
 
 def test_unknown_language_is_rejected_before_decode_or_model_load(monkeypatch):

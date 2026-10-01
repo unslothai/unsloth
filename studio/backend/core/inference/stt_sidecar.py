@@ -1647,21 +1647,23 @@ class WhisperSttSidecar:
             effective_generate_kwargs.pop("task", None)
             effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
+        if len(decoded_audio) > window:
+            effective_generate_kwargs["return_timestamps"] = True
         parts: list[str] = []
-        for start in range(0, max(len(decoded_audio), 1), window):
+        start = 0
+        while start < len(decoded_audio):
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             segment = decoded_audio[start : start + window]
-            if segment.size == 0:
-                continue
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
-            parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
+            text, consumed = engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event)
+            parts.append(text)
+            start += consumed
             if on_progress is not None:
                 on_progress(
                     {
                         "text": " ".join(part.strip() for part in parts if part.strip()),
-                        "processed_seconds": min(start + window, len(decoded_audio))
-                        / _TARGET_SAMPLE_RATE,
+                        "processed_seconds": min(start, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
                         "duration": len(decoded_audio) / _TARGET_SAMPLE_RATE,
                     }
                 )

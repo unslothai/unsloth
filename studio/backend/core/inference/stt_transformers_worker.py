@@ -45,6 +45,7 @@ _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
+_TIMESTAMPS_PER_SECOND = 50
 
 # Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
 # carrying the child's message.
@@ -136,6 +137,8 @@ def transcribe_window(
 
     segment = np.frombuffer(pcm, dtype = np.float32)
     kwargs = dict(generate_kwargs)
+    if kwargs.get("return_timestamps"):
+        kwargs["force_unique_generate_call"] = True
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
@@ -148,8 +151,25 @@ def transcribe_window(
         features = features.to(target_dtype)
     with torch.no_grad():
         generated = model.generate(features, **kwargs)
+    consumed = len(segment)
+    if kwargs.get("return_timestamps"):
+        tokens, end = _complete_segments([int(token) for token in generated[0]], model.generation_config)
+        generated = [tokens]
+        if end:
+            consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
     text = processor.batch_decode(generated, skip_special_tokens = True)
-    return text[0] if text else ""
+    return (text[0] if text else ""), consumed
+
+
+def _complete_segments(tokens: list, generation_config) -> tuple:
+    # Whisper's long-form seek: a segment the window cut off is decoded again from the next window.
+    timestamp_begin = generation_config.no_timestamps_token_id + 1
+    tokens = [t for t in tokens if t < generation_config.eos_token_id or t >= timestamp_begin]
+    is_timestamp = [t >= timestamp_begin for t in tokens]
+    pairs = [i for i in range(1, len(tokens)) if is_timestamp[i - 1] and is_timestamp[i]]
+    if not pairs or is_timestamp[-2:] == [False, True]:
+        return tokens, 0
+    return tokens[: pairs[-1]], tokens[pairs[-1] - 1] - timestamp_begin
 
 
 def _error_response(exc: BaseException) -> dict:
@@ -252,7 +272,7 @@ def run_stt_worker(
                 if engine is None:
                     raise SttWorkerError("The dictation worker has no model loaded.")
                 cancellable = bool(command.get("cancellable"))
-                text = transcribe_window(
+                text, consumed = transcribe_window(
                     engine[0],
                     engine[1],
                     command["audio"],
@@ -262,7 +282,7 @@ def run_stt_worker(
                 if cancellable and cancel_event.is_set():
                     from core.inference.stt_sidecar import SttTranscriptionCancelledError
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
-                _send(resp_queue, {"type": "text", "text": text})
+                _send(resp_queue, {"type": "text", "text": text, "consumed": consumed})
             elif kind == "shutdown":
                 _send(resp_queue, {"type": "shutdown_ack"})
                 return
@@ -425,7 +445,7 @@ class WhisperWorker:
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._cancel_event is not None:
             self._cancel_event.clear()
         self._send(
@@ -438,7 +458,7 @@ class WhisperWorker:
         )
         response = self._await("text", _TRANSCRIBE_TIMEOUT_SECONDS, cancel_event, "transcribe")
         text = response.get("text")
-        return text if isinstance(text, str) else ""
+        return (text if isinstance(text, str) else ""), response["consumed"]
 
     def is_alive(self) -> bool:
         process = self._process
@@ -666,16 +686,16 @@ class InProcessWhisperEngine:
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._model is None:
             raise SttWorkerError("The dictation worker has no model loaded.")
-        text = transcribe_window(
+        result = transcribe_window(
             self._model, self._processor, pcm, dict(generate_kwargs), cancel_event
         )
         if cancel_event is not None and cancel_event.is_set():
             from core.inference.stt_sidecar import SttTranscriptionCancelledError
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        return text
+        return result
 
     def is_alive(self) -> bool:
         return self._model is not None
