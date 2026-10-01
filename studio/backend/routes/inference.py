@@ -26265,7 +26265,11 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
 _COMPLETIONS_SAMPLING_BODY_KEY = {"repetition_penalty": "repeat_penalty"}
 
 
-def _fill_recommended_sampling_completions(body: dict, model_id, client_max_tokens = None) -> None:
+def _fill_recommended_sampling_completions(
+    body: dict,
+    model_id,
+    client_max_tokens = None,
+) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a raw
     ``/v1/completions`` body in place, so the legacy (non-chat) endpoint honors the same pins as
     ``/v1/chat/completions``.
