@@ -63,6 +63,42 @@ test("replay resumes an existing card without duplicating it", () => {
   assert.deepEqual(carried, [{ at: 12, part: { ...saved, result: "ok" } }]);
 });
 
+test("a finished card saved past the cursor is not minted a second time", () => {
+  const carried: Carried[] = [];
+  let replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  const finished = { ...(carried[0].part as Record<string, unknown>) };
+  replay = createGenerationToolRecovery(carried, "run", 4800).apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  assert.deepEqual(
+    carried.map((entry) => entry.part),
+    [finished],
+  );
+});
+
+test("a live card saved past the cursor is not recovered as a second card", () => {
+  const live = {
+    type: "tool-call",
+    toolCallId: "call_0:live-uuid",
+    backendToolCallId: "call_0",
+    generationToolCallId: "run:4897",
+    toolName: "edit_file",
+    args: { path: "scene.glsl" },
+    argsText: '{"path":"scene.glsl"}',
+    result: "ok",
+  };
+  const carried: Carried[] = [{ at: 12, part: live }];
+  const replay = createGenerationToolRecovery(carried, "run", 4800).apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  assert.deepEqual(
+    carried.map((entry) => (entry.part as Record<string, unknown>).toolCallId),
+    ["call_0:live-uuid"],
+  );
+});
+
 test("reused backend ids get separate cards across rounds and reloads", () => {
   const carried: Carried[] = [];
   let replay = createGenerationToolRecovery(carried, "run").apply;

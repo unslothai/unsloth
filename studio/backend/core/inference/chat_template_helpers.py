@@ -2825,6 +2825,19 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
     return None
 
 
+def trailing_assistant_resume_kind(messages: list) -> Optional[str]:
+    """Return the trailing assistant field to resume, or None; prefer content over reasoning."""
+    text = trailing_assistant_text(messages)
+    if text:
+        return "content"
+    if text is None:
+        return None
+    reasoning = messages[-1].get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return "reasoning_content"
+    return None
+
+
 def last_user_text(messages: list) -> str:
     """Text of the newest user turn, with any ``<img>`` markup stripped. Scans back rather than
     reading ``messages[-1]``: a continuation ends on the assistant partial. Stops at the newest
@@ -3084,6 +3097,14 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        added_reasoning = assistant_msg.get("reasoning_content")
+        if (
+            isinstance(added_reasoning, str)
+            and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        ):
+            merged_msg["reasoning_content"] = (
+                f"{conversation[-1]['reasoning_content']}{added_reasoning}"
+            )
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
