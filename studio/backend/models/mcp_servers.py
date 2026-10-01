@@ -42,6 +42,8 @@ class McpServerResponse(BaseModel):
     is_enabled: bool = True
     use_oauth: bool = False
     image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list)
+    # False when no mapping matches a cached tool schema any more; true while the tools are unknown.
+    image_mappings_active: bool = False
     created_at: str
     updated_at: str
 

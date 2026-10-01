@@ -343,6 +343,7 @@ async function mcpToolOnlyEnabled(): Promise<boolean | null> {
 class VisionImageAdapter implements AttachmentAdapter {
   accept = CHAT_IMAGE_ACCEPT;
   private readonly converted = new Map<string, Promise<File | null>>();
+  private readonly toolOnlyIds = new Set<string>();
 
   async *add({
     file: picked,
@@ -409,6 +410,12 @@ class VisionImageAdapter implements AttachmentAdapter {
       throw new Error(reason);
     }
 
+    if (mcpToolOnly && this.toolOnlyIds.size > 0) {
+      const reason = "Only one image per message can go to MCP tools.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+
     const maxSize = 20 * 1024 * 1024;
     if (picked.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
@@ -422,6 +429,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       ...(mcpToolOnly ? { mcpToolOnly: true } : {}),
       status: { type: "requires-action", reason: "composer-send" },
     } satisfies PendingAttachment & { mcpToolOnly?: boolean };
+    if (mcpToolOnly) this.toolOnlyIds.add(attachment.id);
     if (convertedImageType(picked) === null) {
       yield attachment;
       return;
@@ -442,6 +450,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       if (!this.converted.has(attachment.id)) {
         return;
       }
+      this.toolOnlyIds.delete(attachment.id);
       toast.error(error instanceof Error ? error.message : String(error));
       throw error;
     }
@@ -452,6 +461,7 @@ class VisionImageAdapter implements AttachmentAdapter {
     if (mcpToolOnly && file.size > 10 * 1024 * 1024) {
       const reason =
         "The converted image is over the 10 MB limit for MCP tools.";
+      this.toolOnlyIds.delete(attachment.id);
       toast.error(reason);
       throw new Error(reason);
     }
@@ -461,6 +471,7 @@ class VisionImageAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const conversion = this.converted.get(attachment.id);
     this.converted.delete(attachment.id);
+    this.toolOnlyIds.delete(attachment.id);
     const file = conversion ? await conversion : attachment.file;
     const current = await mcpToolOnlyEnabled();
     if (current !== isMcpToolOnly(attachment)) {
@@ -495,6 +506,7 @@ class VisionImageAdapter implements AttachmentAdapter {
 
   async remove(attachment: { id: string }): Promise<void> {
     this.converted.delete(attachment.id);
+    this.toolOnlyIds.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {

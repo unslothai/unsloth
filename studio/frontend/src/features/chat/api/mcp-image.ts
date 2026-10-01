@@ -29,9 +29,12 @@ export function isMcpToolOnly(value: unknown): boolean {
 export function mcpImageMappingsEnabled(
   servers: readonly McpServerConfig[],
 ): boolean {
+  // image_mappings_active is false when no mapping still matches a cached tool schema.
   return servers.some(
     (server) =>
-      server.is_enabled && (server.image_input_mappings?.length ?? 0) > 0,
+      server.is_enabled &&
+      (server.image_input_mappings?.length ?? 0) > 0 &&
+      server.image_mappings_active !== false,
   );
 }
 

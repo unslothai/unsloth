@@ -287,6 +287,16 @@ def test_mappings_round_trip_through_the_routes(mapped_server):
     from routes import mcp_servers as routes_mcp
 
     assert routes_mcp.list_mcp_server_tools("srv1", current_subject = "u")[0]["name"] == "lookup"
+    listed = lambda: routes_mcp._row_to_response(mcp_servers_db.get_server("srv1"))  # noqa: E731
+    assert listed().image_mappings_active is True
+    # The server dropped the string field: images must not be made tool-only for it.
+    stale = {
+        **LOOKUP,
+        "inputSchema": {"type": "object", "properties": {"image": {"type": "boolean"}}},
+    }
+    mcp_client.cache_tools("srv1", [stale])
+    assert listed().image_mappings_active is False
+    mcp_client.cache_tools("srv1", [LOOKUP])
     updated = asyncio.run(
         routes_mcp.update_mcp_server(
             "srv1",

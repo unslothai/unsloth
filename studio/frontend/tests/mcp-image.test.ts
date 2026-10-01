@@ -72,6 +72,16 @@ test("only enabled servers with a mapping make images tool-only", () => {
     ] as unknown as Servers),
     false,
   );
+  assert.equal(
+    mcpImageMappingsEnabled([
+      {
+        ...server,
+        image_input_mappings: [mapped],
+        image_mappings_active: false,
+      },
+    ] as unknown as Servers),
+    false,
+  );
 });
 
 test("mapping candidates are the top-level string fields", () => {

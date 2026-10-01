@@ -26,6 +26,7 @@ export interface McpServerConfig {
   is_enabled: boolean;
   use_oauth: boolean;
   image_input_mappings?: McpImageInputMapping[];
+  image_mappings_active?: boolean;
   created_at: string;
   updated_at: string;
 }

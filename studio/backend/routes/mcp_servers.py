@@ -38,7 +38,7 @@ from core.inference.mcp_client import (
     stdio_mcp_enabled,
 )
 from core.inference.mcp_config_import import parse_mcp_config
-from core.inference.mcp_image import image_input_mappings
+from core.inference.mcp_image import image_input_mappings, image_mapping
 from models.mcp_servers import (
     BlenderTest,
     McpServerCreate,
@@ -154,6 +154,13 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
+def _image_mappings_active(row: dict) -> bool:
+    if not image_input_mappings(row):
+        return False
+    tools = get_cached_tools(row["id"])
+    return tools is None or any(image_mapping(row, tool) for tool in tools)
+
+
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
@@ -164,6 +171,7 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         image_input_mappings = image_input_mappings(row),
+        image_mappings_active = _image_mappings_active(row),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
