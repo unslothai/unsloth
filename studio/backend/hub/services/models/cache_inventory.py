@@ -28,6 +28,7 @@ from hub.utils.snapshot_filters import (
 from hub.services.models.common import (
     _capabilities_for_format,
     _classify_non_gguf_model_format,
+    _diffusers_pipeline_artifact_kind,
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
@@ -1171,10 +1172,12 @@ def _scan_cached_models(
                     if not any(tag.lower() == "whisper" for tag in tags):
                         tags.append("whisper")
                     local_metadata["tags"] = tags
+                pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(load_snapshot)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    "artifact_kind": pipeline_artifact_kind or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,
@@ -1227,6 +1230,9 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
+                # Pin the immutable snapshot, not the bare id: refs/main can move after this structural scan.
+                if row_task is None and pipeline_artifact_kind is not None:
+                    row["load_id"] = str(load_snapshot)
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:
                     row["load_id"] = str(load_snapshot)

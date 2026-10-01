@@ -55,7 +55,6 @@ def _streamed_dit():
 
 def _graphs():
     from torch._dynamo.utils import counters
-
     return counters["stats"].get("unique_graphs", 0)
 
 
@@ -126,8 +125,9 @@ def test_regional_compile_records_its_kwargs_for_the_streamed_path():
     import inspect
 
     from core.inference import diffusion_speed
-
-    assert "_unsloth_regional_compile_kwargs" in inspect.getsource(diffusion_speed._compile_repeated_blocks)
+    assert "_unsloth_regional_compile_kwargs" in inspect.getsource(
+        diffusion_speed._compile_repeated_blocks
+    )
 
 
 class _FakeGroup:
@@ -155,6 +155,9 @@ class _FakeGroup:
 
 def test_the_top_level_group_gets_a_pinned_copy_and_the_block_stream(monkeypatch):
     import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: True)
 
     stream = object()
     top, block = _FakeGroup(None), _FakeGroup(stream)
@@ -168,6 +171,9 @@ def test_the_top_level_group_gets_a_pinned_copy_and_the_block_stream(monkeypatch
 
 def test_the_top_level_pin_kill_switch_and_unstreamed_blocks(monkeypatch):
     import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: True)
 
     top = _FakeGroup(None)
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(None)]))
@@ -180,6 +186,9 @@ def test_the_top_level_pin_kill_switch_and_unstreamed_blocks(monkeypatch):
 
 def test_a_refused_pin_restores_the_group(monkeypatch):
     import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: True)
 
     top = _FakeGroup(None)
 
@@ -188,15 +197,34 @@ def test_a_refused_pin_restores_the_group(monkeypatch):
 
     top._init_cpu_param_dict = boom
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(object())]))
-    assert not res.pin_streamed_top_level_group(object(), logger = types.SimpleNamespace(warning = lambda *a: None))
-    assert top.stream is None and top.low_cpu_mem_usage and top.non_blocking and top.cpu_param_dict == {}
+    assert not res.pin_streamed_top_level_group(
+        object(), logger = types.SimpleNamespace(warning = lambda *a: None)
+    )
+    assert (
+        top.stream is None
+        and top.low_cpu_mem_usage
+        and top.non_blocking
+        and top.cpu_param_dict == {}
+    )
+
+
+def test_the_top_level_pin_honours_the_host_pin_policy(monkeypatch):
+    """The pin-nothing override and the Windows / WSL pinned cap leave the top-level group pageable."""
+    import core.inference.video_minimax_h3_residency as res
+    import core.inference.video_minimax_h3_te as te
+
+    top = _FakeGroup(None)
+    monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(object())]))
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    assert not res.pin_streamed_top_level_group(object())
+    assert top.stream is None and top.low_cpu_mem_usage and top.cpu_param_dict == {}
 
 
 def _swap_ready(monkeypatch):
     import core.inference.video_minimax_h3_te as te
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda: True)
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: True)
     real_pin = te.pin_module_in_place
     monkeypatch.setattr(
         te,
@@ -225,9 +253,15 @@ def test_a_rotating_vae_moves_by_repointing_at_its_pinned_copy(monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
-def test_a_pinned_swap_round_trip_on_cuda():
+@pytest.mark.parametrize("pin_capped", [False, True], ids = ["uncapped", "windows_wsl_pin_cap"])
+def test_a_pinned_swap_round_trip_on_cuda(monkeypatch, pin_capped):
+    import core.inference.diffusion_memory as mem
     from core.inference.video_minimax_h3_residency import install_pinned_swap
 
+    # The round trip is under test, not the host pin policy: Windows / WSL cap pinned memory, so
+    # h3_te_pin_allowed() declines there by default. Opt in through the production override.
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: pin_capped)
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
     vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
     expect = {k: v.clone() for k, v in vae.state_dict().items()}
     assert install_pinned_swap(vae)

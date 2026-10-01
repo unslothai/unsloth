@@ -19,7 +19,6 @@ from core.inference import video_minimax_h3 as vmh3
 def _arena_mod():
     # Imported per test so each one reports on a tree that lacks the module, rather than one collection error.
     from core.inference import diffusion_pinned_arena
-
     return diffusion_pinned_arena
 
 
@@ -120,8 +119,18 @@ def test_streamed_prequant_denoiser_keeps_one_host_copy(monkeypatch, unpinned_sl
 
     from diffusers.hooks import group_offloading as go
 
-    def fake_apply(module, *, onload_device, offload_device, offload_type, num_blocks_per_group,
-                   use_stream, non_blocking = False, record_stream = False, low_cpu_mem_usage = False):
+    def fake_apply(
+        module,
+        *,
+        onload_device,
+        offload_device,
+        offload_type,
+        num_blocks_per_group,
+        use_stream,
+        non_blocking = False,
+        record_stream = False,
+        low_cpu_mem_usage = False,
+    ):
         # What diffusers does up front with use_stream: one host copy per tensor through ModuleGroup._to_cpu.
         module._fake_cpu_param_dict = {
             p: go.ModuleGroup._to_cpu(p, low_cpu_mem_usage) for p in module.parameters()
@@ -137,7 +146,14 @@ def test_streamed_prequant_denoiser_keeps_one_host_copy(monkeypatch, unpinned_sl
         assert p.data_ptr() == copy.data_ptr()
 
 
-def _host(monkeypatch, *, available_gb, anon_gb, shmem_gb, file_gb = 0.0):
+def _host(
+    monkeypatch,
+    *,
+    available_gb,
+    anon_gb,
+    shmem_gb,
+    file_gb = 0.0,
+):
     gb = 1_000_000_000
     monkeypatch.setattr(
         vmh3,
@@ -146,7 +162,9 @@ def _host(monkeypatch, *, available_gb, anon_gb, shmem_gb, file_gb = 0.0):
     )
     import psutil
 
-    monkeypatch.setattr(psutil, "virtual_memory", lambda: types.SimpleNamespace(available = int(available_gb * gb)))
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: types.SimpleNamespace(available = int(available_gb * gb))
+    )
     monkeypatch.setattr(
         psutil,
         "Process",
@@ -189,5 +207,8 @@ def test_the_load_records_a_single_host_copy_for_an_arena_pinned_denoiser():
     from core.inference import video as vid
 
     load = inspect.getsource(vid)
-    assert 'denoiser_host_copy = denoiser_streamed == "stream" and not denoiser_single_host_copy' in load
+    assert (
+        'denoiser_host_copy = denoiser_streamed == "stream" and not denoiser_single_host_copy'
+        in load
+    )
     assert '"_unsloth_pin_arena_bytes"' in load
