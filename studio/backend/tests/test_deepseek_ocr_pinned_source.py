@@ -322,3 +322,55 @@ def test_the_install_leaves_only_the_pinned_files(monkeypatch, pinned_digests):
 
     names = {entry.name for entry in (source / _DEEPSEEK_OCR_PACKAGE).iterdir()}
     assert names == {"__init__.py", *_DEEPSEEK_OCR_MODULES}
+
+
+def test_generated_bytecode_does_not_invalidate_the_install(monkeypatch, pinned_digests):
+    """Python writes __pycache__ on the first import.
+
+    Treating it as an unexpected entry made the predicate go False immediately after a
+    successful import, so every later run re-downloaded and an offline run failed on a
+    source it had already installed and used.
+    """
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _fake_download)
+    source = ensure_deepseek_ocr_source()
+
+    for directory in (source, source / _DEEPSEEK_OCR_PACKAGE):
+        cache = directory / "__pycache__"
+        cache.mkdir()
+        (cache / "modeling_deepseekocr.cpython-313.pyc").write_bytes(b"\x00")
+
+    assert _deepseek_ocr_installed(source) is True
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("bytecode must not trigger a re-download")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", refuse)
+    assert ensure_deepseek_ocr_source() == source
+
+
+def test_a_sibling_planted_in_the_import_root_is_rebuilt(monkeypatch, pinned_digests):
+    """The root is on sys.path, and the origin check only looks at deepseek_ocr.*.
+
+    The modelling code imports addict, so a planted addict.py beside the package would
+    be imported by it with nothing objecting.
+    """
+    fetched = []
+
+    def counting_download(
+        repo_id = None,
+        *args,
+        **kwargs,
+    ):
+        fetched.append(repo_id)
+        return _fake_download(repo_id, *args, **kwargs)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", counting_download)
+    source = ensure_deepseek_ocr_source()
+
+    planted = source / "addict.py"
+    planted.write_text("VALUE = 'planted'\n", encoding = "utf-8")
+
+    assert _deepseek_ocr_installed(source) is False
+    ensure_deepseek_ocr_source()
+    assert len(fetched) == 2
+    assert not planted.exists()
