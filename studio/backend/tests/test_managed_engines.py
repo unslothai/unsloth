@@ -314,6 +314,51 @@ def test_compat_file_matches_its_lock(engine):
     assert "flashinfer-cubin" in install.profile(engine)["omit"]
 
 
+@pytest.mark.parametrize(
+    ("engine", "studio_torch", "version"),
+    [
+        ("vllm", "2.13.0+cu130", "0.30.0"),
+        ("vllm", "2.11.0+cu130", "0.26.0"),
+        ("vllm", "2.11.0", "0.26.0"),
+        ("vllm", "2.12.1+cu130", "0.30.0"),
+        ("vllm", None, "0.30.0"),
+        ("sglang", "2.13.0+cu130", "0.5.20"),
+        ("sglang", "2.11.0+cu130", "0.5.17"),
+        ("sglang", "2.10.0+cu128", "0.5.20"),
+    ],
+)
+def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version):
+    monkeypatch.setattr(
+        install, "_studio_packages", lambda: {"torch": studio_torch} if studio_torch else {}
+    )
+    chosen = install.profile(engine)
+    assert chosen["version"] == version
+    assert install._pins(engine)[engine][0] == version
+    # The chosen lock is built on that torch, so a matching Studio can share it.
+    assert install._pins(engine)["torch"][0] == chosen["torch"]
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_every_release_lock_is_current(monkeypatch, engine):
+    for release in install.PROFILES[engine]["releases"]:
+        monkeypatch.setattr(install, "_studio_packages", lambda r = release: {"torch": r["torch"]})
+        assert install.profile(engine)["version"] == release["version"]
+        assert install._compat_file(engine).get("sizes"), "regenerate with engine_compat.py"
+        assert install._pins(engine)[engine][0] == release["version"]
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_download_size_leaves_out_what_studio_shares(isolated, monkeypatch, engine):
+    full = install.download_bytes(engine)
+    studio_with_engine_torch(monkeypatch, engine)
+    shared = install.download_bytes(engine)
+    sizes = install._compat_file(engine)["sizes"]
+    assert install.install_plan(engine)["shared"]
+    assert full > shared > 0
+    assert full - shared >= sizes["torch"]
+    assert install.status(engine)["download_bytes"] == shared
+
+
 def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):
     studio_with_engine_torch(monkeypatch, "vllm", torch = "2.99.0")
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
@@ -2082,3 +2127,23 @@ def test_an_audio_model_that_also_reads_images_is_refused_as_audio():
     with pytest.raises(HTTPException) as refused:
         route._reject_unsupported_managed_kind(SimpleNamespace(engine = "vllm"), config)
     assert "detected as an audio model" in refused.value.detail
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_wsl_installs_the_newest_release_and_prices_the_distro(isolated, monkeypatch, engine):
+    from core.inference import wsl_host
+
+    studio_with_engine_torch(monkeypatch, engine)
+    monkeypatch.setattr(install, "_studio_packages", lambda: {"torch": "2.11.0+cu130"})
+    local = install.profile(engine)["version"]
+    monkeypatch.setattr(wsl_host, "active", lambda: True)
+    newest = install.PROFILES[engine]["releases"][0]
+    assert install.profile(engine)["version"] == newest["version"] != local
+    sizes = install._compat_file(engine)["sizes"]
+    omit = set(install.profile(engine)["omit"])
+    complete = sum(size or 0 for name, size in sizes.items() if name not in omit)
+    extra = wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
+    monkeypatch.setattr(wsl_host, "summary", lambda: {"state": None, "distro": None})
+    assert install.download_bytes(engine) == complete + extra
+    monkeypatch.setattr(wsl_host, "summary", lambda: {"state": "ready", "distro": "UnslothStudio"})
+    assert install.download_bytes(engine) == complete

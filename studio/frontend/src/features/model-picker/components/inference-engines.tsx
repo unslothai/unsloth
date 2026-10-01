@@ -15,12 +15,14 @@ import { SettingsRow } from "@/features/settings/components/settings-row";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import { useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
+import { formatGiB } from "@/lib/memory/format";
 import { useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
   type InferenceEngine,
   changeEngine,
   isEngineReady,
+  wslNoticeKey,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
 
@@ -161,11 +163,20 @@ function EngineInstall({
           className="space-y-3 rounded-lg border p-3"
         >
           <p>
-            {t("managedEngines.confirm", {
-              engine: names[engine.engine],
-              version: engine.version,
-            })}
+            {engine.download_bytes
+              ? t("managedEngines.confirmSized", {
+                  engine: names[engine.engine],
+                  version: engine.version,
+                  size: formatGiB(engine.download_bytes / 1024 ** 3),
+                })
+              : t("managedEngines.confirm", {
+                  engine: names[engine.engine],
+                  version: engine.version,
+                })}
           </p>
+          {wslNoticeKey(engine) && (
+            <p>{t(wslNoticeKey(engine)!, { engine: names[engine.engine] })}</p>
+          )}
           <p>{t("managedEngines.background")}</p>
           <div className="flex gap-2">
             <Button

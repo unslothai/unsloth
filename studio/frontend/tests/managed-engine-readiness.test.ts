@@ -7,7 +7,7 @@ import type { EngineStatus } from "../src/features/model-picker/api/engines.ts";
 import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
-const { isEngineReady } = await import("../src/features/model-picker/api/engines.ts");
+const { isEngineReady, wslNoticeKey } = await import("../src/features/model-picker/api/engines.ts");
 
 const installed: EngineStatus = {
   engine: "vllm", version: "new", installed_version: "old",
@@ -37,4 +37,22 @@ test("failed or cancelled repairs leave the restored installation loadable", () 
       ...installed, restored: true, job: { ...installed.job, state },
     }), true);
   }
+});
+
+test("Windows users are told about WSL2, the UAC prompt and a restart before installing", () => {
+  assert.equal(wslNoticeKey(installed), null);
+  assert.equal(wslNoticeKey({ ...installed, host: "local" }), null);
+  assert.equal(wslNoticeKey({ ...installed, host: "wsl" }), "managedEngines.wslSetup");
+  assert.equal(
+    wslNoticeKey({ ...installed, host: "wsl", wsl: { state: "ready", distro: null } }),
+    "managedEngines.wslSetup",
+  );
+  assert.equal(
+    wslNoticeKey({ ...installed, host: "wsl", wsl: { state: "restart_required", distro: null } }),
+    "managedEngines.wslRestart",
+  );
+  assert.equal(
+    wslNoticeKey({ ...installed, host: "wsl", wsl: { state: "ready", distro: "UnslothStudio" } }),
+    "managedEngines.wslReady",
+  );
 });
