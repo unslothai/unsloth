@@ -26,7 +26,6 @@ test("idle macOS Pinyin Enter submits (#12137)", () => {
 
 test("IME-owned keydowns stay blocked", () => {
   assert.equal(imeKeydownBlocksComposerSubmit(imeEnter, true, Infinity), true);
-  // WebKit commits before the confirming keydown (compositionend, then keyCode 229).
   assert.equal(imeKeydownBlocksComposerSubmit(imeEnter, false, 5), true);
   assert.equal(
     imeKeydownBlocksComposerSubmit({ ...imeEnter, metaKey: true }, false, Infinity),
