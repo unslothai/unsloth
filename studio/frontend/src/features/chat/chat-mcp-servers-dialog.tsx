@@ -7,7 +7,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCwIcon, UploadIcon } from "lucide-react";
+import { UploadIcon } from "lucide-react";
 import {
   type ChangeEvent,
   useCallback,
@@ -60,6 +60,7 @@ import {
 } from "./mcp-server-form";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
 import { McpImageMappingSettings } from "./api/mcp-image-settings-controls";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
@@ -1207,7 +1208,7 @@ export function ChatMcpServersDialog({
                         {refreshingIds.has(server.id) ? (
                           <Spinner />
                         ) : (
-                          <RefreshCwIcon className="size-3.5" />
+                          <RefreshGlyph className="size-3.5" />
                         )}
                       </Button>
                       <Button

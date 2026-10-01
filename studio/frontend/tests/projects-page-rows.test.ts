@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readSrcAsync } from "./helpers/kit.ts";
+import { readSrc, readSrcAsync } from "./helpers/kit.ts";
 import { formatWorkedFor } from "../src/lib/format-worked-for.ts";
 
 const PAGE = await readSrcAsync("features/chat/projects-page.tsx");
@@ -82,8 +82,8 @@ test("the disclosure sits with the name it opens", () => {
 // One project, two lists: the page edits it through the dialog the sidebar opens.
 test("the row menu edits a project rather than only renaming it", () => {
   assert.match(PAGE, /import \{ EditProjectDialog \} from "\.\/components\/edit-project-dialog";/);
-  assert.match(PAGE, /onSelect=\{\(\) => setEditing\(project\)\}/);
-  assert.match(PAGE, /<span>Edit<\/span>/);
+  assert.match(PAGE, /onEdit=\{\(\) => setEditing\(project\)\}/);
+  assert.match(readSrc("features/chat/components/project-menu-items.tsx"), /<Item icon=\{Settings02Icon\} onSelect=\{onEdit\}>/);
   assert.match(PAGE, /<EditProjectDialog\n\s*project=\{editing\}/);
   // Delete still routes to this page's own confirmation.
   assert.match(PAGE, /onDelete=\{\(project\) => openProjectDelete\(project\)\}/);
@@ -278,11 +278,8 @@ test("the chat menu carries the sidebar's items, without the move", () => {
   ]) {
     assert.ok(menu.includes(label), `${label} is missing from the chat menu`);
   }
-  assert.match(menu, /chatUnread \? "Mark as read" : "Mark as unread"/);
-  assert.match(menu, /<span>Open chat folder<\/span>/);
-  // Desktop opens the folder; the browser says why it cannot.
-  assert.match(menu, /isTauri \? \(/);
-  assert.match(menu, /<OpenChatFolderUnavailableItem \/>/);
+  assert.match(menu, /chatUnread \? "shell\.selection\.markRead" : "shell\.selection\.markUnread"/);
+  assert.match(menu, /<OpenChatFolderItem item=\{chat\} \/>/);
   // The chats listed here are already in this project.
   assert.ok(!menu.includes("<span>Project</span>"));
   assert.ok(!menu.includes("moveChatToProject"));

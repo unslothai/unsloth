@@ -279,7 +279,7 @@ def test_all_count_endpoints_unavailable_still_reserves_pool(monkeypatch):
     assert inference._count_gguf_admission_prompt(backend, payload, payload.messages) == 30000
 
 
-def test_media_keeps_existing_allowance_without_native_embedding_count():
+def test_media_is_charged_by_allowance_and_not_sent_to_the_count():
     backend = _backend(20)
     payload = _payload()
     payload.messages = [
@@ -294,6 +294,9 @@ def test_media_keeps_existing_allowance_without_native_embedding_count():
     count = inference._count_gguf_admission_prompt(backend, payload, payload.messages)
     assert count == 20 + inference._openai_llama_admission_image_tokens(backend)
     assert backend.count_chat_tokens.call_args.kwargs["prefer_native"] is False
+    # llama-server rejects the "[image]" placeholder, and a failed count reserves the whole pool.
+    sent = backend.count_chat_tokens.call_args.args[0]
+    assert [part["type"] for part in sent[0]["content"]] == ["text"]
 
 
 def test_counting_recovers_after_a_complete_outage(monkeypatch):

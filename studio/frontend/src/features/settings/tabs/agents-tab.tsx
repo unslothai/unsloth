@@ -1259,7 +1259,7 @@ export function AgentsTab() {
   // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-8">
+    <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1

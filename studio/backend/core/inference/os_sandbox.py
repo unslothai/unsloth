@@ -213,7 +213,11 @@ class PreparedSandboxLaunch:
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
     if prepared.spawn_callback is not None:
         return prepared.spawn_callback(prepared, popen_kwargs)
-    proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+    argv = prepared.argv
+    if sys.platform == "win32":
+        from . import mxc_policy
+        argv = mxc_policy.host_spawn_args(argv)
+    proc = subprocess.Popen(argv, **popen_kwargs)
     if prepared.execution_record is not None:
         prepared.execution_record = replace(prepared.execution_record, execution_status = "started")
     return proc

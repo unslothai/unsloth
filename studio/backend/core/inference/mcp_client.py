@@ -741,7 +741,8 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    if not _managed_mcp_restricted():
+    # Studio's own Decisions server is answered in process, so no request leaves this machine.
+    if not _managed_mcp_restricted() or is_studio_decisions(url):
         return
     if is_stdio(url):
         from fastapi import HTTPException
@@ -1206,6 +1207,18 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     return [executable, *parts[1:]]
 
 
+def is_studio_decisions(url: str) -> bool:
+    from routes.systemone import MCP_PATH
+    from utils.host_policy import is_loopback_host
+
+    parts = urlsplit(url)
+    return (
+        parts.scheme == "http"
+        and is_loopback_host(parts.hostname or "")
+        and parts.path.rstrip("/") == MCP_PATH
+    )
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -1213,6 +1226,10 @@ def _client(
 ):
     validate_mcp_address(url)
     from fastmcp import Client
+
+    if is_studio_decisions(url):
+        from routes.systemone import decisions_mcp
+        return Client(decisions_mcp)
 
     if is_stdio(url):
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.

@@ -321,7 +321,11 @@ const executable = ts.transpileModule(scheduler, {
 async function recoverRun(
   content: unknown[],
   payloads: unknown[],
-  options: { cursor?: number; viewContent?: unknown[] } = {},
+  options: {
+    cursor?: number;
+    viewContent?: unknown[];
+    metadata?: Record<string, unknown>;
+  } = {},
 ) {
   let shown = {
     messages: [
@@ -404,6 +408,7 @@ async function recoverRun(
         generationSeq: options.cursor ?? 0,
         generationStatus: "running",
         generationSettled: false,
+        ...options.metadata,
       },
     },
     {
@@ -453,6 +458,36 @@ test("the recovery scheduler persists later tool events between reasoning groups
       .map((part) => part.text),
     ["before", "after"],
   );
+});
+
+test("a recovered turn keeps the reasoning cut the backend reported", async () => {
+  // The producer stamps the cut on the saved turn; a settle without it is refused.
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { reasoning_content: "The tokens are `" } }] },
+      { choices: [], quote_cut: true },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ],
+  );
+  assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
+    reason: "quote_cut",
+  });
+});
+
+test("a recovery resumed past the cut keeps the stamp the producer saved", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { content: "The token is `" } }] },
+      { choices: [], quote_cut: true },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ],
+    { cursor: 2, metadata: { incomplete: { reason: "quote_cut" } } },
+  );
+  assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
+    reason: "quote_cut",
+  });
 });
 
 test("the recovery scheduler completes a saved pending card", async () => {

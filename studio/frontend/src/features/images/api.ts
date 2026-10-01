@@ -28,7 +28,10 @@ export interface DiffusionResolvedControl {
 export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
+  supported_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -107,6 +110,8 @@ export interface DiffusionLoadProgress {
 
 export interface DiffusionLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Optional now: required for the gguf / single_file kinds, omitted for a full pipeline loaded via from_pretrained.
   gguf_filename?: string;
   // How to load the model (omit to auto-detect from gguf_filename). Non-GGUF kinds are restricted to unsloth/* repos.
@@ -551,6 +556,11 @@ export async function fetchGalleryObjectUrl(
   // cannot work out from the URL.
   const blob = await fetchGalleryBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size };
+}
+
+/** Thumbnail URL for use with fetchGalleryObjectUrl. */
+export function galleryThumbnailUrl(url: string, thumb = 256): string {
+  return `${url}?thumb=${thumb}`;
 }
 
 // Diffusion LoRA training. Mirrors DiffusionTrainingStartRequest on the backend; only the paths

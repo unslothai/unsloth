@@ -21,6 +21,7 @@ __all__ = [
     "latest_refusal",
     "describe_oversize",
     "open_slot",
+    "ContextBudgetExceeded",
 ]
 
 
@@ -321,3 +322,12 @@ def describe_unservable_tool_call(
         head + tried + "Nothing was written. Increase the Context Length in Model settings, "
         f"or {lever}, then try again."
     )
+
+
+class ContextBudgetExceeded(ValueError):
+    """Prompt refused before generation; carries the counts so nothing parses the message."""
+
+    def __init__(self, request_tokens: int, context_tokens: int):
+        self.request_tokens = int(request_tokens)
+        self.context_tokens = int(context_tokens)
+        super().__init__(describe_oversize(self.request_tokens, self.context_tokens))
