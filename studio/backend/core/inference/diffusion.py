@@ -7912,6 +7912,8 @@ class DiffusionBackend:
         info = small_host_engaged_on(pipe)
         if not info or plan.offload_policy == OFFLOAD_NONE:
             return plan
+        if "small_host_loaded_transformer_mib" in plan.estimates and plan.stream_text_encoders:
+            return plan  # already placed by the route (a refinement may have kept more groups resident since)
         from .diffusion_memory import (
             DEFAULT_BASE_OVERHEAD_MIB,
             OFFLOAD_GROUP,
