@@ -1013,7 +1013,11 @@ def plan_keeps_transformer_resident(plan: Any) -> bool:
 PREQUANT_SEED_ON_HOST_ENV = "UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST"
 
 
-def prequant_seed_device(plan: Any, device: str, scheme: Optional[str] = None) -> str:
+def prequant_seed_device(
+    plan: Any,
+    device: str,
+    scheme: Optional[str] = None,
+) -> str:
     """Where a pre-quantized denoiser seeded into pipeline assembly is materialised.
 
     ``device`` when ``plan`` keeps the denoiser resident (placement is then a no-op). Otherwise the host: every
@@ -1022,7 +1026,12 @@ def prequant_seed_device(plan: Any, device: str, scheme: Optional[str] = None) -
     8 GB) the streaming hooks then fail to allocate their first block, and the load dies although the plan fit.
     Same end state as the runtime-quantise path, which converts on the host under an offload plan. Only the
     schemes measured under offload (``_TORCHAO_GROUP_OFFLOAD_MIN``: int8, fp8); any other keeps today's placement."""
-    if str(os.environ.get(PREQUANT_SEED_ON_HOST_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(PREQUANT_SEED_ON_HOST_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return device
     if plan is None or plan_keeps_transformer_resident(plan):
         return device
@@ -1054,18 +1063,28 @@ def _int8_tensor_pinnable() -> bool:
             for value in table.values():
                 ops.update(value.keys() if isinstance(value, dict) else ())
             if ops:
-                return torch.ops.aten._pin_memory.default in ops and torch.ops.aten.is_pinned.default in ops
+                return (
+                    torch.ops.aten._pin_memory.default in ops
+                    and torch.ops.aten.is_pinned.default in ops
+                )
         return True  # no readable op table: the class exists, which is what 0.17 added
     except Exception:  # noqa: BLE001 - no Int8Tensor: keep the 0.18 floor
         return False
 
 
 def _int8_stream_floor() -> tuple:
-    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return _TORCHAO_GROUP_OFFLOAD_MIN["int8"]
     if not _int8_tensor_pinnable():
         return _TORCHAO_GROUP_OFFLOAD_MIN["int8"]
     return _TORCHAO17_INT8_STREAM_MIN
+
+
 _TORCHAO_STREAM_SAFE_CLASSES = frozenset(("Int8Tensor", "Float8Tensor"))
 # Before 0.38 diffusers moved only the torchao wrapper, leaving quantised data on the host.
 _DIFFUSERS_TORCHAO_GROUP_OFFLOAD_MIN = (0, 38)
@@ -1301,7 +1320,12 @@ def install_torchao_v1_int8_pin_ops() -> bool:
     global _V1_INT8_PIN_OPS_INSTALLED
     if _V1_INT8_PIN_OPS_INSTALLED:
         return True
-    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return False
     try:
         import torch
@@ -1764,7 +1788,12 @@ BALANCED_FIT_CHECK_ENV = "UNSLOTH_DIFFUSION_BALANCED_FIT_CHECK"
 
 
 def _balanced_fit_check_enabled() -> bool:
-    return str(os.environ.get(BALANCED_FIT_CHECK_ENV, "")).strip().lower() not in ("0", "off", "false", "no")
+    return str(os.environ.get(BALANCED_FIT_CHECK_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
@@ -1962,7 +1991,10 @@ def measured_image_runtime_mib(
         return None
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
-    scale = max(1.0, (w * h * max(1, int(batch_size or 1))) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT))
+    scale = max(
+        1.0,
+        (w * h * max(1, int(batch_size or 1))) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT),
+    )
     need = peak * scale * _MEASURED_PEAK_MARGIN
     step = _MEASURED_PEAK_ROUND_MIB
     return int(-(-need // step) * step)
@@ -2083,7 +2115,11 @@ def refine_plan_from_loaded_weights(
                 + (
                     f"loaded transformer {dit} MiB + measured peak {headroom} MiB fit the {budget} MiB budget "
                     "with the text encoders streamed; every denoise step runs resident"
-                    + (f"; {int(te_room)} MiB of the encoders stays resident" if te_room > 0 else ""),
+                    + (
+                        f"; {int(te_room)} MiB of the encoders stays resident"
+                        if te_room > 0
+                        else ""
+                    ),
                 ),
             )
         else:
@@ -2122,7 +2158,12 @@ def refine_plan_from_loaded_weights(
         return plan
 
 
-def _keep_groups_resident(module: Any, room_mib: int, device: Any, logger: Any = None) -> int:
+def _keep_groups_resident(
+    module: Any,
+    room_mib: int,
+    device: Any,
+    logger: Any = None,
+) -> int:
     """Make whole offload groups of a streamed ``module`` resident, within ``room_mib``: the top-level group first (it
     is uploaded on every forward), then blocks in order. A resident group is moved once and its onload / offload become
     no-ops; the groups after it keep streaming, and the last resident block prefetches the first streamed one on the
@@ -3560,7 +3601,11 @@ def _streaming_prefetch_enabled() -> bool:
 
 
 def _apply_streaming_offload(
-    pipe: Any, device: str, logger: Any, *, resident_transformer_mib: Optional[int] = None
+    pipe: Any,
+    device: str,
+    logger: Any,
+    *,
+    resident_transformer_mib: Optional[int] = None,
 ) -> None:
     """Stream transformer blocks and text-encoder leaves without whole-component onloads.
 

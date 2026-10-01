@@ -451,7 +451,10 @@ def _compact_layer_cache(layer_cache: Any) -> None:
     for name in ("k", "v"):
         tensor = getattr(layer_cache, name, None)
         try:
-            if tensor is None or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size():
+            if (
+                tensor is None
+                or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size()
+            ):
                 continue
             setattr(layer_cache, name, tensor.clone())
         except Exception:  # noqa: BLE001 - a memory saving only; keep the entry as stored

@@ -35,14 +35,21 @@ BACKEND = Path(__file__).resolve().parents[1]
 DIFFUSION_SRC = (BACKEND / "core/inference/diffusion.py").read_text()
 MIB = 1024 * 1024
 SIZES_AUTO = dict(model_dense_mib = 19630, companion_dense_mib = 12182, text_encoder_dense_mib = 10847)
-SIZES_EXPLICIT_INT8 = dict(model_dense_mib = 31566, companion_dense_mib = 18024, text_encoder_dense_mib = 16689)
+SIZES_EXPLICIT_INT8 = dict(
+    model_dense_mib = 31566, companion_dense_mib = 18024, text_encoder_dense_mib = 16689
+)
 
 
 class _Target:
     supports_model_cpu_offload = True
 
 
-def _plan(free, total, mode = None, sizes = SIZES_AUTO):
+def _plan(
+    free,
+    total,
+    mode = None,
+    sizes = SIZES_AUTO,
+):
     return plan_diffusion_memory(
         target = _Target(),
         device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
@@ -54,7 +61,8 @@ def _plan(free, total, mode = None, sizes = SIZES_AUTO):
 
 def _call(name):
     calls = [
-        n for n in ast.walk(ast.parse(DIFFUSION_SRC))
+        n
+        for n in ast.walk(ast.parse(DIFFUSION_SRC))
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
     ]
     assert len(calls) == 1, f"expected one {name}() call in diffusion.py"
@@ -101,7 +109,11 @@ class _Source:
     filename = "Qwen-Image-2.1-INT8.safetensors"
 
 
-def _seed_through_call_site(plan, device = "cuda", scheme = "int8"):
+def _seed_through_call_site(
+    plan,
+    device = "cuda",
+    scheme = "int8",
+):
     """Evaluate every keyword of diffusion.py's seed call, then run the loader with the ones it accepts."""
     call = _call("denoiser_prequant_pipe_kwargs")
     scope = dict(vars(diffusion))
@@ -141,7 +153,9 @@ def test_resident_plan_keeps_the_seed_on_the_device(fake_checkpoint):
 
 def _meta(mib):
     m = torch.nn.Module()
-    m.w = torch.nn.Parameter(torch.empty(mib * MIB, dtype = torch.uint8, device = "meta"), requires_grad = False)
+    m.w = torch.nn.Parameter(
+        torch.empty(mib * MIB, dtype = torch.uint8, device = "meta"), requires_grad = False
+    )
     return m
 
 
@@ -150,7 +164,11 @@ class _Pipe:
         self.transformer = _meta(7448)
         self.text_encoder = _meta(8960)  # fp8 Qwen3-VL as loaded
         self.vae = _meta(645)
-        self.components = {"transformer": self.transformer, "text_encoder": self.text_encoder, "vae": self.vae}
+        self.components = {
+            "transformer": self.transformer,
+            "text_encoder": self.text_encoder,
+            "vae": self.vae,
+        }
 
 
 def _refine_as_loaded(pipe, plan):
@@ -175,7 +193,9 @@ def no_torchao(monkeypatch):
 @pytest.mark.parametrize("sizes", [SIZES_AUTO, SIZES_EXPLICIT_INT8], ids = ["auto_quant", "int8"])
 def test_balanced_16gb_does_not_keep_the_9gib_encoder_resident(no_torchao, sizes):
     plan = _plan(15976, 16376, "balanced", sizes)
-    assert plan.offload_policy == OFFLOAD_GROUP and not plan.stream_text_encoders  # the plan main ships
+    assert (
+        plan.offload_policy == OFFLOAD_GROUP and not plan.stream_text_encoders
+    )  # the plan main ships
     final = _refine_as_loaded(_Pipe(), plan)
     encoder_resident = final.offload_policy == OFFLOAD_GROUP and not final.stream_text_encoders
     assert not encoder_resident

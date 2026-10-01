@@ -125,7 +125,12 @@ class _Module:
         return iter(self.weights)
 
 
-STREAM_KWARGS = {"use_stream": True, "non_blocking": True, "record_stream": True, "low_cpu_mem_usage": False}
+STREAM_KWARGS = {
+    "use_stream": True,
+    "non_blocking": True,
+    "record_stream": True,
+    "low_cpu_mem_usage": False,
+}
 
 
 @pytest.fixture
@@ -137,7 +142,11 @@ def _apply_env(monkeypatch):
 def test_v1_int8_keeps_the_copy_stream_once_its_pin_ops_exist(monkeypatch, _apply_env):
     monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: True, raising = False)
     out = mem._torchao_group_offload_kwargs(_Module(_V1Weight), dict(STREAM_KWARGS), [0])
-    assert out["use_stream"] is True and out.get("record_stream") is True and out.get("non_blocking") is True
+    assert (
+        out["use_stream"] is True
+        and out.get("record_stream") is True
+        and out.get("non_blocking") is True
+    )
 
 
 def test_v1_int8_without_its_pin_ops_falls_back_to_synchronous(monkeypatch, _apply_env):
@@ -181,7 +190,12 @@ def test_v1_int8_streams_bit_identically_with_the_shim():
     assert mem.install_torchao_v1_int8_pin_ops() is True
     torch.manual_seed(0)
     blocks = torch.nn.Sequential(
-        *[torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)) for _ in range(3)]
+        *[
+            torch.nn.Sequential(
+                torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)
+            )
+            for _ in range(3)
+        ]
     ).to(torch.bfloat16)
     offloaded = copy.deepcopy(blocks)
     # set_inductor_config = False as Studio builds it: the bare config sets float32 matmul precision process-wide
