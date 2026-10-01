@@ -1155,6 +1155,9 @@ class TestLoadHubDownloadExclusion:
             return frozenset()
 
         class _Registry:
+            def get_job_metadata(self, _key):
+                return None
+
             def claim(self, *_args, admission_check, **_kwargs):
                 assert admission_check() is False
                 return False, "admission_blocked"

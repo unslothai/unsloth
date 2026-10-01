@@ -9819,18 +9819,11 @@ main()
                 $wmiAmdNames = @($usePeers | ForEach-Object { $_.Name })
             } catch {}
         }
-        # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
-        # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
-        # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
-        # ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never
-        # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
-        # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
-        # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
-        # 460/550/560, a different die) is left out.
+        # GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+        # (unslothai#8529). Kept apart from $nameArchTable on purpose: it only WORDS a
+        # message, never selects a wheel index. The (?!0) guards stop "RX 570" swallowing
+        # an "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
         $unsupportedNameArchTable = @(
-            @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
-            @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
         # ── Arch resolution: env-var override → name inference ──────────────
@@ -9841,7 +9834,7 @@ main()
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
-                $ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+                $ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }
@@ -9859,6 +9852,9 @@ main()
                     @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
                     @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                     @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+                    @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch index
+                    @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch index
+                    @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch index
                 )
                 foreach ($row in $nameArchTable) {
                     if ($ROCmGpuLabel -match $row.P) {
@@ -9997,9 +9993,23 @@ main()
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
+    # RDNA arches route to AMD's multi-arch index, one pinned tag (unslothai#11815, #11614, #11814).
+    # gfx1033 (miscomputes) and CDNA stay on the family map. In sync with _WINDOWS_MULTIARCH_GFX in studio/install_python_stack.py.
+    $multiArchGfx = @(
+        "gfx1010", "gfx1011", "gfx1012",                                        # RDNA 1
+        "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",       # RDNA 2, gfx1033 stays per-family
+        "gfx1100", "gfx1101", "gfx1102", "gfx1103",                             # RDNA 3
+        "gfx1150", "gfx1151", "gfx1152", "gfx1153",                             # RDNA 3.5
+        "gfx1200", "gfx1201"                                                    # RDNA 4
+    )
+    $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
+    $MultiArchTag = "rocm7.14.1"
+    $MultiArchTorchVersion = "2.11.0"
+    $MultiArchTorchvisionVersion = "0.26.0"
+    $MultiArchTorchaudioVersion = "2.11.0"
     # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are
     # true on unmapped arches too, and those install CPU torch.
-    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
+    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and ($archFamilyMap.ContainsKey($ROCmGfxArch) -or $multiArchGfx -contains $ROCmGfxArch))
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
@@ -10595,6 +10605,7 @@ main()
     $ROCmTorchFloor = $null
     $PinnedRocmVisionSpec = $null
     $PinnedRocmAudioSpec = $null
+    $ROCmMultiArch = $false
     if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         # $archFamilyMap is defined above the Intel scan (the scan needs it too).
@@ -10643,7 +10654,16 @@ main()
             "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
-        if ($archFamily) {
+        # A family-layout mirror (and no multi-arch mirror) keeps the family route for arches that have one.
+        $_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)
+        $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch -and -not ($archFamily -and $_familyMirrorPinned))
+        if ($ROCmMultiArch) {
+            $ROCmIndexUrl = "$MultiArchIndexBase/"
+            $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
+            $PinnedRocmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
+            $PinnedRocmAudioSpec = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
+            substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
+        } elseif ($archFamily) {
             $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
             $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
             $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
@@ -10953,7 +10973,7 @@ main()
         $script:PrevTorchPin = $null
         # An interrupted run leaks a stale pin, so clear before deciding.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-        if (-not $SkipTorch -and $script:PrevTorchVer) {
+        if (-not $SkipTorch -and $script:PrevTorchVer -and -not $ROCmMultiArch) {
             $_routeWindow = $_pinTorchSpec
             # Vet the kept release against the XPU window, or a kept 2.5 becomes an unsatisfiable pin.
             if ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") { $_routeWindow = (Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython))[0] }
