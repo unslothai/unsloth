@@ -17,7 +17,12 @@ test("the bottom fade re-measures off the list's size, not its row inputs", asyn
   // The box and every section in it, including ones that mount later.
   assert.match(source, /observer\.observe\(el\);/);
   assert.match(source, /for \(const section of el\.children\) observer\.observe\(section\);/);
-  assert.match(source, /const sections = new MutationObserver\(observeSections\);/);
+  assert.match(source, /sections\.observe\(el, \{ childList: true \}\);/);
+  // A section that leaves is unobserved, so the observer does not hold its detached subtree,
+  // and the fade re-measures since an unobserved node reports nothing.
+  assert.match(source, /if \(node instanceof Element\) observer\.unobserve\(node\);/);
+  assert.match(source, /if \(node instanceof Element\) observer\.observe\(node\);/);
+  assert.match(source, /observer\.observe\(node\);\s*\}\s*\}\s*syncFade\(el\);/);
   // Measured on attach from both ends, since the footer mounts after the scroller.
   assert.match(source, /measureScrollRail\(el\);\s*syncFade\(el\);/);
   assert.match(source, /if \(node && scrollRef\.current\) syncFade\(scrollRef\.current\);/);

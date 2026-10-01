@@ -1129,11 +1129,20 @@ export function AppSidebar() {
       });
       observer.observe(el);
       // The sections too, so the fade follows the content height, not just the box.
-      const observeSections = () => {
-        for (const section of el.children) observer.observe(section);
-      };
-      observeSections();
-      const sections = new MutationObserver(observeSections);
+      for (const section of el.children) observer.observe(section);
+      // Sections come and go with their disclosures. A new one reports its size on its own; a gone
+      // one is unobserved, or the observer keeps the detached subtree alive, so re-measure here.
+      const sections = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.removedNodes) {
+            if (node instanceof Element) observer.unobserve(node);
+          }
+          for (const node of record.addedNodes) {
+            if (node instanceof Element) observer.observe(node);
+          }
+        }
+        syncFade(el);
+      });
       sections.observe(el, { childList: true });
       railObserverRef.current = observer;
       sectionObserverRef.current = sections;
@@ -1718,7 +1727,7 @@ export function AppSidebar() {
       return next;
     });
   }, []);
-  // The folders the custom sections draw, open or not: the bottom fade counts their chats.
+  // The folders the custom sections draw, open or not.
   const customSectionProjectRecords = useMemo(
     () =>
       visibleCustomSections.flatMap((section) =>
@@ -3805,8 +3814,7 @@ export function AppSidebar() {
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
                     Always drawn, never only while a row is carried: a row appearing at drag
-                    start shifts every section under it after the pointer was sampled, and the
-                    bottom fade measures a height this one would not be counted in.
+                    start shifts every section under it after the pointer was sampled.
                     It draws its own line, since the line under the folder's last chat already
                     means "into the folder, last" and the same pixels cannot mean both. */}
                 <SidebarMenuItem
