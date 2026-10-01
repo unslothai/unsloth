@@ -222,6 +222,34 @@ def test_plain_tensor_round_trip(tmp_path):
         assert torch.equal(ckpt["state_dict"][key], value)
 
 
+def test_plain_reader_matches_real_writer_without_torchao(tmp_path, monkeypatch):
+    _real_libs()
+    import torch
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_FORMAT
+
+    state = {
+        "encoder.weight": torch.arange(8).reshape(2, 4).to(torch.float8_e4m3fn),
+        "encoder.bias": torch.zeros(2),
+        "buffer": torch.ones(1),
+    }
+    metadata = {"scheme": "fp8", "component": "text_encoder", "base_model_id": "org/base"}
+    path = str(tmp_path / "encoder.safetensors")
+    ps.save_prequant_safetensors(path, fmt = TE_PREQUANT_FORMAT, state_dict = state, metadata = metadata)
+    shared = ps.load_prequant_safetensors(path)
+
+    # Exercise the Windows reader after the real writer has produced the header.
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+    monkeypatch.setitem(sys.modules, "torchao", None)
+    plain = ps.load_plain_prequant_safetensors(path)
+    assert plain["format"] == shared["format"] == TE_PREQUANT_FORMAT
+    assert plain["metadata"] == shared["metadata"] == metadata
+    assert set(plain["state_dict"]) == set(shared["state_dict"]) == set(state)
+    for name, expected in state.items():
+        for actual in (plain["state_dict"][name], shared["state_dict"][name]):
+            assert actual.dtype == expected.dtype
+            assert torch.equal(actual.float(), expected.float())
+
+
 def test_header_is_readable_as_a_torchao_checkpoint(tmp_path):
     """Interop, and the trap that makes it fail silently.
 
@@ -516,3 +544,204 @@ def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
         ps._header_without_unconstructible_fields(
             _unflatten, {}, header, path = "artifact.safetensors"
         )
+
+
+def test_an_all_zero_tensor_field_a_newer_torchao_added_is_dropped():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        if "zero_point" in json.loads(header["blk.w.weight"])["_tensor_data_names"]:
+            raise ValueError(
+                "Failed to create instance of Int8Tensor: Int8Tensor.__new__() got an "
+                "unexpected keyword argument 'zero_point'"
+            )
+        return {"blk.w.weight": object()}, {}
+
+    tensors = {
+        "blk.w._weight_qdata": torch.zeros(2, 4, dtype = torch.int8),
+        "blk.w._weight_scale": torch.ones(2, 1),
+        "blk.w._weight_zero_point": torch.zeros(2, 1, dtype = torch.int8),
+    }
+    header = {
+        "blk.w.weight": json.dumps(
+            {
+                "_type": "Int8Tensor",
+                "_data": {},
+                "_tensor_data_names": ["zero_point", "qdata", "scale"],
+            }
+        ),
+        ps.UNSLOTH_FORMAT_KEY: "v1",
+    }
+    pruned = ps._header_without_unconstructible_fields(
+        _unflatten, tensors, header, path = "artifact.safetensors"
+    )
+    assert json.loads(pruned["blk.w.weight"])["_tensor_data_names"] == ["qdata", "scale"]
+    assert "blk.w._weight_zero_point" not in tensors
+    assert pruned[ps.UNSLOTH_FORMAT_KEY] == "v1"
+
+
+def test_a_non_zero_tensor_field_is_refused_rather_than_dropped():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'zero_point'")
+
+    tensors = {"blk.w._weight_zero_point": torch.ones(2, 1, dtype = torch.int8)}
+    header = {"blk.w.weight": json.dumps({"_data": {}, "_tensor_data_names": ["zero_point"]})}
+    with pytest.raises(ValueError, match = "zero_point"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, tensors, header, path = "artifact.safetensors"
+        )
+
+
+def test_a_missing_tensor_field_is_refused_rather_than_read_as_zero():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'zero_point'")
+
+    names = json.dumps({"_data": {}, "_tensor_data_names": ["zero_point", "qdata", "scale"]})
+    tensors = {
+        "a.w._weight_zero_point": torch.zeros(2, 1, dtype = torch.int8),
+        "b.w._weight_qdata": torch.zeros(2, 4, dtype = torch.int8),
+        "b.w._weight_scale": torch.ones(2, 1),
+    }
+    header = {"a.w.weight": names, "b.w.weight": names}
+    with pytest.raises(ValueError, match = "b.w._weight_zero_point"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, tensors, header, path = "artifact.safetensors"
+        )
+
+
+def test_torchao_older_than_the_floor_is_not_safetensors_support(monkeypatch):
+    assert ps._version_tuple("0.14.0") < ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("0.16.0+cu130") >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("0.19.0+git492be6c") >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple(None) >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("dev") >= ps.MIN_TORCHAO_VERSION
+    monkeypatch.setattr(ps, "_torchao_version", lambda: "0.14.0")
+    assert ps._torchao_helpers() is None
+    assert ps.safetensors_prequant_supported() is False
+
+
+@pytest.fixture
+def plain_checkpoint(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    save_file = pytest.importorskip("safetensors.torch").save_file
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+
+    def write(*, tensors = None, header = None):
+        tensors = {"encoder.weight": torch.ones(2, 3)} if tensors is None else tensors
+        metadata = {
+            ps.UNSLOTH_FORMAT_KEY: "unsloth_prequant_text_encoder_state_dict_v1",
+            ps.UNSLOTH_METADATA_KEY: json.dumps({"scheme": "fp8", "component": "text_encoder"}),
+            "tensor_names": json.dumps(["encoder.weight"]),
+            "encoder.weight": json.dumps({"_type": "Tensor"}),
+        }
+        metadata.update(header or {})
+        path = str(tmp_path / "encoder.safetensors")
+        save_file(tensors, path, metadata = metadata)
+        return path
+
+    return write
+
+
+def test_plain_encoder_needs_no_torchao(plain_checkpoint):
+    import core.inference.diffusion_te_prequant as te
+    import torch
+
+    path = plain_checkpoint(tensors = {"encoder.weight": torch.ones(2, 3).to(torch.float8_e4m3fn)})
+    assert te.te_candidate_is_readable(path)
+    assert not ps.safetensors_prequant_supported()
+    loaded = ps.load_plain_prequant_safetensors(path)
+    assert loaded["state_dict"]["encoder.weight"].dtype == torch.float8_e4m3fn
+    assert torch.equal(loaded["state_dict"]["encoder.weight"].float(), torch.ones(2, 3))
+    assert loaded["metadata"]["scheme"] == "fp8"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        {"tensor_names": '["encoder.weight", "encoder.weight"]'},
+        {"tensor_names": '["missing.weight"]'},
+        {"tensor_names": '"encoder.weight"'},
+        {"tensor_names": "[1]"},
+        {"tensor_names": "invalid"},
+        {"encoder.weight": '{"_type":"Float8Tensor"}'},
+        {"encoder.weight": '{"_type":"Tensor","unexpected":true}'},
+        {ps.UNSLOTH_METADATA_KEY: "[]"},
+        {ps.UNSLOTH_FORMAT_KEY: ""},
+    ],
+)
+def test_plain_reader_rejects_invalid_headers(plain_checkpoint, header):
+    with pytest.raises(ValueError):
+        ps.load_plain_prequant_safetensors(plain_checkpoint(header = header))
+
+
+def test_plain_reader_rejects_unaccounted_tensor(plain_checkpoint):
+    import torch
+    path = plain_checkpoint(
+        tensors = {"encoder.weight": torch.ones(2), "extra.weight": torch.ones(2)}
+    )
+    with pytest.raises(ValueError, match = "does not account"):
+        ps.load_plain_prequant_safetensors(path)
+
+
+def test_plain_reader_restores_root_buffers(plain_checkpoint):
+    import torch
+
+    path = plain_checkpoint(
+        tensors = {
+            "encoder.weight": torch.ones(2),
+            ps.UNSLOTH_ROOT_PREFIX + "buffer": torch.zeros(1),
+        }
+    )
+    state = ps.load_plain_prequant_safetensors(path)["state_dict"]
+    assert set(state) == {"encoder.weight", "buffer"}
+    assert torch.equal(state["buffer"], torch.zeros(1))
+
+
+def test_plain_reader_rejects_root_collision(plain_checkpoint):
+    import torch
+    path = plain_checkpoint(
+        tensors = {"buffer": torch.ones(2), ps.UNSLOTH_ROOT_PREFIX + "buffer": torch.zeros(1)},
+        header = {"tensor_names": '["buffer"]', "buffer": '{"_type":"Tensor"}'},
+    )
+    with pytest.raises(ValueError, match = "does not account"):
+        ps.load_plain_prequant_safetensors(path)
+
+
+def test_plain_encoder_gate_requires_safetensors(monkeypatch):
+    from core.inference.diffusion_te_prequant import te_candidate_is_readable
+
+    monkeypatch.setitem(sys.modules, "safetensors", None)
+    assert not te_candidate_is_readable("encoder.safetensors")
+    assert te_candidate_is_readable("encoder.pt")
+
+
+def test_plain_encoder_resolver_uses_safetensors_without_torchao(monkeypatch):
+    from core.inference.diffusion_te_prequant import (
+        TePrequantSource,
+        _resolve_checkpoint_path,
+    )
+
+    pytest.importorskip("safetensors")
+    hub = pytest.importorskip("huggingface_hub")
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+    requested = []
+
+    def download(**kwargs):
+        requested.append(kwargs["filename"])
+        return "/cache/encoder.safetensors"
+
+    monkeypatch.setattr(hub, "hf_hub_download", download)
+    source = TePrequantSource(
+        kind = "repo",
+        location = "org/encoder",
+        filename = "encoder.safetensors",
+        fallback_filenames = ("encoder.pt",),
+    )
+    assert (
+        _resolve_checkpoint_path(source, None, cache_dir = "/cache") == "/cache/encoder.safetensors"
+    )
+    assert requested == ["encoder.safetensors"]

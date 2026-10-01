@@ -11,11 +11,15 @@ import { ownerPaletteColor } from "@/features/hub/lib/avatar-theme";
 import { buildAdaptiveCardAccentStyle } from "@/features/hub/lib/card-accent";
 import { useDominantColor } from "@/features/hub/lib/use-dominant-color";
 import { formatModelParamLabel } from "@/features/hub/lib/view-models";
-import { formatCompact } from "@/lib/utils";
+import { cn, formatCompact } from "@/lib/utils";
 import { Download01Icon, FavouriteIcon } from "@hugeicons/core-free-icons";
 import { type CSSProperties, memo, useMemo } from "react";
 import type { DiscoverRow } from "../types";
-import { StatChip, buildRowStatusTooltip } from "./models-catalog-rows";
+import {
+  DOWNLOADING_DOT_CLASS,
+  StatChip,
+  buildRowStatusTooltip,
+} from "./models-catalog-rows";
 import { OwnerAvatar, useAvatarImageUrl } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
@@ -251,12 +255,14 @@ export const ModelCard = memo(function ModelCard({
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const partial = row.isAvailableOnDevice && row.isPartialOnDevice;
+  const downloading = partial && row.isDownloadingOnDevice === true;
   const onDevice = row.isAvailableOnDevice && !row.isPartialOnDevice;
   const topCapability = row.capabilities[0] ?? null;
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
   const hasSize = sizeLabel !== "N/A";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -305,25 +311,35 @@ export const ModelCard = memo(function ModelCard({
             gated={row.result.gated}
             isPrivate={row.result.private}
           />
-          {partial && (
+          {partial && !downloading && (
             <span
               role="img"
               aria-label="Partial download"
-              className="inline-block size-[5px] rounded-full bg-status-warning"
+              className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-warning"
+            />
+          )}
+          {partial && downloading && (
+            <span
+              role="img"
+              aria-label="Downloading"
+              className={cn(
+                "inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full",
+                DOWNLOADING_DOT_CLASS,
+              )}
             />
           )}
           {unsupported && (
             <span
               role="img"
               aria-label="May not be supported yet"
-              className="inline-block size-[5px] rounded-full bg-status-danger"
+              className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-danger"
             />
           )}
           {onDevice && (
             <span
               role="img"
               aria-label="On device"
-              className="inline-block size-[5px] rounded-full bg-status-success"
+              className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-success"
             />
           )}
         </div>
@@ -354,7 +370,7 @@ export const ModelCard = memo(function ModelCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[240px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(240px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>

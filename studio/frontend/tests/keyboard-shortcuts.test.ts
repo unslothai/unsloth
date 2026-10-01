@@ -525,6 +525,8 @@ test("no default takes a chord the browser owns without a reason", () => {
     // because the browser's own find is what it replaces. Reserving it is still
     // right -- it is what warns a web user before they rebind onto it.
     "Mod+KeyF",
+    // The command palette takes Print the same way.
+    "Mod+KeyP",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -1268,6 +1270,11 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(/,
   );
+  // A custom section closes on its own, as Pinned does, and takes only its own rows.
+  assert.match(
+    APP_SIDEBAR,
+    /visibleCustomSections\.flatMap\(\(section\) =>\n\s*collapsedSectionIds\.has\(section\.id\)\n\s*\? \[\]/,
+  );
   assert.match(
     APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
@@ -1280,12 +1287,12 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   );
   assert.match(
     APP_SIDEBAR,
-    /folderChatItems\(projectsOpen, visibleProjectRecords\)/,
+    /folderChatItems\(projectsSectionRendered && projectsOpen, visibleProjectRecords\)/,
   );
   // In one list every project chat is a Recents row, so a folder must not list it again.
   assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
   // And the published lists are the filtered ones.
-  assert.match(APP_SIDEBAR, /pinnedItems: pinnedSectionChatItems,/);
+  assert.match(APP_SIDEBAR, /pinnedItems: upToPinnedChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
 });
 
@@ -1509,6 +1516,7 @@ test("every action has a useShortcut call site", async () => {
   const files = [
     "../src/app/routes/__root.tsx",
     "../src/components/app-sidebar.tsx",
+    "../src/components/command-palette.tsx",
     "../src/components/ui/sidebar.tsx",
     "../src/components/assistant-ui/thread.tsx",
     "../src/components/assistant-ui/tool-confirmation-controls.tsx",
@@ -1604,6 +1612,7 @@ test("the published chat lists stop where the sidebar stops", async () => {
   for (const group of [
     /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\([\s\S]*?: \[\],/,
+    /const customSectionChatItems = useMemo\(\(\) => \{\n\s*const bySection = new Map<string, SidebarItem\[\]>\(\);\n\s*if \(!chatListsOnScreen\) return bySection;/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
     assert.match(APP_SIDEBAR, group);
@@ -1617,12 +1626,13 @@ test("the published chat lists stop where the sidebar stops", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\n\s*\.\.\.pinnedSectionChatItems,\n\s*\.\.\.sectionProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
+    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\.\.\.upToPinnedChatItems, \.\.\.belowPinnedChatItems, \.\.\.visibleRecentItems\],/,
   );
   // Gating the arrays is enough because nothing renders from them.
   const rendered = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("return (", selectAll));
   for (const name of [
     "pinnedSectionChatItems",
+    "customSectionChatItems",
     "visibleRecentItems",
     "renderedChatItems",
     "sectionProjectChatItems",

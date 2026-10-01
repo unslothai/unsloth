@@ -32,14 +32,11 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured, one machine and one build per side, so the pair is comparable to itself rather
-  // than to a runner's: 5,384.0 KB raw / 1,610.2 KB transfer at the merge base, leaving
-  // 211.7 KB and 64.6 KB spare. Both halves are re-measured TOGETHER, or each drags main red
-  // on its own; the previous four raises each bought a few kilobytes and were spent within
-  // days, charging the next PR for drift it did not cause. The eager set has not gained a
-  // member across any of it, so what runs out is headroom, not laziness.
-  transferBytes: 1_715_000,
-  rawBytes: 5_730_000,
+  // Re-measured together on one machine and build: 5,813.8 KB raw / 1,730.2 KB transfer at d7795365c,
+  // plus the margin the previous raise chose (210.8 KB raw, 65.1 KB transfer). The growth since is
+  // chat attachment cards, chips and their layout (#12017), which the first chat screen renders.
+  transferBytes: 1_840_000,
+  rawBytes: 6_170_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

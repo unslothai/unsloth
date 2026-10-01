@@ -16,6 +16,8 @@ import types
 
 import pytest
 
+import core.inference.diffusion_cache as dc
+
 from core.inference.diffusion_cache import (
     DEFAULT_FBCACHE_THRESHOLD,
     QUANT_FBCACHE_THRESHOLD,
@@ -221,15 +223,57 @@ def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
     assert t.enabled_with is None  # enable_cache was never called
 
 
-def test_prefix_kv_transformer_runs_uncached(monkeypatch):
+def test_prefix_kv_transformer_runs_uncached_without_the_length_guard(monkeypatch):
     # Qwen-Image-2.1 / FLUX.2 klein KV / Wan-Animate-2 cache the prompt prefix, so the blocks see
     # the whole joint sequence on step 0 and the target tokens alone from step 1. FBCache subtracts
     # the stored residual elementwise, so engaging here raises "The size of tensor a (4096) must
     # match the size of tensor b (4297)" at step 2 of a user's generation, not at load.
     _stub_diffusers(monkeypatch)
+    monkeypatch.setattr(dc, "install_fbcache_length_guard", lambda: False)
     t = _PrefixKVTransformer()
-    assert apply_step_cache(_PrefixKVPipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_PrefixKVPipe(t), mode = "fbcache", length_changes_ok = True) is None
     assert t.enabled_with is None  # enable_cache was never called
+
+
+def test_prefix_kv_transformer_is_cached_once_the_length_guard_is_in(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    monkeypatch.setattr(dc, "install_fbcache_length_guard", lambda: True)
+    t = _PrefixKVTransformer()
+    # An automatic decision (the default) still refuses; only an explicit request opts in.
+    assert apply_step_cache(_PrefixKVPipe(t), mode = "fbcache") is None
+    assert t.enabled_with is None
+    assert apply_step_cache(_PrefixKVPipe(t), mode = "fbcache", length_changes_ok = True) == "fbcache"
+    assert t.enabled_with is not None
+
+
+def test_length_guard_recomputes_on_a_length_change_and_defers_otherwise(monkeypatch):
+    torch = pytest.importorskip("torch")
+    fbc = pytest.importorskip("diffusers.hooks.first_block_cache")
+    monkeypatch.setattr(
+        fbc.FBCHeadBlockHook,
+        "_should_compute_remaining_blocks",
+        fbc.FBCHeadBlockHook._should_compute_remaining_blocks,
+    )
+    assert dc.install_fbcache_length_guard() is True
+    guarded = fbc.FBCHeadBlockHook._should_compute_remaining_blocks
+    assert dc.install_fbcache_length_guard() is True  # idempotent: no second wrapper
+    assert fbc.FBCHeadBlockHook._should_compute_remaining_blocks is guarded
+
+    state = types.SimpleNamespace(
+        head_block_residual = torch.ones(1, 4297, 8), tail_block_residuals = None
+    )
+    hook = fbc.FBCHeadBlockHook.__new__(fbc.FBCHeadBlockHook)
+    hook.state_manager = types.SimpleNamespace(get_state = lambda: state)
+    hook.threshold = 0.1
+    # Step 1 of a prefix-KV render: target tokens only, so the stored residual no longer lines up.
+    assert hook._should_compute_remaining_blocks(torch.ones(1, 4096, 8)) is True
+    # Same length: the original relative-change test decides (identical residual -> reuse).
+    state.head_block_residual = torch.ones(1, 4096, 8)
+    assert hook._should_compute_remaining_blocks(torch.ones(1, 4096, 8)) is False
+    assert hook._should_compute_remaining_blocks(torch.full((1, 4096, 8), 2.0)) is True
+    # A tail residual stored at another length can never be added back, so that also recomputes.
+    state.tail_block_residuals = (torch.ones(1, 4297, 8), None)
+    assert hook._should_compute_remaining_blocks(torch.ones(1, 4096, 8)) is True
 
 
 def test_prefix_kv_guard_does_not_catch_an_ordinary_transformer(monkeypatch):
@@ -1271,3 +1315,28 @@ def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
             modules = lambda block = block: [_types.SimpleNamespace(), block]
         )
         assert _first_block_cache_is_hooked(hooked) is True
+
+
+def test_auto_tier_is_the_speed_layers_max():
+    from core.inference.diffusion_speed import SPEED_MAX
+    assert dc.AUTO_STEP_CACHE_TIER == SPEED_MAX
+
+
+@pytest.mark.parametrize("tier", ["off", "eager", "default", None])
+def test_auto_resolves_uncached_below_max(tier):
+    assert not dc.auto_step_cache_allowed(tier)
+    assert dc.resolve_auto_step_cache(tier, 50) is None
+
+
+def test_auto_resolves_fbcache_on_max_at_the_step_bar():
+    assert dc.resolve_auto_step_cache("max", dc.FBCACHE_MIN_STEPS) == TC_FBCACHE
+    assert dc.resolve_auto_step_cache("max", dc.FBCACHE_MIN_STEPS - 1) is None
+
+
+def test_step_cache_supported_mirrors_the_engage_refusals(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    assert dc.step_cache_supported(_pipe(_MixinTransformer()))
+    assert not dc.step_cache_supported(_pipe(_NonCacheMixinTransformer()))
+    assert not dc.step_cache_supported(_NoCtxPipe(_MixinTransformer()))
+    assert not dc.step_cache_supported(_PrefixKVPipe(_PrefixKVTransformer()))
+    assert not dc.step_cache_supported(types.SimpleNamespace(transformer = None))
