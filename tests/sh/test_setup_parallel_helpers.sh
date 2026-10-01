@@ -280,7 +280,6 @@ else
 fi
 rm -f "$_EXIT_FILE" "$_EXIT_PIDS"
 
-# Without procps (no pgrep) the abort still reaches npm-like grandchildren through /proc.
 if [ -r "/proc/$$/task/$$/children" ]; then
     _NP_BIN=$(mktemp -d)
     for _b in bash sleep cat kill ps cut; do
@@ -323,7 +322,6 @@ else
     echo "  SKIP: no /proc children lists on this platform"
 fi
 
-# A failing sidecar worker leaves the frontend sibling running and its own exit code stands.
 _SIB_FILE=$(mktemp)
 for _fn in setup_fail _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait \
     _setup_restore_twbuild_gitignores_from _setup_frontend_reap_if_exited _setup_pid_tree _setup_abort_frontend_job; do
@@ -350,7 +348,6 @@ else
 fi
 rm -f "$_SIB_FILE"
 
-# An installed package (no pyproject.toml beside studio/) joins npm before the core reinstall.
 if awk '
     /^if \[ -f "\$REPO_ROOT\/pyproject.toml" \]; then$/ {g=1; next}
     g == 1 && /_setup_frontend_reap_if_exited/ {g=2; next}
