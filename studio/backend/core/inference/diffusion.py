@@ -118,12 +118,14 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     plan_keeps_transformer_resident,
+    prequant_seed_device,
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
     reclaim_host_memory,
     reclaim_offload_host_memory,
     release_pinned_host_memory,
+    refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     settled_snapshot_device_memory,
@@ -6132,6 +6134,11 @@ class DiffusionBackend:
                                         scheme = pipeline_seed_scheme,
                                         dtype = dtype,
                                         device = device,
+                                        # An offloading plan pages the denoiser in from the host: never land it on
+                                        # the GPU whole first (8 GB Qwen-Image-2.1 OOMed in the streaming hooks).
+                                        placement_device = prequant_seed_device(
+                                            plan, device, pipeline_seed_scheme
+                                        ),
                                         hf_token = hf_token,
                                         target = target,
                                         path_override = transformer_prequant_path,
@@ -6774,7 +6781,10 @@ class DiffusionBackend:
                     # Whole-module offload still onloads one complete component for its forward. Refine it from the
                     # loaded, possibly quantized weights so an oversized text encoder uses leaf streaming instead of
                     # failing during prompt encoding.
-                    refined_plan = refine_memory_plan_for_components(pipe, plan)
+                    # An explicit balanced request is fit-checked against the loaded companions first (it never was).
+                    refined_plan = refine_memory_plan_for_components(
+                        pipe, refine_balanced_plan_for_components(pipe, plan)
+                    )
                     if refined_plan.offload_policy != plan.offload_policy:
                         logger.info(
                             "diffusion.memory: refined policy %s -> %s (%s)",
