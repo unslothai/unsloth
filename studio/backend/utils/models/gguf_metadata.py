@@ -1233,8 +1233,9 @@ def prism_legacy_q2_gguf_user_message(*, tensor_name: Optional[str] = None) -> s
         f"Bonsai / some DSpark sidecars from prism-ml){where}. The installed llama.cpp "
         "expects the mainline group-64 Q2_0 layout, so the file is not corrupt but "
         "is not compatible with this runtime yet. From the same Hugging Face repo, "
-        "download a variant whose name includes Q2_g64 (for example "
-        "Ternary-Bonsai-27B-Q2_g64.gguf) instead of legacy Q2_0 uploads, and load "
+        "download the group-64 variant (named Q2_g64 or Q2_0_g64, for example "
+        "Ternary-Bonsai-27B-Q2_g64.gguf or Ternary-Bonsai-8B-Q2_0_g64.gguf) instead of "
+        "legacy Q2_0 uploads, and load "
         "the main model weights rather than a *-dspark-* sidecar as the primary model. "
         "Updating llama.cpp may help once Prism finishes migrating their files."
     )

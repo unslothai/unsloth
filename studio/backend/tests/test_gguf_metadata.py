@@ -212,6 +212,7 @@ def test_gguf_mainline_q2_probe_ignores_offset_mismatch_without_q2_0(tmp_path: P
 def test_prism_legacy_q2_message_names_the_tensor():
     msg = prism_legacy_q2_gguf_user_message(tensor_name = "dspark.fc.weight")
     assert "Q2_g64" in msg
+    assert "Q2_0_g64" in msg
     assert "dspark.fc.weight" in msg
     assert "enough memory" not in msg.lower()
 
