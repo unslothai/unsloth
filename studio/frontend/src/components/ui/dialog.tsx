@@ -10,7 +10,6 @@ import type * as React from "react";
 import { createContext, useContext } from "react";
 
 import { Button } from "@/components/ui/button";
-import { useScrollOverflowRef } from "@/lib/scroll-overflow";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -78,7 +77,6 @@ function DialogContent({
   overlayClassName,
   overlayPosition,
   onInteractOutside,
-  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -88,8 +86,6 @@ function DialogContent({
   overlayPosition?: "fixed" | "absolute";
 }) {
   const resolvedContainer = container ?? null;
-  // Firefox clips a scrolling dialog to its radius only while it overflows, keeping its shadow.
-  const contentRef = useScrollOverflowRef(ref);
   return (
     <DialogPortalContainerContext.Provider value={resolvedContainer}>
       <DialogPortal container={resolvedContainer ?? undefined}>
@@ -98,12 +94,11 @@ function DialogContent({
           position={overlayPosition ?? position}
         />
         <DialogPrimitive.Content
-          ref={contentRef}
           data-slot="dialog-content"
           className={cn(
             // max-h + scroll keeps tall dialogs reachable on short viewports; a call site
             // managing its own height overrides both (twMerge drops the base classes).
-            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto scroll-rounded rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
+            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
             // Viewport-fixed dialogs center below the desktop titlebar, which paints over them at
             // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
             // Both are viewport-sized, so neither applies to a dialog portaled into a container.

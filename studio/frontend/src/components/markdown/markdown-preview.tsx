@@ -92,7 +92,7 @@ function MarkdownPreviewImpl({
       className={cn(
         plain
           ? "h-full w-full min-w-0 overflow-auto p-2 text-xs leading-relaxed pointer-events-none select-none"
-          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-md border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
+          : "nodrag max-h-56 w-full min-w-0 overflow-auto rounded-md border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
         className,
       )}
     >

@@ -645,28 +645,24 @@ function RunDialogBody({
       </Collapsible>
 
       {errors.length > 0 && (
-        // Scrolls an inner viewport: the shadow would not survive the clip .scroll-rounded takes in
-        // Firefox. The surface padding keeps the scrollbar clear of the curve. 11rem in all, as before.
-        <div className="overflow-hidden rounded-2xl border border-destructive/30 bg-destructive/5 py-3 shadow-border">
-          <div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">
-            <div className="flex items-center gap-2">
-              <HugeiconsIcon
-                icon={AlertCircleIcon}
-                className="size-4 text-destructive"
-              />
-              <Badge
-                variant="outline"
-                className="rounded-full text-ui-10 text-destructive"
-              >
-                Before you run
-              </Badge>
-            </div>
-            {errors.map((error) => (
-              <p key={error} className="break-words text-xs text-destructive">
-                {error}
-              </p>
-            ))}
+        <div className="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-destructive/30 bg-destructive/5 p-4 shadow-border">
+          <div className="flex items-center gap-2">
+            <HugeiconsIcon
+              icon={AlertCircleIcon}
+              className="size-4 text-destructive"
+            />
+            <Badge
+              variant="outline"
+              className="rounded-full text-ui-10 text-destructive"
+            >
+              Before you run
+            </Badge>
           </div>
+          {errors.map((error) => (
+            <p key={error} className="break-words text-xs text-destructive">
+              {error}
+            </p>
+          ))}
         </div>
       )}
 
