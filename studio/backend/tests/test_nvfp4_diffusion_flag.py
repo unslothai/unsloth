@@ -51,7 +51,7 @@ def test_a_video_family_without_a_usable_hosted_seed_spends_no_smoke_probe(monke
         tq, "_smoke_probe", lambda s, d, unproven_ok = False: calls.append(s) or unproven_ok
     )
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda t: True)
-    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (10, 0))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 0)
     for fam in _FAMILIES:
@@ -110,7 +110,7 @@ def _blackwell(monkeypatch, *, supported = ("int8", "fp8", "nvfp4", "mxfp8")):
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (10, 0))
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: False)
     monkeypatch.setattr(tq, "_child_probe_table", lambda device: None)

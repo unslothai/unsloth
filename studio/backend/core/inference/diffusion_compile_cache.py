@@ -298,6 +298,9 @@ def model_fingerprint(
     what gets compiled.
     """
     blocks = list(getattr(transformer, "_repeated_blocks", []) or [])
+    if not blocks and transformer is not None:
+        from .diffusion_regional_compile import verified_repeated_blocks
+        blocks = list(verified_repeated_blocks(type(transformer).__name__))
     if quant is not None and transformer is not None:
         # Native layers compile to a different graph than torchao under the same scheme name.
         from .diffusion_native_quant import native_quant_signature

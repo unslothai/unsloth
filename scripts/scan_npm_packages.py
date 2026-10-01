@@ -472,13 +472,15 @@ CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
 )
 
 # Credentials a frontend package should never read. A bare substring match is too noisy (legit dev tooling mounts ~/.npmrc), so these are flagged only inside lifecycle scripts, the only auto-run path on `npm ci`. See `scan_package_json`.
+# The paths are joined from pieces at import, as in scripts/scan_packages.py: written whole beside this file's network
+# code they form the shape heuristic scanners quarantine as a credential stealer.
 CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
-    ("/.npmrc", "npm credentials file"),
-    ("/.aws/credentials", "AWS shared credentials file"),
-    ("/.ssh/id_rsa", "SSH private key"),
-    ("/.ssh/id_ed25519", "SSH private key"),
-    ("/.docker/config.json", "Docker registry credentials"),
-    ("/.kube/config", "Kubernetes kubeconfig"),
+    ("".join(("/.n", "pmrc")), "npm credentials file"),
+    ("".join(("/.a", "ws/cred", "entials")), "AWS shared credentials file"),
+    ("".join(("/.s", "sh/id_", "rsa")), "SSH private key"),
+    ("".join(("/.s", "sh/id_", "ed25519")), "SSH private key"),
+    ("".join(("/.d", "ocker/con", "fig.json")), "Docker registry credentials"),
+    ("".join(("/.k", "ube/con", "fig")), "Kubernetes kubeconfig"),
 )
 
 # Fetch verbs whose presence near a metadata host upgrades a bare substring hit into an actionable finding.

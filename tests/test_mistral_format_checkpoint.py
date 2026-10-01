@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A Mistral-format checkpoint (params.json, no config.json, e.g. Mistral-Large-3) gets a
-message that says what it is, instead of the generic "both configs failed" one."""
+"""A Mistral-format checkpoint (params.json, no config.json) gets its own error message."""
 
 import json
 import os
@@ -8,7 +7,7 @@ import os
 import pytest
 from real_accelerator import (
     has_real_accelerator,
-)  # tests/_shared, on sys.path via tests/conftest.py
+)
 import torch
 
 
@@ -24,9 +23,7 @@ def test_params_json_without_config_json_is_mistral_format(tmp_path):
 
 
 def test_a_params_json_without_a_mistral_marker_is_not_claimed(tmp_path):
-    """Meta's original Llama layout also has params.json; the generic message must stay."""
     from unsloth.models.loader import _is_mistral_format_checkpoint
-
     assert (
         _is_mistral_format_checkpoint(
             _write(tmp_path, ["params.json", "consolidated.00.pth", "tokenizer.model"])
@@ -66,7 +63,6 @@ def test_the_message_names_the_file_and_the_route():
 
 @pytest.mark.skipif(not has_real_accelerator(), reason = "import unsloth needs an accelerator")
 def test_loader_raises_the_specific_message(tmp_path):
-    """The arm that fails on main: the loader used to raise the generic message."""
     import unsloth  # noqa: F401
     from unsloth import FastLanguageModel
 

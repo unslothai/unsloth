@@ -341,6 +341,8 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
 # Each batch is run_ruff_format.py, which itself runs ruff and the spacing pass as children, so
 # stopping a batch has to stop its whole tree: killing the wrapper alone would leave the child it
 # was waiting on running, still using the runner and still writing to the copies.
+_HAS_PROC = os.path.isdir("/proc/self")
+
 _OWN_GROUP = (
     {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     if os.name == "nt"
@@ -516,11 +518,46 @@ def test_a_timeout_in_the_polling_loop_kills_the_running_formatters(tmp_path, mo
     assert all(proc.poll() is not None for proc in started), "a formatter outlived the timeout"
     grandchild = _read_pid(pid_file)
     assert grandchild is not None, "the batch never started its child"
-    for _ in range(100):
-        if not _alive(grandchild):
-            break
+    # SIGKILL is sent at once, but the process only dies once it is next scheduled, and a
+    # grandchild still in Python's startup can sit in uninterruptible I/O on a loaded runner, so
+    # wait as long as the launch above may take. A group kill that missed it still fails, just
+    # later. The verdict is the last probe the loop took: probing again after it said "dead" could
+    # only disagree by racing the reaper.
+    deadline = real_monotonic() + 30
+    alive = _alive(grandchild)
+    while alive and real_monotonic() < deadline:
         real_sleep(0.05)
-    assert not _alive(grandchild), "the formatter's own child outlived the timeout"
+        alive = _alive(grandchild)
+    assert not alive, "the formatter's own child outlived the timeout"
+
+
+@pytest.mark.skipif(not _HAS_PROC, reason = "reads Linux /proc")
+def test_a_pid_reaped_between_the_two_probes_is_not_alive(monkeypatch):
+    """The signal probe can see a zombie that is reaped before /proc/<pid>/stat is opened.
+
+    That window used to read as alive, so the timeout test above failed on a process that had
+    already been killed and reaped (Repo tests (CPU, rest) on #12097).
+    """
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert not Path(f"/proc/{child.pid}").exists(), "the child was not reaped"
+    # Stand in for the probe that ran while the process was still a zombie.
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    assert _alive(child.pid) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX signal probe")
+def test_without_proc_a_pid_the_signal_probe_finds_is_alive(monkeypatch):
+    """Where /proc is not mounted (macOS), a missing /proc entry proves nothing.
+
+    Reading it as death would pass the timeout test above even if the group kill missed.
+    """
+    # A pid with no /proc entry, as every pid has on macOS, that the signal probe still finds.
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    monkeypatch.setattr(sys.modules[__name__], "_HAS_PROC", False)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    assert _alive(child.pid) is True
 
 
 def _read_pid(path: Path) -> int | None:
@@ -540,10 +577,17 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    # macOS has no /proc, so the signal probe is the only answer there.
+    if not _HAS_PROC:
+        return True
     # A killed child of an exited wrapper is reparented and reaped; until then it is a zombie.
+    # The reaper can finish between the signal probe above and this read, and a pid with no
+    # /proc entry left is gone, not alive.
     try:
         with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
             return stat.read().split(") ", 1)[1][0] != "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return False
     except OSError:
         return True
 

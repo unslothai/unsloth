@@ -107,6 +107,9 @@ function tab(
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },
     "@/components/ui/spinner": { Spinner: "Spinner" },
+    "../components/managed-provider-urls-section": {
+      ManagedProviderUrlsSection: "ManagedProviderUrlsSection",
+    },
     "@/components/ui/dropdown-menu": Object.fromEntries(
       [
         "DropdownMenu",
@@ -325,6 +328,8 @@ test("Accounts is registered, searchable, and filtered from managed navigation a
   assert.deepEqual(SETTINGS_SEARCH_INDEX.accounts, [
     "settings.accounts.title",
     "settings.accounts.create",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
   ]);
   const dialog = readFileSync(
     new URL("../src/features/settings/settings-dialog.tsx", import.meta.url),
