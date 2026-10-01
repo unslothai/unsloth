@@ -173,6 +173,12 @@ function webEntry(url: string, method?: "GET" | "POST", body?: string): BrowserE
 }
 
 /** Drop blobs no remaining history entry points at. */
+async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
+  if (!a || a.size !== b.size) return false;
+  const [x, y] = (await Promise.all([a.arrayBuffer(), b.arrayBuffer()])).map((buffer) => new Uint8Array(buffer));
+  return x.every((byte, index) => byte === y[index]);
+}
+
 function releaseFiles(tabs: BrowserTab[]): void {
   const live = new Set<string>();
   for (const tab of tabs) {
@@ -371,15 +377,36 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openFile: ({ blob, name, contentType, plainText, key }) => {
       const openKey = key ? `file:${key}` : null;
-      if (openKey && focusExisting(openKey)) return;
       const fileId = newId("file");
       files.set(fileId, blob);
-      openTab(
-        createTab(
-          { kind: "file", fileId, name: name || "Untitled", contentType: contentType || blob.type, plainText },
-          openKey,
-        ),
-      );
+      const entry: BrowserEntry = {
+        kind: "file",
+        fileId,
+        name: name || "Untitled",
+        contentType: contentType || blob.type,
+        plainText,
+      };
+      const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
+      if (openKey && existing) {
+        focusExisting(openKey);
+        const shown = currentEntry(existing);
+        // The file may have been rewritten since it opened: if so, show the new bytes.
+        void sameBytes(shown.kind === "file" ? files.get(shown.fileId) : undefined, blob).then((same) => {
+          const tab = get().tabs.find((candidate) => candidate.id === existing.id);
+          if (same || shown.kind !== "file" || !tab || currentEntry(tab) !== shown) {
+            files.delete(fileId);
+            return;
+          }
+          const tabs = patchTab(get().tabs, tab.id, (current) => ({
+            ...current,
+            history: current.history.map((item) => (item === shown ? entry : item)),
+          }));
+          set({ tabs });
+          releaseFiles(tabs);
+        });
+        return;
+      }
+      openTab(createTab(entry, openKey));
     },
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;

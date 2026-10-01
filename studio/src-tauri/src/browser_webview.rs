@@ -396,6 +396,8 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
         return;
     };
     let app = webview.app_handle().clone();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let page = webview.clone();
     let _ = webview.eval_with_callback(STATE_SCRIPT, move |result| {
         // The script's value as JSON: a string holding our JSON.
         let Ok(inner) = serde_json::from_str::<String>(&result) else {
@@ -404,6 +406,43 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&inner) else {
             return;
         };
+        let icon = value
+            .get("icon")
+            .and_then(|v| v.as_str())
+            .and_then(|icon| Url::parse(icon).ok())
+            .filter(|icon| matches!(icon.scheme(), "http" | "https") && navigation_allowed(icon))
+            .filter(|icon| icon.as_str().len() <= 2048)
+            .map(String::from);
+        // WebKit before Safari 26.2 and WebKitGTK have no Navigation API, so Forward would never
+        // enable: ask the engine instead.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let (app, tab_id) = (app.clone(), tab_id.clone());
+            let _ = page.with_webview(move |platform| {
+                #[cfg(target_os = "macos")]
+                // Safety: wry's live view, read on the main thread.
+                let (can_go_back, can_go_forward) = unsafe {
+                    let view = &*(platform.inner() as *const objc2_web_kit::WKWebView);
+                    (view.canGoBack(), view.canGoForward())
+                };
+                #[cfg(target_os = "linux")]
+                let (can_go_back, can_go_forward) = {
+                    use webkit2gtk::WebViewExt;
+                    let view = platform.inner();
+                    (view.can_go_back(), view.can_go_forward())
+                };
+                emit(
+                    &app,
+                    BrowserEvent::History {
+                        tab_id,
+                        can_go_back,
+                        can_go_forward,
+                        icon,
+                    },
+                );
+            });
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         emit(
             &app,
             BrowserEvent::History {
@@ -413,15 +452,7 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
                     .get("forward")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                icon: value
-                    .get("icon")
-                    .and_then(|v| v.as_str())
-                    .and_then(|icon| Url::parse(icon).ok())
-                    .filter(|icon| {
-                        matches!(icon.scheme(), "http" | "https") && navigation_allowed(icon)
-                    })
-                    .filter(|icon| icon.as_str().len() <= 2048)
-                    .map(String::from),
+                icon,
             },
         );
     });
@@ -918,8 +949,9 @@ pub fn browser_view_supported() -> bool {
 }
 
 /// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
+/// Async: creating a webview from a sync command deadlocks on Windows (Tauri known issue).
 #[tauri::command]
-pub fn browser_view_show<R: Runtime>(
+pub async fn browser_view_show<R: Runtime>(
     webview: Webview<R>,
     state: State<'_, BrowserViews>,
     tab_id: Option<String>,
