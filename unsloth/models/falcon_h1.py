@@ -512,8 +512,11 @@ def _FalconH1_fast_forward_inference(
             attention_mask = None
 
         next_decoder_cache = []
+        block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
 
         for idx, decoder_layer in enumerate(self.model.layers):
+            if block_swap is not None:
+                block_swap.enter(idx)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
@@ -559,6 +562,8 @@ def _FalconH1_fast_forward_inference(
                 down_multiplier = down_multiplier,
             )
             X += residual
+            if block_swap is not None:
+                block_swap.leave(idx)
 
             next_decoder_cache.append(present_key_value)
         X = fast_rms_layernorm_inference(

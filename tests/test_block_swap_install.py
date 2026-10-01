@@ -8,7 +8,7 @@ import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
-NAMES = ("_check_block_swap", "install_block_swap", "trim_config_for_block_swap")
+NAMES = ("_check_block_swap", "_new_block_swap", "install_block_swap", "trim_config_for_block_swap")
 
 
 def _load(
@@ -26,8 +26,14 @@ def _load(
     calls = []
 
     class FakeSwap:
-        def __init__(self, layers, n, depth):
-            calls.append((layers, n, depth))
+        def __init__(
+            self,
+            layers,
+            n,
+            depth,
+            placement = "tail",
+        ):
+            calls.append((layers, n, depth, placement))
 
     ns = {
         "is_moe_model": lambda m: moe,
@@ -65,7 +71,7 @@ def test_happy_path_installs_and_records():
     ns, calls = _load()
     m = _Model()
     sw = ns["install_block_swap"](m, 2, prefetch_depth = 3)
-    assert calls == [(m.layers, 2, 3)]
+    assert calls == [(m.layers, 2, 3, "spread")]
     assert m._unsloth_block_swap is sw
     assert m.layers._unsloth_block_swap is sw
 
@@ -77,11 +83,10 @@ def test_refuses_vllm():
     assert calls == []
 
 
-def test_refuses_moe():
+def test_moe_installs_with_a_notice(capsys):
     ns, calls = _load(moe = True)
-    with pytest.raises(ValueError, match = "MoE"):
-        ns["install_block_swap"](_Model(), 2)
-    assert calls == []
+    ns["install_block_swap"](_Model(), 2)
+    assert len(calls) == 1 and "MoE" in capsys.readouterr().out
 
 
 def test_refuses_unified_memory():
@@ -107,7 +112,7 @@ def test_old_zoo_is_an_import_error():
 
 
 def test_refusal_order_checks_cheap_things_first():
-    ns, _ = _load(moe = True)
+    ns, _ = _load(integrated = True)
     with pytest.raises(ValueError, match = "fast_inference"):
         ns["install_block_swap"](_Model(vllm = object()), 2)
 
@@ -159,8 +164,8 @@ def test_trim_keeps_at_least_one_layer_on_the_card():
 
 
 def test_trim_refuses_what_install_refuses():
-    ns, _ = _load(moe = True)
-    with pytest.raises(ValueError, match = "MoE"):
+    ns, _ = _load(integrated = True)
+    with pytest.raises(ValueError, match = "unified-memory"):
         ns["trim_config_for_block_swap"](_Config(), 4)
     ns, _ = _load(zoo = False)
     with pytest.raises(ImportError, match = "unsloth_zoo"):
@@ -338,20 +343,9 @@ def test_prewrapped_peft_and_quantized_checkpoints_are_covered():
     )
 
 
-@pytest.mark.parametrize("model_type", ["falcon_h1", "granite", "cohere"])
-def test_refuses_models_whose_decode_loop_bypasses_the_swapper(model_type):
-    ns, calls = _load()
-    m = _Model()
-    m.config = types.SimpleNamespace(model_type = model_type)
-    with pytest.raises(ValueError, match = model_type):
-        ns["install_block_swap"](m, 4)
-    assert not calls
-
-
-def test_every_custom_decode_loop_is_served_or_refused():
-    # A FastXModel with its own model-level decode loop must call block_swap.enter/leave or be refused.
+def test_every_custom_decode_loop_is_served():
+    # A FastXModel with its own model-level decode loop must call block_swap.enter/leave.
     models = os.path.join(HERE, "unsloth", "models")
-    refused = {"falcon_h1", "granite", "cohere"}
     for name in sorted(os.listdir(models)):
         if not name.endswith(".py"):
             continue
@@ -363,7 +357,7 @@ def test_every_custom_decode_loop_is_served_or_refused():
             and n.name.endswith("fast_forward_inference")
             and "Attention" not in n.name
         ]
-        if loops and name[:-3] not in refused:
+        if loops:
             assert (
                 "block_swap" in src
             ), f"{name} has a decode loop that never fetches swapped blocks"
@@ -410,3 +404,16 @@ def test_every_unsupported_load_mode_is_refused_before_trimming():
             n.lineno for n in ast.walk(fn) if isinstance(n, ast.Raise) and needle in ast.unparse(n)
         ]
         assert hits and min(hits) < trim, needle
+
+
+def test_older_zoo_without_placement_still_installs():
+    ns, calls = _load()
+
+    class OldSwap:
+        def __init__(self, layers, n, depth):
+            calls.append((layers, n, depth))
+
+    ns["BlockSwap"] = OldSwap
+    m = _Model()
+    ns["install_block_swap"](m, 2)
+    assert calls == [(m.layers, 2, 2)]
