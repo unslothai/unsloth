@@ -2703,6 +2703,7 @@ class InferenceOrchestrator:
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
         caller_image_indexes: "tuple[int, ...]" = (),
+        mcp_image = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -2832,6 +2833,7 @@ class InferenceOrchestrator:
             thread_id = thread_id,
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
+            mcp_image = mcp_image,
             bypass_permissions = bypass_permissions,
             permission_mode = permission_mode,
             reasoning_prefilled = reasoning_prefilled,

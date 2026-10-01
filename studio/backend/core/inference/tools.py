@@ -59,8 +59,15 @@ import time
 import urllib.parse
 import urllib.request
 
+from core.inference.mcp_image import (
+    ATTACHED_IMAGE,
+    image_input_mappings,
+    image_mapping,
+    public_tool,
+)
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
+    MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     call_tool_sync,
@@ -70,6 +77,7 @@ from core.inference.mcp_client import (
     is_stdio,
     list_tools_async,
     parse_server_headers,
+    parse_stdio_command,
     probe_timeout,
     record_probe_failure,
     stdio_mcp_enabled,
@@ -13320,8 +13328,51 @@ def _mcp_tool_schema_text(display: str, tool: dict) -> str:
 def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     for tool in get_cached_tools(server["id"]) or []:
         if tool.get("name") == tool_name and tool_visible_to(tool, "model"):
-            return tool
+            return public_tool(server, tool)
     return None
+
+
+def _mcp_image_recipient(server: dict, mapping: dict) -> str:
+    identity = [
+        server["id"],
+        server["url"],
+        server.get("headers_json"),
+        server.get("use_oauth"),
+        mapping,
+    ]
+    return hashlib.sha256(json.dumps(identity, sort_keys = True).encode()).hexdigest()
+
+
+def _mcp_image_destination(url: str) -> str:
+    # Host or program name only: credentials can sit in URL userinfo or in stdio arguments.
+    if is_stdio(url):
+        try:
+            return f"local command {os.path.basename(parse_stdio_command(url)[0])}"
+        except (ValueError, IndexError):
+            return "local command"
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "unknown host"
+    return f"{host}:{parts.port}" if parts.port else host
+
+
+def mcp_image_share(name, arguments, mcp_image) -> dict | None:
+    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    if mcp_image is None or not isinstance(arguments, dict):
+        return None
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    mapping = image_mapping(server, tool) if server else None
+    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+        return None
+    # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
+    return {
+        "disclosure": {
+            "server": server.get("display_name") or server["id"],
+            "tool": tool_name,
+            "size_bytes": len(mcp_image.data),
+            "destination": _mcp_image_destination(server["url"]),
+        },
+        "image": mcp_image.approved_for(_mcp_image_recipient(server, mapping)),
+    }
 
 
 def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
@@ -13331,6 +13382,15 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     tool_name = _mcp_raw_tool_name(name)
     server = mcp_servers_db.get_server_for_tool(server_key)
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
+
+
+def mcp_catalog_takes_image(names) -> bool:
+    """Whether any of these catalog tools has a field mapped to the attached image."""
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        if server and image_mapping(server, tool):
+            return True
+    return False
 
 
 def mcp_tool_input_schema(name) -> dict | None:
@@ -13570,6 +13630,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
             if not in_failure_cooloff(server["id"]):
                 complete = False
             continue
+        payload = [public_tool(server, tool) for tool in payload]
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed), complete
 
@@ -13628,6 +13689,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
+        payload = [public_tool(server, tool) for tool in payload]
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed)
 
@@ -13690,6 +13752,7 @@ def execute_tool(
     *,
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
+    mcp_image = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -13864,6 +13927,42 @@ def execute_tool(
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
+        mapping = (
+            image_mapping(server, tool or _mcp_cached_tool(server, tool_name))
+            if image_input_mappings(server) and isinstance(arguments, dict)
+            else None
+        )
+        carries_image = bool(mapping) and arguments.get(mapping["field"]) == ATTACHED_IMAGE
+        if mcp_image is not None and not carries_image:
+            # Approved for a mapping that has since gone (edited server, dropped tool cache): never forward the call.
+            return (
+                "Error: the MCP server changed after the image was approved. Call the tool again."
+            )
+        if carries_image:
+            # Only a tool loop that just got the user's approval for this call passes mcp_image.
+            if mcp_image is None:
+                return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
+            # Re-read the row: an edit while the approval card was open must not redirect the image.
+            fresh = mcp_servers_db.get_server(server_id)
+            fresh_mapping = (
+                image_mapping(fresh, tool or _mcp_cached_tool(fresh, tool_name)) if fresh else None
+            )
+            if not (
+                fresh_mapping
+                and fresh.get("is_enabled")
+                and mcp_image.recipient
+                == _mcp_image_recipient(server, mapping)
+                == _mcp_image_recipient(fresh, fresh_mapping)
+            ):
+                return "Error: the MCP server changed after the image was approved. Call the tool again."
+            arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
+
+        def _image_still_approved(row: dict) -> bool:
+            # Checked again at dispatch: a call can wait behind a stdio session lock after the re-read above.
+            if not carries_image:
+                return True
+            current = image_mapping(row, tool or _mcp_cached_tool(row, tool_name))
+            return bool(current) and _mcp_image_recipient(row, current) == mcp_image.recipient
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -13877,6 +13976,7 @@ def execute_tool(
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and _image_still_approved(row)
             )
 
         result = call_tool_sync(
@@ -13891,6 +13991,15 @@ def execute_tool(
             config_check = _config_current,
             ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
+        if mcp_image is not None and isinstance(result, str):
+            # Returned images may be resized copies of the user's; none of them reach the model on this call.
+            result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
+            if returned_images:
+                result = (
+                    result.rstrip("\n")
+                    + "\n[Images the tool returned were withheld from the model.]"
+                )
+            result = mcp_image.redact(result)
         if tool is not None and isinstance(result, str) and result.startswith("Error:"):
             return _mcp_schema_page(
                 result.rstrip() + "\n\n", _mcp_tool_schema_text(display, tool), 0
