@@ -296,20 +296,28 @@ def test_a_remote_error_fails_the_monitor_row(monkeypatch):
         ("", "application/octet-stream", True),
     ],
 )
-def test_proxy_never_repeats_a_document_type_from_a_remote(monkeypatch, upstream_type, relayed, attachment):
+def test_proxy_never_repeats_a_document_type_from_a_remote(
+    monkeypatch, upstream_type, relayed, attachment
+):
     """A relayed body is served from this origin, so only media types survive the trip."""
     instance = linked_instances_db.create_instance("colab", "https://remote.example", REMOTE_KEY)
     headers = {"content-disposition": "inline; filename=x.html"}
     if upstream_type:
         headers["content-type"] = upstream_type
-    _remote(lambda r: httpx.Response(200, content = b"<script>x</script>", headers = headers), monkeypatch)
+    _remote(
+        lambda r: httpx.Response(200, content = b"<script>x</script>", headers = headers), monkeypatch
+    )
     response = asyncio.run(
-        linked_instances.proxy(_proxy_request("GET"), instance, "api/inference/images/gallery/1/file")
+        linked_instances.proxy(
+            _proxy_request("GET"), instance, "api/inference/images/gallery/1/file"
+        )
     )
     assert response.media_type == relayed
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "sandbox" in response.headers["content-security-policy"]
-    assert response.headers.get("content-disposition") == ("attachment" if attachment else "inline; filename=x.html")
+    assert response.headers.get("content-disposition") == (
+        "attachment" if attachment else "inline; filename=x.html"
+    )
 
 
 def test_tool_fields_do_not_reach_an_instance_that_is_not_trusted_with_tools():
@@ -328,12 +336,19 @@ def test_tool_fields_do_not_reach_an_instance_that_is_not_trusted_with_tools():
     dropped = linked_instances.strip_tool_fields(body, instance)
 
     assert set(dropped) == {
-        "enable_tools", "enabled_tools", "mcp_enabled", "permission_mode",
-        "bypass_permissions", "confirm_tool_calls", "deep_research_armed",
+        "enable_tools",
+        "enabled_tools",
+        "mcp_enabled",
+        "permission_mode",
+        "bypass_permissions",
+        "confirm_tool_calls",
+        "deep_research_armed",
     }
     # An explicit refusal, not just an omission: the remote's own default cannot re-enable them.
     assert body["enable_tools"] is False
-    assert not any(f in body for f in ("enabled_tools", "mcp_enabled", "permission_mode", "bypass_permissions"))
+    assert not any(
+        f in body for f in ("enabled_tools", "mcp_enabled", "permission_mode", "bypass_permissions")
+    )
     assert body["messages"] == [{"role": "user", "content": "hi"}]
 
 
@@ -355,7 +370,10 @@ def test_allow_tools_is_off_for_a_new_instance_and_survives_a_rename():
     renamed = linked_instances_db.update_instance(instance["id"], name = "colab2")
     assert renamed["allow_tools"] is True
 
-    assert linked_instances_db.update_instance(instance["id"], allow_tools = False)["allow_tools"] is False
+    assert (
+        linked_instances_db.update_instance(instance["id"], allow_tools = False)["allow_tools"]
+        is False
+    )
 
 
 def test_forward_strips_tool_fields_before_they_leave_this_machine(monkeypatch):
@@ -386,6 +404,7 @@ def test_forward_strips_tool_fields_before_they_leave_this_machine(monkeypatch):
     assert seen["enable_tools"] is False
     assert "enabled_tools" not in seen and "permission_mode" not in seen
     assert seen["model"] == "unsloth/a"
+
 
 def test_info_merges_the_remotes_system_endpoints(monkeypatch):
     instance = linked_instances_db.create_instance("colab", "http://remote", REMOTE_KEY)

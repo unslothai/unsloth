@@ -58,6 +58,8 @@ def strip_tool_fields(body: dict, instance: dict) -> list[str]:
     # An explicit refusal, so a remote default cannot turn them back on.
     body["enable_tools"] = False
     return dropped
+
+
 _CATALOG_TTL_S = 10.0
 # A remote builds /v1/models from a disk scan; a busy Windows box takes 5 to 6 s.
 _PROBE_TIMEOUT = httpx.Timeout(20.0, connect = 5.0)
@@ -451,6 +453,8 @@ def relayed_media_type(upstream_type: str) -> str:
     """The content type we are willing to repeat from a remote, for a non-JSON body."""
     base = (upstream_type or "").split(";")[0].strip().lower()
     return base if base.startswith(_RELAYABLE_TYPES) else _OPAQUE_TYPE
+
+
 _GALLERY_PREFIX = "/api/inference/images/"
 
 
@@ -522,9 +526,7 @@ async def proxy(request: Request, instance: dict, path: str) -> Response:
             await upstream.aclose()
 
     relayed = relayed_media_type(media_type)
-    passthrough = {
-        k: v for k, v in upstream.headers.items() if k.lower() == "cache-control"
-    }
+    passthrough = {k: v for k, v in upstream.headers.items() if k.lower() == "cache-control"}
     # The remote names the file, so the name is never trusted to pick a handler: an opaque body
     # downloads rather than opening, and a relayed image keeps its own disposition.
     if relayed == _OPAQUE_TYPE:

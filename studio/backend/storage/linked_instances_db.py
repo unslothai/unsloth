@@ -46,7 +46,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Tools stay off for a linked instance until the owner turns them on for that instance.
     cols = {row[1] for row in conn.execute("PRAGMA table_info(linked_instances)").fetchall()}
     if "allow_tools" not in cols:
-        conn.execute("ALTER TABLE linked_instances ADD COLUMN allow_tools INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE linked_instances ADD COLUMN allow_tools INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
 
 
