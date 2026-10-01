@@ -165,9 +165,13 @@ def _build_text_format_validation_function(format_kind: str):
 
 
 def _coerce_validation_value(value: Any) -> Any:
-    if value is None:
+    import pandas as pd
+
+    if isinstance(value, (dict, list)):
+        return value
+    if value is None or pd.isna(value):
         return ""
-    if isinstance(value, (dict, list, bool, int, float)):
+    if isinstance(value, (bool, int, float)):
         return value
     return str(value)
 

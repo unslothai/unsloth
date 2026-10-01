@@ -92,3 +92,16 @@ def test_validate_json_text_accepts_native_scalars():
 
 def test_validate_markdown_text_keeps_leading_indented_code_block():
     assert _validate_markdown_text("    ```\n    literal backticks")["is_valid"] is True
+
+
+def test_missing_values_fail_both_checks():
+    import math
+
+    import pandas as pd
+
+    from core.data_recipe.text_format_validators import _build_text_format_validation_function
+
+    df = pd.DataFrame({"x": [math.nan, pd.NA, None, "# ok"]}, dtype = object)
+    for kind, expected in (("markdown", [False, False, False, True]), ("json", [False] * 4)):
+        result = _build_text_format_validation_function(kind)(df)
+        assert result["is_valid"].tolist() == expected, kind
