@@ -1965,6 +1965,19 @@ _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
 
+# Dense (non-torchao) denoisers on the eager tier (speed_mode off, e.g. fp16 on a 15 GB T4, where the flat 8192 MiB
+# reserve streamed FLUX.2-klein-4B's 7.4 GB DiT). Worst CUDA MiB above the resident weights, fp16 eager, all resident,
+# one 1024x1024 image, encoder + every step + VAE decode: klein 2455, FLUX.1-schnell 2448, Qwen-Image 4248 (true CFG).
+# family -> (peak MiB, largest loaded DiT MiB the measurement covers: a bigger DiT of the same family, e.g. klein-9B,
+# keeps the flat estimate).
+MEASURED_ACTIVATION_DENSE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE"
+_MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
+    "flux.2-klein": (2455, 7800),
+    "flux.1": (2448, 23800),
+    "qwen-image": (4248, 40900),
+}
+_MEASURED_DENSE_SPEED_MODES = ("off",)
+
 
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
@@ -1977,13 +1990,26 @@ def measured_image_runtime_mib(
     width: Optional[int] = None,
     height: Optional[int] = None,
     batch_size: int = 1,
+    dense_transformer_mib: Optional[int] = None,
 ) -> Optional[int]:
-    """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate)."""
+    """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+
+    ``dense_transformer_mib`` (the loaded DiT size) selects the dense eager table instead of the torchao one."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
-    peak = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
-    if peak is None or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES:
-        return None
+    if dense_transformer_mib is not None:
+        if _env_off(MEASURED_ACTIVATION_DENSE_ENV):
+            return None
+        entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(str(family or "").lower())
+        if entry is None or str(speed_mode or "") not in _MEASURED_DENSE_SPEED_MODES:
+            return None
+        peak, max_dit = entry
+        if int(dense_transformer_mib) <= 0 or int(dense_transformer_mib) > max_dit:
+            return None
+    else:
+        peak = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
+        if peak is None or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES:
+            return None
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     scale = max(
@@ -2037,7 +2063,7 @@ def refine_plan_from_loaded_weights(
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
     Keeps the flat plan's offload hooks and makes whole groups resident (denoiser first, then encoders) within the
-    safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families
+    safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families (dense denoisers: the eager-tier table)
     or speed tiers, non-torchao denoisers and ``model`` plans."""
     try:
         if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
@@ -2047,11 +2073,6 @@ def refine_plan_from_loaded_weights(
             return plan
         memory = plan.device_memory
         if memory.is_unified or getattr(memory, "device", None) != "cuda":
-            return plan
-        if not _pipe_denoisers_hold_torchao(pipe):
-            return plan
-        headroom = measured_image_runtime_mib(family, speed_mode)
-        if headroom is None:
             return plan
         budget = plan.estimates.get("safe_device_budget_mib")
         if budget is None:
@@ -2065,11 +2086,19 @@ def refine_plan_from_loaded_weights(
         other = sum(m for m, r in sizes.values() if r == "other")
         if dit <= 0:
             return plan
+        # A dense denoiser uses the eager-tier table, sized by its loaded DiT; a torchao one the compiled table.
+        dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
+        headroom = measured_image_runtime_mib(
+            family, speed_mode, dense_transformer_mib = dense_mib
+        )
+        if headroom is None:
+            return plan
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
         estimates = dict(plan.estimates)
         estimates.update(
             measured_runtime_headroom_mib = headroom,
+            measured_dense_transformer_mib = dense_mib,
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -2313,9 +2342,15 @@ def measured_request_extra_mib(
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
-    headroom, family, speed_mode = reserve
+    headroom, family, speed_mode = reserve[:3]
+    dense_mib = reserve[3] if len(reserve) > 3 else None
     need = measured_image_runtime_mib(
-        family, speed_mode, width = width, height = height, batch_size = batch_size
+        family,
+        speed_mode,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        dense_transformer_mib = dense_mib,
     )
     if need is None:
         return 0
