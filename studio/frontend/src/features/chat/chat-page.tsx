@@ -190,6 +190,7 @@ import {
   getTrainingCompareHandoff,
   normalizeModelRef,
   pickTrainingCompareTarget,
+  trainingCompareSelection,
 } from "./lib/training-compare-handoff";
 import {
   externalReasoningTakesEffort,
@@ -4023,7 +4024,10 @@ export function ChatPage({
         const state = useChatRuntimeStore.getState();
         const target = pickTrainingCompareTarget(state.loras, handoff);
         const selectWithConfig = async (
-          selection: Pick<SelectedModelInput, "id" | "isLora">,
+          selection: Pick<
+            SelectedModelInput,
+            "id" | "isLora" | "isDownloaded"
+          >,
         ) => {
           const previousConfig = currentRuntimePerModelConfig({
             includeMaxSeqLength: true,
@@ -4040,13 +4044,12 @@ export function ChatPage({
           });
         };
         if (target) {
-          const isLora = target.exportType === "lora";
+          const selection = trainingCompareSelection(target);
           console.info("[chat-handoff] loading trained model", {
-            id: target.id,
+            ...selection,
             baseModel: target.baseModel,
-            isLora,
           });
-          await selectWithConfig({ id: target.id, isLora });
+          await selectWithConfig(selection);
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);

@@ -97,3 +97,11 @@ test("without the run's folder, the newest same-base LoRA is picked", () => {
     qwenLora.id,
   );
 });
+
+test("a finished full fine-tune loads as a local model, not a download", () => {
+  assert.deepEqual(handoff.trainingCompareSelection(fullFinetune), {
+    id: fullFinetune.id,
+    isLora: false,
+    isDownloaded: true,
+  });
+});

@@ -110,3 +110,11 @@ export function pickTrainingCompareTarget<T extends TrainingCompareCandidate>(
   });
   return partial ?? null;
 }
+
+export function trainingCompareSelection(target: TrainingCompareCandidate) {
+  return {
+    id: target.id,
+    isLora: target.exportType === "lora",
+    isDownloaded: true,
+  };
+}
