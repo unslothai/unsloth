@@ -15,6 +15,7 @@ from core.inference import tools as tools_mod
 from core.inference.mcp_image import (
     ATTACHED_IMAGE,
     McpImage,
+    WITHHELD_RESULT,
     McpImageError,
     parse_mcp_image,
     public_tool,
@@ -128,6 +129,49 @@ def test_execute_tool_inserts_the_image_only_when_given_one(mapped_server):
     assert out.startswith("Error: the MCP server changed") and len(mapped_server) == 1
 
 
+def test_an_edit_while_the_card_is_open_does_not_redirect_the_image(mapped_server, monkeypatch):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    args = {"image": ATTACHED_IMAGE}
+    approved = image.approved_for(
+        tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["recipient"]
+    )
+    stale = mcp_servers_db.get_server("srv1")
+    mcp_servers_db.update_server("srv1", {"headers_json": json.dumps({"X-Key": "other"})})
+    # execute_tool resolved the row before the edit landed.
+    monkeypatch.setattr(mcp_servers_db, "get_server_for_tool", lambda _key: stale)
+    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
+    assert out.startswith("Error: the MCP server changed") and mapped_server == []
+
+
+@pytest.mark.parametrize(
+    "encode",
+    [
+        lambda d: base64.urlsafe_b64encode(d).decode(),
+        lambda d: d.hex(),
+        lambda d: "\\n".join(base64.b64encode(d).decode()[i : i + 8] for i in range(0, 200, 8)),
+    ],
+    ids = ["urlsafe", "hex", "wrapped"],
+)
+def test_a_reencoded_echo_withholds_the_result(encode):
+    image = McpImage(mime = "image/png", data = _png_bytes() * 4)
+    assert image.redact(f"result: {encode(image.data)}") == WITHHELD_RESULT
+    assert image.redact("result: Cowboy Bebop ep 5") == "result: Cowboy Bebop ep 5"
+
+
+def test_durable_runs_refuse_the_image():
+    from routes.chat_generation_runs import CreateChatGenerationRun, _sanitize_request
+    with pytest.raises(HTTPException) as exc:
+        _sanitize_request(
+            CreateChatGenerationRun.model_construct(
+                requestPayload = {
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "mcp_image": _data_url(_png_bytes()),
+                }
+            )
+        )
+    assert exc.value.detail == "Media chat runs use the legacy streaming path"
+
+
 def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
     tools_mod.execute_tool("mcp__srv1__lookup", {"image": "https://x/y.png"}, mcp_image = image)
@@ -139,6 +183,7 @@ def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
     share = tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": ATTACHED_IMAGE}, image)
     assert share["server"] == "Trace" and share["tool"] == "lookup"
     assert share["size_bytes"] == len(image.data)
+    assert share["destination"] == "trace.example"
 
 
 def _one_call_turns():

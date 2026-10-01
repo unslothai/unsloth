@@ -13351,6 +13351,7 @@ def mcp_image_share(name, arguments, mcp_image) -> dict | None:
         "server": server.get("display_name") or server["id"],
         "tool": tool_name,
         "size_bytes": len(mcp_image.data),
+        "destination": urllib.parse.urlsplit(server["url"]).netloc or server["url"],
         "recipient": _mcp_image_recipient(server, mapping),
     }
 
@@ -13918,7 +13919,18 @@ def execute_tool(
             # Only a tool loop that just got the user's approval for this call passes mcp_image.
             if mcp_image is None:
                 return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
-            if mcp_image.recipient != _mcp_image_recipient(server, mapping):
+            # Re-read the row: an edit while the approval card was open must not redirect the image.
+            fresh = mcp_servers_db.get_server(server_id)
+            fresh_mapping = (
+                image_mapping(fresh, tool or _mcp_cached_tool(fresh, tool_name)) if fresh else None
+            )
+            if not (
+                fresh_mapping
+                and fresh.get("is_enabled")
+                and mcp_image.recipient
+                == _mcp_image_recipient(server, mapping)
+                == _mcp_image_recipient(fresh, fresh_mapping)
+            ):
                 return "Error: the MCP server changed after the image was approved. Call the tool again."
             arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
 

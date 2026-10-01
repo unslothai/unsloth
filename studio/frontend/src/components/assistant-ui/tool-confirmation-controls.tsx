@@ -189,8 +189,8 @@ export function ToolConfirmationControls({
       {disclosure ? (
         <p className="w-full text-xs text-muted-foreground">
           Send your attached image ({Math.ceil(disclosure.size_bytes / 1024)}{" "}
-          KB) to {disclosure.server} ({disclosure.tool})? The server may keep
-          it.
+          KB) to {disclosure.server} ({disclosure.tool}) at{" "}
+          {disclosure.destination}? The server may keep it.
         </p>
       ) : null}
       <Button

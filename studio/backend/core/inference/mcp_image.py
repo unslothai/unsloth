@@ -17,8 +17,13 @@ import io
 import json
 from dataclasses import dataclass, field, replace
 from typing import Optional
+from urllib.parse import unquote
 
 ATTACHED_IMAGE = "attached_image"
+WITHHELD_RESULT = (
+    "[The tool's reply contained the attached image, so it was withheld from the model.]"
+)
+_PROBE_BYTES = 96
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # Pillow reports a JPEG carrying extra pictures (phone HDR / portrait shots) as MPO.
 _FORMATS = {"image/png": ("PNG",), "image/jpeg": ("JPEG", "MPO"), "image/webp": ("WEBP",)}
@@ -43,12 +48,25 @@ class McpImage:
         return f"data:{self.mime};base64,{text}" if encoding == "data_url" else text
 
     def redact(self, text: str) -> str:
-        # Servers that echo their input would otherwise put the bytes in the model's context.
+        """``text`` without the image: exact echoes replaced, re-encoded ones withhold it all."""
         head, *tails = text.split(self.encoded("base64").rstrip("="))
         for tail in tails:
             head = head.removesuffix(f"data:{self.mime};base64,") + "[attached image]"
             head += tail.removeprefix("==").removeprefix("=")
-        return head
+        return WITHHELD_RESULT if self._reencoded_in(head) else head
+
+    def _reencoded_in(self, text: str) -> bool:
+        # A leading slice catches wrapped, escaped, percent, url-safe and hex copies, truncated too.
+        probe = self.data[:_PROBE_BYTES]
+        compact = "".join(text.split()).replace("\\n", "").replace("\\r", "")
+        if "%" in compact:
+            compact = unquote(compact)
+        b64 = base64.b64encode(probe).decode("ascii").rstrip("=")
+        return (
+            b64 in compact
+            or b64.replace("+", "-").replace("/", "_") in compact
+            or probe.hex() in compact.lower()
+        )
 
 
 def parse_mcp_image(data_url: str) -> McpImage:

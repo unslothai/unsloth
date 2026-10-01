@@ -8,6 +8,7 @@ export type ImageDisclosure = {
   server: string;
   tool: string;
   size_bytes: number;
+  destination: string;
 };
 
 type Part = { type: string; image?: unknown };
