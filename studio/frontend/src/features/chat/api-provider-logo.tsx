@@ -20,7 +20,7 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter"]);
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter", "replicate"]);
 
 /** Shared hub or connection logo; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
