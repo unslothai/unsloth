@@ -2002,16 +2002,11 @@ def save_to_gguf(
         print("Unsloth: llama.cpp found in the system. Skipping installation.")
     except:
         print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
-        if IS_KAGGLE_ENVIRONMENT:
-            quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False, print_output = print_output
-            )
-        else:
-            # Kaggle: no CUDA support due to environment limitations.
-            quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False,
-                print_output = print_output,
-            )
+        # GGUF conversion does not need CUDA, and Kaggle cannot build with it anyway.
+        quantizer_location, converter_location = install_llama_cpp(
+            gpu_support = False,
+            print_output = print_output,
+        )
 
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
@@ -2780,19 +2775,15 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     Creates an Ollama Modelfile.
     Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
     """
-    ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
-    if not ollama_template_name:
-        print(
-            f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile"
-        )
-        return None
-    ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name)
+    ollama_modelfile = getattr(tokenizer, "_ollama_modelfile", None)
+    if not ollama_modelfile or ollama_modelfile in OLLAMA_TEMPLATES.values():
+        ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
+        ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name) or ollama_modelfile
     if not ollama_modelfile:
         print(
             f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile"
         )
         return None
-    tokenizer._ollama_modelfile = ollama_modelfile
     modelfile = ollama_modelfile
 
     FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"

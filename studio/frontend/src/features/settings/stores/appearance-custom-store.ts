@@ -39,7 +39,6 @@ const guardedLocalStorage: StateStorage = {
 
 export type ReduceMotionSetting = "system" | "on" | "off";
 export type ChatWidthSetting = "standard" | "wide" | "full";
-export type ComposerAttachmentsSetting = "cards" | "compact";
 export type SentAttachmentsSetting = "auto" | "list" | "chips";
 
 export type CustomModeColors = {
@@ -238,7 +237,6 @@ export type AppearanceCustomization = {
   headingFont: string | null;
   chatFont: string | null;
   chatWidth: ChatWidthSetting;
-  composerAttachments: ComposerAttachmentsSetting;
   sentAttachments: SentAttachmentsSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
@@ -273,7 +271,6 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   headingFont: null,
   chatFont: null,
   chatWidth: "standard",
-  composerAttachments: "cards",
   sentAttachments: "auto",
   codeFont: null,
   importedFonts: [],
@@ -490,8 +487,6 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
       source.chatWidth === "wide" || source.chatWidth === "full"
         ? source.chatWidth
         : "standard",
-    composerAttachments:
-      source.composerAttachments === "compact" ? "compact" : "cards",
     sentAttachments:
       source.sentAttachments === "list" || source.sentAttachments === "chips"
         ? source.sentAttachments

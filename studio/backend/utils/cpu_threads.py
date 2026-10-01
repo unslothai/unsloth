@@ -16,7 +16,7 @@ _THREAD_POOL_ENV_VARS = (
 
 
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
-    """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured.
+    """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured, else cap OpenBLAS at one thread.
 
     Must run before importing libraries that initialize an OpenMP or BLAS
     pool. Library-specific vars are left untouched so users can override a
@@ -25,6 +25,9 @@ def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> Non
     environ = os.environ if env is None else env
     configured = environ.get("UNSLOTH_CPU_THREADS", "").strip()
     if not configured:
+        # OpenBLAS reads a blank value as 0 (one thread per core), so blank counts as unset.
+        if not environ.get("OPENBLAS_NUM_THREADS", "").strip():
+            environ["OPENBLAS_NUM_THREADS"] = "1"
         return
 
     try:

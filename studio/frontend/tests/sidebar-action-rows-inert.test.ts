@@ -135,10 +135,15 @@ test("the sidebar list measures its scroll rail", async () => {
   // appearing shrinks the content box.
   assert.match(
     source,
-    /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*railObserverRef\.current = observer;/,
+    /const observer = new ResizeObserver\(\(\) => \{\s*measureScrollRail\(el\);\s*syncFade\(el\);\s*\}\);\s*observer\.observe\(el\);/,
   );
-  // Writes a variable, never state: that pairing is what looped.
+  // Writes the DOM, never state: that pairing is what looped.
   assert.equal(/new ResizeObserver\([^)]*set[A-Z]/.test(source), false);
+  assert.match(source, /if \(fade\.dataset\.visible !== visible\) fade\.dataset\.visible = visible;/);
+  assert.equal(/setCanScrollDown/.test(source), false);
+  // The sections too, so the fade follows content that grows without rendering AppSidebar.
+  assert.match(source, /for \(const section of el\.children\) observer\.observe\(section\);/);
+  assert.match(source, /sections\.observe\(el, \{ childList: true \}\);/);
   // And only on a change, so it cannot re-trigger itself.
   assert.match(source, /if \(rail === railWidthRef\.current\) return;/);
   // The fade stops at the rail too: the thumb ends its travel in that band.

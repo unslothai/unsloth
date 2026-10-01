@@ -1,5 +1,10 @@
 {
   "bundle": {
+    "icon": [
+      "icons/macos/32x32.png",
+      "icons/macos/128x128.png",
+      "icons/icon.icns"
+    ],
     "resources": {
       "../../install.sh": "install.sh"
     },

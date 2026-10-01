@@ -61,6 +61,8 @@ export interface SystemInfoResponse {
   dense_quant_schemes?: string[];
   /** Absent on older backends, where readers treat it as off. */
   nvfp4_diffusion?: boolean;
+  /** Whether group offload can stream torchao weights. Absent on older backends. */
+  quantised_streaming?: boolean;
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;
