@@ -559,7 +559,7 @@ if (
     try:
         import triton
         from .nf4 import dequantize_nf4, dequantize_nf4_planned
-        from .nf4_gemv import gemv_nf4, triton_gemv_eager
+        from .nf4_gemv import gemv_nf4, gemv_nf4_planned, triton_gemv_eager
 
         _USE_NF4_KERNELS = True
         # Eager decode uses the Triton GEMV where it is faster; compiled code always does.
@@ -1161,6 +1161,33 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             return torch_matmul(X, W, out = out)
         if not _USE_NF4_KERNELS or not (_TRITON_GEMV_EAGER or _is_compiling()):
             return _fast_gemv_ctypes(X, W, quant_state, out)
+        # Eager decode runs every weight once per token: repeat the first launch for this weight
+        # directly (see gemv_nf4_planned).
+        eager = (
+            not _is_compiling()
+            and type(quant_state) is not list
+            and X.is_contiguous()
+            and X.device.index == _current_device()
+        )
+        if eager:
+            plan = getattr(quant_state, "_unsloth_gemv_plan", None)
+            if (
+                plan is not None
+                and plan[0] == W.data_ptr()
+                and plan[1] is quant_state.absmax
+                and plan[2] is X.dtype
+                and X.data_ptr() & 15 == plan[3]
+                and (out is None or (out.dtype is X.dtype and out.data_ptr() & 15 == 0))
+            ):
+                if out is None:
+                    out = torch_empty((1, 1, plan[4]), dtype = X.dtype, device = X.device)
+                try:
+                    done = plan[5](X, out)
+                except Exception:
+                    done = False
+                if done:
+                    return out
+                quant_state._unsloth_gemv_plan = None
         absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
@@ -1168,6 +1195,24 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             # The gemv kernels assume each weight row starts a new quantization block.
             return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
         try:
+            if (
+                eager
+                and X.dim() == 3
+                and X.shape[0] == 1
+                and X.shape[1] == 1
+                and (out is None or (out.dtype is X.dtype and out.data_ptr() & 15 == 0))
+            ):
+                if out is None:
+                    out = torch_empty((1, 1, int(shape[0])), dtype = X.dtype, device = X.device)
+                # Launches once.
+                rerun = gemv_nf4_planned(
+                    X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out
+                )
+                if rerun is not None:
+                    quant_state._unsloth_gemv_plan = _NF4Plan(
+                        [W.data_ptr(), absmax, X.dtype, X.data_ptr() & 15, int(shape[0]), rerun]
+                    )
+                return out
             return gemv_nf4(
                 X,
                 W,

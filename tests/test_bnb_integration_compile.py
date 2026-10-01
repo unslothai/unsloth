@@ -280,13 +280,18 @@ def test_kernel_failure_falls_back_to_bitsandbytes(nf4_kernels, monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("PTX compile failed")
 
-    monkeypatch.setattr(U, "dequantize_nf4", broken)
-    monkeypatch.setattr(U, "gemv_nf4", broken)
+    for name in ("dequantize_nf4", "dequantize_nf4_planned", "gemv_nf4", "gemv_nf4_planned"):
+        monkeypatch.setattr(U, name, broken)
     assert torch.equal(_bits(U.fast_dequantize(q, s)), _bits(F.dequantize_4bit(q, s)))
     assert U._USE_NF4_KERNELS is False
     monkeypatch.setattr(U, "_USE_NF4_KERNELS", True)
     X = torch.randn(1, 1, 256, dtype = torch.bfloat16, device = DEVICE)
     assert U.fast_gemv(X, q, s).shape == (1, 1, 512)
+    assert U._USE_NF4_KERNELS is False
+    # Batch > 1 decode dequantizes into the scratch buffer through the planned launch.
+    monkeypatch.setattr(U, "_USE_NF4_KERNELS", True)
+    got = U.fast_dequantize(q.t(), s, use_global_buffer = True).t()
+    assert torch.equal(_bits(got), _bits(F.dequantize_4bit(q, s)))
     assert U._USE_NF4_KERNELS is False
 
 

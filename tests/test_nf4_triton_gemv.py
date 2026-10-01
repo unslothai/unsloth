@@ -110,3 +110,53 @@ def test_explicit_out_is_written_and_returned():
     out = torch.empty(1, 1, 1024, dtype = torch.bfloat16, device = "cuda")
     assert gemv_nf4(X, *_args(q, s), out = out).data_ptr() == out.data_ptr()
     assert torch.equal(out, gemv_nf4(X, *_args(q, s)))
+
+
+def _utils_with_kernels():
+    from unsloth.kernels import utils
+    if not (utils._USE_NF4_KERNELS and utils._TRITON_GEMV_EAGER):
+        pytest.skip("eager decode does not take the Triton GEMV here")
+    return utils
+
+
+@pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
+def test_decode_plan_reruns_match_the_kernel(nested):
+    """Eager decode repeats the launch planned on each weight's first call. With weights
+    interleaved as in a decoder, every rerun equals a fresh gemv_nf4 launch bit for bit."""
+    from unsloth.kernels import triton_launch
+
+    utils = _utils_with_kernels()
+    weights = [
+        _quant(n, k, torch.bfloat16, nested = nested, seed = i)
+        for i, (n, k) in enumerate([(512, 256), (256, 1024), (768, 512)])
+    ]
+    for step in range(3):
+        for i, (q, s) in enumerate(weights):
+            X = torch.randn(1, 1, s.shape[1], dtype = torch.bfloat16, device = "cuda")
+            got = utils.fast_gemv(X, q, s)
+            want = gemv_nf4(X, *_args(q, s))
+            assert torch.equal(got, want), (step, i)
+    if triton_launch._ENABLED:
+        assert all(getattr(s, "_unsloth_gemv_plan", None) for _, s in weights)
+
+
+def test_decode_plan_is_rebuilt_or_bypassed_when_inputs_change():
+    """New absmax (QuantState.to), another activation dtype, or an activation that is not 16 byte
+    aligned would not fit the planned launch: each must still give the kernel's own result."""
+    import copy
+    import pickle
+
+    utils = _utils_with_kernels()
+    q, s = _quant(512, 256, torch.bfloat16, nested = False)
+    X = torch.randn(1, 1, 256, dtype = torch.bfloat16, device = "cuda")
+    for _ in range(2):
+        utils.fast_gemv(X, q, s)
+    s.absmax = s.absmax * 2
+    assert torch.equal(utils.fast_gemv(X, q, s), gemv_nf4(X, *_args(q, s)))
+    X16 = X.half()
+    assert torch.equal(utils.fast_gemv(X16, q, s), gemv_nf4(X16, *_args(q, s)))
+    base = torch.randn(1, 1, 257, dtype = torch.bfloat16, device = "cuda")
+    Xm = base[:, :, 1:]  # 2 bytes past a 16 byte boundary
+    assert torch.equal(utils.fast_gemv(Xm, q, s), gemv_nf4(Xm.contiguous(), *_args(q, s)))
+    assert getattr(copy.deepcopy(s), "_unsloth_gemv_plan", None) is None
+    assert getattr(pickle.loads(pickle.dumps(s)), "_unsloth_gemv_plan", None) is None

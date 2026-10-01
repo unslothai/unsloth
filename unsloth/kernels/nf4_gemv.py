@@ -15,10 +15,11 @@ import triton
 import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN, _mul
-from .triton_launch import launch, tag_compile_cache
+from .triton_launch import launch, relaunch, tag_compile_cache
 
 __all__ = [
     "gemv_nf4",
+    "gemv_nf4_planned",
     "triton_gemv_eager",
 ]
 
@@ -172,9 +173,8 @@ def _gemv_config(N: int, K: int, blocksize: int, major: int, words_ok: bool, for
     block_k = max(blocksize, min(2048, triton.next_power_of_2(K)))
     use_words = words_ok and (force == "words" or (force is None and not _TRITON_37))
     if use_words:
-        if major == 7 and N * K >= (1 << 25):
-            # T4: shorter K steps won on the 14336x4096, 4096x14336 and vocab shapes.
-            block_k = max(blocksize, min(512, block_k))
+        # One row per program and BLOCK_K 2048 was the fastest config at every Llama 1B / 8B shape on
+        # T4, L4 and A100 (interleaved CUDA graph timing; T4 throttles, so sweeps must interleave).
         return True, (N,), 1, block_k, 1
     if force is None:
         return False, (-(-N // 4),), 4, block_k, 4
@@ -189,7 +189,22 @@ def _major(index):
     return torch.cuda.get_device_capability(index)[0]
 
 
-def _launch(kernels, X, W, absmax, code2, absmax2, offset, code, out, N, K, blocksize, blocksize2):
+def _launch(
+    kernels,
+    X,
+    W,
+    absmax,
+    code2,
+    absmax2,
+    offset,
+    code,
+    out,
+    N,
+    K,
+    blocksize,
+    blocksize2,
+    plan = False,
+):
     nested = code2 is not None
     use_words, grid, block_n, block_k, num_warps = _gemv_config(
         N, K, blocksize, _major(X.device.index), _word_aligned(W), _FORCE_KERNEL
@@ -216,10 +231,24 @@ def _launch(kernels, X, W, absmax, code2, absmax2, offset, code, out, N, K, bloc
         BLOCK_K = block_k,
     )
     if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
-        launch(kernel, grid, args, 8, constexprs, X.device.index, num_warps = num_warps)
+        entry = launch(kernel, grid, args, 8, constexprs, X.device.index, num_warps = num_warps)
+        if plan:
+            return _rerun(entry, grid, args, X.device.index)
     else:
         kernel[grid](*args, **constexprs, num_warps = num_warps)
     return out
+
+
+def _rerun(entry, grid, args, device_index):
+    if entry is None:
+        return None
+    weights, sizes = args[1:7], args[8:]
+
+    def rerun(X, out):
+        # X and out must match the first launch's in dtype and 16 byte alignment.
+        return relaunch(entry, grid, device_index, (X, *weights, out, *sizes))
+
+    return rerun
 
 
 @torch.library.triton_op("unsloth::gemv_nf4", mutates_args = ())
@@ -329,3 +358,27 @@ def gemv_nf4(
         return _launch(*args)
     with torch.cuda.device(X.device):
         return _launch(*args)
+
+
+def gemv_nf4_planned(
+    X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out
+):
+    """Eager gemv_nf4 into out on the current device, returning a function (X, out) that repeats
+    the launch for this same weight, skipping the per-call argument handling (decode runs every
+    weight once per token). None when that is unavailable."""
+    return _launch(
+        _KERNELS,
+        X,
+        W_u8,
+        absmax,
+        code2,
+        absmax2,
+        offset,
+        code,
+        out,
+        int(shape[0]),
+        int(shape[1]),
+        int(blocksize),
+        int(blocksize2) if code2 is not None else 0,
+        plan = True,
+    )
