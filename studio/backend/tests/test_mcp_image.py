@@ -487,6 +487,13 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
         and getattr(node.func, "id", None) == "_refuse_unused_mcp_image"
     ]
     assert len(calls) == 7
+    # The forced image approval parks the GGUF stream, so the slot must be tracked for reclaim.
+    slot = [
+        ast.unparse(node.value)
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.keyword) and node.arg == "on_decode_slot"
+    ]
+    assert slot and all("_mcp_image is not None" in expr for expr in slot)
     # External: before any catalog, then once the Codex and the generic catalogs are resolved.
     external = inspect.getsource(inf._proxy_to_external_provider)
     assert "_refuse_unused_mcp_image(_mcp_image, _catalog_names(studio_tool_payloads))" in external
