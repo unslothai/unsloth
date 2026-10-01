@@ -140,7 +140,8 @@ def upsert_execution(execution: dict) -> bool:
     """Returns False when the run's recipe does not exist or the id belongs to another recipe.
 
     A snapshot older than the stored one (two tabs tracking one run) is accepted but dropped:
-    a lower lastEventId, or a non-terminal status over a terminal one, never replaces it.
+    a lower lastEventId, a snapshot without analysis at the same lastEventId as one with it, or a
+    non-terminal status over a terminal one, never replaces it.
     """
     conn = get_connection()
     try:
@@ -153,6 +154,12 @@ def upsert_execution(execution: dict) -> bool:
             WHERE data_recipe_executions.recipe_id = excluded.recipe_id
               AND COALESCE(json_extract(excluded.record_json, '$.lastEventId'), -1)
                   >= COALESCE(json_extract(data_recipe_executions.record_json, '$.lastEventId'), -1)
+              AND NOT (
+                  COALESCE(json_extract(excluded.record_json, '$.lastEventId'), -1)
+                      = COALESCE(json_extract(data_recipe_executions.record_json, '$.lastEventId'), -1)
+                  AND json_extract(data_recipe_executions.record_json, '$.analysis') IS NOT NULL
+                  AND json_extract(excluded.record_json, '$.analysis') IS NULL
+              )
               AND NOT (
                   json_extract(data_recipe_executions.record_json, '$.status') IN (?5, ?6, ?7)
                   AND COALESCE(json_extract(excluded.record_json, '$.status'), '')

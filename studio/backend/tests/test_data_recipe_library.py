@@ -151,3 +151,14 @@ def test_older_run_snapshot_from_another_tab_does_not_replace_a_newer_one():
 
     stored = client.get("/recipes/r1/executions").json()["executions"][0]
     assert (stored["status"], stored["lastEventId"]) == ("cancelled", 12)
+
+
+def test_unenriched_snapshot_at_the_same_event_keeps_the_enriched_one():
+    client = _client()
+    client.put("/recipes/r1", json = _recipe())
+    put = lambda **extra: client.put("/recipes/r1/executions/e1", json = _execution(**extra))
+    assert put(status = "completed", lastEventId = 9, analysis = {"num_records": 3}).status_code == 204
+    assert put(status = "completed", lastEventId = 9, analysis = None).status_code == 204
+
+    stored = client.get("/recipes/r1/executions").json()["executions"][0]
+    assert stored["analysis"] == {"num_records": 3}
