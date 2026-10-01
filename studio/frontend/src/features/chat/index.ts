@@ -289,6 +289,7 @@ export {
   isAudioAttachment,
   attachmentBodyText,
   parseAttachmentText,
+  isTextAttachment,
   readAttachmentText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
@@ -535,3 +536,5 @@ export {
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
+
+export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";
