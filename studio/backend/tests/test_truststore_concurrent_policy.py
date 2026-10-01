@@ -23,17 +23,25 @@ import pytest
 _PACKAGE = Path(__file__).resolve().parent.parent / "vendor" / "truststore"
 
 
-@pytest.fixture()
-def truststore(monkeypatch):
-    # Load the vendored copy under a private name: an installed truststore must not stand in.
-    name = "_unsloth_vendored_truststore_under_test"
+def _load_vendored(name, monkeypatch):
+    # A private name keeps an installed truststore from standing in. An earlier import may have
+    # injected truststore into ssl (native TLS is on by default on macOS / Windows), so put the
+    # stdlib class back first, or this copy captures the injected one as its original.
+    stdlib = next(c for c in ssl._SSLContext.__subclasses__() if c.__module__ == "ssl")
+    monkeypatch.setattr(ssl, "SSLContext", stdlib)
     spec = importlib.util.spec_from_file_location(
         name, _PACKAGE / "__init__.py", submodule_search_locations = [str(_PACKAGE)]
     )
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, module)
     spec.loader.exec_module(module)
-    api = sys.modules[f"{name}._api"]
+    return module, sys.modules[f"{name}._api"]
+
+
+@pytest.fixture()
+def truststore(monkeypatch):
+    name = "_unsloth_vendored_truststore_under_test"
+    module, api = _load_vendored(name, monkeypatch)
 
     @contextlib.contextmanager
     def flipping(ctx):
@@ -223,16 +231,10 @@ _SELF_SIGNED_DER = base64.b64decode(
 @pytest.mark.skipif(
     sys.platform not in ("darwin", "win32"), reason = "the OS verifier only exists on macOS / Windows"
 )
-def test_the_real_os_verifier_sees_the_policy_while_a_window_is_open():
+def test_the_real_os_verifier_sees_the_policy_while_a_window_is_open(monkeypatch):
     name = "_unsloth_vendored_truststore_os_verifier"
-    spec = importlib.util.spec_from_file_location(
-        name, _PACKAGE / "__init__.py", submodule_search_locations = [str(_PACKAGE)]
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
     try:
-        spec.loader.exec_module(module)
-        api = sys.modules[f"{name}._api"]
+        module, api = _load_vendored(name, monkeypatch)
         ctx = module.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
         class _Sock:
