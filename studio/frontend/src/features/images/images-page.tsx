@@ -1574,6 +1574,7 @@ export function ImagesPage({
   const [thumbById, setThumbById] = useState<Record<string, string>>(() =>
     galleryCache.thumbById.toRecord(),
   );
+  const [srcErrors, setSrcErrors] = useState<Record<string, boolean>>({});
   // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
   // Observer root for loading thumbnails near the visible strip.
@@ -1905,6 +1906,12 @@ export function ImagesPage({
   const ensureSrc = useCallback(async (image: GalleryImage) => {
     if (galleryCache.srcById.has(image.id) || galleryCache.inflight.has(image.id)) return;
     galleryCache.inflight.add(image.id);
+    setSrcErrors((prev) => {
+      if (!prev[image.id]) return prev;
+      const next = { ...prev };
+      delete next[image.id];
+      return next;
+    });
     try {
       const { url, bytes } = await fetchGalleryObjectUrl(image.url);
       if (galleryCache.deleted.has(image.id)) {
@@ -1927,7 +1934,9 @@ export function ImagesPage({
         return next;
       });
     } catch {
-      // Leave it without a src; the tile shows a placeholder.
+      if (!galleryCache.deleted.has(image.id)) {
+        setSrcErrors((prev) => ({ ...prev, [image.id]: true }));
+      }
     } finally {
       galleryCache.inflight.delete(image.id);
     }
@@ -2077,6 +2086,12 @@ export function ImagesPage({
       galleryCache.srcById.delete(id); // revokes the URL with the entry
       galleryCache.thumbById.delete(id);
       galleryCache.deleted.add(id);
+      setSrcErrors((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       setSrcById((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -5631,24 +5646,45 @@ export function ImagesPage({
                   />
                 </div>
               </>
-            ) : selected && selectedThumb ? (
-              // Match the original's display size while loading; actions require the original.
-              // Leave the box unpainted because object-contain can leave empty space.
-              <>
-                <img
-                  src={selectedThumb}
-                  alt={selected.prompt}
-                  style={{ maxWidth: selected.width, maxHeight: selected.height }}
-                  className="size-full object-contain"
-                />
-                <Spinner className="absolute size-8 text-muted-foreground" />
-              </>
             ) : selected ? (
-              // The selected record's blob is still loading; spin in place.
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner className="size-8" />
-                <p className="text-sm">Loading…</p>
-              </div>
+              <>
+                {selectedThumb && (
+                  <img
+                    src={selectedThumb}
+                    alt={selected.prompt}
+                    style={{ maxWidth: selected.width, maxHeight: selected.height }}
+                    className="size-full object-contain"
+                  />
+                )}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  {srcErrors[selected.id] ? (
+                    <>
+                      <span role="alert" className="sr-only">Full-resolution download failed.</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5"
+                        title="Full-resolution download failed. Retry downloading."
+                        onClick={() => void ensureSrc(selected)}
+                      >
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+                        Retry download
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1.5"
+                      disabled
+                      title="Loading full-resolution image…"
+                    >
+                      <Spinner className="size-4" label="Loading full-resolution image" />
+                      Loading image…
+                    </Button>
+                  )}
+                </div>
+              </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 {/* Same icon as the Images nav item. */}
