@@ -143,8 +143,16 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
 };
 
 const ROOT_GROUPS: RootGroup[] = [...BLOCK_GROUPS];
+const MODEL_ROOT_GROUP: RootGroup = {
+  kind: "model",
+  title: "Models",
+  description: "Connect a provider and pick which model powers your AI steps.",
+  icon: Settings02Icon,
+};
+const MODEL_SETUP_TYPES = new Set<BlockType>(["model_provider", "model_config"]);
 const ROOT_GROUPS_WITH_SEED_FIRST: RootGroup[] = [
   ...ROOT_GROUPS.filter((group) => group.kind === "seed"),
+  MODEL_ROOT_GROUP,
   ...ROOT_GROUPS.filter((group) => group.kind !== "seed"),
 ];
 const SEARCHABLE_KINDS: SheetKind[] = [
@@ -163,13 +171,6 @@ const LLM_SETUP_TYPES = new Set<BlockType>([
   "model_config",
   "tool_config",
 ]);
-const MODEL_SETUP_TYPES = new Set<BlockType>(["model_provider", "model_config"]);
-const MODEL_ROOT_GROUP = {
-  kind: "model" as SheetView,
-  title: "Models",
-  description: "Connect a provider and pick which model powers your AI steps.",
-  icon: Settings02Icon,
-};
 
 function BlockSheetButton({
   icon,
@@ -308,7 +309,11 @@ export function BlockSheet({
     if (!isScopedBlockView) {
       return [];
     }
-    const blocks = getBlocksForKind(VIEW_KIND[sheetView] ?? "sampler");
+    const kindBlocks = getBlocksForKind(VIEW_KIND[sheetView] ?? "sampler");
+    const blocks =
+      sheetView === "model"
+        ? kindBlocks.filter((item) => MODEL_SETUP_TYPES.has(item.type))
+        : kindBlocks;
     if (!hasSearch) {
       return blocks;
     }
@@ -322,10 +327,6 @@ export function BlockSheet({
     sheetView === "llm"
       ? scopedBlocks.filter((item) => LLM_SETUP_TYPES.has(item.type))
       : [];
-  const modelSetupBlocks =
-    sheetView === "model"
-      ? scopedBlocks.filter((item) => MODEL_SETUP_TYPES.has(item.type))
-      : [];
   const featuredSeedBlock =
     sheetView === "seed" && !hasSearch
       ? scopedBlocks.find((item) => item.type === "seed_unstructured") ?? null
@@ -337,39 +338,27 @@ export function BlockSheet({
 
   const rootGroups = useMemo(() => {
     if (!hasSearch) {
-      const seedFirst = ROOT_GROUPS_WITH_SEED_FIRST.filter((group) => group.kind === "seed");
-      const rest = ROOT_GROUPS_WITH_SEED_FIRST.filter((group) => group.kind !== "seed");
-      return [...seedFirst, MODEL_ROOT_GROUP, ...rest];
+      return ROOT_GROUPS_WITH_SEED_FIRST;
     }
-    return [
-      ...(matchesSearch(MODEL_ROOT_GROUP.title, MODEL_ROOT_GROUP.description)
-        ? [MODEL_ROOT_GROUP]
-        : []),
-      ...ROOT_GROUPS.filter((group) => {
-        if (matchesSearch(group.title, group.description)) {
-          return true;
-        }
-        if (group.kind === "processor") {
-          return matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION);
-        }
-        const blockKind = VIEW_KIND[group.kind];
-        if (!blockKind) {
-          return false;
-        }
-        return getBlocksForKind(blockKind).some((item) =>
+    return ROOT_GROUPS.filter((group) => {
+      if (matchesSearch(group.title, group.description)) {
+        return true;
+      }
+      if (group.kind === "processor") {
+        return matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION);
+      }
+      const blockKind = VIEW_KIND[group.kind];
+      return (
+        blockKind !== null &&
+        getBlocksForKind(blockKind).some((item) =>
           matchesSearch(item.title, item.description),
-        );
-      }),
-    ];
+        )
+      );
+    });
   }, [hasSearch, matchesSearch]);
-  const visibleScopedBlocks =
-    sheetView === "model" ? modelSetupBlocks : scopedBlocks;
   const showNoMatches =
-    (isRootView &&
-      hasSearch &&
-      rootSearchBlocks.length === 0 &&
-      rootGroups.length === 0) ||
-    (isScopedBlockView && visibleScopedBlocks.length === 0) ||
+    (isRootView && hasSearch && rootSearchBlocks.length === 0) ||
+    (isScopedBlockView && scopedBlocks.length === 0) ||
     (isProcessorView &&
       hasSearch &&
       !matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION));
@@ -536,6 +525,7 @@ export function BlockSheet({
                   />
                 ))}
               {isRootView &&
+                !hasSearch &&
                 rootGroups.map((item) => (
                   <BlockSheetButton
                     key={item.kind}
@@ -556,10 +546,6 @@ export function BlockSheet({
                         : "chevron"
                     }
                     onClick={() => {
-                      if (item.kind === "model") {
-                        onViewChange("model");
-                        return;
-                      }
                       if (item.kind === "seed" && seedBlocks.length === 1) {
                         setSheetOpen(false);
                         onAddSeed(seedBlocks[0].type as SeedBlockType);
@@ -690,20 +676,6 @@ export function BlockSheet({
                   />
                 ))}
               {isScopedBlockView &&
-                sheetView === "model" &&
-                modelSetupBlocks.map((item) => (
-                  <BlockSheetButton
-                    key={item.type}
-                    icon={item.icon}
-                    title={item.title}
-                    description={item.description}
-                    draggable={true}
-                    onDragStart={buildDragStart(item.kind, item.type)}
-                    trailing={getTrailing()}
-                    onClick={() => onBlockClick(item.kind, item.type)}
-                  />
-                ))}
-              {isScopedBlockView &&
                 sheetView === "seed" &&
                 otherSeedBlocks.map((item) => (
                   <BlockSheetButton
@@ -720,7 +692,6 @@ export function BlockSheet({
               {isScopedBlockView &&
                 sheetView !== "llm" &&
                 sheetView !== "seed" &&
-                sheetView !== "model" &&
                 scopedBlocks.map(
                   (item) => (
                     <BlockSheetButton
