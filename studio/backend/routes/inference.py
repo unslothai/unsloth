@@ -31336,6 +31336,8 @@ async def open_sandbox_file(
     model-written, and a script or app would run rather than be viewed.
     """
     await _authenticate_header_or_query(request, token)
+    # It launches an app on the host's desktop, like the library and model reveals.
+    account_access.require_installation_owner()
 
     from pathlib import Path
 

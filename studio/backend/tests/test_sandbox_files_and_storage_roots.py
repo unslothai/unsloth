@@ -6513,6 +6513,20 @@ def test_opening_refuses_scripts_links_and_escapes(tmp_path, monkeypatch, name, 
     assert launched == []
 
 
+def test_only_the_installation_owner_opens_files_on_the_host(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "report.pdf").write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    with pytest.raises(HTTPException) as caught:
+        _open(inference, "report.pdf")
+    assert caught.value.status_code == 403
+    assert launched == []
+
+
 def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_path, monkeypatch):
     from utils.paths import path_utils
 

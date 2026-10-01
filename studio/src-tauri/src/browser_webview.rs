@@ -55,8 +55,8 @@ struct ViewsState {
     shown: Option<String>,
     /// Last address reported per tab.
     urls: HashMap<String, String>,
-    /// Each download's path, by URL (macOS doesn't report it back).
-    downloads: HashMap<String, PathBuf>,
+    /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
+    downloads: HashMap<String, Vec<PathBuf>>,
     polling: bool,
 }
 
@@ -743,7 +743,9 @@ fn create_view<R: Runtime>(
                         .lock()
                         .unwrap()
                         .downloads
-                        .insert(url.to_string(), path);
+                        .entry(url.to_string())
+                        .or_default()
+                        .push(path);
                     emit(
                         app,
                         BrowserEvent::Download {
@@ -759,13 +761,20 @@ fn create_view<R: Runtime>(
                     true
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    let recorded = app
-                        .state::<BrowserViews>()
-                        .inner
-                        .lock()
-                        .unwrap()
-                        .downloads
-                        .remove(url.as_str());
+                    let recorded = {
+                        let state = app.state::<BrowserViews>();
+                        let mut inner = state.inner.lock().unwrap();
+                        let pending = inner.downloads.entry(url.to_string()).or_default();
+                        let index = path
+                            .as_ref()
+                            .and_then(|path| pending.iter().position(|p| p == path))
+                            .unwrap_or(0);
+                        let recorded = (index < pending.len()).then(|| pending.remove(index));
+                        if pending.is_empty() {
+                            inner.downloads.remove(url.as_str());
+                        }
+                        recorded
+                    };
                     let path = path.or(recorded);
                     if let (true, Some(path)) = (success, path.as_deref()) {
                         mark_downloaded(path, &url);
