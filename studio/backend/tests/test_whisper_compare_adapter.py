@@ -179,3 +179,41 @@ def test_whisper_applies_the_adapter_state_under_the_lock_before_transcribing(mo
         assert list(backend.generate_whisper_response(audio, use_adapter = use_adapter)) == ["hello"]
 
     assert events == [(False, True), ("transcribe", True), (True, True), ("transcribe", True)]
+
+
+def test_a_base_pane_transcription_turns_the_lora_back_on_afterwards():
+    peft = pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Lora:
+        disabled = False
+
+        def disable_adapter_layers(self):
+            self.disabled = True
+
+        def enable_adapter_layers(self):
+            self.disabled = False
+
+    class _PeftWhisper(peft.PeftModel):
+        def __init__(self):
+            torch.nn.Module.__init__(self)
+            self.base_model = _Lora()
+
+    model = _PeftWhisper()
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "whisper-lora"
+    backend._generation_lock = threading.Lock()
+    seen = []
+
+    def _pipe(_inputs):
+        seen.append(model.base_model.disabled)
+        return {"text": "hello"}
+
+    backend.models = {"whisper-lora": {"model": model, "whisper_pipeline": _pipe}}
+    audio = np.zeros(16, np.float32)
+
+    list(backend.generate_whisper_response(audio, use_adapter = False))
+    list(backend.generate_whisper_response(audio))
+
+    assert seen == [True, False]
