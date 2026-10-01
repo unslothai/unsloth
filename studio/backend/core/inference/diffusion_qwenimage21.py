@@ -21,7 +21,6 @@ import weakref
 from typing import Any, Optional
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
-# Kill switch for compacting the prefix K/V the extract step stores (see _compact_layer_cache); default on.
 COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
@@ -439,19 +438,16 @@ def compact_kv_enabled() -> bool:
 
 
 def _compact_layer_cache(layer_cache: Any) -> None:
-    """Give a prefix K/V cache entry its own storage when it is a view into a larger buffer.
-
-    The block's extract step stores ``key[:, :prefix].clone()``. Under torch.compile, Inductor fuses that clone into
-    the kernel producing the full-sequence key and returns the prefix as a VIEW of the full buffer, so each cached
-    entry pins the whole (batch, text + image, heads, dim) K and V: 2 x 32 MiB per block at 1024x1024, about 2 GiB
-    across the 32 blocks for the rest of the first step (measured: step 0 peaks at 2.7 GiB above the weights, every
-    later step at 0.66 GiB). A copy here, in eager code between blocks, frees each full buffer as soon as its block
-    returns. Bit-identical: the values are the same, only the storage shrinks. Entries that already own their storage
-    (eager blocks) are left alone."""
+    """Copy a prefix K/V entry that is a view of a larger buffer. Under compile Inductor turns the extract step's
+    ``key[:, :prefix].clone()`` into a view of the full text + image K/V, pinning ~2 GiB across 32 blocks at 1 MP for
+    step 0. Bit-identical."""
     for name in ("k", "v"):
         tensor = getattr(layer_cache, name, None)
         try:
-            if tensor is None or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size():
+            if (
+                tensor is None
+                or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size()
+            ):
                 continue
             setattr(layer_cache, name, tensor.clone())
         except Exception:  # noqa: BLE001 - a memory saving only; keep the entry as stored

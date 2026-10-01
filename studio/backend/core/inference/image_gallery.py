@@ -31,6 +31,8 @@ logger = get_logger(__name__)
 
 # PNG text-chunk key holding our structured recipe JSON.
 _META_KEY = "unsloth"
+# Absent on PNGs written before it existed.
+RECIPE_SCHEMA_VERSION = 1
 # Image ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -55,10 +57,7 @@ def _params_text(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# zlib level for gallery PNGs. The encode sits between the last denoise step and the HTTP response, single threaded on
-# the host: Pillow's default (6) costs ~0.4 s on a 1024x1024 render (measured on a Xeon host), level 1 ~0.1 s for files
-# ~10% larger. Lossless either way: only the deflate effort changes, the pixels and the embedded recipe are identical.
-# Set 6 to restore the old encode.
+# Pillow's default zlib level 6 costs ~0.4 s per 1024x1024 PNG on the request path; level 1 ~0.1 s, ~10% larger, lossless.
 PNG_COMPRESS_LEVEL_ENV = "UNSLOTH_IMAGE_PNG_COMPRESS_LEVEL"
 _DEFAULT_PNG_COMPRESS_LEVEL = 1
 
@@ -88,6 +87,7 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
+    meta = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
     data = _png_bytes(image, meta)

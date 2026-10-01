@@ -545,9 +545,10 @@ def test_thumbnail_is_a_downscaled_webp_of_the_png():
 def _noisy(size = 128):
     # Incompressible-ish content so the deflate level changes the encoded bytes.
     import random
-
     rng = random.Random(1234)
-    return Image.frombytes("RGB", (size, size), bytes(rng.randrange(256) for _ in range(size * size * 3)))
+    return Image.frombytes(
+        "RGB", (size, size), bytes(rng.randrange(256) for _ in range(size * size * 3))
+    )
 
 
 def _encode(image, level):

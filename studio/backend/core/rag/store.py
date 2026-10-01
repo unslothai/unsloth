@@ -12,10 +12,13 @@ partition key.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import struct
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 from storage import rag_db
@@ -414,6 +417,28 @@ def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str |
     return row["id"] if row else None
 
 
+def reusable_document_by_hash(
+    conn: sqlite3.Connection, scope: str, sha256: str, ext: str, identity: str
+) -> dict | None:
+    """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
+    copied. Extension must match (parsers branch on it) and so must the embedding identity."""
+    # rowid DESC is served by idx_documents_hash (no sort over every copy) and is newest-first.
+    for row in conn.execute(
+        "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
+        "AND num_chunks > 0 AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=documents.scope) "
+        "ORDER BY rowid DESC",
+        (scope, sha256),
+    ):
+        doc = dict(row)
+        if os.path.splitext(doc["filename"])[1].lower() != ext:
+            continue
+        if not config.embedding_identity_matches(doc.get("embedding_model"), identity):
+            continue
+        return doc
+    return None
+
+
 def documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:
     """Every live copy of this text in the scope, oldest first.
 
@@ -457,6 +482,7 @@ def add_chunks(
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
+    vec_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
         chunk_regions = regions[i] if regions and i < len(regions) else None
@@ -483,11 +509,14 @@ def add_chunks(
             "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
             (chunk.text, chunk_id, scope),
         )
-        conn.execute(
-            "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
-            (scope, chunk_id, _f32(vector)),
+        vec_rowids.append(
+            conn.execute(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+                (scope, chunk_id, _f32(vector)),
+            ).lastrowid
         )
     conn.commit()
+    _remember_vec_rowids(conn, document_id, vec_rowids)
 
 
 def delete_document(
@@ -512,6 +541,124 @@ def delete_document(
     conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
     if commit:
         conn.commit()
+
+
+def _copy_chunk_rows(
+    conn: sqlite3.Connection, source_id: str, target_id: str, scope: str
+) -> dict[str, str]:
+    """Uncommitted chunk + FTS copy; returns source -> target ids (chunks_vec has no FK)."""
+    chunk_ids: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT id, chunk_index FROM chunks WHERE document_id=?", (source_id,)
+    ).fetchall():
+        chunk_ids[r["id"]] = f"{target_id}:{r['chunk_index']}"
+    conn.execute(
+        "INSERT INTO chunks("
+        "id, document_id, scope, chunk_index, text, page_number, "
+        "source_page_index, token_count, kind, pdf_regions_json) "
+        "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
+        "source_page_index, token_count, kind, pdf_regions_json "
+        "FROM chunks WHERE document_id=?",
+        (target_id, target_id, scope, source_id),
+    )
+    conn.execute(
+        "INSERT INTO chunks_fts(text, chunk_id, scope) "
+        "SELECT text, id, scope FROM chunks WHERE document_id=?",
+        (target_id,),
+    )
+    return chunk_ids
+
+
+# chunks_vec rowids this process wrote, per (db, document): chunk_id is unindexed in vec0, and the next
+# copy's donor is usually the one just written. Verified on read.
+_VEC_ROWIDS_MAX = 256
+_vec_rowids: OrderedDict[tuple[str, str], list[int]] = OrderedDict()
+_vec_rowids_lock = threading.Lock()
+
+
+def _db_file(conn: sqlite3.Connection) -> str:
+    return conn.execute("PRAGMA database_list").fetchone()[2]
+
+
+def _remember_vec_rowids(conn: sqlite3.Connection, document_id: str, rowids: list[int]) -> None:
+    key = (_db_file(conn), document_id)
+    with _vec_rowids_lock:
+        _vec_rowids[key] = rowids
+        _vec_rowids.move_to_end(key)
+        while len(_vec_rowids) > _VEC_ROWIDS_MAX:
+            _vec_rowids.popitem(last = False)
+
+
+def _donor_vectors_by_rowid(conn: sqlite3.Connection, source: dict, chunk_ids) -> list | None:
+    with _vec_rowids_lock:
+        rowids = _vec_rowids.get((_db_file(conn), source["id"]))
+    if not rowids or len(rowids) != len(chunk_ids):
+        return None
+    rows = []
+    for start in range(0, len(rowids), 500):
+        batch = rowids[start : start + 500]
+        rows += conn.execute(
+            f"SELECT scope, chunk_id, embedding FROM chunks_vec "
+            f"WHERE rowid IN ({','.join('?' * len(batch))})",
+            batch,
+        ).fetchall()
+    found = {r["chunk_id"] for r in rows if r["scope"] == source["scope"]}
+    return rows if len(rows) == len(found) and found == set(chunk_ids) else None
+
+
+def _donor_vectors(conn: sqlite3.Connection, source: dict, chunk_ids) -> list:
+    rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
+    if rows is not None:
+        return rows
+    # One pass over the partition: chunk ids are "<document id>:<index>" and ';' sorts right after ':'.
+    rows = conn.execute(
+        "SELECT scope, chunk_id, embedding FROM chunks_vec "
+        "WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+        (source["scope"], f"{source['id']}:", f"{source['id']};"),
+    ).fetchall()
+    return [r for r in rows if r["chunk_id"] in chunk_ids]
+
+
+def prefetch_donor_vectors(conn: sqlite3.Connection, source: dict) -> list | None:
+    """Read ``source``'s vector rows outside any write transaction, for copy_document_index."""
+    if not rag_db.vec_table_exists(conn):
+        return None
+    ids = [
+        r["id"] for r in conn.execute("SELECT id FROM chunks WHERE document_id=?", (source["id"],))
+    ]
+    return _donor_vectors(conn, source, ids)
+
+
+def copy_document_index(
+    conn: sqlite3.Connection,
+    source: dict,
+    target_id: str,
+    scope: str,
+    prefetched: list | None = None,
+) -> int:
+    """Uncommitted chunk + FTS + vector copy; returns vector rows copied (0 without chunks_vec).
+    ``prefetched`` (prefetch_donor_vectors) is used only if it still covers exactly the donor's chunks."""
+    chunk_ids = _copy_chunk_rows(conn, source["id"], target_id, scope)
+    if not rag_db.vec_table_exists(conn):
+        return 0
+    rows = prefetched
+    if (
+        rows is None
+        or len(rows) != len(chunk_ids)
+        or {r["chunk_id"] for r in rows} != chunk_ids.keys()
+        # chunks_vec may have been recreated at another width since the prefetch.
+        or (rows and len(rows[0]["embedding"]) != 4 * (rag_db.vec_table_dim(conn) or 0))
+    ):
+        rows = _donor_vectors(conn, source, chunk_ids)
+    rowids = [
+        conn.execute(
+            "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+            (scope, chunk_ids[r["chunk_id"]], r["embedding"]),
+        ).lastrowid
+        for r in rows
+    ]
+    _remember_vec_rowids(conn, target_id, rowids)
+    return len(rows)
 
 
 def copy_documents(
@@ -542,24 +689,7 @@ def copy_documents(
         conn.execute(
             "UPDATE documents SET num_chunks=? WHERE id=?", (source["num_chunks"], document_id)
         )
-        for r in conn.execute(
-            "SELECT id, chunk_index FROM chunks WHERE document_id=?", (source["id"],)
-        ).fetchall():
-            chunk_ids[r["id"]] = f"{document_id}:{r['chunk_index']}"
-        conn.execute(
-            "INSERT INTO chunks("
-            "id, document_id, scope, chunk_index, text, page_number, "
-            "source_page_index, token_count, kind, pdf_regions_json) "
-            "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
-            "source_page_index, token_count, kind, pdf_regions_json "
-            "FROM chunks WHERE document_id=?",
-            (document_id, document_id, scope, source["id"]),
-        )
-        conn.execute(
-            "INSERT INTO chunks_fts(text, chunk_id, scope) "
-            "SELECT text, id, scope FROM chunks WHERE document_id=?",
-            (document_id,),
-        )
+        chunk_ids.update(_copy_chunk_rows(conn, source["id"], document_id, scope))
     if chunk_ids and rag_db.vec_table_exists(conn):
         # vec0 scans the whole partition for any chunk filter, so read each source scope once.
         for source_scope in {source["scope"] for source, _ in documents}:

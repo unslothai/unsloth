@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DOMParser as XmlDomParser } from "@xmldom/xmldom";
 import {
   Unzip,
   UnzipInflate,
@@ -28,6 +29,7 @@ const {
   getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
+  markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
@@ -493,6 +495,7 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
           ],
         }),
       }),
+      getFieldObjects: async () => null,
       destroy: async () => {
         destroyed.push("success");
       },
@@ -527,14 +530,24 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
   }
 });
 
-function singlePagePdf(content: string, resources: string, extra: string[]) {
+function singlePagePdf(
+  content: string,
+  resources: string,
+  extra: string[],
+  pageEntries = "",
+  catalogEntries = "",
+) {
   const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Catalog /Pages 2 0 R ${catalogEntries}>>`,
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R ${pageEntries}>>`,
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     ...extra,
   ];
+  return pdfBytes(objects);
+}
+
+function pdfBytes(objects: string[]) {
   let body = "%PDF-1.4\n";
   const offsets = objects.map((object, index) => {
     const offset = body.length;
@@ -592,6 +605,120 @@ test("a scanned pdf is refused unless the python tool can open it", async () => 
   );
   assert.equal(getPdfAttachmentTextError(scan.name, scanText, true), null);
   assert.equal(getPdfAttachmentTextError(typed.name, typedText, false), null);
+});
+
+test("a filled pdf form keeps the values typed into its fields", async () => {
+  const font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  const field = (name: string, value: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Tx /T (${name}) /V (${value}) /Rect [60 ${y} 190 ${y + 20}] /P 3 0 R >>`;
+  const checkbox = (name: string, state: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Btn /T (${name}) /V /${state} /AS /${state} /AP << /N << /Yes 10 0 R /Off 11 0 R >> >> /Rect [60 ${y} 70 ${y + 10}] /P 3 0 R >>`;
+  const blank = "<< /Length 0 >>\nstream\n\nendstream";
+  const filled = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Name:) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          font,
+          field("name", "Oscar Papa Quebec", 95),
+          field("notes", "", 60),
+          checkbox("agree", "Yes", 30),
+          checkbox("newsletter", "Off", 10),
+          blank,
+          blank,
+          `<< /Type /Annot /Subtype /Widget /FT /Tx /F 2 /T (internal) /V (hidden) /Rect [0 0 1 1] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (status) /TU (Marital\\nstatus) /Opt [[(1) (Single)] [(2) (Married)]] /V (2) /Rect [60 150 190 170] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 8192 /T (pin) /V (4321) /Rect [60 175 190 195] /P 3 0 R >>`,
+        ],
+        "/Annots [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] ",
+        "/AcroForm << /Fields [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] >> ",
+      ),
+    ],
+    "filled.pdf",
+    { type: "application/pdf" },
+  );
+  const fieldsOnly = new File(
+    [
+      singlePagePdf(
+        "",
+        "<< >>",
+        [field("name", "Romeo Sierra", 95)],
+        "/Annots [5 0 R] ",
+        "/AcroForm << /Fields [5 0 R] >> ",
+      ),
+    ],
+    "fields-only.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(filled),
+    "Name:\nname: Oscar Papa Quebec\nagree: Yes\nMarital status: Married",
+  );
+  const fieldsOnlyText = await extractPdfAttachmentText(fieldsOnly);
+  assert.equal(fieldsOnlyText, "name: Romeo Sierra");
+  assert.equal(
+    getPdfAttachmentTextError(fieldsOnly.name, fieldsOnlyText, false),
+    null,
+  );
+});
+
+test("a multi-page pdf form keeps each page's values with that page", async () => {
+  const stream = (content: string) =>
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  const page = (contents: number, annots: string) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 10 0 R >> >> /Contents ${contents} 0 R /Annots [${annots}] >>`;
+  const option = (exportName: string, tooltip: string, x: number, on: boolean) =>
+    `<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TU (${tooltip}) /AS /${on ? exportName : "Off"} /AP << /N << /${exportName} 12 0 R /Off 12 0 R >> >> /Rect [${x} 20 ${x + 10} 30] /P 3 0 R >>`;
+  const form = new File(
+    [
+      pdfBytes([
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 9 0 R 13 0 R 14 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        page(5, "7 0 R 8 0 R"),
+        page(11, "9 0 R 13 0 R 14 0 R"),
+        stream("BT /F1 12 Tf 20 100 Td (Filing status) Tj ET"),
+        "<< /FT /Btn /Ff 49152 /T (form1[0].c1_1[0]) /V /S /Kids [7 0 R 8 0 R] >>",
+        option("S", "Single", 20, true),
+        option("M", "Married", 60, false),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (form1[0].f2_01[0]) /TU (Date\\nsigned) /V (2026-09-30) /Rect [60 95 190 115] /P 4 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream("BT /F1 12 Tf 20 100 Td (Signature) Tj ET"),
+        stream(""),
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 2097152 /T (languages) /Opt [(English) (French) (German)] /V [(English) (German)] /Rect [60 40 190 80] /P 4 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (lights) /V (Off) /Rect [60 10 190 30] /P 4 0 R >>",
+      ]),
+    ],
+    "form.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(form),
+    "Filing status\nform1[0].c1_1[0]: S\n\nSignature\nDate signed: 2026-09-30\nlanguages: English, German\nlights: Off",
+  );
+});
+
+test("a pdf with a damaged form field still reads its text", async () => {
+  const damaged = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Budget: 4200) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+          "<< /Type /Annot /Subtype /Widget /FT /Tx /T null /V (x) /Rect [60 20 190 40] >>",
+        ],
+        "/Annots [6 0 R] ",
+        "/AcroForm << /Fields [6 0 R] >> ",
+      ),
+    ],
+    "damaged.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(await extractPdfAttachmentText(damaged), "Budget: 4200");
 });
 
 // The bytes are requested synchronously, so the extractor is reached without
@@ -1040,6 +1167,132 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
     () => repackDocxAttachmentArchive("wide.docx", archive),
     /DOCX file is too large: wide\.docx/,
   );
+});
+
+test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const note = (kind: string, id: number, text: string) =>
+    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const notes = (kind: string, body: string) =>
+    strToU8(
+      `<w:${kind}s ${w}>` +
+        `<w:${kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${kind}>` +
+        `<w:${kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}>` +
+        body +
+        `</w:${kind}s>`,
+    );
+  const ref = (kind: string, id: number) =>
+    kind === "endnote"
+      ? `<w:r><w:${kind}Reference w:id="${id}">\n</w:${kind}Reference >\n</w:r>`
+      : `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "paper.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
+          `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r>` +
+          `<w:r><x:footnoteReference xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" x:id="3"/></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([
+        ["footnotes", "notes/foot.xml"],
+        ["endnotes", "endnotes.xml"],
+      ]),
+      "word/notes/foot.xml": notes(
+        "footnote",
+        note("footnote", 1, "Source: LATER") +
+          note("footnote", 2, "Source: EARLIER") +
+          note("footnote", 3, "Source: LOCALLY DECLARED") +
+          note("footnote", 4, "Source: DELETED"),
+      ),
+      "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    const marked = markDocxNotes(archive);
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(marked.archive),
+    });
+    assert.equal(
+      marked.label(value),
+      "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Endnotes\n[i] Source: ENDNOTEBODY",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
+  const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "strict.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>${run(" Click or tap here to enter text.")}</w:sdtContent></w:sdt>` +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr w:val="0"/></w:sdtPr><w:sdtContent>${run(" FILLED")}</w:sdtContent></w:sdt>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes skips move sources, deletions and text box fallbacks", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = `<w:txbxContent><w:p>${run("BOX")}</w:p></w:txbxContent>`;
+  const archive = repackDocxAttachmentArchive(
+    "moved.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w} ${mc}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:moveFrom w:id="7">${run(" MOVED")}</w:moveFrom>` +
+          `<w:del w:id="8"><w:r><w:delText> GONE</w:delText></w:r></w:del>` +
+          run(" COVID") + "<w:r><w:noBreakHyphen/></w:r>" + run("19") +
+          `<w:moveTo w:id="9">${run(" MOVED")}</w:moveTo>` +
+          `<w:r><mc:AlternateContent><mc:Choice Requires="wps">${box}</mc:Choice>` +
+          `<mc:Fallback>${box}</mc:Fallback></mc:AlternateContent></w:r>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(
+      markDocxNotes(archive).label(""),
+      "Footnotes\n[1] Keep COVID-19 MOVED BOX",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
 });
 
 /** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */

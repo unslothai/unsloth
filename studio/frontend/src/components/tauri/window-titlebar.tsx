@@ -440,12 +440,13 @@ export function WindowTitlebar({
             />
           )}
           {/* One border for edge and corner: it snaps to device pixels where a 1px box blurs. Pinned, it
-              is also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). */}
+              is also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). Dark
+              hides it: any visible border there is lighter than both surfaces and reads as a white seam. */}
           <div
             className={cn(
-              "absolute top-0 right-0 h-[12px] border-t border-sidebar-border",
+              "absolute top-0 right-0 h-[12px] border-t border-sidebar-border dark:border-transparent",
               pinned &&
-                "h-[calc(100dvh-var(--studio-custom-titlebar-height))] rounded-tl-[12px] border-l border-sidebar-border/80 border-t-sidebar-border/90 dark:border-white/10 dark:border-t-white/15",
+                "h-[calc(100dvh-var(--studio-custom-titlebar-height))] rounded-tl-[12px] border-l border-sidebar-border/80 border-t-sidebar-border/90",
             )}
             style={{ left: pinned ? cornerLeft : 0 }}
           />
