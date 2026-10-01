@@ -1408,13 +1408,11 @@ def _xpu_device_name_or_placeholder(torch) -> str:
 
 
 def _configure_rocm_miopen(torch) -> None:
-    """Bound cold solver search on measured GPUs without removing fallback solvers."""
     if "MIOPEN_SEARCH_CUTOFF" in os.environ:
         return
     try:
         count = torch.cuda.device_count()
-        # MIOpen caches this process-wide setting at first use. Do not apply a
-        # single GPU's workaround to an untested GPU in a mixed-architecture host.
+        # Process-wide in MIOpen: any untested arch on a mixed host keeps the default.
         if not count or any(
             _props_gfx_arch(torch.cuda.get_device_properties(i)) != "gfx1151" for i in range(count)
         ):
