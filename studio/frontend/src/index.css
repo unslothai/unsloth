@@ -17,8 +17,9 @@
 
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
-	   window actions remain usable. Repeat the standard backdrop visually, above
-	   its glyphs, without changing hit testing or blurring the dialog itself.
+	   window actions remain usable. Repeat the standard backdrop over the surface
+	   and page navigation. Window controls paint above it, keeping their glyphs
+	   and hover feedback sharp without changing hit testing.
 	   Only viewport backdrops participate; a panel-local dialog or a menu must
 	   not dim the window chrome. :has also keeps stacked modals correct without
 	   a separate counter or document-wide MutationObserver. */

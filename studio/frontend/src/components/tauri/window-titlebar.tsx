@@ -488,7 +488,8 @@ export function WindowTitlebar({
         />
         <div
           className={cn(
-            "pointer-events-auto absolute right-0 top-0 flex h-full",
+            // Keep native window actions crisp above the visual modal backdrop.
+            "pointer-events-auto absolute right-0 top-0 z-[100] flex h-full",
             focused ? "text-foreground" : "text-muted-foreground",
           )}
           role="toolbar"

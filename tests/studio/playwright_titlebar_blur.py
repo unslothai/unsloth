@@ -63,6 +63,8 @@ def run():
             return titlebar.evaluate("""e => {const s = getComputedStyle(e, '::after'); return {
                 titlebarZ: getComputedStyle(e).zIndex, content: s.content,
                 opacity: s.opacity, blur: s.backdropFilter, pointerEvents: s.pointerEvents,
+                backdropZ: s.zIndex,
+                controlsZ: getComputedStyle(e.querySelector('[aria-label="Window controls"]')).zIndex,
                 overlayZ: getComputedStyle(document.querySelector('[data-slot="dialog-overlay"]')).zIndex
             }}""")
         def blurred(want):
@@ -85,6 +87,7 @@ def run():
         if EXPECTED:
             assert media_facts["blur"] == "blur(2px)", media_facts
             assert media_facts["pointerEvents"] == "none", media_facts
+            assert int(media_facts["controlsZ"]) > int(media_facts["backdropZ"]), media_facts
         else:
             assert media_facts["content"] == "none", media_facts
         page.evaluate("document.fonts.ready")
