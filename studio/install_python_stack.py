@@ -7367,9 +7367,8 @@ def _evict_xformers_built_for_another_torch(
     """Remove a resident xFormers whose extension was built against another torch. True iff removed.
 
     xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
-    and a package install never uninstalls what an earlier run left behind. family_only keeps a
-    build for another torch release of the same family and CUDA major (stable ABI since 0.0.34):
-    _C.so links libcudart.so.<major>, which a cu130 torch does not ship (#11639).
+    and a package install never uninstalls what an earlier run left behind. family_only keeps one
+    of the same family and CUDA major (stable ABI since 0.0.34; _C.so links libcudart.so.<major>).
     """
     built_for = _resident_xformers_build_torch()
     resident = str(_probe_installed_torch_version() or "")
