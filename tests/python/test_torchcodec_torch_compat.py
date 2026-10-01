@@ -1490,8 +1490,7 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
         assert mod._torch_accelerator_index_url("2.13.0") is None, base
         assert mod._detect_cuda_torch_index_url() is None, base
-        # URL construction declines, but family state remains authoritative so no caller
-        # mistakes the refusal for permission to re-probe the host or erase provenance.
+        # No URL, but the family stays authoritative (no re-probe, provenance kept).
         assert mod._explicit_torch_index_url() is None, base
         assert mod._explicit_torch_index_family() == "cu126", base
         assert mod._explicit_unknown_family_torch_index_url() is None, base
@@ -1535,8 +1534,7 @@ def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monk
     assert mod._ensure_cuda_torch() is False
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
 
-    # An installed one-shot XPU pin and the miscomputing-AMD CPU demotion synthesize
-    # their own leaves; both must stop before probing/downloading from the broken URL.
+    # XPU triton swap and the miscomputing-AMD CPU demotion synthesize their own leaves.
     monkeypatch.setattr(mod, "_explicit_xpu_torch_index_url", lambda: None)
     monkeypatch.setattr(mod, "_installed_torch_version_label", lambda: "2.10.0+xpu")
     monkeypatch.setattr(mod.subprocess, "run", unexpected)
@@ -1571,7 +1569,6 @@ def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monk
     assert source.count("if _ensure_xpu_torch() is False:") == 2
     assert source.count("if _ensure_cpu_torch() is False:") == 2
 
-    # The final flavor repair likewise declines rather than emitting a bad --index-url.
     monkeypatch.setattr(
         mod,
         "_probe_torch_runtime",
@@ -1580,8 +1577,7 @@ def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monk
     assert mod._expected_torch_index_url("cu130") is None
     assert mod._ensure_expected_torch_flavor("cu130") is False
 
-    # XPU and unknown families use the empty unknown-pin sentinel. It is not a usable
-    # differing URL and must not bypass the same final invariant.
+    # The "" unknown-pin sentinel must not bypass the final invariant.
     for family, expected in (("xpu", "xpu"), ("current", "cu130")):
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
         assert mod._explicit_unknown_family_torch_index_url() == ""
@@ -1604,8 +1600,7 @@ def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
         lambda: (True, True, "2.11.0+cpu", "", ""),
     )
 
-    # The requested family still governs this run, but a dependency move to CPU is what
-    # the manifest records and it cannot inherit the old cu128 provenance bit.
+    # A dependency move to CPU is recorded, without the old cu128 pin bit.
     assert mod._expected_torch_flavor_tag() == "cu130"
     assert mod._recordable_torch_flavor_tag("cu130") == "cpu"
     assert mod._expected_torch_flavor_was_pinned("cpu") is False
@@ -1633,8 +1628,7 @@ def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
     assert mod._recordable_torch_flavor_tag("") == "cu128"
     assert mod._expected_torch_flavor_was_pinned("cu128") is True
 
-    # The CPU invariant normally requires a current CPU pin. Here the unusable request
-    # changed no wheel, so a preserved pinned-CPU manifest remains authoritative too.
+    # The unusable request changed no wheel, so a pinned-CPU manifest stays authoritative.
     monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "cpu")
     monkeypatch.setattr(
         mod,
@@ -1650,7 +1644,6 @@ def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
     )
     assert mod._ensure_expected_torch_flavor() is True
 
-    # The install checks this after every package operation and before certifying success.
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     install = source.split("def install_python_stack(", 1)[1]
     resident_check = install.index("not _resident_torch_flavor_tag()")

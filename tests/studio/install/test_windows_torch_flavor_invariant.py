@@ -413,9 +413,7 @@ class TestManifestRecordsTheFlavor:
     def test_a_usable_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
         # The wheel came from a mirror whose leaf names no family, so the previous record
         # describes a venv that no longer exists and would hand a later unpinned run a flavor
-        # to "repair" the mirror's build back to. An unusable query-base FAMILY is falsey,
-        # but its later dependency steps may still have moved torch, so it records the
-        # resident answer instead of either the request or the old manifest.
+        # to "repair" the mirror's build back to. An unusable FAMILY records the resident build.
         helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
         helper = helper[: helper.index("\ndef ", 1)]
         assert "if _explicit_torch_index_is_unusable():" in helper

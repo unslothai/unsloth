@@ -58,8 +58,7 @@ check "stack classifies the xpu leaf" \
     "$(grep -q '_TORCH_BACKEND = "xpu"' "$STACK_PY" && echo yes || echo no)" yes
 check "stack repairs an xpu pin" \
     "$(grep -q 'def _ensure_xpu_torch' "$STACK_PY" && echo yes || echo no)" yes
-# Both repair points must check the verdict: an unusable pinned index must abort
-# rather than letting a later pass silently continue with the wrong torch family.
+# Both repair points must abort on a False verdict (an inexpressible pinned index).
 check "repair runs at both call sites" \
     "$(grep -c '^        if _ensure_xpu_torch() is False:' "$STACK_PY")" 2
 # The ROCm helper must skip an xpu backend, or it treats the pin as an AMD host.

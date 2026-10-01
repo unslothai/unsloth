@@ -2821,8 +2821,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu118"
 
     def test_the_driver_family_probe_mirrors_the_index_url(self, monkeypatch):
-        # The helper reads _detect_cuda_torch_index_family, so an ancient-driver "cpu"
-        # family has to come back as "" rather than as a family named "cpu".
+        # An ancient-driver "cpu" family is "", not a CUDA family.
         monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "cpu")
         assert stack_mod._driver_cuda_torch_flavor_tag() == ""
         monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "CU126")

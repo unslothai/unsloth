@@ -2423,8 +2423,7 @@ def _rocm_miscomputing_host() -> bool:
     """
     if IS_WINDOWS or IS_MACOS:
         return False
-    # A usable pin owns the choice. An unusable one installed nothing, so only an explicit ROCm
-    # request still overrules the demotion; any other family leaves the wrong ROCm wheel.
+    # An unusable pin installed nothing: only a ROCm one may still overrule the demotion.
     if _explicit_torch_index_url() is not None or _is_pip_rocm_family_leaf(
         _explicit_torch_index_family() or ""
     ):
@@ -4031,8 +4030,7 @@ def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
 
 
 def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:
-    """_detect_cuda_torch_index_family as a pip index URL. None also when the mirror carries
-    a query/fragment credential that no leaf URL can express (_pytorch_whl_leaf_url)."""
+    """_detect_cuda_torch_index_family as a URL; None also for a query-auth mirror."""
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
         return _trim_index_path_slashes(_override_url)
@@ -4089,12 +4087,8 @@ def _explicit_torch_index_url() -> "str | None":
 
 
 def _explicit_torch_index_family() -> "str | None":
-    """The lowercased leaf the URL / FAMILY pin names, whether or not it is a usable URL.
-
-    URL wins over FAMILY, as in the installers. A FAMILY pin over a query-auth mirror has no
-    URL (_explicit_torch_index_url is None) but is still the user's choice: callers asking
-    whether a pin EXISTS read this, or they re-probe the GPU and pick another family.
-    """
+    """The pin's family leaf even when no URL can express it; read this, not the URL, to ask
+    whether a pin EXISTS, or a query-auth FAMILY pin is re-probed off the GPU."""
     url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if url:
         return _torch_index_leaf(_trim_index_path_slashes(url))
@@ -4277,8 +4271,7 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
         return None
     if _is_pip_rocm_family_leaf(leaf) or leaf == "cpu" or _is_cuda_family_leaf(leaf):
         return None
-    # "" = an unknown FAMILY no URL can express: it exists (callers test `is not None`), but
-    # installed nothing, so provenance code must not treat it as the venv's source.
+    # "" = exists but inexpressible: it installed nothing, so it is no provenance.
     return _explicit_torch_index_url() or ""
 
 
@@ -4312,8 +4305,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     # An explicit unknown-family pin was applied VERBATIM at install time; leave it alone.
     if _explicit_unknown_family_torch_index_url() is not None:
         return
-    # A known non-CUDA FAMILY over a query-auth mirror is still the user's choice: its URL
-    # being inexpressible is no licence to pick a family off this host's GPU.
+    # An inexpressible pin still outranks the GPU probe.
     _pin_family = _explicit_torch_index_family() or ""
     _pin_unusable = _explicit_torch_index_is_unusable()
     if _pin_unusable and not _is_cuda_family_leaf(_pin_family):
@@ -5053,7 +5045,6 @@ def _expected_torch_flavor_tag() -> str:
     # the index this run actually installed from.
     unknown_pin = _explicit_unknown_family_torch_index_url()
     if unknown_pin is not None:
-        # "" = the pin could not be expressed, so nothing replaced the recorded build.
         return "" if unknown_pin else (_RECORDED_TORCH_TAG or "")
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
@@ -5088,8 +5079,7 @@ def _recordable_torch_flavor_tag(resolved: str) -> str:
     a venv that no longer exists, and carrying it forward would hand a later unpinned run
     a flavor to "repair" the mirror's build back to.
     """
-    # A pin no URL could express installed nothing, but a dependency step may still have moved
-    # torch: record what is resident, never the pre-run manifest or the unfulfilled request.
+    # Dependency steps may still have moved torch: record what is resident, not the request.
     if _explicit_torch_index_is_unusable():
         return _resident_torch_flavor_tag()
     if resolved:
@@ -5145,8 +5135,7 @@ def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
             pin_family == resident or (_is_pip_rocm_family_leaf(pin_family) and resident == "rocm")
         ):
             return True  # nothing to install: the requested family is already resident
-        # Else only unchanged, previously pinned provenance survives; a dependency step moving
-        # torch to another CUDA leaf must not inherit the old leaf's pin bit.
+        # A dependency move to another leaf must not inherit the old leaf's pin bit.
         return (
             bool(_RECORDED_TORCH_TAG_PINNED)
             and bool(resident)
@@ -5523,7 +5512,6 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # comes back empty, and that host must not be downgraded.
     _cpu_pinned = expected == "cpu" and (
         _explicit_cpu_torch_index_pin()
-        # An unusable pin changed no wheel, so a recorded CPU pin keeps its authority.
         or (
             _explicit_torch_index_is_unusable()
             and _RECORDED_TORCH_TAG == "cpu"
@@ -5538,7 +5526,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # a manifest that predates it overrides an administrator's mirror. Compared rather than
     # vetoed: the helper's known set predates XPU.
     _unknown_pin = _explicit_unknown_family_torch_index_url()
-    # "" is the inexpressible pin: it changed no wheel, so the invariant below still applies.
+    # "" (inexpressible) changed no wheel, so the invariant below still applies.
     if _unknown_pin and _torch_index_leaf(_unknown_pin) != expected:
         return True
     # CUDA only, and only for an expectation INFERRED from hardware: an emptied mask is a
@@ -5914,8 +5902,7 @@ def _ensure_rocm_torch() -> "bool | None":
     # An explicit unknown-family pin was applied VERBATIM at install time; leave it alone.
     if _explicit_unknown_family_torch_index_url() is not None:
         return
-    # A FAMILY pin over a query-auth mirror stays authoritative though no URL expresses it: a
-    # non-ROCm one is not this helper's, and a ROCm one is never replaced by a probed family.
+    # An inexpressible pin stays authoritative: non-ROCm is not ours, ROCm is never re-probed.
     _pin_family = _explicit_torch_index_family() or ""
     _rocm_pin_unusable = _explicit_torch_index_is_unusable() and _is_pip_rocm_family_leaf(
         _pin_family
@@ -11983,8 +11970,7 @@ def install_python_stack() -> int:
     # 2b. Torch repair (wrong-family / CPU-only); must follow base packages so torch is present.
     if not IS_MACOS and not NO_TORCH:
         _progress(_torch_step_label("check"))
-        # False = a required repair the configured mirror cannot express: abort, never fall
-        # back off the mirror or certify the wrong build.
+        # False = required repair the mirror cannot express: abort, never leave the mirror.
         if _ensure_cuda_torch() is False:
             return 1
         if _ensure_rocm_torch() is False:
@@ -12239,8 +12225,7 @@ def install_python_stack() -> int:
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress(_torch_step_label("final"))
         _torch_before_repair = str(_probe_installed_torch_version() or "")
-        # False = a required repair the configured mirror cannot express: abort, never fall
-        # back off the mirror or certify the wrong build.
+        # False = required repair the mirror cannot express: abort, never leave the mirror.
         if _ensure_cuda_torch() is False:
             return 1
         if _ensure_rocm_torch() is False:
@@ -12505,9 +12490,7 @@ def install_python_stack() -> int:
     ):
         return 1
 
-    # The pin installed nothing, but a dependency step may still have moved torch, and the
-    # manifest records the resident flavor (_recordable_torch_flavor_tag). Unreadable is unsafe
-    # to certify.
+    # The manifest records the resident flavor under an unusable pin; unreadable is uncertifiable.
     if not NO_TORCH and _explicit_torch_index_is_unusable() and not _resident_torch_flavor_tag():
         _safe_print(
             "   [WARN] could not verify the resident PyTorch flavor after declining the "
