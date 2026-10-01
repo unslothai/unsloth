@@ -474,6 +474,111 @@ def resolve_unsloth_device_map(
     return plan.device_map
 
 
+# plan_block_swap options a caller can pass through device_map_planner_kwargs.
+_BLOCK_SWAP_PLANNER_KEYS = (
+    "batch_size",
+    "lora_rank",
+    "reserve_bytes",
+    "prefetch_depth",
+    "rows_per_chunk",
+    "retained_rows",
+    "headroom_bytes",
+    "safety_bytes",
+    "free_space_policy",
+    "no_split_module_classes",
+)
+
+
+def resolve_auto_block_swap(
+    device_map,
+    model_name,
+    *,
+    max_seq_length,
+    planner_kwargs = None,
+    skip_reason = None,
+    **config_kwargs,
+):
+    """`from_pretrained(block_swap_layers = "auto")`: `(layers, device_map)`, the trailing decoder layers
+    to build in host RAM so the rest plus a training step's reserve fits, and the map to load the rest
+    with. 0 and the map unchanged when everything fits, so nothing is swapped and nothing slows down.
+    `device_map = "unsloth"` / `"unsloth_balanced"` sizes every card through the multi-GPU planner;
+    anything else sizes the one card the load uses."""
+
+    def _none(reason):
+        print(f"Unsloth: block_swap_layers = 'auto' loads every layer onto the GPU: {reason}.")
+        return 0, device_map
+
+    if skip_reason is not None:
+        return _none(skip_reason)
+    if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
+        return _none("block swap needs a CUDA or ROCm GPU")
+    if is_distributed():
+        return _none("each rank of a distributed launch owns its own device")
+    try:
+        from unsloth_zoo.device_map_planner import plan_block_swap
+    except ImportError:
+        return _none("this unsloth_zoo cannot plan block swap")
+
+    planner_kwargs = dict(planner_kwargs or {})
+    requested_memory = planner_kwargs.pop("max_memory", None)
+    devices = []
+    if isinstance(device_map, str) and device_map in _PLANNED_DEVICE_MAPS:
+        devices = (
+            [d for d in requested_memory if isinstance(d, int) and not isinstance(d, bool)]
+            if requested_memory
+            else list(range(torch.cuda.device_count()))
+        )
+    multi = len(devices) > 1
+    if multi:
+        target = None
+    elif devices:
+        target = devices[0]
+    else:
+        if isinstance(device_map, dict) and set(device_map) == {""}:
+            target = torch.device(device_map[""])
+            if target.type != "cuda":
+                return _none(f"the load places the model on {target}")
+            target = target.index if target.index is not None else torch.cuda.current_device()
+        elif device_map is None or (
+            isinstance(device_map, str)
+            and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))
+        ):
+            target = (
+                torch.device(device_map).index
+                if isinstance(device_map, str) and device_map.startswith("cuda:")
+                else torch.cuda.current_device()
+            )
+        else:
+            return _none(
+                "it sizes one GPU or the `device_map = 'unsloth'` planner, not an explicit map"
+            )
+        devices = [target]
+    max_memory = {}
+    for d in devices:
+        free = torch.cuda.mem_get_info(d)[0]
+        cap = _as_bytes((requested_memory or {}).get(d)) if requested_memory else None
+        max_memory[d] = free if cap is None else min(free, cap)
+
+    options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    plan = plan_block_swap(
+        model_name,
+        max_memory = max_memory,
+        seq_len = max_seq_length,
+        **options,
+        **config_kwargs,
+    )
+    print(
+        "Unsloth: "
+        + plan.describe().splitlines()[0].replace("block swap:", "block_swap_layers = 'auto':")
+    )
+    if not plan.layers:
+        return 0, device_map
+    if multi and plan.device_plan is not None:
+        print(plan.device_plan.describe())
+        return plan.layers, plan.device_plan.device_map
+    return plan.layers, {"": target}
+
+
 def __get_model_name(
     model_name,
     load_in_4bit = True,

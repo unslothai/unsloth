@@ -1916,7 +1916,13 @@ class FastBaseModel:
         user_config = kwargs.pop("config", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
-        if kwargs.pop("block_swap_layers", 0):
+        _block_swap_layers = kwargs.pop("block_swap_layers", 0)
+        if _block_swap_layers == "auto":
+            print(
+                "Unsloth: block_swap_layers = 'auto' loads every layer onto the GPU here; "
+                "get_peft_model(block_swap_layers = 'auto') can still move layers to host RAM."
+            )
+        elif _block_swap_layers:
             raise NotImplementedError(
                 "Unsloth: loading straight to host RAM with from_pretrained(block_swap_layers = ...) "
                 "covers the Llama, Mistral and Qwen2/Qwen3 text paths. For this model, pass "

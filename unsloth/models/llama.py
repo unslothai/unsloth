@@ -47,6 +47,7 @@ from .loader_utils import (
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
+    resolve_auto_block_swap,
     warn_if_bitsandbytes_quantized_nothing,
 )
 from ..utils.packing import (
@@ -2476,21 +2477,21 @@ class FastLlamaModel:
         user_config = kwargs.pop("config", None)
         block_swap_layers = kwargs.pop("block_swap_layers", 0)
         if block_swap_layers and kwargs.get("state_dict") is not None:
-            raise ValueError(
-                "Unsloth: from_pretrained(block_swap_layers = ...) does not take a state_dict; "
-                "save it as a safetensors checkpoint and load that."
+            block_swap_layers = refuse_block_swap_load(
+                block_swap_layers,
+                "does not take a state_dict; save it as a safetensors checkpoint and load that.",
             )
         if block_swap_layers and kwargs.get("quantization_config") is not None:
-            raise ValueError(
-                "Unsloth: from_pretrained(block_swap_layers = ...) does not take a quantization_config; "
-                "pass load_in_4bit = True instead."
+            block_swap_layers = refuse_block_swap_load(
+                block_swap_layers,
+                "does not take a quantization_config; pass load_in_4bit = True instead.",
             )
         if block_swap_layers and (
             kwargs.get("gguf_file") or kwargs.get("use_safetensors") is False
         ):
-            raise ValueError(
-                "Unsloth: from_pretrained(block_swap_layers = ...) needs a safetensors checkpoint; "
-                "it does not support gguf_file or use_safetensors = False."
+            block_swap_layers = refuse_block_swap_load(
+                block_swap_layers,
+                "needs a safetensors checkpoint; it does not support gguf_file or use_safetensors = False.",
             )
         if user_config is not None:
             model_config = user_config
@@ -2674,14 +2675,14 @@ class FastLlamaModel:
         if not (_explicit_bnb_4bit and _checked_4bit):
             load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         if block_swap_layers and load_in_8bit:
-            raise ValueError(
-                "Unsloth: block_swap_layers supports 16-bit and 4-bit loads, not load_in_8bit."
+            block_swap_layers = refuse_block_swap_load(
+                block_swap_layers, "supports 16-bit and 4-bit loads, not load_in_8bit."
             )
         if block_swap_layers and _ckpt_quant_method not in (None, "bitsandbytes"):
             # The host tail is rebuilt as dense or bnb 4-bit layers; packed formats would not survive it.
-            raise ValueError(
-                f"Unsloth: from_pretrained(block_swap_layers = ...) does not support {_ckpt_quant_method} "
-                "checkpoints; use a bitsandbytes or 16-bit checkpoint."
+            block_swap_layers = refuse_block_swap_load(
+                block_swap_layers,
+                f"does not support {_ckpt_quant_method} checkpoints; use a bitsandbytes or 16-bit checkpoint.",
             )
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
@@ -2750,6 +2751,40 @@ class FastLlamaModel:
                     "load adds, so the plan would size dense weights at 4bit"
                 )
 
+        if block_swap_layers and (fast_inference or num_labels is not None):
+            block_swap_layers = refuse_block_swap_load(
+                block_swap_layers, "does not support fast_inference or classification heads."
+            )
+        if block_swap_layers == "auto":
+            # Sized like the device map planner: how many trailing layers must stay in host RAM.
+            block_swap_layers, device_map = resolve_auto_block_swap(
+                requested_device_map(device_map),
+                model_name,
+                max_seq_length = max_seq_length,
+                planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
+                skip_reason = _planner_skip_reason,
+                **planner_config_overrides(kwargs),
+                token = token,
+                trust_remote_code = trust_remote_code,
+                **planner_hub_kwargs(kwargs),
+                revision = revision,
+                **add_dtype_kwargs(dtype),
+                **planner_quantization_kwargs(
+                    **compressed_tensors_planner_quantization(
+                        model_config,
+                        load_in_4bit,
+                        load_in_8bit,
+                        kwargs.get("quantization_config", None),
+                    ),
+                    rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
+                    if _modelopt_rewritten
+                    else fp8_to_nf4_planner_quantization_config(
+                        model_config,
+                        SKIP_QUANTIZATION_MODULES + (["out_proj"] if IS_FALCON_H1 else []),
+                    ),
+                    extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
+                ),
+            )
         # Here, not in loader.py: the mapper there can still substitute the repo (a -bnb-4bit name
         # resolving to its 16-bit twin), so a plan sized for the caller's name is the wrong plan.
         device_map = resolve_unsloth_device_map(
@@ -2835,11 +2870,6 @@ class FastLlamaModel:
 
         kwargs = add_dtype_kwargs(dtype, kwargs)
 
-        if block_swap_layers and (fast_inference or num_labels is not None):
-            raise ValueError(
-                "Unsloth: from_pretrained(block_swap_layers = ...) does not support "
-                "fast_inference or classification heads."
-            )
         if block_swap_layers:
             import copy as _copy
 

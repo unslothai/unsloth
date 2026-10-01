@@ -87,6 +87,7 @@ __all__ = [
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "install_block_swap",
+    "refuse_block_swap_load",
     "trim_config_for_block_swap",
     "attach_block_swap_layers",
     "skip_swapped_checkpoint_keys",
@@ -171,6 +172,10 @@ try:
     from unsloth_zoo.block_swap import build_host_layers
 except ImportError:  # unsloth_zoo predates loading straight to host
     build_host_layers = None
+try:
+    from unsloth_zoo.block_swap import auto_swap_indices, estimate_training_reserve_bytes
+except ImportError:  # unsloth_zoo predates block_swap_layers = "auto"
+    auto_swap_indices = estimate_training_reserve_bytes = None
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
@@ -6067,15 +6072,60 @@ def _new_block_swap(layers, n, *args, placement, **kwargs):
         return BlockSwap(layers, n, *args, **kwargs)
 
 
+def refuse_block_swap_load(block_swap_layers, reason):
+    """A load-to-host restriction: `"auto"` falls back to loading onto the GPU (0), a count raises."""
+    if block_swap_layers == "auto":
+        print(
+            f"Unsloth: block_swap_layers = 'auto' loads every layer onto the GPU: loading into host RAM {reason}"
+        )
+        return 0
+    raise ValueError(f"Unsloth: from_pretrained(block_swap_layers = ...) {reason}")
+
+
+def _auto_block_swap_indices(model, prefetch_depth):
+    """Layers to swap so each GPU keeps a training step's reserve free; [] when it already does."""
+    if auto_swap_indices is None:
+        raise ImportError(
+            "Unsloth: block_swap_layers = 'auto' needs a newer unsloth_zoo. "
+            "Run `pip install --upgrade unsloth_zoo`."
+        )
+    layers = find_decoder_layers(model)
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    # Gradients at the parameters' own size plus AdamW's two fp32 moments.
+    extra = sum(p.numel() * (p.element_size() + 8) for p in trainable)
+    seq_len = getattr(model, "max_seq_length", None) or 2048
+    reserve = estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra)
+    indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
+    if not indices:
+        print(
+            f"Unsloth: block_swap_layers = 'auto' swaps nothing: every GPU keeps the "
+            f"{reserve / 2**30:.2f} GiB a {seq_len}-token step needs."
+        )
+    else:
+        print(
+            f"Unsloth: block_swap_layers = 'auto' keeps {len(indices)} of {len(layers)} decoder layers "
+            f"in host RAM so {reserve / 2**30:.2f} GiB stays free for a {seq_len}-token step."
+        )
+    if left > 0:
+        print(
+            f"Unsloth: block_swap_layers = 'auto' is still {left / 2**30:.2f} GiB short; "
+            "lower max_seq_length, or load with from_pretrained(block_swap_layers = 'auto')."
+        )
+    return indices
+
+
 def install_block_swap(
     model,
     block_swap_layers = 0,
     prefetch_depth = 2,
     use_gradient_checkpointing = "unsloth",
 ):
-    """Stream `block_swap_layers` frozen decoder blocks from pinned host RAM; off at 0."""
+    """Stream frozen decoder blocks from pinned host RAM: `block_swap_layers` of them, or "auto" for
+    as few as keep a training step's reserve free on every GPU; off at 0."""
     existing = getattr(model, "_unsloth_block_swap", None)
-    if existing is None and (not block_swap_layers or block_swap_layers <= 0):
+    if existing is None and (
+        not block_swap_layers or (block_swap_layers != "auto" and block_swap_layers <= 0)
+    ):
         return None
     if not use_gradient_checkpointing:
         raise ValueError(
@@ -6090,6 +6140,15 @@ def install_block_swap(
             "Unsloth: block_swap_layers cannot be combined with fast_inference = True, "
             "since evicted weights would sync to vLLM as empty tensors."
         )
+    if block_swap_layers == "auto":
+        # Nothing to swap to without a discrete CUDA / ROCm card: auto means no swap there.
+        if not torch.cuda.is_available() or is_integrated_unified_memory_gpu():
+            return None
+        if BlockSwap is None:
+            _check_block_swap(model)
+        block_swap_layers = _auto_block_swap_indices(model, prefetch_depth)
+        if not block_swap_layers:
+            return None
     _check_block_swap(model)
     layers = find_decoder_layers(model)
     # Spaced evenly, each block's copy hides behind several layers of compute instead of one
@@ -6227,8 +6286,11 @@ def attach_block_swap_layers(
         setattr(config, key, value)
     count = config.num_hidden_layers - first
     layer_cls = type(layers[0])
-    # The tail runs where the resident prefix landed (device_map = {"": 1}), not the current device.
-    device = next(layers[first - 1].parameters()).device
+    # The tail feeds the final norm and head, so it fetches onto the head's card (device_map = {"": 1}
+    # puts it there too); a multi-GPU plan reserved its slot pool on that card.
+    head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(head, "weight", None)
+    device = weight.device if weight is not None else next(layers[first - 1].parameters()).device
     if device.type != "cuda":
         device = torch.device("cuda", torch.cuda.current_device())
     tensors, handles = _checkpoint_tensors(model_name, **hub_kwargs)

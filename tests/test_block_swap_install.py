@@ -8,7 +8,14 @@ import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
-NAMES = ("_check_block_swap", "_new_block_swap", "install_block_swap", "trim_config_for_block_swap")
+NAMES = (
+    "_check_block_swap",
+    "_new_block_swap",
+    "refuse_block_swap_load",
+    "_auto_block_swap_indices",
+    "install_block_swap",
+    "trim_config_for_block_swap",
+)
 
 
 def _load(
@@ -17,6 +24,7 @@ def _load(
     integrated = False,
     zoo = True,
     cuda = True,
+    auto_pick = ([], 0),
 ):
     src = open(UTILS, encoding = "utf-8").read()
     mod = ast.parse(src)
@@ -41,6 +49,8 @@ def _load(
         "BlockSwap": FakeSwap if zoo else None,
         "build_host_layers": object() if zoo else None,
         "find_decoder_layers": lambda m: m.layers,
+        "auto_swap_indices": lambda layers, reserve, depth: auto_pick,
+        "estimate_training_reserve_bytes": lambda config, seq_len, extra_bytes = 0: 2**30,
         "torch": types.SimpleNamespace(cuda = types.SimpleNamespace(is_available = lambda: cuda)),
     }
     for name in NAMES:
@@ -53,10 +63,15 @@ class _Layers(list):
 
 
 class _Model:
+    config = None
+
     def __init__(self, vllm = None):
         self.layers = _Layers(["L0", "L1", "L2"])
         if vllm is not None:
             self.vllm_engine = vllm
+
+    def parameters(self):
+        return []
 
 
 def test_zero_is_a_no_op():
@@ -170,6 +185,17 @@ def test_trim_refuses_what_install_refuses():
     ns, _ = _load(zoo = False)
     with pytest.raises(ImportError, match = "unsloth_zoo"):
         ns["trim_config_for_block_swap"](_Config(), 4)
+
+
+def _refusals(fn, needle):
+    """Lines of `if <needle ...>: block_swap_layers = refuse_block_swap_load(...)` in `fn`."""
+    return [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.If)
+        and needle in ast.unparse(n.test) + ast.unparse(n.body)
+        and "refuse_block_swap_load" in ast.unparse(n.body)
+    ]
 
 
 def _peft_signature_and_calls(path):
@@ -302,11 +328,7 @@ def test_non_safetensors_formats_are_refused_before_the_prefix_loads():
     )
     cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
-    refusal = [
-        n.lineno
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Raise) and "needs a safetensors checkpoint" in ast.unparse(n)
-    ]
+    refusal = _refusals(fn, "needs a safetensors checkpoint")
     trim = [
         n.lineno
         for n in ast.walk(fn)
@@ -338,9 +360,7 @@ def test_prewrapped_peft_and_quantized_checkpoints_are_covered():
     load = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
-    assert any(
-        isinstance(n, ast.Raise) and "_ckpt_quant_method" in ast.unparse(n) for n in ast.walk(load)
-    )
+    assert _refusals(load, "_ckpt_quant_method")
 
 
 def test_every_custom_decode_loop_is_served():
@@ -369,11 +389,7 @@ def test_a_caller_quantization_config_is_refused_before_loading():
     )
     cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
-    raises = [
-        n.lineno
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Raise) and "quantization_config" in ast.unparse(n)
-    ]
+    raises = _refusals(fn, "quantization_config")
     trim = [
         n.lineno
         for n in ast.walk(fn)
@@ -400,9 +416,7 @@ def test_every_unsupported_load_mode_is_refused_before_trimming():
         "_ckpt_quant_method",
         "safetensors",
     ):
-        hits = [
-            n.lineno for n in ast.walk(fn) if isinstance(n, ast.Raise) and needle in ast.unparse(n)
-        ]
+        hits = _refusals(fn, needle)
         assert hits and min(hits) < trim, needle
 
 
@@ -417,3 +431,30 @@ def test_older_zoo_without_placement_still_installs():
     m = _Model()
     ns["install_block_swap"](m, 2)
     assert calls == [(m.layers, 2, 2)]
+
+
+def test_auto_swaps_nothing_when_the_card_has_room(capsys):
+    ns, calls = _load(auto_pick = ([], 0))
+    assert ns["install_block_swap"](_Model(), "auto") is None
+    assert calls == [] and "swaps nothing" in capsys.readouterr().out
+
+
+def test_auto_swaps_the_layers_the_shortfall_needs():
+    ns, calls = _load(auto_pick = ([0, 2], 0))
+    m = _Model()
+    ns["install_block_swap"](m, "auto")
+    assert calls == [(m.layers, [0, 2], 2, "spread")]
+
+
+def test_auto_without_a_gpu_is_a_quiet_no_op():
+    ns, calls = _load(cuda = False)
+    assert ns["install_block_swap"](_Model(), "auto") is None
+    assert calls == []
+
+
+def test_load_refusals_fall_back_for_auto_and_raise_for_a_count(capsys):
+    ns, _ = _load()
+    assert ns["refuse_block_swap_load"]("auto", "does not take a state_dict.") == 0
+    assert "loads every layer onto the GPU" in capsys.readouterr().out
+    with pytest.raises(ValueError, match = "state_dict"):
+        ns["refuse_block_swap_load"](4, "does not take a state_dict.")
