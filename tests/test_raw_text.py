@@ -808,6 +808,9 @@ def _eos_tokenizer():
         def __call__(self, text, **kwargs):
             return {"input_ids": [[int(word) for word in text.split()]]}
 
+        def decode(self, ids, **kwargs):
+            return "".join(f" {i}" for i in ids)
+
     return Tokenizer()
 
 
@@ -831,6 +834,25 @@ def test_tokenized_chunks_reserve_space_for_the_final_eos():
                 assert restored == list(range(count)) + [99]
                 dataset = loader.create_causal_dataset(chunks)
                 assert dataset["labels"] == dataset["input_ids"]
+
+
+def test_text_chunks_reserve_space_for_the_final_eos():
+    # MLX trains on text chunks and truncates at max_seq_length, which would drop an overflowing EOS.
+    for size in (2, 4):
+        for stride in range(size):
+            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
+            for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
+                if count == 0:
+                    continue
+                chunks = loader.chunk_text(" ".join(map(str, range(count))), return_tokenized = False)
+                pieces = [chunk.replace("</s>", " </s>").split() for chunk in chunks]
+                assert all(len(piece) <= size for piece in pieces)
+                assert all(piece != ["</s>"] for piece in pieces)
+                assert pieces[-1][-1] == "</s>"
+                restored = list(pieces[0])
+                for piece in pieces[1:]:
+                    restored.extend(piece[stride:])
+                assert restored == [str(i) for i in range(count)] + ["</s>"]
 
 
 def test_chunk_size_one_keeps_the_final_eos_overflow():
@@ -863,5 +885,6 @@ if __name__ == "__main__":
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
     test_tokenized_chunks_reserve_space_for_the_final_eos()
+    test_text_chunks_reserve_space_for_the_final_eos()
     test_chunk_size_one_keeps_the_final_eos_overflow()
     sys.exit(0 if success else 1)

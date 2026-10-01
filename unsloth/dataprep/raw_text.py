@@ -164,8 +164,10 @@ class RawTextDataLoader:
             tokens = list(range(tokens))
 
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        eos_token = getattr(self.tokenizer, "eos_token", None) or ""
+        has_eos = eos_token_id is not None if return_tokenized else bool(eos_token)
         # The final EOS counts toward chunk_size; chunk_size 1 cannot hold a token plus EOS.
-        reserve_eos = return_tokenized and eos_token_id is not None and chunk_size > 1
+        reserve_eos = has_eos and chunk_size > 1
         num_tokens = len(tokens) + int(reserve_eos)
 
         if num_tokens <= chunk_size:
@@ -178,23 +180,33 @@ class RawTextDataLoader:
                 attention_mask = [1] * len(tokens)
                 return [{"input_ids": tokens, "attention_mask": attention_mask}]
             else:
-                eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                 return [text + eos_token]
 
-        chunks = []
+        bounds = []
         start_idx = 0
-
-        while start_idx < num_tokens:
+        while True:
             end_idx = min(start_idx + chunk_size, num_tokens)
+            bounds.append([start_idx, end_idx])
+            if end_idx == num_tokens:
+                break
+            start_idx += chunk_size - stride
+
+        # Stride 0 + exact multiple leaves a lone-EOS chunk: move the previous chunk's last token in.
+        if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
+            bounds[-2][1] -= 1
+            bounds[-1][0] -= 1
+
+        chunks = []
+        for i, (start_idx, end_idx) in enumerate(bounds):
             chunk_tokens = tokens[start_idx:end_idx]
+            # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
+            is_last = i == len(bounds) - 1
 
             if return_tokenized:
                 chunk_tokens_list = (
                     chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
-
-                # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
-                if end_idx == num_tokens and eos_token_id is not None:
+                if is_last and eos_token_id is not None:
                     chunk_tokens_list.append(eos_token_id)
 
                 attention_mask = [1] * len(chunk_tokens_list)
@@ -202,23 +214,10 @@ class RawTextDataLoader:
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
-
-                if end_idx == num_tokens:
-                    eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+                if is_last:
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)
-
-            # Advance with stride overlap
-            if end_idx == num_tokens:
-                break
-            start_idx += chunk_size - stride
-
-        # Stride 0 + exact multiple leaves a lone-EOS chunk: move the previous chunk's last token in.
-        if reserve_eos and len(chunks) > 1 and len(chunks[-1]["input_ids"]) == 1:
-            chunks[-1]["input_ids"].insert(0, chunks[-2]["input_ids"].pop())
-            for chunk in chunks[-2:]:
-                chunk["attention_mask"] = [1] * len(chunk["input_ids"])
 
         return chunks
 
