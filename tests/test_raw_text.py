@@ -800,24 +800,6 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
     return True
 
 
-if __name__ == "__main__":
-    success = test_raw_text_loader()
-    test_clean_text_keeps_text_in_any_script()
-    test_clean_text_drops_invisible_characters()
-    test_clean_text_decision_cannot_drift_between_interpreters()
-    success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
-    success = test_smart_chunk_text_no_eos_on_intermediate_full_chunks() and success
-    success = test_load_from_file_skips_non_object_json_lines() and success
-    success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
-    success = test_load_from_files_all_empty_raises() and success
-    success = test_negative_stride_is_rejected() and success
-    success = test_validate_dataset_handles_tokenized_and_text_columns() and success
-    success = test_validate_dataset_accepts_objects_without_column_names() and success
-    success = test_validate_dataset_streams_instead_of_materialising_columns() and success
-    success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
-    sys.exit(0 if success else 1)
-
-
 def _eos_tokenizer():
     class Tokenizer:
         eos_token_id = 99
@@ -863,3 +845,23 @@ def test_chunk_size_one_keeps_the_final_eos_overflow():
         assert chunks[-1]["input_ids"] == [count - 1, 99]
         restored = [token for chunk in chunks for token in chunk["input_ids"]]
         assert restored == list(range(count)) + [99]
+
+
+if __name__ == "__main__":
+    success = test_raw_text_loader()
+    test_clean_text_keeps_text_in_any_script()
+    test_clean_text_drops_invisible_characters()
+    test_clean_text_decision_cannot_drift_between_interpreters()
+    success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_smart_chunk_text_no_eos_on_intermediate_full_chunks() and success
+    success = test_load_from_file_skips_non_object_json_lines() and success
+    success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
+    success = test_load_from_files_all_empty_raises() and success
+    success = test_negative_stride_is_rejected() and success
+    success = test_validate_dataset_handles_tokenized_and_text_columns() and success
+    success = test_validate_dataset_accepts_objects_without_column_names() and success
+    success = test_validate_dataset_streams_instead_of_materialising_columns() and success
+    success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
+    test_tokenized_chunks_reserve_space_for_the_final_eos()
+    test_chunk_size_one_keeps_the_final_eos_overflow()
+    sys.exit(0 if success else 1)
