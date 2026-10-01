@@ -280,6 +280,33 @@ else
 fi
 rm -f "$_EXIT_FILE" "$_EXIT_PIDS"
 
+# A failing sidecar worker leaves the frontend sibling running and its own exit code stands.
+_SIB_FILE=$(mktemp)
+for _fn in setup_fail _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait \
+    _setup_restore_twbuild_gitignores_from _setup_frontend_reap_if_exited _setup_pid_tree _setup_abort_frontend_job; do
+    sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_SIB_FILE"
+done
+_SIB_OUT=$(
+    bash -c '
+        set -euo pipefail
+        C_ERR=; SCRIPT_DIR=/nonexistent; step() { echo "STEP $*"; }
+        . "$1"
+        ( sleep 6; echo FRONTEND_DONE ) &
+        _SETUP_FRONTEND_BG_PID=$!
+        _setup_parallel_reset
+        _setup_parallel_run "T5 5.5.0" setup_fail 9 "install transformers 5.5.0 failed"
+        _setup_parallel_wait
+    ' _ "$_SIB_FILE" 2>&1
+) && _sib_rc=0 || _sib_rc=$?
+if [ "$_sib_rc" -eq 1 ] && ! printf '%s\n' "$_SIB_OUT" | grep -q 'Frontend build or OXC install failed'; then
+    echo "  PASS: a failing sidecar worker does not abort the frontend sibling"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: sidecar failure hit the frontend job (rc=$_sib_rc): $_SIB_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$_SIB_FILE"
+
 # An installed package (no pyproject.toml beside studio/) joins npm before the core reinstall.
 if awk '
     /^if \[ -f "\$REPO_ROOT\/pyproject.toml" \]; then$/ {g=1; next}

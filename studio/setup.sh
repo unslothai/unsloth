@@ -692,6 +692,8 @@ _setup_parallel_run() {
     shift
     (
         set -euo pipefail
+        # The frontend job is a sibling: a failing worker's setup_fail must not abort it.
+        _SETUP_FRONTEND_BG_PID=""
         "$@"
     ) &
     _SETUP_PARALLEL_PIDS+=("$!")
