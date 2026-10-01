@@ -206,10 +206,10 @@ def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_
         assert "unsloth studio reset-password" in detail, multi_user
 
 
-def _request_from(host: str | None):
+def _request_from(host: str | None, headers: dict | None = None):
     from types import SimpleNamespace
     client = SimpleNamespace(host = host) if host is not None else None
-    return SimpleNamespace(client = client, headers = {})
+    return SimpleNamespace(client = client, headers = headers or {})
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
@@ -239,3 +239,14 @@ def test_the_login_route_hands_its_request_to_the_hint(auth):
     source = inspect.getsource(auth.login)
     assert "_login_failure_detail(request)" in source
     assert "_login_failure_detail()" not in source
+
+
+def test_a_tunnelled_visitor_is_remote_even_though_the_socket_peer_is_loopback(monkeypatch, auth):
+    """The managed Cloudflare tunnel terminates at 127.0.0.1 and names the visitor in
+    CF-Connecting-IP. That visitor is exactly who must not be told "your terminal"."""
+    monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: False)
+    detail = auth._login_failure_detail(
+        _request_from("127.0.0.1", {"cf-connecting-ip": "198.51.100.9"})
+    )
+    assert "on the machine Unsloth Studio is running on" in detail
+    assert "your terminal" not in detail

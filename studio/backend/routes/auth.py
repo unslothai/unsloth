@@ -484,8 +484,12 @@ def _login_failure_detail(request: Request | None = None) -> str:
 
 
 def _client_is_loopback(request: Request | None) -> bool:
+    """Only the person at the machine. ``utils.client_ip`` rather than this module's
+    ``_client_ip``: the managed Cloudflare tunnel terminates on loopback and names the visitor
+    in ``CF-Connecting-IP``, and that visitor is the remote case this wording exists for."""
+    from utils.client_ip import client_ip
     try:
-        return ipaddress.ip_address(_client_ip(request)).is_loopback
+        return ipaddress.ip_address(client_ip(request)).is_loopback
     except ValueError:
         return False
 
