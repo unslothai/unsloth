@@ -2149,6 +2149,14 @@ export function managedKvCacheFields(
   return { kvCacheDtype: kv, loadedKvCacheDtype: kv };
 }
 
+export function managedTensorParallelFields(
+  resp: { tensor_parallel?: boolean | null } & LlamaCppConfigEcho,
+) {
+  if (isCustomLlamaLoad(resp)) return {};
+  const tp = resp.tensor_parallel ?? false;
+  return { tensorParallel: tp, loadedTensorParallel: tp };
+}
+
 export function managedSpeculativeSettings(
   resp: Parameters<typeof resolveLoadedSpeculativeSettings>[0] & LlamaCppConfigEcho,
 ) {

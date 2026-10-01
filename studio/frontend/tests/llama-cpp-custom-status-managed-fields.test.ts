@@ -115,3 +115,39 @@ test("a custom load's KV cache and speculative echo leave the managed controls a
   assert.equal(s.kvCacheDtype, null);
   assert.equal(s.speculativeType, "auto");
 });
+
+test("a custom load's split-mode tensor leaves the managed tensor parallel choice alone", async () => {
+  const { managedTensorParallelFields } = await import(
+    "../src/features/chat/stores/chat-runtime-store.ts"
+  );
+  const resp = { tensor_parallel: true };
+  assert.deepEqual(
+    managedTensorParallelFields({
+      ...resp,
+      requested_llama_cpp_config: custom,
+    }),
+    {},
+  );
+  assert.deepEqual(managedTensorParallelFields(resp), {
+    tensorParallel: true,
+    loadedTensorParallel: true,
+  });
+
+  useChatRuntimeStore.setState({
+    modelLoading: false,
+    tensorParallel: false,
+    loadedTensorParallel: false,
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: MODEL },
+  });
+  applyActiveModelStatusToStore(
+    { ...(statusFor(custom) as object), tensor_parallel: true } as never,
+    { previousCheckpoint: MODEL },
+  );
+  const s = useChatRuntimeStore.getState();
+  assert.equal(
+    s.tensorParallel,
+    false,
+    "Use Studio settings would reload with tensor parallelism on",
+  );
+  assert.equal(s.loadedTensorParallel, false);
+});

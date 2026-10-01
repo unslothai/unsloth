@@ -501,6 +501,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.tensor_parallel !== undefined && {
         loadedTensorParallel: status.tensor_parallel,
         ...((prevState.loadedTensorParallel === null ||

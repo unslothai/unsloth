@@ -219,6 +219,7 @@ import {
   loadedLlamaCppConfigFields,
   managedKvCacheFields,
   managedSpeculativeSettings,
+  managedTensorParallelFields,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
   resolvePreserveThinkingOnLoad,
@@ -3682,8 +3683,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             loadResp.requested_llama_extra_args !== undefined
               ? (loadResp.requested_llama_extra_args ?? [])
               : (resolvedExtraArgs ?? null),
-          tensorParallel: loadResp.tensor_parallel ?? false,
-          loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          ...managedTensorParallelFields(loadResp),
           loadedDisableVision: loadResp.disable_vision ?? false,
           // Repaired from the echo alongside tensorParallel: a stale true would show Vision off over a
           // loaded projector, and the next Apply would send it.
@@ -4075,8 +4075,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           nUbatch: null,
           loadedNUbatch: null,
           ...clearedServerTuningState(),
-          tensorParallel: loadResp.tensor_parallel ?? false,
-          loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          ...managedTensorParallelFields(loadResp),
           loadedDisableVision: loadResp.disable_vision ?? false,
           // The request above omits disable_vision, so the echo is what the load ran with.
           disableVision: loadResp.disable_vision ?? false,

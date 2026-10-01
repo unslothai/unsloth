@@ -103,6 +103,7 @@ import {
   managedGpuMemoryFields,
   managedKvCacheFields,
   managedSpeculativeSettings,
+  managedTensorParallelFields,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
   pinHoldsLiveEffort,
@@ -2615,7 +2616,6 @@ export function useChatModelRuntime() {
                 }
               }
             }
-            const loadedTp = loadResponse.tensor_parallel ?? false;
             const committedSlots =
               ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
               (loadResponse.is_mlx ?? false)
@@ -2703,8 +2703,7 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               ...managedKvCacheFields(loadResponse),
               ...mlxRuntimeStateFrom(loadResponse),
-              tensorParallel: loadedTp,
-              loadedTensorParallel: loadedTp,
+              ...managedTensorParallelFields(loadResponse),
               loadedDisableVision: loadResponse.disable_vision ?? false,
               // Repaired from the echo like the knob above: loadDisableVision forces the flag off for a
               // diffusion target without writing the store, so a Vision-off GGUF followed by a diffusion
@@ -3002,9 +3001,7 @@ export function useChatModelRuntime() {
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
                   ...managedGpuMemoryFields(rollbackResponse),
-                  tensorParallel: rollbackResponse.tensor_parallel ?? false,
-                  loadedTensorParallel:
-                    rollbackResponse.tensor_parallel ?? false,
+                  ...managedTensorParallelFields(rollbackResponse),
                   loadedDisableVision:
                     rollbackResponse.disable_vision ?? false,
                   // The rolled-back model's own loaded value, matching the request above field for field. Not
