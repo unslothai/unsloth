@@ -16,7 +16,9 @@ import os
 import re
 import sqlite3
 import struct
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 from storage import rag_db
@@ -480,6 +482,7 @@ def add_chunks(
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
+    vec_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
         chunk_regions = regions[i] if regions and i < len(regions) else None
@@ -506,11 +509,14 @@ def add_chunks(
             "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
             (chunk.text, chunk_id, scope),
         )
-        conn.execute(
-            "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
-            (scope, chunk_id, _f32(vector)),
+        vec_rowids.append(
+            conn.execute(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+                (scope, chunk_id, _f32(vector)),
+            ).lastrowid
         )
     conn.commit()
+    _remember_vec_rowids(conn, document_id, vec_rowids)
 
 
 def delete_document(
@@ -563,28 +569,72 @@ def _copy_chunk_rows(
     return chunk_ids
 
 
+# chunks_vec rowids this process wrote, per (database, document). chunk_id is not indexed in vec0, so
+# finding a donor's vectors by it scans the whole scope partition; the donor for a run of identical
+# files is the copy just written, so its rowids are usually here. Rows are verified on read.
+_VEC_ROWIDS_MAX = 256
+_vec_rowids: OrderedDict[tuple[str, str], list[int]] = OrderedDict()
+_vec_rowids_lock = threading.Lock()
+
+
+def _db_file(conn: sqlite3.Connection) -> str:
+    return conn.execute("PRAGMA database_list").fetchone()[2]
+
+
+def _remember_vec_rowids(conn: sqlite3.Connection, document_id: str, rowids: list[int]) -> None:
+    key = (_db_file(conn), document_id)
+    with _vec_rowids_lock:
+        _vec_rowids[key] = rowids
+        _vec_rowids.move_to_end(key)
+        while len(_vec_rowids) > _VEC_ROWIDS_MAX:
+            _vec_rowids.popitem(last = False)
+
+
+def _donor_vectors_by_rowid(
+    conn: sqlite3.Connection, source: dict, chunk_ids: dict[str, str]
+) -> list | None:
+    with _vec_rowids_lock:
+        rowids = _vec_rowids.get((_db_file(conn), source["id"]))
+    if not rowids or len(rowids) != len(chunk_ids):
+        return None
+    rows = []
+    for start in range(0, len(rowids), 500):
+        batch = rowids[start : start + 500]
+        rows += conn.execute(
+            f"SELECT scope, chunk_id, embedding FROM chunks_vec "
+            f"WHERE rowid IN ({','.join('?' * len(batch))})",
+            batch,
+        ).fetchall()
+    found = {r["chunk_id"] for r in rows if r["scope"] == source["scope"]}
+    return rows if len(rows) == len(found) and found == chunk_ids.keys() else None
+
+
 def copy_document_index(conn: sqlite3.Connection, source: dict, target_id: str, scope: str) -> int:
     """Uncommitted chunk + FTS + vector copy; returns vector rows copied (0 without chunks_vec)."""
     chunk_ids = _copy_chunk_rows(conn, source["id"], target_id, scope)
     if not rag_db.vec_table_exists(conn):
         return 0
-    source_ids = list(chunk_ids)
-    copied = 0
-    # Filter in SQL so only the donor's rows reach Python; batched for SQLITE_MAX_VARIABLE_NUMBER.
-    for start in range(0, len(source_ids), 500):
-        batch = source_ids[start : start + 500]
-        placeholders = ",".join("?" * len(batch))
-        rows = conn.execute(
-            f"SELECT chunk_id, embedding FROM chunks_vec WHERE scope=? "
-            f"AND chunk_id IN ({placeholders})",
-            [source["scope"], *batch],
-        ).fetchall()
-        conn.executemany(
+    rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
+    if rows is None:
+        source_ids = list(chunk_ids)
+        rows = []
+        # Filter in SQL so only the donor's rows reach Python; batched for SQLITE_MAX_VARIABLE_NUMBER.
+        for start in range(0, len(source_ids), 500):
+            batch = source_ids[start : start + 500]
+            rows += conn.execute(
+                f"SELECT chunk_id, embedding FROM chunks_vec WHERE scope=? "
+                f"AND chunk_id IN ({','.join('?' * len(batch))})",
+                [source["scope"], *batch],
+            ).fetchall()
+    rowids = [
+        conn.execute(
             "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
-            [(scope, chunk_ids[r["chunk_id"]], r["embedding"]) for r in rows],
-        )
-        copied += len(rows)
-    return copied
+            (scope, chunk_ids[r["chunk_id"]], r["embedding"]),
+        ).lastrowid
+        for r in rows
+    ]
+    _remember_vec_rowids(conn, target_id, rowids)
+    return len(rows)
 
 
 def copy_documents(

@@ -2769,3 +2769,64 @@ def test_reuse_falls_back_to_a_normal_ingest_when_the_donor_lost_its_vectors(
         new_doc = store.get_document(conn, new_row["document_id"])
         vecs = _vectors(new_doc["id"])
         assert len(vecs) == new_doc["num_chunks"] > 0
+
+
+@requires_sqlite_vec
+def test_identical_copies_read_the_donor_vectors_by_rowid(rag_home, stub_embeddings, monkeypatch):
+    hits = []
+    original = store._donor_vectors_by_rowid
+
+    def spy(conn, source, chunk_ids):
+        rows = original(conn, source, chunk_ids)
+        hits.append(rows is not None)
+        return rows
+
+    monkeypatch.setattr(store, "_donor_vectors_by_rowid", spy)
+    source, folder = _folder(rag_home)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (source / name).write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    assert hits == [True, True]
+    with _connection() as conn:
+        ids = [
+            r["document_id"]
+            for r in conn.execute(
+                "SELECT document_id FROM linked_folder_files WHERE folder_id=? ORDER BY relative_path",
+                (folder["id"],),
+            ).fetchall()
+        ]
+    assert _vectors(ids[1]) == _vectors(ids[0]) == _vectors(ids[2])
+
+
+@requires_sqlite_vec
+def test_a_stale_rowid_entry_falls_back_to_the_partition_scan(rag_home, stub_embeddings):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "d.txt").write_text("a distinct different body", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        by_rel = {
+            r["relative_path"]: r["document_id"]
+            for r in conn.execute(
+                "SELECT relative_path, document_id FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            ).fetchall()
+        }
+        other = [
+            r["rowid"]
+            for r in conn.execute(
+                "SELECT rowid FROM chunks_vec WHERE chunk_id LIKE ?", (f"{by_rel['d.txt']}:%",)
+            ).fetchall()
+        ]
+        store._remember_vec_rowids(conn, by_rel["a.txt"], other)
+
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    with _connection() as conn:
+        b_id = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()["document_id"]
+    assert _vectors(b_id) == _vectors(by_rel["a.txt"])
