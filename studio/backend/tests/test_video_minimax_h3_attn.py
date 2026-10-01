@@ -25,6 +25,31 @@ from core.inference.diffusion_convrot import is_rotated_linear, rotate_linears_ 
 GROUP = 16
 
 
+@pytest.fixture(autouse = True)
+def _restore_process_flags():
+    # Process-wide state these tests touch: diffusers' ModelMixin.set_attention_backend also sets the registry's
+    # ACTIVE backend (every later dispatch_attention_fn call without an explicit backend uses it), and torchao's
+    # quantize_ applies its recommended inductor config (float32 matmul precision "high", coordinate-descent tuning).
+    # Restore both so later test files see what they were written against.
+    import torch._inductor.config as inductor_config
+    from diffusers.models.attention_dispatch import _AttentionBackendRegistry
+
+    active_backend = _AttentionBackendRegistry._active_backend
+
+    precision = torch.get_float32_matmul_precision()
+    knobs = ("coordinate_descent_tuning", "coordinate_descent_check_all_directions", "force_fuse_int_mm_with_mul",
+             "fx_graph_cache")
+    saved = {k: getattr(inductor_config, k) for k in knobs if hasattr(inductor_config, k)}
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    _AttentionBackendRegistry.set_active_backend(active_backend)
+    torch.set_float32_matmul_precision(precision)
+    for k, v in saved.items():
+        setattr(inductor_config, k, v)
+
+
 def _tiny_model() -> torch.nn.Module:
     torch.manual_seed(0)
     model = h3.MiniMaxH3Transformer3DModel(
