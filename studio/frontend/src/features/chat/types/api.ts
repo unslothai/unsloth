@@ -126,6 +126,19 @@ export interface LoadModelRequest {
   audio_device?: "auto" | "cpu" | "gpu";
 }
 
+export interface ResidentMetadata {
+  resident_available: true;
+  model: string;
+  variant?: string | null;
+  parallel_slots?: number | null;
+  tensor_parallel?: boolean | null;
+}
+
+export interface JoinResidentResponse {
+  status: "joined" | "already_joined";
+  resident: ResidentMetadata;
+}
+
 export interface ValidateModelResponse {
   valid: boolean;
   message: string;
@@ -337,6 +350,7 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  resident?: ResidentMetadata | null;
   is_mlx?: boolean;
   is_npu?: boolean;
   active_model: string | null;

@@ -1775,8 +1775,34 @@ class LlamaFlagCatalogResponse(BaseModel):
     )
 
 
+class ResidentMetadata(BaseModel):
+    """Non-sensitive metadata for a model resident shared by LAN accounts."""
+
+    resident_available: bool = True
+    model: str = Field(..., description = "Sanitized public model label")
+    variant: Optional[str] = Field(None, description = "GGUF variant, when applicable")
+    parallel_slots: Optional[int] = Field(
+        None, description = "Effective concurrent llama.cpp generation slots"
+    )
+    tensor_parallel: Optional[bool] = Field(
+        None, description = "Whether tensor parallelism is active"
+    )
+
+
+class JoinResidentResponse(BaseModel):
+    """Result of attaching the current account to the active resident."""
+
+    status: Literal["joined", "already_joined"]
+    resident: ResidentMetadata
+
+
 class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
+
+    resident: Optional[ResidentMetadata] = Field(
+        None,
+        description = "Sanitized resident model metadata available to LAN accounts.",
+    )
 
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"

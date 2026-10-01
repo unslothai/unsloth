@@ -73,9 +73,11 @@ import {
   getInferenceStatus,
   getLoadProgress,
   fetchGgufStagedMetadata,
+  joinResident,
   listLoras,
   listModels,
   loadModel,
+  ResidentConflictError,
   unloadModel,
   validateModel,
 } from "../api/chat-api";
@@ -3381,16 +3383,33 @@ export function useChatModelRuntime() {
                   runnerLogPath,
                 )
               : undefined;
+            const joinAction =
+              err instanceof ResidentConflictError
+                ? {
+                    label: "Join resident",
+                    onClick: () => {
+                      void joinResident()
+                        .then(() => refresh())
+                        .catch((joinError) => {
+                          toast.error(
+                            joinError instanceof Error
+                              ? joinError.message
+                              : "Failed to join resident model",
+                          );
+                        });
+                    },
+                  }
+                : logsAction;
             if (loadToastDismissedRef.current) {
               toast.error(summary, {
                 description: detail || undefined,
-                action: logsAction,
+                action: joinAction,
               });
             } else {
               toast.error(summary, {
                 id: toastId,
                 description: detail || undefined,
-                action: logsAction,
+                action: joinAction,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,
