@@ -48,6 +48,8 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
+    # A shell opt-out (0) or opt-in must beat hardware.py's gfx1151 default.
+    "MIOPEN_SEARCH_CUTOFF",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",

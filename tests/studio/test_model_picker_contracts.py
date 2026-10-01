@@ -704,7 +704,7 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[\s*inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 
@@ -1648,6 +1648,16 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
 
 
+def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
+    """Reapply after refresh rebuilds target, logical identity and H3 partition from status."""
+    src = _read("features/video/video-page.tsx")
+    assert 'status?.model_kind !== "pipeline"' in src
+    assert "displayRepoId: status.display_repo_id ?? undefined," in src
+    assert 'status.h3_task === "fl2va" || status.h3_task === "ref2va"' in src
+    assert "lastLoad.current = {" in src
+    assert "setCanReapply(true);" in src
+
+
 def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
     """The chat picker can only forward a GGUF filename (ggufFilename is GGUF-specific), so a
     curated single-file artifact -- an LTX-2.3 checkpoint, an FP8 transformer -- arrives with no
@@ -2121,19 +2131,19 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     alone is not enough -- a checkpoint sharing its repo with the companions, and already
     cached, leaves an entry of companion files that would still claim to be the model."""
     for page in ("images/images-page.tsx", "video/video-page.tsx"):
-        src = _read(f"features/{page}")
-        entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
-        assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "e.files.includes(opts.filename)" in entries.group(
-            0
-        ), f"{page} does not mark the picked repo's entry as the checkpoint"
-        # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
-        # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
-        # reads the whole selected model as "Required assets". Only the planner knows about the
-        # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
-        assert "e.checkpoint ??" in entries.group(
-            0
-        ), f"{page} ignores the checkpoint flag the plan carried"
+        assert "diffusionStagingEntries(plan.entries" in _read(
+            f"features/{page}"
+        ), f"{page} does not map the plan entries into staged downloads"
+    page = "lib/diffusion-pipeline-load-target.ts"
+    entries = re.search(r"entries\s*\.map\(\(e\) => \(\{.*?\}\)\)", _read(page), re.S)
+    assert entries, f"{page} does not map the plan entries into staged downloads"
+    assert "e.files.includes(opts.filename)" in entries.group(
+        0
+    ), f"{page} does not mark the picked repo's entry as the checkpoint"
+    # The plan's answer wins (only it knows a gated pipeline is staged from an ungated mirror); false is final.
+    assert "e.checkpoint ??" in entries.group(
+        0
+    ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged

@@ -2960,6 +2960,31 @@ def test_top_level_group_respects_the_pinned_allocator_rounding(monkeypatch):
     assert group.onload_ == "diffusers"
 
 
+def test_top_level_group_counts_against_the_running_pin_total(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    module, group = _top_group_module(monkeypatch)
+    monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    group.modules = [
+        types.SimpleNamespace(
+            parameters = lambda: [__import__("torch").empty(1 << 18)], buffers = lambda: []
+        )
+    ]
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 8)
+    # What is under test is the running-total accounting, not page locking: a plain host copy
+    # stands in for pin_memory, which raises on a host with no CUDA device (the CPU CI runners).
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self.clone())
+    # 8 MiB budget, 8 MiB of encoders already pinned: the 1 MiB top group no longer fits
+    assert mem._pin_top_level_group(module, None, [8]) is False
+    assert group.onload_ == "diffusers"
+    total = [4]
+    assert mem._pin_top_level_group(module, None, total) is True
+    assert total == [5]
+
+
 @pytest.mark.parametrize("kind", ["streamed_group", "torchao"])
 def test_top_level_group_left_alone_when_not_the_streamless_top_group(monkeypatch, kind):
     import core.inference.diffusion_memory as mem
@@ -3065,3 +3090,25 @@ def test_top_level_weights_replaced_while_offloaded_are_picked_up(monkeypatch):
         got = net(x.cuda()).cpu()
         want = ref(x)
     assert torch.allclose(got, want, atol = 1e-5)
+
+
+def test_streaming_counts_pinned_encoders_before_a_torchao_denoiser_pins(monkeypatch):
+    # The torchao denoiser pins within a running total; encoders the plan pins must already be on it (as on the group
+    # tier), or the two together exceed the pinnable host budget.
+    import core.inference.diffusion_memory as mem
+
+    seen_totals: dict = {}
+    real = mem._torchao_group_offload_kwargs
+
+    def _spy(
+        module,
+        kwargs,
+        pinned_mib = None,
+    ):
+        seen_totals[module.name] = pinned_mib[0] if pinned_mib else None
+        return real(module, kwargs, pinned_mib)
+
+    monkeypatch.setattr(mem, "_torchao_group_offload_kwargs", _spy)
+    _streaming_apply_kwargs(monkeypatch, 40_000)
+    # the 7500 MiB encoder, rounded up to a power of two like the pinned allocator
+    assert seen_totals["transformer"] == 8192

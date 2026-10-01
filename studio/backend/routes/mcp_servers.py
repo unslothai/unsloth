@@ -5,7 +5,7 @@ import asyncio
 import json
 import sys
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 from urllib.parse import urlparse
 
 import structlog
@@ -21,7 +21,11 @@ from auth.authentication import (
 )
 from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
+    UI_RESOURCE_SCHEME,
     cache_tools,
+    call_tool_structured_sync,
+    get_cached_tools,
+    in_failure_cooloff,
     clear_oauth_tokens_async,
     close_mcp_sessions,
     invalidate_tool_cache,
@@ -31,10 +35,12 @@ from core.inference.mcp_client import (
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
+    read_resource_sync,
     record_probe_failure,
     serialize_mcp_server_mutation,
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
+    tool_visible_to,
 )
 from core.inference.mcp_config_import import parse_mcp_config
 from models.mcp_servers import (
@@ -49,6 +55,9 @@ from models.mcp_servers import (
     McpStdioCommand,
     McpStdioDecodeRequest,
     McpStdioEncodeResponse,
+    McpUiResourceResponse,
+    McpUiToolCallRequest,
+    McpUiToolCallResult,
 )
 from storage import mcp_servers_db
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -578,3 +587,171 @@ async def test_mcp_server(
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))
+
+
+_UI_TIMEOUT = 60.0
+UI_TOOL_APPROVAL_REQUIRED = "approval_required"
+
+
+def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
+    """Re-read per request: a stale widget must not keep a removed server reachable."""
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if not server.get("is_enabled"):
+        raise HTTPException(status_code = 400, detail = "MCP server is disabled")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
+        if not stdio_mcp_enabled():
+            raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
+    return server
+
+
+def _row_still_matches(server_id: str, server: dict) -> bool:
+    current = mcp_servers_db.get_server(server_id)
+    return current is not None and all(
+        current.get(k) == server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    )
+
+
+# One discovery per server at a time: reopening a chat mounts every widget at once, each probing a cold cache.
+_discovery_locks: dict = {}
+
+
+async def _warm_tool_cache(server: dict) -> None:
+    """Rediscover once on a cold cache: a chat reopened after a restart never ran the chat path, and widget calls read the cache."""
+    server_id = server["id"]
+    async with _discovery_locks.setdefault(server_id, asyncio.Lock()):
+        tools = get_cached_tools(server_id)
+        if tools is None and not in_failure_cooloff(server_id):
+            use_oauth = bool(server.get("use_oauth"))
+            url = server["url"]
+            try:
+                tools = await list_tools_async(
+                    url = url,
+                    headers = parse_server_headers(server),
+                    timeout = probe_timeout(url, use_oauth),
+                    use_oauth = use_oauth,
+                )
+            except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
+                tools = None
+            # A row edited mid-probe: the old endpoint's answer must neither authorize a read nor be cached.
+            if not _row_still_matches(server_id, server):
+                tools = None
+            elif tools is None:
+                record_probe_failure(server_id, use_oauth)
+            else:
+                cache_tools(server_id, tools)
+
+
+def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
+    from core.inference.tools import mcp_session_scope
+    return {
+        "url": server["url"],
+        "headers": parse_server_headers(server),
+        "timeout": _UI_TIMEOUT,
+        "use_oauth": bool(server.get("use_oauth")),
+        # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
+        "scope": mcp_session_scope(session_id, thread_id),
+        "config_check": lambda: _row_still_matches(server_id, server),
+    }
+
+
+@router.get("/{server_id}/ui-resource", response_model = McpUiResourceResponse)
+async def read_mcp_ui_resource(
+    server_id: str,
+    uri: str,
+    thread_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    server = _ui_server_or_404(server_id, via_api_key)
+    uri = (uri or "").strip()
+    # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
+    if not uri.startswith(UI_RESOURCE_SCHEME):
+        raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
+    from core.inference.tools import (
+        _STUDIO_CREDENTIAL_BLOCKED,
+        _mcp_arguments_reference_studio_credential,
+    )
+
+    if _mcp_arguments_reference_studio_credential({"uri": uri}):
+        raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
+    await _warm_tool_cache(server)
+    try:
+        contents = await asyncio.to_thread(
+            read_resource_sync, uri = uri, **_ui_call_kwargs(server_id, server, thread_id, session_id)
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise log_and_http_error(
+            exc,
+            502,
+            "Could not load this MCP app's interface.",
+            event = "mcp_servers.ui_resource_failed",
+            log = logger,
+        )
+    return McpUiResourceResponse(**contents)
+
+
+@router.post("/{server_id}/ui-tool-call", response_model = McpUiToolCallResult)
+async def call_mcp_ui_tool(
+    server_id: str,
+    payload: McpUiToolCallRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    """Widget is untrusted: server_id comes from the host frame, the tool must be discovered with "app" visibility, and it passes the confirm gate."""
+    from core.inference.tools import (
+        _STUDIO_CREDENTIAL_BLOCKED,
+        MCP_TOOL_PREFIX,
+        _mcp_arguments_reference_studio_credential,
+        is_potentially_unsafe_tool_call,
+        mcp_tool_definition,
+    )
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
+    server = _ui_server_or_404(server_id, via_api_key)
+    tool_name = (payload.tool_name or "").strip()
+    if not tool_name:
+        raise HTTPException(status_code = 400, detail = "tool_name must not be empty")
+    # A mounted widget outlives the cache: an edit or off/on toggle of the server empties it.
+    await _warm_tool_cache(server)
+    tool = mcp_tool_definition(server_id, tool_name)
+    if tool is None:
+        raise HTTPException(
+            status_code = 404, detail = f"MCP server has no discovered tool named '{tool_name}'"
+        )
+    if not tool_visible_to(tool, "app"):
+        raise HTTPException(
+            status_code = 403, detail = f"Tool '{tool_name}' is not callable by an MCP app"
+        )
+    arguments = payload.arguments or {}
+    if _mcp_arguments_reference_studio_credential(arguments):
+        raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
+    mode = payload.permission_mode
+    # An unstated or unknown mode asks; "auto" asks only for what the model's call would be asked for.
+    needs_approval = mode not in ("off", "full") and (
+        mode != "auto"
+        or is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", arguments)
+    )
+    if needs_approval and not payload.approved:
+        raise HTTPException(status_code = 409, detail = UI_TOOL_APPROVAL_REQUIRED)
+    try:
+        result = await asyncio.to_thread(
+            call_tool_structured_sync,
+            name = tool_name,
+            args = arguments,
+            **_ui_call_kwargs(server_id, server, payload.thread_id, payload.session_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise log_and_http_error(
+            exc,
+            502,
+            "The MCP app's tool call failed.",
+            event = "mcp_servers.ui_tool_call_failed",
+            log = logger,
+        )
+    return McpUiToolCallResult(**result)
