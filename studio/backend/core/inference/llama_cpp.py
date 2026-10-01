@@ -749,7 +749,7 @@ def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
     level = _LOG_LEVEL_TOKEN_RE.match(line)
     if level is not None:
         return level.group(1) in "WE"
-    return "error" in line_lower or "fail" in line_lower
+    return "error" in line_lower or "fail" in line_lower or "warn" in line_lower
 
 
 def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], environ) -> list[str]:
@@ -17815,10 +17815,14 @@ class LlamaCppBackend:
                         to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
                     elif not levelled:
                         to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
-                    if to_info:
-                        logger.info(f"[llama-server] {line}")
-                    else:
-                        logger.debug(f"[llama-server] {line}")
+                    try:
+                        if to_info:
+                            logger.info(f"[llama-server] {line}")
+                        else:
+                            logger.debug(f"[llama-server] {line}")
+                    except Exception:
+                        # A closed stdout must not stop the drain and stall the server.
+                        pass
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
                         try:

@@ -91,9 +91,16 @@ def test_only_warnings_errors_and_readiness_reach_info(monkeypatch):
 def test_builds_without_level_letters_fall_back_to_keywords(monkeypatch):
     log = _logger(monkeypatch)
     _backend(
-        ["llama_model_loader: - kv 2: general.name str = test", "error: failed to load model"]
+        [
+            "llama_model_loader: - kv 2: general.name str = test",
+            "error: failed to load model",
+            "warning: GPU backend unavailable",
+        ]
     )._drain_stdout()
-    assert _info_lines(log) == ["[llama-server] error: failed to load model"]
+    assert _info_lines(log) == [
+        "[llama-server] error: failed to load model",
+        "[llama-server] warning: GPU backend unavailable",
+    ]
 
 
 def test_user_text_in_a_trace_dump_stays_debug(monkeypatch):
@@ -153,3 +160,22 @@ def test_close_writes_reason_and_exit_code_and_rearms_the_tee_warning(tmp_path, 
     log.records.clear()
     b._close_attempt_log()
     assert not _info_lines(log)
+
+
+def test_a_raising_logger_does_not_stop_the_drain():
+    class _Raising:
+        def __getattr__(self, name):
+            def boom(*a, **k):
+                raise ValueError("I/O operation on closed file")
+
+            return boom
+
+    lines = list(_NOTABLE) + list(_NOISE)
+    b = _backend(lines)
+    llama_cpp_logger = llama_cpp.logger
+    llama_cpp.logger = _Raising()
+    try:
+        b._drain_stdout()
+    finally:
+        llama_cpp.logger = llama_cpp_logger
+    assert b._stdout_lines == lines
