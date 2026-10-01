@@ -38139,7 +38139,7 @@ class LlamaCppBackend:
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm
                     if image_share is not None:
-                        start_event["image_disclosure"] = image_share
+                        start_event["image_disclosure"] = image_share["disclosure"]
 
                     try:
                         # Gated calls are not running yet; a "Running ..." badge
@@ -38773,9 +38773,7 @@ class LlamaCppBackend:
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             if image_share is not None:
-                                kwargs["mcp_image"] = mcp_image.approved_for(
-                                    image_share["recipient"]
-                                )
+                                kwargs["mcp_image"] = image_share["image"]
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

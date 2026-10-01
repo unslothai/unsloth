@@ -5,6 +5,7 @@ import asyncio
 import base64
 import io
 import json
+import random
 
 import pytest
 from fastapi import HTTPException
@@ -36,6 +37,14 @@ LOOKUP = {
 def _png_bytes(fmt = "PNG"):
     out = io.BytesIO()
     Image.new("RGB", (4, 3), "red").save(out, format = fmt)
+    return out.getvalue()
+
+
+def _noise_png():
+    out = io.BytesIO()
+    Image.frombytes("RGB", (64, 64), random.Random(0).randbytes(64 * 64 * 3)).save(
+        out, format = "PNG"
+    )
     return out.getvalue()
 
 
@@ -116,7 +125,7 @@ def test_execute_tool_inserts_the_image_only_when_given_one(mapped_server):
     assert out.startswith("Error: no approved image") and mapped_server == []
 
     share = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)
-    approved = image.approved_for(share["recipient"])
+    approved = share["image"]
     out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
     assert mapped_server[0]["args"]["image"] == image.encoded("data_url")
     assert args == {"image": ATTACHED_IMAGE}
@@ -132,9 +141,7 @@ def test_execute_tool_inserts_the_image_only_when_given_one(mapped_server):
 def test_an_edit_while_the_card_is_open_does_not_redirect_the_image(mapped_server, monkeypatch):
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {"image": ATTACHED_IMAGE}
-    approved = image.approved_for(
-        tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["recipient"]
-    )
+    approved = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["image"]
     stale = mcp_servers_db.get_server("srv1")
     mcp_servers_db.update_server("srv1", {"headers_json": json.dumps({"X-Key": "other"})})
     # execute_tool resolved the row before the edit landed.
@@ -149,11 +156,14 @@ def test_an_edit_while_the_card_is_open_does_not_redirect_the_image(mapped_serve
         lambda d: base64.urlsafe_b64encode(d).decode(),
         lambda d: d.hex(),
         lambda d: "\\n".join(base64.b64encode(d).decode()[i : i + 8] for i in range(0, 200, 8)),
+        lambda d: base64.b64encode(d).decode().replace("/", "\\/"),
+        lambda d: base64.b64encode(d[1:]).decode(),
+        lambda d: base64.b64encode(d[len(d) // 2 :]).decode(),
     ],
-    ids = ["urlsafe", "hex", "wrapped"],
+    ids = ["urlsafe", "hex", "wrapped", "json-escaped", "offset", "tail"],
 )
 def test_a_reencoded_echo_withholds_the_result(encode):
-    image = McpImage(mime = "image/png", data = _png_bytes() * 4)
+    image = McpImage(mime = "image/png", data = _noise_png())
     assert image.redact(f"result: {encode(image.data)}") == WITHHELD_RESULT
     assert image.redact("result: Cowboy Bebop ep 5") == "result: Cowboy Bebop ep 5"
 
@@ -181,9 +191,13 @@ def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
     )
     assert tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": ATTACHED_IMAGE}, None) is None
     share = tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": ATTACHED_IMAGE}, image)
-    assert share["server"] == "Trace" and share["tool"] == "lookup"
-    assert share["size_bytes"] == len(image.data)
-    assert share["destination"] == "trace.example"
+    assert share["disclosure"] == {
+        "server": "Trace",
+        "tool": "lookup",
+        "size_bytes": len(image.data),
+        "destination": "trace.example",
+    }
+    assert share["image"].data == image.data and share["image"].recipient
 
 
 def _one_call_turns():
@@ -232,7 +246,9 @@ def test_safetensors_loop_always_asks_before_sending_the_image(mapped_server, de
     assert starts[0]["awaiting_confirmation"] is True
     assert starts[0]["image_disclosure"]["server"] == "Trace"
     assert [getattr(s, "data", None) for s in seen] == ([image.data] if decision == "allow" else [])
-    assert all(s.recipient == starts[0]["image_disclosure"]["recipient"] for s in seen)
+    # The fingerprint covers the server's headers, so it is never streamed.
+    assert "recipient" not in starts[0]["image_disclosure"]
+    assert all(s.recipient for s in seen)
 
 
 def test_route_requires_an_interactive_stream_for_the_image():
@@ -288,4 +304,4 @@ def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
         ast.unparse(node) for node in ast.walk(ast.parse(src)) if isinstance(node, ast.stmt)
     }
     assert "needs_confirm = needs_confirm or image_share is not None" in statements
-    assert "kwargs['mcp_image'] = mcp_image.approved_for(image_share['recipient'])" in statements
+    assert "kwargs['mcp_image'] = image_share['image']" in statements

@@ -56,17 +56,31 @@ class McpImage:
         return WITHHELD_RESULT if self._reencoded_in(head) else head
 
     def _reencoded_in(self, text: str) -> bool:
-        # A leading slice catches wrapped, escaped, percent, url-safe and hex copies, truncated too.
-        probe = self.data[:_PROBE_BYTES]
-        compact = "".join(text.split()).replace("\\n", "").replace("\\r", "")
+        # Slices spread over the image, at every base64 alignment, catch wrapped, escaped, percent, url-safe and
+        # hex copies, partial ones too.
+        compact = "".join(text.split()).replace("\\n", "").replace("\\r", "").replace("\\/", "/")
         if "%" in compact:
             compact = unquote(compact)
-        b64 = base64.b64encode(probe).decode("ascii").rstrip("=")
-        return (
-            b64 in compact
-            or b64.replace("+", "-").replace("/", "_") in compact
-            or probe.hex() in compact.lower()
-        )
+        lowered = compact.lower()
+        for probe in self._probes():
+            b64 = base64.b64encode(probe).decode("ascii")
+            if (
+                b64 in compact
+                or b64.replace("+", "-").replace("/", "_") in compact
+                or probe.hex() in lowered
+            ):
+                return True
+        return False
+
+    def _probes(self):
+        last = len(self.data) - _PROBE_BYTES
+        if last < 0:
+            yield self.data[: len(self.data) // 3 * 3]
+            return
+        for start in sorted({last * i // 7 for i in range(8)}):
+            for shift in range(3):
+                if start + shift <= last:
+                    yield self.data[start + shift : start + shift + _PROBE_BYTES]
 
 
 def parse_mcp_image(data_url: str) -> McpImage:

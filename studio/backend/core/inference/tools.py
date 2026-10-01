@@ -13340,19 +13340,22 @@ def _mcp_image_recipient(server: dict, mapping: dict) -> str:
 
 
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
-    """Approval-card details when this call would send the user's attached image, else None."""
+    """Approval-card details plus the image bound to this server when the call would send it, else None."""
     if mcp_image is None or not isinstance(arguments, dict):
         return None
     server, tool, tool_name = _mcp_resolve_tool(name)
     mapping = image_mapping(server, tool) if server else None
     if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
         return None
+    # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
     return {
-        "server": server.get("display_name") or server["id"],
-        "tool": tool_name,
-        "size_bytes": len(mcp_image.data),
-        "destination": urllib.parse.urlsplit(server["url"]).netloc or server["url"],
-        "recipient": _mcp_image_recipient(server, mapping),
+        "disclosure": {
+            "server": server.get("display_name") or server["id"],
+            "tool": tool_name,
+            "size_bytes": len(mcp_image.data),
+            "destination": urllib.parse.urlsplit(server["url"]).netloc or server["url"],
+        },
+        "image": mcp_image.approved_for(_mcp_image_recipient(server, mapping)),
     }
 
 

@@ -607,7 +607,8 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     from core.inference.mcp_image import McpImage
 
     image = McpImage(mime = "image/png", data = b"IMG")
-    shared = {"server": "Trace", "tool": "lookup", "size_bytes": 3, "recipient": "r1"}
+    disclosure = {"server": "Trace", "tool": "lookup", "size_bytes": 3}
+    shared = {"disclosure": disclosure, "image": image.approved_for("r1")}
     asked: list = []
     monkeypatch.setattr(
         loop_mod, "mcp_image_share", lambda name, args, image: shared if image else None
@@ -627,7 +628,7 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
     lines = _run(FakeTransport(turns), mcp_image = image, bypass_permissions = True)
 
     start = _events(lines, "tool_start")[0]
-    assert start["awaiting_confirmation"] is True and start["image_disclosure"] == shared
+    assert start["awaiting_confirmation"] is True and start["image_disclosure"] == disclosure
     assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
     # Without an image the same call keeps the ordinary path: no card, no image.
     executed.clear()

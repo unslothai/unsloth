@@ -1735,7 +1735,7 @@ async def stream_with_studio_tools(
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
             if image_share is not None:
-                start_event["image_disclosure"] = image_share
+                start_event["image_disclosure"] = image_share["disclosure"]
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1852,7 +1852,7 @@ async def stream_with_studio_tools(
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 if image_share is not None:
-                    kwargs["mcp_image"] = mcp_image.approved_for(image_share["recipient"])
+                    kwargs["mcp_image"] = image_share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
