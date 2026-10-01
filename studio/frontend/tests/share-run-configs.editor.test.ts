@@ -378,6 +378,12 @@ test("share dialog defaults to Web only on loopback addresses", () => {
       const explicit = new URL(render().link);
       assert.equal(explicit.origin, new URL(address).origin);
       assert.equal(explicit.search, "?run=1");
+      const note = text(render().tree);
+      assert.equal(
+        note.includes("Anyone with it and your password can sign in"),
+        destination === "desktop",
+        address,
+      );
     }
   } finally {
     Object.assign(window, { location: previous });

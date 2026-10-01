@@ -115,10 +115,11 @@ export function ShareRunConfigDialog({
   const [includeVariant, setIncludeVariant] = useState(
     shareableModel && Boolean(target.ggufVariant),
   );
-  const [destination, setDestination] = useState(() =>
-    !isTauri && loopbackHostname.test(window.location.hostname)
-      ? "browser"
-      : "desktop",
+  // A tunnel or LAN address: whoever has it and the password reaches this machine.
+  const remoteAddress =
+    !isTauri && !loopbackHostname.test(window.location.hostname);
+  const [destination, setDestination] = useState(
+    remoteAddress ? "desktop" : "browser",
   );
   const [selected, setSelected] = useState<Set<SharedConfigKey>>(
     () =>
@@ -295,10 +296,18 @@ export function ShareRunConfigDialog({
                 </>
               )}
             </div>
-            <p className="text-ui-12 leading-snug text-muted-foreground">
-              {destination === "browser"
-                ? "This link contains your Unsloth Web address. Recipients need access to that address. A localhost address opens Unsloth Web on their own computer."
-                : "The recipient needs Unsloth Desktop installed."}
+            <p
+              className={
+                destination === "browser" && remoteAddress
+                  ? "text-ui-12 leading-snug text-amber-600 dark:text-amber-500"
+                  : "text-ui-12 leading-snug text-muted-foreground"
+              }
+            >
+              {destination !== "browser"
+                ? "The recipient needs Unsloth Desktop installed."
+                : remoteAddress
+                  ? "This link contains this Studio's network address. Anyone with it and your password can sign in and control this computer. Share it only with people who should use this Studio; otherwise share a Desktop link."
+                  : "This link contains your Unsloth Web address. Recipients need access to that address. A localhost address opens Unsloth Web on their own computer."}
             </p>
           </div>
           <div className="space-y-1.5">
