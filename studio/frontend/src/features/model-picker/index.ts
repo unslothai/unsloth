@@ -83,3 +83,7 @@ export {
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";
+export {
+  SharedRunConfigLinkHandler,
+  receiveSharedRunConfigUrls,
+} from "./sharing";
