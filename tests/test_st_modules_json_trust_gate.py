@@ -263,9 +263,8 @@ def test_a_real_dense_config_is_untouched_by_that_check(tmp_path):
 def test_the_check_does_not_key_off_the_import_module_class_attribute(
     helper, tmp_path, monkeypatch
 ):
-    """util.import_module_class is not a version test: 5.5 exports it while its WordEmbeddings.load
-    still calls import_from_string on tokenizer_class. Keying off it skipped the check on exactly
-    the versions that need it, so the refusal must hold whatever the attribute is."""
+    """Not a version test: 5.5 exports it while its WordEmbeddings.load still calls
+    import_from_string on tokenizer_class, so the refusal holds whatever the attribute is."""
     import sentence_transformers.util as st_util
     from sentence_transformers.models import Dense
 

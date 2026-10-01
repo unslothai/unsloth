@@ -1255,16 +1255,8 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _import_sentence_transformers_class(class_ref, model_name):
-        """Resolve an in-namespace "type" and confirm what came back is really one of
-        sentence-transformers' module classes.
-
-        The prefix test pins the import to the installed sentence_transformers package, so the
-        import itself reaches only trusted code. It does not say the name denotes a module class:
-        the same dotted syntax reaches any public attribute, a submodule, or a plain function, and
-        the caller goes straight on to call .load() on whatever is returned. So confirm the result
-        before handing it the load, which also keeps a ref that merely looks in-namespace from
-        reaching code that isn't.
-        """
+        """The prefix pins the import to the installed package, but not to a module class: the
+        same syntax names any attribute, and _load_modules then calls .load() on it."""
         from sentence_transformers.util import import_from_string
 
         if not class_ref.split(".")[-1] or not all(
@@ -1304,14 +1296,11 @@ class FastSentenceTransformer(FastModel):
             "sentence_transformers.base.modules.transformer.Transformer",
         }
 
-    # A module's own config carries further dotted class paths that some sentence-transformers
-    # loaders import ungated, so an allowed in-namespace "type" could walk around the gate above:
     # Dense imports AND CALLS config["activation_function"], WordEmbeddings imports
-    # config["tokenizer_class"], and Router/Asym import every value of config["types"]. The prefixes
-    # are upstream's own rules, so applying them unconditionally only ever agrees with a version
-    # that gates for itself. Which versions those are cannot be feature-detected: 5.5 exports
-    # util.import_module_class while its WordEmbeddings.load still calls import_from_string on
-    # tokenizer_class, so keying off that attribute skipped the check on the versions needing it.
+    # config["tokenizer_class"], Router/Asym import every config["types"] value, all ungated on
+    # some versions, so an allowed in-namespace "type" reaches them. Prefixes are upstream's own
+    # rules, applied unconditionally: util.import_module_class is not a version test, since 5.5
+    # exports it while its WordEmbeddings.load still calls import_from_string on tokenizer_class.
     _MODULE_CONFIG_CLASS_REFS = (
         ("activation_function", "torch."),
         ("tokenizer_class", "sentence_transformers."),
