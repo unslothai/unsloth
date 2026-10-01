@@ -359,7 +359,10 @@ export function ThreadSidebar({
           <Input
             value={renameDraft}
             onChange={(e) => setRenameDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); }}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              if (e.key === "Enter") void commitRename();
+            }}
             autoFocus
           />
           <DialogFooter>
