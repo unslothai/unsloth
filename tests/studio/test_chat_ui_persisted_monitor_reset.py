@@ -56,9 +56,23 @@ def test_the_fresh_page_writes_storage_where_no_app_code_runs():
 
 def test_every_blocking_call_announces_itself_first():
     body = _step_body()
-    for call in ("page.close()", "ctx.clear_cookies()", "new_throttled_page(ctx)", "page.goto("):
-        preceding = body[: body.index(call)].rstrip().splitlines()
-        window = "\n".join(preceding[-3:])
-        assert (
-            "info(" in window
-        ), f"{call} has no breadcrumb before it, so a wedge there prints nothing"
+    handoff = body.index("page = _fresh_page")
+    calls = {
+        "page.close()": body.index("page.close()"),
+        "ctx.clear_cookies()": body.index("ctx.clear_cookies()"),
+        "new_throttled_page(ctx)": body.index("new_throttled_page(ctx)"),
+        "page.goto(": body.index("page.goto("),
+        # The storage write is a timeout-free page.evaluate under the wrapper.
+        "robust_evaluate(": body.index("robust_evaluate(", handoff),
+    }
+    for call, at in calls.items():
+        # The statement directly before the call (a try: line in between is allowed),
+        # not a nearby one: two calls in a row must each name themselves.
+        preceding = [
+            line.strip()
+            for line in body[: body.rfind("\n", 0, at)].splitlines()
+            if line.strip() and line.strip() != "try:"
+        ]
+        assert preceding and preceding[-1].startswith(
+            "info("
+        ), f"{call} has no breadcrumb directly before it, so a wedge there names the wrong call"

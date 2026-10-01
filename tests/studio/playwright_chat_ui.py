@@ -2487,6 +2487,7 @@ with sync_playwright() as p:
     page = _fresh_page
     info("parking the fresh page on /api/health to write localStorage")
     page.goto(f"{BASE}/api/health", wait_until = "domcontentloaded", timeout = 30_000)
+    info("writing the monitor overlay and clearing the auth tokens")
     robust_evaluate(
         page,
         """() => {
