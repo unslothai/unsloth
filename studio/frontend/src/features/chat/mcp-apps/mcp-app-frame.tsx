@@ -57,6 +57,12 @@ function isHttpUrl(url: string): boolean {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+interface FrameScope {
+  serverId: string;
+  threadId?: string;
+  sessionId?: string;
+}
+
 interface PendingToolCall {
   name: string;
   argsPreview: string;
@@ -102,7 +108,11 @@ export function McpAppFrame(props: McpAppFrameProps) {
   const { serverId, toolName, ui, threadId, sessionId, className } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { resolved: theme } = useTheme();
-  const [resource, setResource] = useState<McpUiResource | null>(null);
+  // The scope the template was fetched for travels with it: a reused component's new props must
+  // never redirect the old widget's requests to another server or conversation.
+  const [resource, setResource] = useState<
+    (McpUiResource & { scope: FrameScope }) | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [pendingCalls, setPendingCalls] = useState<PendingToolCall[]>([]);
@@ -118,7 +128,9 @@ export function McpAppFrame(props: McpAppFrameProps) {
     setResource(null);
     setError(null);
     readMcpUiResource(serverId, ui.resourceUri, { threadId, sessionId }).then(
-      (loaded) => !cancelled && setResource(loaded),
+      (loaded) =>
+        !cancelled &&
+        setResource({ ...loaded, scope: { serverId, threadId, sessionId } }),
       (err: unknown) =>
         !cancelled &&
         setError(err instanceof Error ? err.message : String(err)),
@@ -134,7 +146,13 @@ export function McpAppFrame(props: McpAppFrameProps) {
     if (!resource || !token) return null;
     const shim = bridgeShim(token, window.location.origin);
     const html = withBridgeShim(`${resource.text}\n${RESIZE_FALLBACK}`, shim);
-    return { token, html, src: frameSrc(resource.ui?.csp), fed: false };
+    return {
+      token,
+      html,
+      src: frameSrc(resource.ui?.csp),
+      scope: resource.scope,
+      fed: false,
+    };
   }, [resource]);
 
   // Layout, not passive: the listener must be armed before the iframe's onLoad and first message.
@@ -156,7 +174,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         throw new RpcError("tools/call requires a tool name", INVALID_PARAMS);
       }
       const args = isObject(rawArgs) ? rawArgs : {};
-      const { serverId, threadId, sessionId } = latest.current.props;
+      const { serverId, threadId, sessionId } = frame.scope;
       const scope = toolApprovalScope(sessionId, threadId);
       const toolKey = `mcp__${serverId}__${name}`;
       const send = (approved: boolean) =>
@@ -213,7 +231,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
     };
 
     const request = async (method: string, params: Record<string, unknown>) => {
-      const { props: now, theme: nowTheme } = latest.current;
+      const { theme: nowTheme } = latest.current;
       switch (method) {
         case "ui/initialize":
           return {
@@ -241,9 +259,10 @@ export function McpAppFrame(props: McpAppFrameProps) {
           if (typeof params.uri !== "string" || !params.uri) {
             throw new RpcError("resources/read requires a uri", INVALID_PARAMS);
           }
-          const res = await readMcpUiResource(now.serverId, params.uri, {
-            threadId: now.threadId,
-            sessionId: now.sessionId,
+          const { serverId, threadId, sessionId } = frame.scope;
+          const res = await readMcpUiResource(serverId, params.uri, {
+            threadId,
+            sessionId,
           });
           if (res.contents?.length) return { contents: res.contents };
           const body = res.blob ? { blob: res.blob } : { text: res.text };

@@ -35,7 +35,7 @@ test("a widget's tools/call is sent as approved only when the user said so", () 
   );
   assert.match(
     frame,
-    /const \{ serverId, threadId, sessionId \} = latest\.current\.props;/,
+    /const \{ serverId, threadId, sessionId \} = frame\.scope;/,
   );
 });
 
@@ -135,4 +135,15 @@ test("a widget's link opens only from the user's Open click, never from the requ
   assert.match(openLinkCase, /link: url,/);
   assert.match(openLinkCase, /return opened \? \{\} : \{ isError: true \};/);
   assert.match(frame, /if \(allow && asking\.link\) openLink\(asking\.link\);/);
+});
+
+test("a widget's server-bound requests use the scope its template was fetched for", () => {
+  assert.match(frame, /scope: \{ serverId, threadId, sessionId \}/);
+  assert.equal(
+    frame.match(/const \{ serverId, threadId, sessionId \} = frame\.scope;/g)
+      ?.length,
+    2,
+  );
+  assert.doesNotMatch(frame, /latest\.current\.props;\n\s*const scope/);
+  assert.doesNotMatch(frame, /readMcpUiResource\(now\.serverId/);
 });
