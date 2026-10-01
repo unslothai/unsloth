@@ -8419,6 +8419,8 @@ class LlamaCppBackend:
             kwargs["preserve_thinking"] = preserve_thinking
         _coerce_reasoning_effort(getattr(self, "_architecture", None), kwargs)
         compiled = getattr(self, "_compiled_custom_config", None)
+        if compiled is None and request_template_kwargs is None:
+            return kwargs or None
         preset = (
             compiled.summary()["request_defaults"].get("chat_template_kwargs", {})
             if compiled
