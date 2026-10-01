@@ -2705,6 +2705,14 @@ class VideoBackend:
         # reaches the Hub just as a weight pull does. READ, not popped: load_pipeline takes it too (it is in this
         # thread's kwargs by contract).
         local_files_only = bool(kwargs.get("local_files_only"))
+        # Before anything below can import unsloth_zoo, torchao or diffusers: each enters the
+        # torch._dynamo import cycle from the inductor side, so racing the background torch warm
+        # there leaves dynamo half-initialised until a restart. A no-op once the warm is done.
+        try:
+            from utils.torch_warmup import gate_torch_stack_import
+            gate_torch_stack_import("video load", logger)
+        except Exception as exc:  # noqa: BLE001 - a safety net, never a new failure
+            logger.debug("dynamo import gate skipped: %r", exc)
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"],

@@ -2987,6 +2987,14 @@ class DiffusionBackend:
         # load_pipeline and nothing before it, so the prefetch that moves the bytes ran unrestricted. READ, not
         # popped: load_pipeline takes it too.
         local_files_only = bool(kwargs.get("local_files_only"))
+        # Before anything below can import unsloth_zoo, torchao or diffusers: each enters the
+        # torch._dynamo import cycle from the inductor side, so racing the background torch warm
+        # there leaves dynamo half-initialised until a restart. A no-op once the warm is done.
+        try:
+            from utils.torch_warmup import gate_torch_stack_import
+            gate_torch_stack_import("image load", logger)
+        except Exception as exc:  # noqa: BLE001 - a safety net, never a new failure
+            logger.debug("dynamo import gate skipped: %r", exc)
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
