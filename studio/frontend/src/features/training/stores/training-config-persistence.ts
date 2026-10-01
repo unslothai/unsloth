@@ -228,6 +228,7 @@ function migrateThroughVersion19(
       loraRankBeforeCpt: null,
       loraAlphaBeforeCpt: null,
       loraVariantBeforeCpt: null,
+      trainOnCompletionsBeforeCpt: null,
     } satisfies TrainingMethodProvenance;
   }
 }
@@ -357,6 +358,10 @@ function normalizeTrainingMethodProvenance(
     loraVariantBeforeCpt:
       wasCpt && isLoraVariant(provenance.loraVariantBeforeCpt)
         ? provenance.loraVariantBeforeCpt
+        : null,
+    trainOnCompletionsBeforeCpt:
+      wasCpt && typeof provenance.trainOnCompletionsBeforeCpt === "boolean"
+        ? provenance.trainOnCompletionsBeforeCpt
         : null,
   };
 }

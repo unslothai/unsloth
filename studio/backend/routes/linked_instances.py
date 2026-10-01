@@ -86,7 +86,9 @@ async def create_linked_instance(payload: LinkedInstanceCreate):
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
-@router.patch("/{instance_id}", response_model = LinkedInstance, dependencies = [Depends(_require_owner_ui)])
+@router.patch(
+    "/{instance_id}", response_model = LinkedInstance, dependencies = [Depends(_require_owner_ui)]
+)
 async def update_linked_instance(instance_id: str, payload: LinkedInstanceUpdate):
     base_url = await _normalized_url(payload.base_url) if payload.base_url is not None else None
     try:

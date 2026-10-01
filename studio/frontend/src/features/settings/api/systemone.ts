@@ -26,6 +26,7 @@ export type SystemOneSettings = {
   loadingModel: string | null;
   installing: boolean;
   error: string | null;
+  mcpUrl: string;
 };
 
 export type SystemOneDownloadPlan = {
@@ -34,6 +35,14 @@ export type SystemOneDownloadPlan = {
   sizeBytes: number;
   cached: boolean;
   error: string | null;
+};
+
+export type SystemOneSettingsPatch = {
+  enabled?: boolean;
+  model?: string;
+  device?: SystemOneDevice;
+  expectedEnabled?: boolean;
+  expectedModel?: string;
 };
 
 type ApiSystemOneSettings = {
@@ -58,6 +67,8 @@ type ApiSystemOneSettings = {
   loading_model: string | null;
   installing: boolean;
   error: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mcp_url: string;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -70,6 +81,35 @@ type ApiSystemOneDownloadPlan = {
 };
 
 const SETTINGS_PATH = "/api/settings/systemone";
+const SYSTEMONE_SETTINGS_EVENT = "unsloth-systemone-settings-change";
+
+export function subscribeSystemOneSettings(
+  listener: (settings: SystemOneSettings) => void,
+) {
+  const handleChange = (event: Event) => {
+    listener((event as CustomEvent<SystemOneSettings>).detail);
+  };
+  window.addEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
+  return () => window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
+}
+
+function publishSystemOneSettings(settings: SystemOneSettings) {
+  window.dispatchEvent(
+    new CustomEvent(SYSTEMONE_SETTINGS_EVENT, { detail: settings }),
+  );
+  return settings;
+}
+
+function toApiPatch(patch: SystemOneSettingsPatch) {
+  const { expectedEnabled, expectedModel, ...settings } = patch;
+  return {
+    ...settings,
+    ...(expectedEnabled !== undefined && {
+      expected_enabled: expectedEnabled,
+    }),
+    ...(expectedModel !== undefined && { expected_model: expectedModel }),
+  };
+}
 
 function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
   return {
@@ -90,6 +130,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     loadingModel: settings.loading_model,
     installing: settings.installing,
     error: settings.error,
+    mcpUrl: settings.mcp_url,
   };
 }
 
@@ -107,19 +148,37 @@ export async function loadSystemOneSettings(): Promise<SystemOneSettings> {
   );
 }
 
-export async function updateSystemOneSettings(patch: {
-  enabled?: boolean;
-  model?: string;
-  device?: SystemOneDevice;
-}): Promise<SystemOneSettings> {
-  return readSettings(
-    await authFetch(SETTINGS_PATH, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }),
-    "Failed to save Decision API settings",
+export async function updateSystemOneSettings(
+  patch: SystemOneSettingsPatch,
+): Promise<SystemOneSettings> {
+  return publishSystemOneSettings(
+    await readSettings(
+      await authFetch(SETTINGS_PATH, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(toApiPatch(patch)),
+      }),
+      "Failed to save Decision API settings",
+    ),
   );
+}
+
+export async function validateSystemOneSettings(
+  patch: SystemOneSettingsPatch,
+): Promise<void> {
+  const res = await authFetch(`${SETTINGS_PATH}/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(toApiPatch(patch)),
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(
+        res,
+        "Couldn't validate the Decision API setting.",
+      ),
+    );
+  }
 }
 
 export async function unloadSystemOneModel(): Promise<SystemOneSettings> {
@@ -129,8 +188,11 @@ export async function unloadSystemOneModel(): Promise<SystemOneSettings> {
   );
 }
 
-export async function resolveSystemOneDownload(): Promise<SystemOneDownloadPlan> {
-  const res = await authFetch(`${SETTINGS_PATH}/resolve`);
+export async function resolveSystemOneDownload(
+  model?: string,
+): Promise<SystemOneDownloadPlan> {
+  const query = model ? `?${new URLSearchParams({ model })}` : "";
+  const res = await authFetch(`${SETTINGS_PATH}/resolve${query}`);
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to check the Decision API model"),

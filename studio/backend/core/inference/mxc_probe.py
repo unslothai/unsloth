@@ -15,7 +15,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from . import mxc_adapter, mxc_policy, mxc_runtime
+from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_runtime
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, bool, str]] = {}
@@ -75,14 +75,22 @@ def host_prep_remediation() -> str | None:
     return advice
 
 
+def _is_cmd(selected_executable: str) -> bool:
+    return Path(selected_executable).name.casefold() in mxc_policy._CMD_NAMES
+
+
 def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outside_write: Path):
     name = Path(selected_executable).name.casefold()
     read_capture = workdir / "outside-read.txt"
-    if name in {"cmd", "cmd.exe"}:
+    if _is_cmd(selected_executable):
+        # The quoted redirect is the positive control for quoting: a command line that mangles quotes
+        # also fails the denied read and write below, which would otherwise pass without isolation.
         command = (
             "echo ok>inside.txt"
+            ' & echo ok>"inside quoted.txt"'
             f' & type "{canary}" >"{read_capture}" 2>nul'
             f' & (echo bad>"{outside_write}") 2>nul'
+            " & cd"
             " & echo UNSLOTH_MXC_TERMINAL_PROBE_OK"
         )
         return (selected_executable, "/d", "/s", "/c", command)
@@ -223,8 +231,21 @@ def _probe(
             env = env,
         )
 
+        # Production runs a cmd Terminal from a drive alias of its workdir, so the probe must too.
+        lease = None
+        if execution_kind == "terminal" and _is_cmd(selected_executable):
+            try:
+                lease = mxc_drive_alias.acquire(
+                    mxc_policy._safe_canonical_path(str(workdir), directory = True)
+                )
+            except Exception:
+                lease = None
         try:
-            request = mxc_policy.build_launch_request(probe_plan)
+            request = (
+                mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
+                if lease
+                else mxc_policy.build_launch_request(probe_plan)
+            )
             proc = mxc_adapter.spawn(
                 request,
                 cancel_event = cancel_event,
@@ -261,6 +282,8 @@ def _probe(
                 if proc.poll() is None:
                     mxc_adapter.abort(proc)
                 mxc_adapter.release_runtime(proc)
+            if lease is not None:
+                lease.release()
         if (
             proc.returncode != 0
             or result.get("exitCode") != 0
@@ -281,6 +304,8 @@ def _probe(
                 or outside_write.exists()
                 or "outside-secret" in outside_read
                 or not (workdir / "inside.txt").is_file()
+                or (_is_cmd(selected_executable) and not (workdir / "inside quoted.txt").is_file())
+                or (lease is not None and lease.root.casefold() not in output.casefold().split())
             ):
                 return False, "the live MXC Terminal positive/negative controls failed"
             return True, "the selected Terminal passed the live MXC positive and negative controls"

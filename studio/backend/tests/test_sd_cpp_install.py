@@ -3294,3 +3294,48 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "remaining", "body", "throttled"),
+    [
+        (403, "0", b"", True),
+        (429, "4998", b"", True),
+        (403, "4998", b'{"message": "secondary rate limit"}', True),
+        (403, "4998", b'{"message": "Resource not accessible"}', False),
+    ],
+)
+def test_a_rate_limit_stops_the_fallback_ladder(
+    monkeypatch, capsys, status, remaining, body, throttled
+):
+    import email.message
+
+    seen = []
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+
+    def fake_fetch(
+        tag,
+        *,
+        repo,
+        token,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append(repo)
+        raise urllib.error.HTTPError(
+            f"https://api/{repo}", status, "refused", headers, io.BytesIO(body)
+        )
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    if not throttled:
+        assert sdmod._resolve_with_fallback("auto", None)[2] is None
+        assert len(seen) > 1
+        return
+    with pytest.raises(sdmod.GitHubRateLimited, match = "rate limiting.*GH_TOKEN"):
+        sdmod._resolve_with_fallback("auto", None)
+    assert len(seen) == 1
+    assert sdmod.main(["--print-asset"]) == 2
+    assert "rate limiting" in capsys.readouterr().err
