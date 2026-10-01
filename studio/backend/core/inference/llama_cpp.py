@@ -17842,10 +17842,13 @@ class LlamaCppBackend:
                         except OSError as e:
                             if not getattr(self, "_llama_log_tee_failed", False):
                                 self._llama_log_tee_failed = True
-                                logger.warning(
-                                    f"Could not write llama-server log "
-                                    f"{getattr(self, '_llama_log_path', None)}: {e}"
-                                )
+                                try:
+                                    logger.warning(
+                                        f"Could not write llama-server log "
+                                        f"{getattr(self, '_llama_log_path', None)}: {e}"
+                                    )
+                                except Exception:
+                                    pass
         except Exception:
             # Never let the drain thread die: a full stdout pipe can deadlock
             # llama-server (Windows). Pipe-closed on exit is the common case.

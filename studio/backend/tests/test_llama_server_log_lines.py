@@ -170,8 +170,13 @@ def test_a_raising_logger_does_not_stop_the_drain():
 
             return boom
 
+    class _Full:
+        def write(self, _):
+            raise OSError("disk full")
+
     lines = list(_NOTABLE) + list(_NOISE)
     b = _backend(lines)
+    b._llama_log_fh = _Full()
     llama_cpp_logger = llama_cpp.logger
     llama_cpp.logger = _Raising()
     try:
