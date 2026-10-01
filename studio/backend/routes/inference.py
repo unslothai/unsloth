@@ -20587,13 +20587,35 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     slot = await _route_to_extra_slot(model)
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse):
-        response.serving = [response.active_model] if response.active_model else []
+        active = response.active_model
+        response.serving = [active] if active else []
+        response.serving_checkpoints = [response.model_identifier or active] if active else []
         for other in (None, *model_slots.visible()):
             if other is not slot:
-                entries = await asyncio.to_thread(model_slots.in_slot, other, _slot_model_objects)
+                entries, checkpoints = await asyncio.to_thread(
+                    model_slots.in_slot, other, _slot_entries_and_checkpoints
+                )
                 response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
-                response.serving += [e["id"] for e in entries if e["id"] not in response.serving]
+                for e in entries:
+                    if e["id"] not in response.serving:
+                        response.serving.append(e["id"])
+                        response.serving_checkpoints.append(checkpoints.get(e["id"]) or e["id"])
     return response
+
+
+def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
+    """This slot's /v1/models entries, and the checkpoint each local one is loaded from."""
+    checkpoints: dict[str, str] = {}
+    llama = get_llama_cpp_backend()
+    if getattr(llama, "is_loaded", False):
+        public = _llama_public_model_id(llama)
+        if public:
+            checkpoints[public] = _llama_status_model_ids(llama)[1] or public
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    if name:
+        checkpoints[_orchestrator_public_model_id(backend) or name] = name
+    return _slot_model_objects(), checkpoints
 
 
 async def _slot_status(current_subject: str):

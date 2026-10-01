@@ -2247,7 +2247,7 @@ type ToolStatusEntry = {
   owner?: () => void;
 };
 
-export type LoadedModelSummary = { id: string; quant?: string | null };
+export type LoadedModelSummary = { id: string; quant?: string | null; checkpoint?: string };
 
 type ChatRuntimeStore = {
   settingsHydrated: boolean;

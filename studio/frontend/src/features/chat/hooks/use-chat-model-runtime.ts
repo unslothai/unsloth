@@ -599,14 +599,18 @@ function publishLoadedModels(
   ids: string[],
   statusId?: string | null,
   statusQuant?: string | null,
+  checkpoints?: string[],
 ): void {
   // The status names the quant of the model it describes; only the others need /v1/models.
   const current = useChatRuntimeStore.getState().loadedModels;
   const known = new Map(current.map((m) => [m.id, m]));
-  const next = ids.map((id) => {
+  const next = ids.map((id, i) => {
     const prev = known.get(id);
     const quant = id === statusId ? (statusQuant ?? null) : prev?.quant;
-    return prev && prev.quant === quant ? prev : { id, quant };
+    const checkpoint = checkpoints?.[i] || id;
+    return prev && prev.quant === quant && prev.checkpoint === checkpoint
+      ? prev
+      : { id, quant, checkpoint };
   });
   if (next.length !== current.length || next.some((m, i) => m !== current[i])) {
     useChatRuntimeStore.setState({ loadedModels: next });
@@ -705,6 +709,7 @@ async function syncInferenceStatusToStore(options?: {
       statusRes.serving ?? [],
       statusRes.active_model,
       statusRes.gguf_variant,
+      statusRes.serving_checkpoints,
     );
 
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
@@ -3791,7 +3796,7 @@ export function useChatModelRuntime() {
   const ejectAllModels = useCallback(async (): Promise<boolean> => {
     const others = useChatRuntimeStore
       .getState()
-      .loadedModels.map((m) => m.id)
+      .loadedModels.map((m) => m.checkpoint ?? m.id)
       .filter((id) => id !== params.checkpoint);
     const selectedLocal =
       Boolean(params.checkpoint) && !isExternalModelId(params.checkpoint);

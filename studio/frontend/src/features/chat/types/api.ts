@@ -360,6 +360,8 @@ export interface InferenceStatusResponse {
   loaded: string[];
   /** The models answering requests; `loaded` also names one only held behind the active model. */
   serving?: string[];
+  /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
+  serving_checkpoints?: string[];
   inference?: {
     temperature?: number;
     top_p?: number;

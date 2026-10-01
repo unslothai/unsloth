@@ -5831,7 +5831,9 @@ export function HubModelPicker({
 
   const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
     const optionKey = makeModelOptionKey("loaded", entry.id);
-    const isSelected = modelIdsMatchForPicker(value, entry.id);
+    // Select and eject by the checkpoint: a local model is labelled by name but loaded by path.
+    const checkpoint = entry.checkpoint ?? entry.id;
+    const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
     return (
       <div
@@ -5850,8 +5852,8 @@ export function HubModelPicker({
             loaded={true}
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() =>
-              onSelect(entry.id, {
-                source: "hub",
+              onSelect(checkpoint, {
+                source: /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint) ? "local" : "hub",
                 isLora: false,
                 ggufVariant: quant ?? undefined,
                 isDownloaded: true,
@@ -5870,7 +5872,7 @@ export function HubModelPicker({
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onEject?.(entry.id);
+                    onEject?.(checkpoint);
                   }}
                   aria-label={`Eject ${entry.id}`}
                   className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"

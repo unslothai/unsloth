@@ -23,3 +23,13 @@ test("every quant list and cached GGUF row marks the quant each loaded model run
   );
   assert.match(picker, /meta="GGUF"\s*quantChip=\{loadedQuants\.map\(ggufQuantChipLabel\)\.join\(", "\) \|\| undefined\}/);
 });
+
+test("a loaded row is selected, picked and ejected by its checkpoint, not its label", () => {
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(runtime, /const checkpoint = checkpoints\?\.\[i\] \|\| id;/);
+  assert.match(runtime, /statusRes\.serving_checkpoints,\s*\);/);
+  assert.match(runtime, /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/);
+  assert.match(picker, /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/);
+  assert.match(picker, /onSelect\(checkpoint, \{/);
+  assert.match(picker, /onEject\?\.\(checkpoint\);/);
+});

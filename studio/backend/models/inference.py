@@ -1814,6 +1814,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         description = "Models answering requests: the active one and each kept alongside. "
         "Unlike loaded, leaves out a model only held in memory behind the active one.",
     )
+    serving_checkpoints: List[str] = Field(
+        default_factory = list,
+        description = "The checkpoint id each serving entry is loaded from, in the same order: "
+        "the path of a local model, else the same id. Load, select and unload by this one.",
+    )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )

@@ -221,6 +221,27 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
     assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]
 
 
+def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(backends, monkeypatch):
+    # A local model is listed under its label but selected, loaded and unloaded by its path.
+    _, extra = backends
+    local = "/home/alice/models/B-local.gguf"
+    extra.llama = FakeLlama(local, "Q8_0")
+    public = inf._llama_public_model_id
+    monkeypatch.setattr(
+        inf,
+        "_llama_public_model_id",
+        lambda llama: "B-local" if llama is extra.llama else public(llama),
+    )
+
+    async def slot_status(subject):
+        return InferenceStatusResponse(active_model = "org/A-GGUF", model_identifier = "org/A-GGUF")
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    status = asyncio.run(inf.get_status("s"))
+    assert status.serving == ["org/A-GGUF", "B-local"]
+    assert status.serving_checkpoints == ["org/A-GGUF", local]
+
+
 def test_stop_loading_reaches_the_slot_being_filled(backends, monkeypatch):
     primary, _ = backends
     filling = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
