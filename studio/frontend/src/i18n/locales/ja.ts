@@ -1317,13 +1317,6 @@ export const ja = {
           wide: "広い",
           full: "全幅",
         },
-        composerAttachments: {
-          label: "入力欄の添付ファイル",
-          description:
-            "入力欄を広げる大きなカード、またはコンパクトなタイルの列で表示します。",
-          cards: "大きなカード",
-          compact: "コンパクトなタイル",
-        },
         sentAttachments: {
           label: "送信済みメッセージの添付ファイル",
           description:

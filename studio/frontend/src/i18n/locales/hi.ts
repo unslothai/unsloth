@@ -1338,13 +1338,6 @@ export const hi = {
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
         },
-        composerAttachments: {
-          label: "इनपुट बॉक्स में अटैचमेंट",
-          description:
-            "बड़े कार्ड जो इनपुट बॉक्स को बड़ा करते हैं, या टाइलों की एक कॉम्पैक्ट पंक्ति।",
-          cards: "बड़े कार्ड",
-          compact: "कॉम्पैक्ट टाइलें",
-        },
         sentAttachments: {
           label: "भेजे गए संदेशों में अटैचमेंट",
           description:

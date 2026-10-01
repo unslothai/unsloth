@@ -1335,13 +1335,6 @@ export const ar = {
           wide: "واسع",
           full: "العرض الكامل",
         },
-        composerAttachments: {
-          label: "المرفقات في حقل الكتابة",
-          description:
-            "بطاقات كبيرة تُوسّع حقل الكتابة، أو صف مضغوط من المربعات الصغيرة.",
-          cards: "بطاقات كبيرة",
-          compact: "مربعات مضغوطة",
-        },
         sentAttachments: {
           label: "المرفقات في الرسائل المرسلة",
           description:

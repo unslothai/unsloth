@@ -116,8 +116,8 @@ test("cards keep their hairline edge in dark mode", () => {
 
 test("the strip is laid out through the DOM, never through React state", () => {
   const strip = ATTACHMENT.slice(
-    ATTACHMENT.indexOf("const ComposerAttachmentCards: FC"),
     ATTACHMENT.indexOf("export const ComposerAttachments: FC"),
+    ATTACHMENT.indexOf("export const ComposerAddAttachment: FC"),
   );
   assert.match(strip, /el\.dataset\.layout = next/);
   assert.doesNotMatch(strip, /useState/);
@@ -138,21 +138,22 @@ test("sent attachments split images from files by type, with stable component ma
   assert.match(sent, /<AttachmentPreviewDialog redactFromReload=\{false\}>/);
 });
 
-test("both attachment settings default to the new look and reject anything else", () => {
-  assert.equal(DEFAULT_CUSTOMIZATION.composerAttachments, "cards");
+test("the sent attachments setting defaults to auto and rejects anything else", () => {
   assert.equal(DEFAULT_CUSTOMIZATION.sentAttachments, "auto");
-  const saved = sanitizeCustomization({
-    composerAttachments: "compact",
-    sentAttachments: "chips",
-  });
-  assert.equal(saved.composerAttachments, "compact");
-  assert.equal(saved.sentAttachments, "chips");
-  const junk = sanitizeCustomization({
-    composerAttachments: "huge",
-    sentAttachments: 7,
-  });
-  assert.equal(junk.composerAttachments, "cards");
-  assert.equal(junk.sentAttachments, "auto");
+  assert.equal(sanitizeCustomization({ sentAttachments: "chips" }).sentAttachments, "chips");
+  assert.equal(sanitizeCustomization({ sentAttachments: 7 }).sentAttachments, "auto");
+});
+
+test("the composer always shows attachments as cards", () => {
+  // A record saved while compact tiles were an option is dropped on load.
+  const saved = sanitizeCustomization({ composerAttachments: "compact" });
+  assert.equal("composerAttachments" in saved, false);
+  assert.match(
+    ATTACHMENT,
+    /<ComposerPrimitive\.Attachments components=\{CARD_COMPONENTS\} \/>/,
+  );
+  assert.doesNotMatch(ATTACHMENT, /COMPACT_COMPONENTS|const AttachmentUI\b|aui-pasted-text-chip/);
+  assert.doesNotMatch(ATTACHMENT, /customization\.composerAttachments/);
 });
 
 test("audio or video attached before a model loaded is checked when sent", () => {
@@ -295,8 +296,9 @@ test("a sent text file downloads whole, not the capped preview", async () => {
 });
 
 test("a composer clip reads as a video, not by its .mp4 name as audio", () => {
-  assert.match(ATTACHMENT, /if \(isVideoAttachment\(attachment\)\) return "Video";\n\s*return isAudioAttachment\(/);
-  assert.match(ATTACHMENT, /isVideo\n\s*\? FlimSlateIcon\n\s*: isAudioAttachment\(name, contentType\)/);
+  assert.equal(attachmentFileKind("clip.mp4", "video/mp4"), "video");
+  assert.equal(attachmentFileKind("clip.webm", "video/webm"), "video");
+  assert.equal(attachmentFileKind("song.mp3", "audio/mpeg"), "audio");
 });
 
 test("a sent document shown from its stored text downloads and chats as a .txt", async () => {

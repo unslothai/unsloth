@@ -1331,13 +1331,6 @@ export const ko = {
           wide: "넓게",
           full: "전체 너비",
         },
-        composerAttachments: {
-          label: "입력창의 첨부 파일",
-          description:
-            "입력창을 키우는 큰 카드 또는 작은 타일 한 줄로 표시합니다.",
-          cards: "큰 카드",
-          compact: "작은 타일",
-        },
         sentAttachments: {
           label: "보낸 메시지의 첨부 파일",
           description:

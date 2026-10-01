@@ -1318,13 +1318,6 @@ export const zhCN = {
           wide: "宽",
           full: "全宽",
         },
-        composerAttachments: {
-          label: "输入框中的附件",
-          description:
-            "使用会撑大输入框的大卡片，或紧凑的一行小图块。",
-          cards: "大卡片",
-          compact: "紧凑图块",
-        },
         sentAttachments: {
           label: "已发送消息中的附件",
           description:

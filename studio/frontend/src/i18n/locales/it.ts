@@ -1320,13 +1320,6 @@ export const it = {
           wide: "Ampia",
           full: "Larghezza piena",
         },
-        composerAttachments: {
-          label: "Allegati nel campo di testo",
-          description:
-            "Schede grandi che ingrandiscono il campo di testo, oppure una riga compatta di riquadri.",
-          cards: "Schede grandi",
-          compact: "Riquadri compatti",
-        },
         sentAttachments: {
           label: "Allegati nei messaggi inviati",
           description:

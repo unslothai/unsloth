@@ -1361,13 +1361,6 @@ export const de = {
           wide: "Breit",
           full: "Volle Breite",
         },
-        composerAttachments: {
-          label: "Anhänge im Eingabefeld",
-          description:
-            "Große Karten, die das Eingabefeld vergrößern, oder eine kompakte Reihe von Kacheln.",
-          cards: "Große Karten",
-          compact: "Kompakte Kacheln",
-        },
         sentAttachments: {
           label: "Anhänge in gesendeten Nachrichten",
           description:

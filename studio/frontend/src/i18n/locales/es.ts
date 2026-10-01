@@ -1356,13 +1356,6 @@ export const es = {
           wide: "Amplio",
           full: "Ancho completo",
         },
-        composerAttachments: {
-          label: "Adjuntos en el cuadro de texto",
-          description:
-            "Tarjetas grandes que agrandan el cuadro de texto o una fila compacta de miniaturas.",
-          cards: "Tarjetas grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Adjuntos en los mensajes enviados",
           description:

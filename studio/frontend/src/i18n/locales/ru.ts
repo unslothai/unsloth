@@ -1340,13 +1340,6 @@ export const ru = {
           wide: "Широкая",
           full: "Полная ширина",
         },
-        composerAttachments: {
-          label: "Вложения в поле ввода",
-          description:
-            "Крупные карточки, увеличивающие поле ввода, или компактный ряд плиток.",
-          cards: "Крупные карточки",
-          compact: "Компактные плитки",
-        },
         sentAttachments: {
           label: "Вложения в отправленных сообщениях",
           description:

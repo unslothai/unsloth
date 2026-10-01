@@ -1348,13 +1348,6 @@ export const ptBR = {
           wide: "Ampla",
           full: "Largura total",
         },
-        composerAttachments: {
-          label: "Anexos no campo de texto",
-          description:
-            "Cartões grandes que aumentam o campo de texto ou uma fileira compacta de miniaturas.",
-          cards: "Cartões grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Anexos nas mensagens enviadas",
           description:

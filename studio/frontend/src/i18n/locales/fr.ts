@@ -1360,13 +1360,6 @@ export const fr = {
           wide: "Large",
           full: "Pleine largeur",
         },
-        composerAttachments: {
-          label: "Pièces jointes dans la zone de saisie",
-          description:
-            "De grandes cartes qui agrandissent la zone de saisie, ou une rangée compacte de vignettes.",
-          cards: "Grandes cartes",
-          compact: "Vignettes compactes",
-        },
         sentAttachments: {
           label: "Pièces jointes dans les messages envoyés",
           description:
