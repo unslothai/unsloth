@@ -24,11 +24,23 @@ these tests observe whether an import happened at all.
 import json
 import os
 import sys
-import types
 
 import pytest
 
-from unsloth import FastSentenceTransformer
+# sentence-transformers is an extra (`huggingfacenotorch`), not a core dependency, so
+# without this the whole file errors with ModuleNotFoundError in the shard that installs
+# the core set only, rather than skipping.
+#
+# Two jobs run this file, and for different reasons. version-compat-ci's zoo-imports job
+# names it on the pytest line and installs sentence-transformers for it, which is where
+# it runs under the CUDA spoof against the pinned transformers matrix. studio-backend-ci's
+# "Repo tests (CPU, auto-discovered)" shard collects it by discovery, where without a
+# sentence-transformers install the importorskip would leave it permanently skipped: that
+# branch also installs the package so the gate runs there too, on the core dependency set
+# rather than the version matrix.
+pytest.importorskip("sentence_transformers")
+
+from unsloth import FastSentenceTransformer  # noqa: E402
 
 
 MARKER = "unsloth_st_gate_marker"
@@ -1452,3 +1464,66 @@ def test_the_delegated_check_fetches_the_legacy_config_filename(tmp_path, monkey
             LegacyWordEmbeddings,
         )
     assert "wordembedding_config.json" in requested
+
+
+def test_an_unparseable_manifest_refuses_rather_than_passing(tmp_path, monkeypatch):
+    """The file is in hand and still unreadable, which is not "nothing to check".
+
+    The delegated loader opens the very same path straight afterwards, so a transient read
+    error here followed by a retry that succeeds there would import a type nothing ever
+    looked at. Below 6.0 nothing else checks it, so this refuses.
+    """
+    _simulate_pre_six(monkeypatch)
+
+    broken = tmp_path / "models--acme--embedder" / "snapshots" / ("a" * 40)
+    broken.mkdir(parents = True)
+    (broken / "modules.json").write_text("{not json", encoding = "utf8")
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_module_path",
+        staticmethod(lambda *a, **k: str(broken / "modules.json")),
+    )
+
+    with pytest.raises(ValueError, match = "Could not read the modules.json"):
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+
+def test_an_unparseable_manifest_is_tolerated_where_upstream_gates_it(tmp_path, monkeypatch):
+    """From 6.0 upstream refuses the type itself, so refusing here would only break a
+    load that is already safe."""
+    import sentence_transformers
+
+    monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
+
+    broken = tmp_path / "models--acme--embedder" / "snapshots" / ("b" * 40)
+    broken.mkdir(parents = True)
+    (broken / "modules.json").write_text("{not json", encoding = "utf8")
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_module_path",
+        staticmethod(lambda *a, **k: str(broken / "modules.json")),
+    )
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == "b" * 40
+    )
+
+
+def test_a_manifest_that_is_not_a_list_is_not_a_refusal(tmp_path, monkeypatch):
+    """A modules.json that is not a list names no modules, and the loader iterates it too,
+    so it cannot build a module from this either. Refusing would only break a load that
+    upstream fails on its own."""
+    _simulate_pre_six(monkeypatch)
+
+    odd = tmp_path / "models--acme--embedder" / "snapshots" / ("c" * 40)
+    odd.mkdir(parents = True)
+    (odd / "modules.json").write_text(json.dumps({"not": "a list"}), encoding = "utf8")
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_module_path",
+        staticmethod(lambda *a, **k: str(odd / "modules.json")),
+    )
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == "c" * 40
+    )

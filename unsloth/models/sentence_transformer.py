@@ -1641,13 +1641,33 @@ class FastSentenceTransformer(FastModel):
             with open(modules_json_path, encoding = "utf8") as f:
                 modules_config = json.load(f)
         except (OSError, ValueError) as exception:
-            logging.debug(
-                "Unsloth: Could not read %s to gate its module types: %s",
-                modules_json_path,
-                exception,
-            )
-            return validated
+            # Fail closed, for the same reason the fetch error does. The file is in hand
+            # and still unreadable, and the delegated loader opens the very same path
+            # straight afterwards: a transient read error or a retry that succeeds there
+            # would import a type nothing ever looked at. "Could not check" is not
+            # "nothing to check". Only worth refusing over below 6.0, where
+            # sentence-transformers does not gate the type itself.
+            import sentence_transformers
+            if Version(sentence_transformers.__version__).major >= 6:
+                logging.debug(
+                    "Unsloth: Could not read %s to gate its module types (%s); "
+                    "sentence-transformers gates the module class itself on this version.",
+                    modules_json_path,
+                    exception,
+                )
+                return validated
+            raise ValueError(
+                f"Unsloth: Could not read the modules.json of {model_name} that was just "
+                f"fetched, to check its module classes ({type(exception).__name__}: "
+                f"{exception}). The installed sentence-transformers "
+                f"({getattr(sentence_transformers, '__version__', 'unknown')}) imports a "
+                f"module class named there without checking it, so this refuses rather "
+                f"than loading unchecked. Retry, or pass the argument "
+                f"`trust_remote_code=True` to allow custom code to be run."
+            ) from exception
         if not isinstance(modules_config, list):
+            # Not a refusal: a modules.json that is not a list names no modules at all,
+            # and the loader iterates it, so it cannot build a module from this either.
             return validated
 
         for module_config in modules_config:
