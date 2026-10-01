@@ -38,15 +38,14 @@ export function McpImageMappings({
   const [enabled, setEnabled] = useState(value.length > 0);
   const [options, setOptions] = useState<Option[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [encoding, setEncoding] =
-    useState<McpImageInputMapping["encoding"]>("base64");
 
   async function discover(id: string) {
     setLoading(true);
     try {
       const probe = await refreshMcpServerTools(id);
-      if (!probe.ok)
+      if (!probe.ok) {
         throw new Error(probe.error ?? "The server did not respond.");
+      }
       const tools = await listMcpServerTools(id);
       setOptions(
         tools.flatMap((tool) =>
@@ -102,10 +101,36 @@ export function McpImageMappings({
               key={mapping.tool}
               className="flex items-center justify-between gap-3 text-xs"
             >
-              <span className="truncate">
-                {mapping.tool} / {mapping.field} (
-                {mapping.encoding === "data_url" ? "data URL" : "base64"})
+              <span className="min-w-0 flex-1 truncate">
+                {mapping.tool} / {mapping.field}
               </span>
+              <Select
+                value={mapping.encoding}
+                disabled={disabled}
+                onValueChange={(next) =>
+                  onChange(
+                    value.map((m) =>
+                      m.tool === mapping.tool
+                        ? {
+                            ...m,
+                            encoding: next as McpImageInputMapping["encoding"],
+                          }
+                        : m,
+                    ),
+                  )
+                }
+              >
+                <SelectTrigger
+                  className="h-7 w-32"
+                  aria-label={`Image encoding for ${mapping.tool}`}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="base64">Raw base64</SelectItem>
+                  <SelectItem value="data_url">Data URL</SelectItem>
+                </SelectContent>
+              </Select>
               <Button
                 type="button"
                 size="xs"
@@ -144,7 +169,7 @@ export function McpImageMappings({
                   if (!option) return;
                   onChange([
                     ...value.filter((m) => m.tool !== option.tool),
-                    { ...option, encoding },
+                    { ...option, encoding: "base64" },
                   ]);
                 }}
               >
@@ -163,21 +188,6 @@ export function McpImageMappings({
                       {option.tool} / {option.field}
                     </SelectItem>
                   ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={encoding}
-                disabled={disabled}
-                onValueChange={(next) =>
-                  setEncoding(next as McpImageInputMapping["encoding"])
-                }
-              >
-                <SelectTrigger className="min-w-36" aria-label="Image encoding">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="base64">Raw base64</SelectItem>
-                  <SelectItem value="data_url">Data URL</SelectItem>
                 </SelectContent>
               </Select>
             </div>
