@@ -24,7 +24,7 @@ export async function saveBrowserDownload({ blob, name, contentType, url }: Brow
 export async function saveLinkAs(url: string): Promise<void> {
   const page = await fetchBrowserPage({ url }, new AbortController().signal);
   if (page.kind === "raw") {
-    await saveBrowserDownload({ blob: page.blob, name: fileNameFromUrl(page.url), contentType: page.contentType, url });
+    await saveBrowserDownload({ blob: page.blob, name: page.fileName ?? fileNameFromUrl(page.url), contentType: page.contentType, url });
     return;
   }
   const name = fileNameFromUrl(page.url);

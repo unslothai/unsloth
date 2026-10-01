@@ -12,7 +12,7 @@ export type BrowserPage =
       html: string;
       refresh: { delay: number; url: string } | null;
     }
-  | { kind: "raw"; url: string; blob: Blob; contentType: string };
+  | { kind: "raw"; url: string; blob: Blob; contentType: string; /** The server's download name. */ fileName?: string };
 
 export type BrowserRequest = {
   url: string;
@@ -59,11 +59,18 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
   }
   const finalUrl = response.headers.get("X-Unsloth-Browser-Url");
   const blob = await response.blob();
+  let fileName: string | undefined;
+  try {
+    fileName = decodeURIComponent(response.headers.get("X-Unsloth-Browser-Filename") ?? "") || undefined;
+  } catch {
+    fileName = undefined;
+  }
   return {
     kind: "raw",
     url: finalUrl ?? request.url,
     blob,
     contentType: response.headers.get("Content-Type") ?? blob.type,
+    fileName,
   };
 }
 

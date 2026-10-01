@@ -30,8 +30,13 @@ import {
 
 type LoadState =
   | { status: "loading" }
-  | { status: "error"; message: string; botCheck: boolean }
+  | { status: "error"; message: string; botCheck: boolean; resubmit?: boolean }
   | { status: "ready"; page: BrowserPage };
+
+// Form submissions sent once, and those the user chose to send again: going back to a form's
+// result whose response is gone asks rather than repeating what it did.
+const sentPosts = new WeakSet<BrowserEntry>();
+const resubmits = new WeakSet<BrowserEntry>();
 
 function sameOrigin(url: string, origin: string): boolean {
   try {
@@ -123,12 +128,15 @@ function PageError({
   url,
   message,
   botCheck = false,
+  resubmit = false,
   onRetry,
 }: {
   url: string;
   message: string;
   /** The site refused a non-browser; a retry won't help. */
   botCheck?: boolean;
+  /** A form's result: a retry sends the form again. */
+  resubmit?: boolean;
   onRetry: () => void;
 }) {
   const t = useT();
@@ -138,9 +146,13 @@ function PageError({
         {t(botCheck ? "browser.error.botCheckTitle" : "browser.error.title")}
       </p>
       <p className="text-sm text-muted-foreground">
-        {t(botCheck ? "browser.error.botCheckDescription" : "browser.error.description", { host: hostOf(url) })}
+        {resubmit
+          ? t("browser.error.resubmit")
+          : t(botCheck ? "browser.error.botCheckDescription" : "browser.error.description", { host: hostOf(url) })}
       </p>
-      <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
+      {message ? (
+        <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
+      ) : null}
       {/* A bot check needs a real browser; a retry rarely helps. */}
       <div className="mt-1 flex gap-2">
         <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
@@ -166,8 +178,13 @@ function WebPage({
   // Keyed per load; starts from the cache on back and forward.
   const [state, setState] = useState<LoadState>(() => {
     const page = cachedPage(entry, reloadKey);
-    return page ? { status: "ready", page } : { status: "loading" };
+    if (page) return { status: "ready", page };
+    if (method === "POST" && sentPosts.has(entry) && !resubmits.has(entry)) {
+      return { status: "error", message: "", botCheck: false, resubmit: true };
+    }
+    return { status: "loading" };
   });
+  const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
   const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
   const updateTab = useBrowserStore((store) => store.updateTab);
@@ -176,7 +193,7 @@ function WebPage({
   useEffect(() => {
     const show = (page: BrowserPage) => {
       if (page.kind === "raw") {
-        const name = fileNameFromUrl(page.url);
+        const name = page.fileName ?? fileNameFromUrl(page.url);
         setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
         updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
         if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
@@ -189,6 +206,14 @@ function WebPage({
     if (cached) {
       show(cached);
       return () => setPageDownload(tab.id, null);
+    }
+    if (blocked) {
+      updateTab(tab.id, { loading: false, title: hostOf(url) });
+      return;
+    }
+    if (method === "POST") {
+      sentPosts.add(entry);
+      resubmits.delete(entry);
     }
     const controller = new AbortController();
     updateTab(tab.id, { loading: true });
@@ -211,18 +236,27 @@ function WebPage({
       controller.abort();
       setPageDownload(tab.id, null);
     };
-  }, [entry, url, method, body, reloadKey, tab.id, updateTab]);
+  }, [entry, url, method, body, reloadKey, blocked, tab.id, updateTab]);
 
   if (state.status === "loading") return <div className="size-full bg-background" />;
   if (state.status === "error") {
     return (
-      <PageError url={url} message={state.message} botCheck={state.botCheck} onRetry={() => reload(tab.id)} />
+      <PageError
+        url={url}
+        message={state.message}
+        botCheck={state.botCheck}
+        resubmit={state.resubmit}
+        onRetry={() => {
+          if (state.resubmit) resubmits.add(entry);
+          reload(tab.id);
+        }}
+      />
     );
   }
   const { page } = state;
   if (page.kind === "raw") {
     return (
-      <FileView blob={page.blob} name={fileNameFromUrl(page.url)} contentType={page.contentType} scale={tab.zoom} />
+      <FileView blob={page.blob} name={page.fileName ?? fileNameFromUrl(page.url)} contentType={page.contentType} scale={tab.zoom} />
     );
   }
   return (

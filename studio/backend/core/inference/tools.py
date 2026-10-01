@@ -15553,7 +15553,8 @@ def _fetch_url_raw(
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
 
     ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
-    ``meta_out`` receives the final ``url`` and ``charset`` of a successful binary-mode fetch, and
+    ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
+    successful binary-mode fetch, and
     ``bot_check`` on HTTP errors.
 
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
@@ -15707,6 +15708,7 @@ def _fetch_url_raw(
                 if meta_out is not None:
                     meta_out["url"] = current_url
                     meta_out["charset"] = resp.headers.get_content_charset()
+                    meta_out["filename"] = resp.headers.get_filename()
                 return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(

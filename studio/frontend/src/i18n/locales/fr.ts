@@ -197,6 +197,7 @@ export const fr = {
       retry: "Réessayer",
       botCheckTitle: "Ce site vérifie que vous utilisez un vrai navigateur",
       botCheckDescription: "{host} demande aux visiteurs de prouver qu'ils sont humains, ce que l'affichage intégré ne peut pas faire ici. Ouvrez-le plutôt dans votre navigateur.",
+      resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",

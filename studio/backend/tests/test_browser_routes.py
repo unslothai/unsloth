@@ -142,6 +142,14 @@ def test_other_bodies_pass_through_untouched(monkeypatch):
     assert response.headers["x-unsloth-browser-url"] == "https://example.com/p.pdf"
     assert response.body == pdf and response.media_type == "application/pdf"
     assert response.headers["content-security-policy"] == "sandbox"
+    assert "x-unsloth-browser-filename" not in response.headers
+
+
+def test_a_download_keeps_the_servers_file_name(monkeypatch):
+    meta = {"url": "https://example.com/download?id=1", "filename": "../x/re\x07port 1.pdf"}
+    _fetch(monkeypatch, (None, b"%PDF", "application/pdf"), meta)
+    assert _call().headers["x-unsloth-browser-filename"] == "report%201.pdf"
+    assert browser_mod.NAME_HEADER in browser_mod.EXPOSED_HEADERS
 
 
 def test_fetch_arguments(monkeypatch):

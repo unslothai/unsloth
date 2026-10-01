@@ -198,6 +198,7 @@ export const ja = {
       retry: "再試行",
       botCheckTitle: "このサイトは本物のブラウザかを確認しています",
       botCheckDescription: "{host} は訪問者に人間であることの確認を求めていますが、アプリ内の表示ではここで対応できません。ブラウザで開いてください。",
+      resubmit: "このページはフォーム送信の結果です。再読み込みするとフォームが再送信され、同じ操作が繰り返される可能性があります。",
     },
     native: {
       externalPrompt: "{host} が {url} を開こうとしています",

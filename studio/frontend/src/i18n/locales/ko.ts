@@ -197,6 +197,7 @@ export const ko = {
       retry: "다시 시도",
       botCheckTitle: "이 사이트는 실제 브라우저인지 확인합니다",
       botCheckDescription: "{host}에서 방문자에게 사람임을 증명하도록 요청하지만, 앱 내 보기에서는 여기서 할 수 없습니다. 브라우저에서 여세요.",
+      resubmit: "이 페이지는 양식 제출 결과입니다. 다시 불러오면 양식이 다시 전송되어 같은 작업이 반복될 수 있습니다.",
     },
     native: {
       externalPrompt: "{host}에서 {url}을(를) 열려고 합니다",

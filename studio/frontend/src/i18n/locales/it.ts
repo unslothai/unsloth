@@ -194,6 +194,7 @@ export const it = {
       retry: "Riprova",
       botCheckTitle: "Questo sito verifica che tu usi un browser reale",
       botCheckDescription: "{host} chiede ai visitatori di dimostrare di essere persone, cosa che la vista nell'app non può fare qui. Aprilo nel tuo browser.",
+      resubmit: "Questa pagina deriva da un modulo. Ricaricarla invia di nuovo il modulo e potrebbe ripeterne l'azione.",
     },
     native: {
       externalPrompt: "{host} vuole aprire {url}",

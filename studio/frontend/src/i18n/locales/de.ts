@@ -197,6 +197,7 @@ export const de = {
       retry: "Erneut versuchen",
       botCheckTitle: "Diese Website prüft auf einen echten Browser",
       botCheckDescription: "{host} verlangt von Besuchern einen Nachweis, dass sie Menschen sind. Die Ansicht in der App kann das hier nicht. Öffne die Seite stattdessen in deinem Browser.",
+      resubmit: "Diese Seite stammt aus einem Formular. Erneutes Laden sendet das Formular noch einmal und kann dessen Aktion wiederholen.",
     },
     native: {
       externalPrompt: "{host} möchte {url} öffnen",

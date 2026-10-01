@@ -194,6 +194,7 @@ export const en = {
       retry: "Try again",
       botCheckTitle: "This site checks for a real browser",
       botCheckDescription: "{host} asks visitors to prove they're human, which the in-app view can't do here. Open it in your browser instead.",
+      resubmit: "This page came from a form. Loading it again sends the form again, which could repeat what it did.",
     },
     native: {
       externalPrompt: "{host} wants to open {url}",

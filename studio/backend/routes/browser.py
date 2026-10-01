@@ -35,7 +35,8 @@ router = APIRouter()
 BROWSER_FRAME_PATH = "/api/browser/frame"
 KIND_HEADER = "X-Unsloth-Browser-Kind"
 URL_HEADER = "X-Unsloth-Browser-Url"
-EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER)
+NAME_HEADER = "X-Unsloth-Browser-Filename"
+EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER)
 
 # Cap for documents (PDFs, images), which come back whole.
 _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
@@ -434,6 +435,15 @@ def _fetch(
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
+def _attachment_name(meta: dict) -> Optional[str]:
+    """The server's name for a download, as a bare file name."""
+    name = meta.get("filename")
+    if not isinstance(name, str):
+        return None
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name.replace("\\", "/").rsplit("/", 1)[-1]).strip()[:255]
+    return name if name.strip(".") else None
+
+
 def _build_response(
     url: str, error: Optional[str], body: bytes, content_type: str, meta: dict
 ) -> Response:
@@ -469,6 +479,7 @@ def _build_response(
             URL_HEADER: quote(final_url, safe = ":/?#[]@!$&'()*+,;=%~"),
             # Never rendered on Studio's origin.
             "Content-Security-Policy": "sandbox",
+            **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
         },
     )
 
