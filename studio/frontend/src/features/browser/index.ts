@@ -10,7 +10,7 @@ export { saveLinkAs } from "./downloads";
 export { browserTabType, textFileKind } from "./file-kind";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
 export { useBrowserHistoryStore } from "./history-store";
-export { useNativeBrowser } from "./native-view";
+export { useNativeBrowser } from "./native-support";
 export { pinBrowserPage } from "./resize-pin";
 export { useBrowserPrefsStore } from "./prefs-store";
 export { type OpenFileInput, useBrowserStore } from "./store";

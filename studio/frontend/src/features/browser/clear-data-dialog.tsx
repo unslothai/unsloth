@@ -14,7 +14,7 @@ import {
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useBrowserHistoryStore } from "./history-store";
-import { clearNativeBrowsingData, useNativeBrowser } from "./native-view";
+import { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
 import { clearPageCache } from "./store";
 
 export function ClearBrowsingDataDialog({

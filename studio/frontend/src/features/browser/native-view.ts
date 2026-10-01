@@ -10,28 +10,15 @@
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
-import { create } from "zustand";
 import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
-import { type BrowserTab, currentEntry, entryKey, setNativeWebHistory, useBrowserStore } from "./store";
+import { callNative as call } from "./native-support";
+import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
-/** Whether pages open in native views: in the desktop app where they can use its checking proxy
- *  (not macOS 13 and earlier), the proxied frame otherwise. */
-export const useNativeBrowser = create(() => ({ enabled: false }));
-
-if (isTauri) {
-  void call<boolean>("browser_view_supported")
-    .then((supported) => {
-      if (!supported) return;
-      setNativeWebHistory(true);
-      useNativeBrowser.setState({ enabled: true });
-    })
-    .catch(() => undefined);
-}
+export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
 
 const EVENT = "unsloth-browser";
 // Live views, hidden ones included.
@@ -64,11 +51,6 @@ type NativeEvent =
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
 const t = (key: TranslationKey, values?: InterpolationValues) => translate(key, values, getLocale());
-
-async function call<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command, args);
-}
 
 // Tab id to the history entry its view last loaded.
 const views = new Map<string, number>();
@@ -214,11 +196,6 @@ export function hasNativeView(tabId: string): boolean {
 export async function nativeFind(tabId: string, query: string, backwards: boolean): Promise<boolean> {
   if (!views.has(tabId)) return false;
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
-}
-
-/** Clear the native pages' own cookies, storage and cache. */
-export async function clearNativeBrowsingData(): Promise<void> {
-  if (useNativeBrowser.getState().enabled) await call("browser_view_clear_data");
 }
 
 // Studio UI that covers the panel. Not tooltips, or every hover would blank the page.
