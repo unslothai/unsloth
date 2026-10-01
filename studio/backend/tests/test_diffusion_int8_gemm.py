@@ -162,6 +162,29 @@ def test_linear_swap_is_bit_identical_eager_and_compiled(forced, version, bias):
 
 
 @needs_cuda
+@pytest.mark.parametrize("bias", [False, True])
+def test_prequant_style_fp32_weight_scale(forced, bias):
+    """Studio's int8 prequant checkpoints rebuild an Int8Tensor with fp32 weight scales (bias added before rounding)."""
+    from torch._dynamo.utils import counters
+
+    stock = _int8_linear(1024, 768, bias, 2)
+    fused = _int8_linear(1024, 768, bias, 2)
+    for lin in (stock, fused):
+        lin.weight.scale = lin.weight.scale.float()
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    with torch.inference_mode():
+        assert torch.equal(fused(x), stock(x))
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+
+
+@needs_cuda
 def test_small_m_and_misaligned_keep_stock(forced):
     lin = _int8_linear(1000, 768, False, None)  # K off the 64 grid
     assert g8._eligible(lin) is None

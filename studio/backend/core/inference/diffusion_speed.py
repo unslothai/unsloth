@@ -506,6 +506,7 @@ def apply_speed_optims(
                 max_autotune = False,
                 cache_active = cache_active,
                 offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
             )
     elif (
         mode == SPEED_MAX
@@ -518,6 +519,7 @@ def apply_speed_optims(
             max_autotune = True,
             cache_active = cache_active,
             offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
         )
 
     if applied["compiled"]:
@@ -816,6 +818,7 @@ def _compile_repeated_blocks(
     max_autotune: bool = False,
     cache_active: bool = False,
     offload_active: bool = False,
+    denoiser_offloaded: Optional[bool] = None,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -915,8 +918,11 @@ def _compile_repeated_blocks(
         # After the fused MLP (its down projection calls the same GEMM), before the compile traces the Linears.
         try:
             from .diffusion_int8_gemm import install as install_int8_gemm
+            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident.
             transformer._unsloth_int8_gemm = install_int8_gemm(
-                transformer, logger, offload_active = offload_active
+                transformer,
+                logger,
+                offload_active = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded),
             )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)

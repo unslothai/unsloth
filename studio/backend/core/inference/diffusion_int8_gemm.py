@@ -433,8 +433,17 @@ def _linear_forward(self: Any, x: Any) -> Any:
     rec = self.__dict__.get(_REC)
     if rec is None or x.dtype != torch.bfloat16 or not x.is_cuda:
         return type(self).forward(self, x)
-    kind, wq, ws, weight = rec
+    kind, _wq, _ws, weight = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
+        return type(self).forward(self, x)
+    # Read the int8 payload off the live parameter, never a cached alias: a placement change that moves the weight
+    # must neither leave the kernel a stale device nor pin the old copy.
+    if kind == "v1":
+        impl = weight.original_weight_tensor.tensor_impl
+        wq, ws = impl.int_data, impl.scale.reshape(-1)
+    else:
+        wq, ws = weight.qdata, weight.scale.reshape(-1)
+    if wq.device != x.device:
         return type(self).forward(self, x)
     lead = x.shape[:-1]
     x2d = x.reshape(-1, x.shape[-1])
@@ -457,7 +466,7 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
     if _DEVICE_CFG.get(q.device.index) is None:
         return None
     parts = _v2_parts(weight)
-    if parts is None or q.shape[0] < _MIN_ROWS or parts[1].dtype != torch.bfloat16:
+    if parts is None or q.shape[0] < _MIN_ROWS or parts[1].dtype not in (torch.bfloat16, torch.float32):
         return None
     if parts[0].shape[1] % _K_ALIGN or parts[0].shape[0] % _N_ALIGN:
         return None
@@ -477,9 +486,10 @@ def _eligible(module: Any) -> Optional[tuple]:
 
     if bias is not None and bias.dtype != torch.bfloat16:
         return None
-    # bf16 weight scales only: that is what a bf16 checkpoint quantizes to, and the one epilogue rounding order
-    # verified against both torchao generations. Aligned shapes only: a K off the 64 grid (masked, unvectorized
-    # loads) ran 3-25x slower than cuBLAS on B200, and every DiT Linear measured sits on it.
+    # Weight scales: v1 quantizes a bf16 weight to bf16 scales (its epilogue rounds before the bias add); v2 also takes
+    # the fp32 scales Studio's prequant checkpoints carry (its epilogue adds the bias first, as the kernel does with
+    # WS_FP32). Aligned shapes only: a K off the 64 grid (masked, unvectorized loads) ran 3-25x slower than cuBLAS on
+    # B200, and every DiT Linear measured sits on it.
     out_f, in_f = getattr(module, "out_features", 0), getattr(module, "in_features", 0)
     if in_f % _K_ALIGN or out_f % _N_ALIGN:
         return None
@@ -487,7 +497,7 @@ def _eligible(module: Any) -> Optional[tuple]:
     if parts is not None and parts[1].dtype == torch.bfloat16:
         return ("v1",) + parts + (w,)
     parts = _v2_parts(w)
-    if parts is not None and parts[1].dtype == torch.bfloat16:
+    if parts is not None and parts[1].dtype in (torch.bfloat16, torch.float32):
         return ("v2",) + parts + (w,)
     return None
 
@@ -549,7 +559,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             if _MARK in module.__dict__:
                 count += 1
                 continue
-            module.__dict__[_REC] = rec
+            module.__dict__[_REC] = (rec[0], None, None, rec[3])  # kind + the Parameter, no payload alias
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
