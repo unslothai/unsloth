@@ -24,6 +24,11 @@ test("reopening a rewritten file shows its new bytes; an unchanged one keeps its
   open("version 2");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.notEqual(shown(), first);
-  assert.equal(await browserFile(shown()!)?.text(), "version 2");
+  assert.equal(await browserFile(shown() ?? "")?.text(), "version 2");
+  // Two quick reopens: the last one wins.
+  open("version 3");
+  open("version 4");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(await browserFile(shown() ?? "")?.text(), "version 4");
   assert.equal(useBrowserStore.getState().tabs.length, 1);
 });

@@ -394,9 +394,13 @@ function sendDocumentAnnotations(
           ?.focus();
         return;
       }
-      // Two frames, so the composer has rendered the attachment it now sends.
+      // Two frames, so the composer has rendered the attachment it now sends. Text typed
+      // meanwhile is the next message: leave the annotations staged with it.
       requestAnimationFrame(() =>
-        requestAnimationFrame(() => form.requestSubmit()),
+        requestAnimationFrame(() => {
+          if (composer.getState().text.trim()) return;
+          form.requestSubmit();
+        }),
       );
     })
     .catch(() => undefined);

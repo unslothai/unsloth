@@ -170,6 +170,9 @@ function webEntry(url: string, method?: "GET" | "POST", body?: string): BrowserE
 }
 
 /** Drop blobs no remaining history entry points at. */
+// Pending file refreshes per tab, run in order.
+const refreshes = new Map<string, Promise<void>>();
+
 async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   if (!a || a.size !== b.size) return false;
   const [x, y] = (await Promise.all([a.arrayBuffer(), b.arrayBuffer()])).map((buffer) => new Uint8Array(buffer));
@@ -386,11 +389,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
-        const shown = currentEntry(existing);
-        // The file may have been rewritten since it opened: if so, show the new bytes.
-        void sameBytes(shown.kind === "file" ? files.get(shown.fileId) : undefined, blob).then((same) => {
+        // The file may have been rewritten since it opened: if so, show the new bytes. In order
+        // per tab, each against what the tab shows by then, so the last reopen wins.
+        const previous = refreshes.get(existing.id) ?? Promise.resolve();
+        const next = previous.then(async () => {
           const tab = get().tabs.find((candidate) => candidate.id === existing.id);
-          if (same || shown.kind !== "file" || !tab || currentEntry(tab) !== shown) {
+          const shown = tab && currentEntry(tab);
+          if (!tab || shown?.kind !== "file" || (await sameBytes(files.get(shown.fileId), blob))) {
             files.delete(fileId);
             return;
           }
@@ -399,7 +404,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
             history: current.history.map((item) => (item === shown ? entry : item)),
           }));
           set({ tabs });
-          releaseFiles(tabs);
+          // Not releaseFiles: a later reopen's blob is stored but not referenced yet.
+          if (!tabs.some((other) => other.history.some((item) => item.kind === "file" && item.fileId === shown.fileId))) {
+            files.delete(shown.fileId);
+          }
+        });
+        refreshes.set(existing.id, next);
+        void next.finally(() => {
+          if (refreshes.get(existing.id) === next) refreshes.delete(existing.id);
         });
         return;
       }
