@@ -321,6 +321,15 @@ def _call_name(node: ast.AST) -> str:
     return ""
 
 
+def _matches_any(names, table) -> str | None:
+    """First table hit across every spelling an alias can have. Ambiguity fails closed."""
+    for name in names:
+        hit = _matches(name, table)
+        if hit is not None:
+            return hit
+    return None
+
+
 def _matches(name: str, table) -> str | None:
     """Match a dotted callee against a table on its trailing segments.
 
@@ -414,8 +423,16 @@ class _FileFacts:
         self.index = index
         self.module = index.files.get(path, "")
         self.is_package = path.name == "__init__.py"
-        # local alias -> dotted target, for both `import x.y as z` and `from x import y`
-        self.imports: dict[str, str] = {}
+        # local alias -> dotted targets, for both `import x.y as z` and `from x import y`.
+        #
+        # A set, not one target, because one file can bind the same alias to two
+        # different modules in two different functions. `import json as codec` in one and
+        # `import pickle as codec` in another used to leave whichever came last, and
+        # canonicalising `codec.load` to the wrong one of those loses the deserialiser:
+        # the JSON read stopped being an untrusted source and a dynamic import below it
+        # was accepted. Resolution tries every binding and the strongest answer wins, so
+        # an ambiguous alias fails closed instead of silently picking one.
+        self.imports: dict[str, set[str]] = {}
         # qualname -> FunctionDef
         self.functions: dict[str, ast.AST] = {}
         # qualname -> parameter names in order
@@ -434,12 +451,21 @@ class _FileFacts:
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, ast.Import):
                     for alias in child.names:
-                        self.imports[alias.asname or alias.name.split(".")[0]] = alias.name
+                        if alias.asname:
+                            self._bind_import(alias.asname, alias.name)
+                        else:
+                            # `import pkg.parser` binds `pkg`, not `pkg.parser`. Recording
+                            # the full dotted name against the head made target_of append
+                            # the original tail to it a second time, so `pkg.parser.parse`
+                            # resolved as `pkg.parser.parser.parse` and did not resolve at
+                            # all: taint returned by that helper never reached its caller.
+                            head = alias.name.split(".")[0]
+                            self._bind_import(head, head)
                 elif isinstance(child, ast.ImportFrom):
                     base = self._absolute(child)
                     for alias in child.names:
                         target = f"{base}.{alias.name}" if base else alias.name
-                        self.imports[alias.asname or alias.name] = target
+                        self._bind_import(alias.asname or alias.name, target)
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     scope.append(child.name)
                     qualname = ".".join(scope)
@@ -459,6 +485,13 @@ class _FileFacts:
                 walk(child)
 
         walk(self.tree)
+
+    def _bind_import(self, alias: str, target: str) -> None:
+        self.imports.setdefault(alias, set()).add(target)
+
+    def _targets(self, alias: str) -> list[str]:
+        """Every module one alias can mean in this file, in a deterministic order."""
+        return sorted(self.imports.get(alias, ()))
 
     def _absolute(self, node: ast.ImportFrom) -> str:
         """Resolve a relative import against this file's containing package.
@@ -481,22 +514,31 @@ class _FileFacts:
             base = base + node.module.split(".")
         return ".".join(base)
 
-    def canonical(self, name: str) -> str:
-        """Rewrite a callee through this file's imports, so the tables see one spelling.
+    def canonicals(self, name: str) -> list[str]:
+        """Every spelling a callee can have once this file's imports are applied.
 
         Suffix matching alone cannot do this, and claiming it could was wrong: after
         `import json as js`, `js.load` has no suffix in the table, and after
         `from yaml import safe_load` the call is the bare name `safe_load`. Both are
         deserialisers of attacker bytes that produced no taint at all, so a dynamic
         import or a subprocess immediately downstream was silently accepted.
+
+        A list rather than one name because an alias can be bound twice in one file. The
+        callers try all of them and take the first match, which is what makes an
+        ambiguous alias fail closed: `codec.load` is treated as a deserialiser if any
+        binding of `codec` makes it one.
         """
         if not name:
-            return name
+            return [name]
         head, separator, tail = name.partition(".")
-        dotted = self.imports.get(head)
-        if dotted is None:
-            return name
-        return f"{dotted}.{tail}" if separator else dotted
+        targets = self._targets(head)
+        if not targets:
+            return [name]
+        return [f"{dotted}.{tail}" if separator else dotted for dotted in targets]
+
+    def canonical(self, name: str) -> str:
+        """One spelling, for a message. Matching goes through `canonicals`."""
+        return self.canonicals(name)[0]
 
     def target_of(
         self,
@@ -526,18 +568,20 @@ class _FileFacts:
                 return (self.path, candidate)
             return None
         # `from pkg.mod import f` then `f(...)`.
-        dotted = self.imports.get(head)
-        if dotted is None:
+        targets = self._targets(head)
+        if not targets:
             if not tail and f"{name}" in self.functions:
                 return (self.path, name)
             return None
-        full = f"{dotted}.{tail}" if tail else dotted
-        file = self.index.resolve(full)
-        if file is None:
-            return None
-        module = self.index.files.get(file, "")
-        qualname = full[len(module) + 1 :] if module and full.startswith(module + ".") else ""
-        return (file, qualname)
+        for dotted in targets:
+            full = f"{dotted}.{tail}" if tail else dotted
+            file = self.index.resolve(full)
+            if file is None:
+                continue
+            module = self.index.files.get(file, "")
+            qualname = full[len(module) + 1 :] if module and full.startswith(module + ".") else ""
+            return (file, qualname)
+        return None
 
 
 def _param_names(node: ast.AST) -> list[str]:
@@ -585,7 +629,10 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.local_reasons.get(node.id)
             if reason:
                 return reason
-            return self.state.tainted_globals.get(f"{self.facts.relative}::{node.id}")
+            own = self.state.tainted_globals.get(f"{self.facts.relative}::{node.id}")
+            if own:
+                return own
+            return self._imported_global(node.id)
         if isinstance(node, ast.Attribute):
             attribute_reason = self.state.tainted_attrs.get(self._attr_key(node))
             if attribute_reason:
@@ -644,11 +691,17 @@ class _TaintPass(ast.NodeVisitor):
         return None
 
     def _tainted_call(self, node: ast.Call) -> str | None:
-        name = self.facts.canonical(_call_name(node.func))
-        source = _matches(name, UNTRUSTED_CALLS)
+        names = self.facts.canonicals(_call_name(node.func))
+        source = _matches_any(names, UNTRUSTED_CALLS)
         if source:
-            return f"{source}()"
-        method = _matches(name, UNTRUSTED_METHODS)
+            # The file and line are part of the reason so that two downloads stay
+            # distinguishable: the unpinned-fetch rule has to know WHICH download reached
+            # an import, not merely that one in the same function did. The file belongs in
+            # it as well as the line, because a reason travels across files and a bare
+            # line number would collide with an unrelated fetch sitting on that line
+            # somewhere else.
+            return f"{source}()@{self.facts.relative}:{node.lineno}"
+        method = _matches_any(names, UNTRUSTED_METHODS)
         if method:
             return f"read via .{method}"
         # Container and string operations preserve taint.
@@ -681,8 +734,8 @@ class _TaintPass(ast.NodeVisitor):
             return None
         # Container constructors pass their contents straight through, so wrapping a
         # tainted iterable in one of these is not a sanitiser.
-        if _matches(
-            name,
+        if _matches_any(
+            names,
             {"list", "tuple", "set", "dict", "sorted", "reversed", "iter", "enumerate"},
         ):
             for argument in node.args:
@@ -693,7 +746,7 @@ class _TaintPass(ast.NodeVisitor):
         # `open(downloaded)` hands back a handle onto attacker bytes, and the usual shape
         # is `with open(downloaded, "rb") as handle: pickle.load(handle)`. Without this
         # the handle read clean and the declared pickle sink never fired.
-        if _matches(name, {"open", "io.open", "Path.open"}):
+        if _matches_any(names, {"open", "io.open", "Path.open"}):
             for argument in node.args:
                 reason = self.tainted(argument)
                 if reason:
@@ -701,8 +754,8 @@ class _TaintPass(ast.NodeVisitor):
             return None
         # `os.path.join(tainted, "Spark-TTS")` is still attacker-influenced, and that is
         # the whole basename-collision shape: a fixed name under a controlled parent.
-        if _matches(
-            name,
+        if _matches_any(
+            names,
             {
                 "os.path.join",
                 "path.join",
@@ -728,6 +781,27 @@ class _TaintPass(ast.NodeVisitor):
             returned = self.state.returns_tainted.get(target)
             if returned:
                 return returned
+        return None
+
+    def _imported_global(self, name: str) -> str | None:
+        """`from producer import MODEL_TYPE`, where the producer tainted that global.
+
+        Checking only this file's own globals broke the cross-file guarantee for the one
+        shape that needs it least ceremony: `MODEL_TYPE = json.load(...)["model_type"]`
+        at the top of one module, imported into another and handed straight to
+        `import_module`. Neither file reported anything, because the read and the sink
+        each looked local and clean.
+        """
+        for dotted in self.facts._targets(name):
+            owner, _, attribute = dotted.rpartition(".")
+            if not owner or not attribute:
+                continue
+            file = self.facts.index.resolve(owner)
+            if file is None:
+                continue
+            reason = self.state.tainted_globals.get(f"{_relative(file)}::{attribute}")
+            if reason:
+                return reason
         return None
 
     def _attr_key(self, node: ast.Attribute) -> str:
@@ -763,6 +837,14 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.tainted(node.value)
             if reason:
                 self._assign(node.target, reason)
+        self.generic_visit(node)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        # `if (cfg := json.loads(text)):` binds cfg, and only the statement forms were
+        # handled, so the walrus carried a parsed config past the analysis untainted.
+        reason = self.tainted(node.value)
+        if reason:
+            self._assign(node.target, reason)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -808,6 +890,19 @@ class _TaintPass(ast.NodeVisitor):
         self._check_remote_code(node)
         self.generic_visit(node)
 
+    @staticmethod
+    def _bind(bound: dict[str, str], name: str, reason: str) -> None:
+        """Strongest reason wins, same rule the settled parameters already used.
+
+        Assigning unconditionally let a weaker later call overwrite a stronger earlier
+        one: `execute(json.loads(blob))` followed anywhere by `execute(model_type)` left
+        the parameter marked only `untrusted parameter name`, so a sink inside `execute`
+        came out tier B and did not fail the gate even though the first call site hands
+        it proven untrusted data.
+        """
+        if bound.get(name, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
+            bound[name] = reason
+
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
         target = self.facts.target_of(node.func, self.class_name)
@@ -826,25 +921,25 @@ class _TaintPass(ast.NodeVisitor):
                 continue
             index = position + offset
             if index < len(params):
-                bound[params[index]] = reason
+                self._bind(bound, params[index], reason)
         star_kwargs = self.state.star_kwargs.get(target)
         for keyword in node.keywords:
             reason = self.tainted(keyword.value)
             if not reason:
                 continue
             if keyword.arg and keyword.arg in params:
-                bound[keyword.arg] = reason
+                self._bind(bound, keyword.arg, reason)
             elif star_kwargs:
                 # A keyword the callee does not name by hand still arrives, in **kwargs.
                 # Matching only on the keyword's own name dropped the taint entirely for
                 # every helper that forwards its options that way.
-                bound[star_kwargs] = reason
+                self._bind(bound, star_kwargs, reason)
             elif keyword.arg:
-                bound[keyword.arg] = reason
+                self._bind(bound, keyword.arg, reason)
 
     def _check_sink(self, node: ast.Call) -> None:
-        name = self.facts.canonical(_call_name(node.func))
-        sink = _matches(name, SINKS)
+        names = self.facts.canonicals(_call_name(node.func))
+        sink = _matches_any(names, SINKS)
         if sink is None:
             self._check_getattr(node)
             return
@@ -867,15 +962,15 @@ class _TaintPass(ast.NodeVisitor):
         if _call_name(node.func).rpartition(".")[2] != "getattr" or len(node.args) < 2:
             return
         holder = node.args[0]
-        holder_name = (
-            self.facts.canonical(_call_name(holder)).split(".")[0]
+        holder_names = (
+            [candidate.split(".")[0] for candidate in self.facts.canonicals(_call_name(holder))]
             if not isinstance(holder, ast.Call)
-            else ""
+            else []
         )
-        is_module_ish = holder_name in MODULE_ISH_NAMES or (
+        is_module_ish = any(held in MODULE_ISH_NAMES for held in holder_names) or (
             isinstance(holder, ast.Call)
-            and _matches(
-                self.facts.canonical(_call_name(holder.func)),
+            and _matches_any(
+                self.facts.canonicals(_call_name(holder.func)),
                 {"importlib.import_module", "import_module"},
             )
         )
@@ -887,8 +982,16 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_remote_code(self, node: ast.Call) -> None:
         """`trust_remote_code = True` written at a loader, or forwarded as a constant."""
-        name = self.facts.canonical(_call_name(node.func))
-        if not any(marker in name for marker in REMOTE_CODE_LOADERS):
+        names = self.facts.canonicals(_call_name(node.func))
+        name = next(
+            (
+                candidate
+                for candidate in names
+                if any(marker in candidate for marker in REMOTE_CODE_LOADERS)
+            ),
+            "",
+        )
+        if not name:
             return
         for keyword in node.keywords:
             if keyword.arg != "trust_remote_code":
@@ -982,7 +1085,27 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
     """
     findings: list[dict] = []
 
-    def record(node: ast.AST, qualname: str, shape: str, text: str) -> None:
+    # node -> the function it sits in. The dict and assignment spellings used to be
+    # recorded under the synthetic qualnames `<dict>`, `<assign>` and `<item>`, which no
+    # function is called, so the context digest in the baseline key was always empty: a
+    # reviewed `trust_remote_code = True` kept its allowance word for word after the
+    # consent check around it was weakened, which is the one thing the context digest
+    # exists to stop. Deeper functions are walked later so the innermost one wins.
+    owners: dict[int, str] = {}
+    for owner_qualname, owner_node in sorted(
+        facts.functions.items(), key = lambda item: (item[0].count("."), item[0])
+    ):
+        for child in ast.walk(owner_node):
+            owners[id(child)] = owner_qualname
+
+    def record(
+        node: ast.AST,
+        shape: str,
+        text: str,
+        qualname: str = "",
+    ) -> None:
+        if not qualname:
+            qualname = owners.get(id(node), "<module>")
         findings.append(
             {
                 "path": facts.relative,
@@ -1014,7 +1137,12 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
             if argument.arg != "trust_remote_code":
                 continue
             if isinstance(default, ast.Constant) and default.value is True:
-                record(node, qualname, "default", f"def {qualname}(..., trust_remote_code = True)")
+                record(
+                    node,
+                    "default",
+                    f"def {qualname}(..., trust_remote_code = True)",
+                    qualname = qualname,
+                )
 
     for node in ast.walk(facts.tree):
         if isinstance(node, ast.Dict):
@@ -1025,13 +1153,13 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                     and isinstance(value, ast.Constant)
                     and value.value is True
                 ):
-                    record(node, "<dict>", "dict", _short(node))
+                    record(node, "dict", _short(node))
         elif isinstance(node, ast.Assign):
             if not (isinstance(node.value, ast.Constant) and node.value.value is True):
                 continue
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "trust_remote_code":
-                    record(node, "<assign>", "assignment", _short(node))
+                    record(node, "assignment", _short(node))
                 # `kwargs["trust_remote_code"] = True` then `from_pretrained(**kwargs)`.
                 # The keyword never appears at the call, and the call checker cannot see
                 # inside an expanded dict, so this spelling was reported nowhere at all.
@@ -1040,11 +1168,11 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                     and isinstance(target.slice, ast.Constant)
                     and target.slice.value == "trust_remote_code"
                 ):
-                    record(node, "<item>", "dict item", _short(node))
+                    record(node, "dict item", _short(node))
     return findings
 
 
-def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, bool]) -> list[dict]:
+def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, frozenset]) -> list[dict]:
     """A download with no `revision` whose bytes the same function then imports.
 
     `snapshot_download(repo)` without a revision resolves to whatever the branch points
@@ -1061,21 +1189,34 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, bool]) -> list[
     co-location while none of the fetched bytes are executed.
 
     The test is whether the fetched value REACHES the import, which the taint analysis
-    has already decided: `reached` carries the sinks in this function whose tainted
-    argument came from one of these downloads. Correlation, not proximity.
+    has already decided: `reached` carries, per function, the identity of each download
+    whose value arrived at an import sink. Correlation, not proximity, and per download
+    rather than per function: a function that pins the code it imports and separately
+    downloads weights used to have the weights fetch reported, because a function-wide
+    boolean cannot say which of the two the sink actually consumed.
     """
     findings: list[dict] = []
     for qualname, node in sorted(facts.functions.items()):
-        if not reached.get(qualname):
+        arrived = reached.get(qualname) or frozenset()
+        if not arrived:
             continue
         fetches: list[ast.Call] = []
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
                 continue
-            name = facts.canonical(_call_name(child.func))
-            if _matches(name, {"snapshot_download", "hf_hub_download"}):
-                if not any(keyword.arg == "revision" for keyword in child.keywords):
-                    fetches.append(child)
+            source = _matches_any(
+                facts.canonicals(_call_name(child.func)),
+                {"snapshot_download", "hf_hub_download"},
+            )
+            if not source:
+                continue
+            if any(keyword.arg == "revision" for keyword in child.keywords):
+                continue
+            # Same identity the taint reason carries, so this is the download the sink
+            # read and not merely one of the downloads in the same body.
+            if f"{source}()@{facts.relative}:{child.lineno}" not in arrived:
+                continue
+            fetches.append(child)
         for call in fetches:
             findings.append(
                 {
@@ -1243,7 +1384,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     # Sinks whose tainted argument came from a download, per function. This is what
     # lets the unpinned-fetch rule ask whether the fetched path reaches an import
     # rather than whether the two merely appear in the same function.
-    _DOWNLOADS = ("snapshot_download()", "hf_hub_download()")
+    _DOWNLOADS = ("snapshot_download()@", "hf_hub_download()@")
     _IMPORT_SINKS = frozenset(
         {
             "sys.path.insert",
@@ -1260,14 +1401,17 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
 
     findings: list[dict] = []
     for path, facts in sorted(facts_by_path.items()):
-        reached: dict[str, bool] = {}
+        reached: dict[str, frozenset] = {}
         for qualname, node in sorted(facts.functions.items()):
             visitor, converged = _settle(facts, qualname, list(ast.iter_child_nodes(node)), state)
             if not converged:
                 unconverged.add(f"{facts.relative}::{qualname}")
             found = visitor.findings if visitor is not None else []
-            reached[qualname] = any(
-                f["sink"] in _IMPORT_SINKS and f["why"] in _DOWNLOADS for f in found
+            reached[qualname] = frozenset(
+                f["why"]
+                for f in found
+                if f["sink"] in _IMPORT_SINKS
+                and any(f["why"].startswith(prefix) for prefix in _DOWNLOADS)
             )
             findings.extend(found)
         body = [
@@ -1293,7 +1437,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                     "path": where.split("::")[0],
                     "line": 0,
                     "qualname": where.split("::")[-1],
-                    "sink": "analysis did not converge",
+                    "sink": INCOMPLETE_SINK,
                     "argument": f"local taint still growing after {_LOCAL_BOUND} passes",
                     "why": "the result for this body is incomplete",
                     "artefacts": [],
@@ -1328,6 +1472,59 @@ def _baseline_key(finding: dict) -> str:
     )
 
 
+def _counted(findings: list[dict]) -> dict[str, int]:
+    """How many times each reviewed-sink identity appears in this scan."""
+    counted: dict[str, int] = {}
+    for finding in findings:
+        if not finding["gated"] or finding["tier"] != "A":
+            continue
+        if finding["sink"] == INCOMPLETE_SINK:
+            continue
+        key = _baseline_key(finding)
+        counted[key] = counted.get(key, 0) + 1
+    return counted
+
+
+def _unbaselined(findings: list[dict], baseline: dict | None = None) -> list[dict]:
+    """Gating findings with no allowance behind them. Extracted so it can be tested."""
+    if baseline is None:
+        baseline = _load_baseline()
+    seen: dict[str, int] = {}
+    new: list[dict] = []
+    for finding in findings:
+        if not finding["gated"] or finding["tier"] != "A":
+            continue
+        if finding["sink"] == INCOMPLETE_SINK:
+            # Never allowable, whatever a hand-edited baseline says. --update refuses to
+            # write one of these, and consulting the baseline here would be the other
+            # half of the same hole.
+            new.append(finding)
+            continue
+        key = _baseline_key(finding)
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > baseline.get(key, 0):
+            new.append(finding)
+    return new
+
+
+def _stale_allowances(findings: list[dict], baseline: dict | None = None) -> list[str]:
+    """Allowances for a sink that is no longer there.
+
+    A loaded gun: the key is the path, the qualname, a hash of the call and the enclosing
+    function, so a later change that restores the identical call in the same place
+    inherits the allowance and is never reported. Removing a sink therefore has to be
+    accompanied by --update.
+    """
+    if baseline is None:
+        baseline = _load_baseline()
+    counted = _counted(findings)
+    return sorted(
+        f"{key} ({count - counted.get(key, 0)} unused)"
+        for key, count in baseline.items()
+        if count > counted.get(key, 0)
+    )
+
+
 def _load_baseline() -> dict:
     if not BASELINE_PATH.exists():
         return {}
@@ -1335,7 +1532,34 @@ def _load_baseline() -> dict:
         return json.load(handle).get("entries", {})
 
 
+INCOMPLETE_SINK = "analysis did not converge"
+
+
 def _write_baseline(findings: list[dict]) -> None:
+    """Record the reviewed sinks, and refuse outright if the analysis is incomplete.
+
+    An exhausted bound emits a synthetic `analysis did not converge` finding, and the
+    writer used to store it like any other reviewed sink and report success. Every later
+    run then matched that allowance and printed OK while the scanner was still saying its
+    own result was partial, which is the exact failure this script exists to prevent: a
+    clean answer nobody can stand behind. There is nothing to review in an incomplete
+    analysis, so it cannot be baselined and `--update` fails instead.
+    """
+    incomplete = [f for f in findings if f["sink"] == INCOMPLETE_SINK]
+    if incomplete:
+        print("refusing to write a baseline: the analysis did not converge", file = sys.stderr)
+        for finding in incomplete[:20]:
+            print(
+                f"  {finding['path']}::{finding['qualname']}: {finding['argument']}",
+                file = sys.stderr,
+            )
+        if len(incomplete) > 20:
+            print(f"  ... and {len(incomplete) - 20} more", file = sys.stderr)
+        print(
+            "Raise the bound or simplify the body. A partial result is not a reviewed sink.",
+            file = sys.stderr,
+        )
+        raise SystemExit(2)
     entries: dict[str, int] = {}
     for finding in findings:
         if not finding["gated"] or finding["tier"] != "A":
@@ -1470,25 +1694,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     baseline = _load_baseline()
-    counted: dict[str, int] = {}
-    new: list[dict] = []
-    for finding in findings:
-        if not finding["gated"] or finding["tier"] != "A":
-            continue
-        key = _baseline_key(finding)
-        counted[key] = counted.get(key, 0) + 1
-        if counted[key] > baseline.get(key, 0):
-            new.append(finding)
-
-    # An allowance for a sink that is no longer there is a loaded gun: the key is the
-    # path, the qualname and a hash of the call, so a later change that restores the
-    # identical call in the same place inherits the allowance and is never reported.
-    # Removing a sink therefore has to be accompanied by --update.
-    stale = sorted(
-        f"{key} ({count - counted.get(key, 0)} unused)"
-        for key, count in baseline.items()
-        if count > counted.get(key, 0)
-    )
+    new = _unbaselined(findings, baseline = baseline)
+    stale = _stale_allowances(findings, baseline = baseline)
 
     shown = [
         f

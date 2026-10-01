@@ -672,3 +672,219 @@ def test_an_unsettled_interprocedural_fixpoint_fails_the_gate(tmp_path, monkeypa
         "def d(path):\n    return importlib.import_module('x.' + c(path))\n",
     )
     assert "analysis did not converge" in _sinks(findings)
+
+
+def test_a_stronger_reason_is_not_overwritten_by_a_later_weaker_call(tmp_path):
+    """Two call sites, one proving taint and one only suggesting it.
+
+    Binding a callee's parameters assigned unconditionally, so whichever call site the
+    walk reached last decided the tier. `run(json.load(...))` followed by
+    `run(model_type)` left the parameter marked only "untrusted parameter name", and the
+    sink inside `run` came out tier B: reported for a human to read, but not gating.
+    The order in the sample is the one that used to lose, weaker call last.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def run(name):\n"
+        "    return importlib.import_module('x.' + name)\n"
+        "def first(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return run(json.load(handle)['model_type'])\n"
+        "def second(model_type):\n"
+        "    return run(model_type)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_tainted_global_imported_from_another_module_is_tainted(tmp_path):
+    """`from producer import MODEL_TYPE`, where the producer read it off a config.
+
+    The global lookup only ever checked the consuming file's own module-level names, so
+    each half looked clean on its own: the read is in one file and the sink in the other,
+    and nothing was reported anywhere. This is the cross-file guarantee the whole script
+    claims, in its shortest possible form.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import json\n"
+        "with open('config.json') as handle:\n"
+        "    MODEL_TYPE = json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import importlib\nfrom producer import MODEL_TYPE\n"
+        "def load():\n"
+        "    return importlib.import_module('transformers.models.' + MODEL_TYPE)\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_remote_code_assignment_is_keyed_to_its_enclosing_function(tmp_path):
+    """An allowance for `trust_remote_code = True` has to die with the consent around it.
+
+    The three assignment spellings were recorded under the synthetic qualnames `<assign>`,
+    `<dict>` and `<item>`, which no function is called, so the context digest in the
+    baseline key was always the empty string. A reviewed assignment therefore kept its
+    allowance word for word after the consent check beside it was deleted, which is the
+    one regression the context digest exists to catch.
+    """
+    findings = _scan(
+        tmp_path,
+        "def load(name, approved):\n"
+        "    if not approved:\n"
+        "        raise ValueError('refused')\n"
+        "    trust_remote_code = True\n"
+        "    return trust_remote_code\n",
+    )
+    assignments = [f for f in findings if f["sink"].startswith("trust_remote_code = True (assign")]
+    assert len(assignments) == 1
+    assert assignments[0]["qualname"] == "load"
+    assert assignments[0]["context"]
+
+    weakened = _scan(
+        tmp_path,
+        "def load(name, approved):\n"
+        "    trust_remote_code = True\n"
+        "    return trust_remote_code\n",
+        name = "weakened.py",
+    )
+    other = [f for f in weakened if f["sink"].startswith("trust_remote_code = True (assign")]
+    assert len(other) == 1
+    # Same path, same qualname, same call text, and the key still has to differ.
+    assert other[0]["hash"] == assignments[0]["hash"]
+    assert L._baseline_key(other[0]).replace("weakened.py", "sample.py") != L._baseline_key(
+        assignments[0]
+    )
+
+
+def test_one_alias_bound_to_two_modules_fails_closed(tmp_path):
+    """`import json as codec` here, `import pickle as codec` there.
+
+    Imports were a file-wide name -> target map, so the second binding overwrote the
+    first and `codec.load` inside `load_json` canonicalised to `pickle.load`. That is not
+    merely imprecise: the JSON read stopped counting as an untrusted source, so the value
+    was clean and the dynamic import below it was accepted. Both bindings are kept now
+    and the strongest answer wins.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib\n"
+        "def load_json(path):\n"
+        "    import json as codec\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return importlib.import_module('x.' + codec.load(handle)['model_type'])\n"
+        "def load_cache(path):\n"
+        "    import pickle as codec\n"
+        "    with open(path, 'rb') as handle:\n"
+        "        return codec.load(handle)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_unaliased_dotted_import_resolves_its_helper(tmp_path):
+    """`import pkg.parser` binds `pkg`, so the tail must not be appended twice.
+
+    Recording `pkg -> pkg.parser` made `pkg.parser.parse` resolve as
+    `pkg.parser.parser.parse`, which is nothing, so the helper was outside the analysis:
+    taint it returned never reached the caller's sink.
+    """
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    (package / "parser.py").write_text(
+        "import json\n"
+        "def parse(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    user = tmp_path / "use.py"
+    user.write_text(
+        "import importlib\nimport pkg.parser\n"
+        "def load(path):\n"
+        "    return importlib.import_module('x.' + pkg.parser.parse(path))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([package / "parser.py", user], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_taint_propagates_through_an_assignment_expression(tmp_path):
+    """The walrus binds a name, and only the statement forms were handled.
+
+    `if (cfg := json.loads(blob)):` left `cfg` out of the local taint entirely, so a
+    dynamic import reading it a line later was reported as clean.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    if (cfg := json.loads(blob)):\n"
+        "        return importlib.import_module('x.' + cfg['model_type'])\n"
+        "    return None\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_only_the_fetch_that_reaches_the_import_is_a_code_fetch(tmp_path):
+    """Two downloads in one function, and only one of them is executed.
+
+    `reached` was a per-function boolean, so a function that imports a pinned checkout
+    and separately downloads weights had the weights fetch reported as executable code.
+    The pinned one carries a revision and is never a candidate, which is what made the
+    boolean report the wrong call.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, os, sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo, weights_repo):\n"
+        "    code = snapshot_download(repo, revision = 'a' * 40)\n"
+        "    weights = snapshot_download(weights_repo)\n"
+        "    sys.path.insert(0, os.path.join(code, 'src'))\n"
+        "    importlib.import_module('vendored')\n"
+        "    return weights\n",
+    )
+    fetches = [f for f in findings if f["sink"] == "unpinned code fetch"]
+    assert fetches == [], [f["argument"] for f in fetches]
+
+
+def test_an_incomplete_analysis_cannot_be_baselined(tmp_path, monkeypatch):
+    """`--update` has to refuse, and the gate has to ignore a hand-written allowance.
+
+    An exhausted bound emits a synthetic "analysis did not converge" finding. The writer
+    stored it like a reviewed sink and reported success, so every later run matched the
+    allowance and printed OK while the scanner was still saying its own answer was
+    partial. That is the one outcome this script exists to prevent.
+    """
+    monkeypatch.setattr(L, "_LOCAL_BOUND", 1)
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        a = json.load(handle)['model_type']\n"
+        "    b = a\n    c = b\n    d = c\n    e = d\n"
+        "    return importlib.import_module('x.' + e)\n",
+    )
+    # Spelled out rather than read off the module, so that on a tree without the fix
+    # this test fails on the behaviour below and not on a missing constant.
+    incomplete = [f for f in findings if f["sink"] == "analysis did not converge"]
+    assert incomplete
+
+    baseline = tmp_path / "baseline.json"
+    monkeypatch.setattr(L, "BASELINE_PATH", baseline)
+    with pytest.raises(SystemExit) as refused:
+        L._write_baseline(findings)
+    assert refused.value.code == 2
+    assert not baseline.exists()
+
+    # And an allowance someone writes by hand must not silence it either.
+    baseline.write_text(
+        json.dumps({"entries": {L._baseline_key(incomplete[0]): 1}}),
+        encoding = "utf-8",
+    )
+    assert "analysis did not converge" in {f["sink"] for f in L._unbaselined(findings)}
