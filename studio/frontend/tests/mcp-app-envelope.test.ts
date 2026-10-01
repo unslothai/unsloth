@@ -9,6 +9,7 @@ import ts from "typescript";
 
 import { splitMcpImages } from "../src/features/chat/api/mcp-images.ts";
 import {
+  cspFrameQuery,
   extractMcpUiEnvelope,
   isMcpUiToolResult,
   mcpUiReplayImages,
@@ -186,4 +187,16 @@ test("a widget result replays the images it carried to the model", () => {
     adapter,
     /mcpUiReplayImages\(result, tc\.toolName \?\? ""\);\n\s*if \(uiImages\.length > 0\) content \+= mcpImagesEnvelope\(uiImages\);/,
   );
+});
+
+test("a declared CSP rides the frame URL and a null or absent one asks for nothing", () => {
+  assert.equal(
+    cspFrameQuery({
+      connectDomains: ["api.example.com", ""],
+      frameDomains: null,
+    }),
+    "connect=api.example.com",
+  );
+  for (const csp of [null, undefined, {}, "x"])
+    assert.equal(cspFrameQuery(csp), "");
 });

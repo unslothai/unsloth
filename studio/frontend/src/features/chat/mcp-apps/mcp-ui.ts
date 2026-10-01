@@ -109,6 +109,30 @@ export function toolResultParams(
   };
 }
 
+const CSP_PARAMS: [string, string][] = [
+  ["connect", "connectDomains"],
+  ["resource", "resourceDomains"],
+  ["frame", "frameDomains"],
+  ["base_uri", "baseUriDomains"],
+];
+
+/** The frame shell's query from the template's declared CSP; a server may send `"csp": null`. */
+export function cspFrameQuery(csp: unknown): string {
+  const query = new URLSearchParams();
+  const declared =
+    typeof csp === "object" && csp !== null
+      ? (csp as Record<string, unknown>)
+      : {};
+  for (const [param, field] of CSP_PARAMS) {
+    const domains = declared[field];
+    const value = Array.isArray(domains)
+      ? domains.filter((d) => typeof d === "string" && d).join(",")
+      : "";
+    if (value) query.set(param, value);
+  }
+  return query.toString();
+}
+
 /** getRandomValues, not randomUUID (missing over plain-HTTP LAN); null without Web Crypto. */
 export function newBridgeToken(): string | null {
   const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));

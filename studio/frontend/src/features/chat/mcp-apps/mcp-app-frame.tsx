@@ -10,7 +10,6 @@ import { openLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  type McpUiCspField,
   type McpUiResource,
   callMcpUiTool,
   readMcpUiResource,
@@ -20,6 +19,7 @@ import {
   type McpUiEnvelope,
   RESIZE_FALLBACK,
   bridgeShim,
+  cspFrameQuery,
   newBridgeToken,
   toolApprovalScope,
   toolResultParams,
@@ -78,24 +78,10 @@ function argsPreview(args: Record<string, unknown>): string {
   }
 }
 
-const CSP_PARAMS: [string, McpUiCspField][] = [
-  ["connect", "connectDomains"],
-  ["resource", "resourceDomains"],
-  ["frame", "frameDomains"],
-  ["base_uri", "baseUriDomains"],
-];
-
 // The shell's CSP is fixed at request time, so declared domains ride the URL; never the auth token.
-function frameSrc(csp: McpUiResource["ui"]["csp"] = {}): string {
-  const query = new URLSearchParams();
-  for (const [param, field] of CSP_PARAMS) {
-    const domains = csp[field];
-    const value = Array.isArray(domains)
-      ? domains.filter(Boolean).join(",")
-      : "";
-    if (value) query.set(param, value);
-  }
-  return apiUrl(`/api/inference/mcp-app-frame${query.size ? `?${query}` : ""}`);
+function frameSrc(csp: McpUiResource["ui"]["csp"] | null): string {
+  const query = cspFrameQuery(csp);
+  return apiUrl(`/api/inference/mcp-app-frame${query ? `?${query}` : ""}`);
 }
 
 export interface McpAppFrameProps {
