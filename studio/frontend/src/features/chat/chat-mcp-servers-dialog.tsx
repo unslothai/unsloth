@@ -77,6 +77,16 @@ type FormState = {
   imageInputMappings: McpImageInputMapping[];
 };
 
+// What image-field discovery reads: it probes the SAVED server, so it waits for these to be saved.
+function connectionKey(form: FormState): string {
+  return JSON.stringify([
+    form.url,
+    form.arguments.map((row) => row.value),
+    form.headers.map((row) => [row.key, row.value]),
+    form.useOauth,
+  ]);
+}
+
 const EMPTY_FORM: FormState = {
   displayName: "",
   url: "",
@@ -364,6 +374,7 @@ export function ChatMcpServersDialog({
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [savedConnection, setSavedConnection] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [codecPending, setCodecPending] = useState(false);
@@ -516,12 +527,14 @@ export function ChatMcpServersDialog({
       setCodecPending(false);
       setDecodingCommand(false);
       setForm(baseForm);
+      setSavedConnection(connectionKey(baseForm));
       return;
     }
 
     setCodecPending(true);
     setDecodingCommand(true);
     setForm(baseForm);
+    setSavedConnection(null);
     try {
       const decoded = await decodeMcpStdioCommand(server.url);
       if (
@@ -530,7 +543,7 @@ export function ChatMcpServersDialog({
       ) {
         return;
       }
-      setForm({
+      const decodedForm: FormState = {
         ...baseForm,
         url: decoded.command,
         arguments: argumentsFromStrings(decoded.arguments ?? []),
@@ -540,7 +553,9 @@ export function ChatMcpServersDialog({
           decoded.arguments ?? [],
         ),
         useOauth: false,
-      });
+      };
+      setForm(decodedForm);
+      setSavedConnection(connectionKey(decodedForm));
     } catch (err) {
       if (
         formGenerationRef.current !== generation ||
@@ -1060,6 +1075,10 @@ export function ChatMcpServersDialog({
                 setForm((prev) => ({ ...prev, imageInputMappings }))
               }
               disabled={formPending}
+              connectionUnsaved={
+                savedConnection === null ||
+                connectionKey(form) !== savedConnection
+              }
             />
 
             {form.transport !== "unknown" && (

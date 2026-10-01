@@ -29,11 +29,13 @@ export function McpImageMappings({
   value,
   onChange,
   disabled,
+  connectionUnsaved,
 }: {
   serverId?: string;
   value: McpImageInputMapping[];
   onChange: (value: McpImageInputMapping[]) => void;
   disabled: boolean;
+  connectionUnsaved: boolean;
 }) {
   const [enabled, setEnabled] = useState(value.length > 0);
   const [options, setOptions] = useState<Option[] | null>(null);
@@ -144,7 +146,11 @@ export function McpImageMappings({
               </Button>
             </div>
           ))}
-          {options === null ? (
+          {connectionUnsaved ? (
+            <p className="text-xs text-muted-foreground">
+              Save the connection changes first, then choose the image field.
+            </p>
+          ) : options === null ? (
             <Button
               type="button"
               size="sm"
