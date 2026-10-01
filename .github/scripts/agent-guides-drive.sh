@@ -354,12 +354,14 @@ crosscheck_contract() {
         || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
       home="$(raw_env DSH_HOME)"
       [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
-      cfg="$home/settings.yaml"
-      if [ -f "$cfg" ]; then
-        grep -q 'openai-completions' "$cfg" \
-          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
-        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
-      fi
+      # A --patch overlay, not settings.yaml: dsh 0.1.7 imports that only after the first boot.
+      cfg="$home/unsloth.patch.yml"
+      [ -f "$cfg" ] || guide_fail "dsh patch $cfg missing (start.py write_dsh_patch)"
+      grep -qF -- "--patch $cfg" "$raw" \
+        || guide_fail "dsh launch command no longer passes --patch $cfg (start.py _dsh_command)"
+      grep -q 'openai-completions' "$cfg" \
+        || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_patch)"
+      cp "$cfg" "$REDACTED_DIR/dsh-patch.yml"
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true

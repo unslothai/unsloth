@@ -248,12 +248,12 @@ test("each list keeps its own manual order", () => {
   assert.deepEqual(saved["project:p1"], ["b", "a"]);
 });
 
-test("the sidebar starts grouped by project, sorted by priority", () => {
+test("the sidebar starts grouped by project, sorted by last updated", () => {
   // Defaults are what an install without saved preferences renders, so they are
   // part of the layout, not an implementation detail.
   const fresh = useSidebarOrganizationStore.getInitialState();
   assert.equal(fresh.organizeBy, "project");
-  assert.equal(fresh.chatSort, "priority");
+  assert.equal(fresh.chatSort, "updated");
   // Pinned defaults to manual because pin order already is one: re-sorting the
   // chat lists must not silently rearrange the rows the user pinned by hand.
   assert.equal(fresh.pinnedSort, "manual");
@@ -261,22 +261,22 @@ test("the sidebar starts grouped by project, sorted by priority", () => {
 
 test("Pinned sorts independently of the chat lists", () => {
   const store = useSidebarOrganizationStore.getState();
-  store.setChatSort("updated");
-  store.setPinnedSort("priority");
+  store.setChatSort("manual");
+  store.setPinnedSort("updated");
 
   const state = useSidebarOrganizationStore.getState();
-  assert.equal(state.chatSort, "updated");
-  assert.equal(state.pinnedSort, "priority");
+  assert.equal(state.chatSort, "manual");
+  assert.equal(state.pinnedSort, "updated");
 });
 
 test("Projects sort on their own, keeping the drag order by default", () => {
   assert.equal(useSidebarOrganizationStore.getInitialState().projectSort, "manual");
   const store = useSidebarOrganizationStore.getState();
-  store.setChatSort("priority");
+  store.setChatSort("updated");
   store.setProjectSort("name");
   const state = useSidebarOrganizationStore.getState();
   assert.equal(state.projectSort, "name");
-  assert.equal(state.chatSort, "priority");
+  assert.equal(state.chatSort, "updated");
   store.setProjectSort("manual");
 });
 

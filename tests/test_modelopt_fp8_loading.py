@@ -481,8 +481,11 @@ def test_rewrite_follows_who_loads_the_weights():
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "FastModel loads need an accelerator")
 def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
+    """Subprocess: FastModel compiles and rebinds the Llama classes process-wide before it refuses."""
+    import subprocess
+    import sys
+
     from transformers import LlamaConfig, LlamaForCausalLM
-    from unsloth import FastModel
 
     config = LlamaConfig(
         hidden_size = 64,
@@ -496,8 +499,19 @@ def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
     raw = json.loads((tmp_path / "config.json").read_text())
     raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
     (tmp_path / "config.json").write_text(json.dumps(raw))
-    with pytest.raises(KeyError, match = "cannot load this `modelopt` checkpoint"):
-        FastModel.from_pretrained(str(tmp_path), load_in_4bit = False, load_in_16bit = True)
+    code = f"""
+import os
+os.environ["UNSLOTH_COMPILE_LOCATION"] = {str(tmp_path / "compiled")!r}
+from unsloth import FastModel
+try:
+    FastModel.from_pretrained({str(tmp_path)!r}, load_in_4bit = False, load_in_16bit = True)
+except KeyError as error:
+    print("REFUSED", "cannot load this `modelopt` checkpoint" in str(error))
+else:
+    print("LOADED")
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 600)
+    assert "REFUSED True" in out.stdout, (out.stdout[-2000:], out.stderr[-2000:])
 
 
 @needs_per_tensor_fp8
@@ -531,7 +545,7 @@ def test_config_branch_moves_rope_extension_onto_the_config():
     from unsloth.models import llama
 
     source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
-    branch = source.split("if user_config is not None or _modelopt_rewritten:", 1)[1]
+    branch = source.split("if user_config is not None or _modelopt_rewritten", 1)[1]
     branch = branch.split("AutoModelForCausalLM.from_pretrained(", 1)[0]
     assert 'kwargs.pop("rope_scaling", None)' in branch
 
@@ -901,18 +915,22 @@ print("CHECK", q.dtype, w_rel, float((got - want).norm() / want.norm()))
 def test_fp8_linear_forward_patch_adds_the_bias():
     from unsloth.kernels.fp8 import module_forward_patch
 
-    forward = module_forward_patch(lambda X, weight, scale: X @ weight.t(), "weight_scale_inv")
+    forward = module_forward_patch(
+        lambda X, weight, scale: X @ weight.to(X.dtype).t(), "weight_scale_inv"
+    )
     biased, plain = nn.Linear(4, 3), nn.Linear(4, 3, bias = False)
     for module in (biased, plain):
         module.weight_scale_inv = torch.ones(())
     # fbgemm keeps its bias in fp32; the output must stay in the activation dtype.
     biased.bias.data = biased.bias.data.float()
     X = torch.randn(2, 4, dtype = torch.bfloat16)
-    biased.weight.data, plain.weight.data = (m.weight.data.bfloat16() for m in (biased, plain))
+    biased.weight.data, plain.weight.data = (
+        m.weight.data.to(torch.float8_e4m3fn) for m in (biased, plain)
+    )
     out = forward(biased, X)
     assert out.dtype == torch.bfloat16
-    torch.testing.assert_close(out, X @ biased.weight.t() + biased.bias.bfloat16())
-    assert torch.equal(forward(plain, X), X @ plain.weight.t())
+    torch.testing.assert_close(out, X @ biased.weight.bfloat16().t() + biased.bias.bfloat16())
+    assert torch.equal(forward(plain, X), X @ plain.weight.bfloat16().t())
 
 
 def test_save_keeps_transformers_fp8_scale_names():
