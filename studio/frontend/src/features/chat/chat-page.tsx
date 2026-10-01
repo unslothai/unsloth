@@ -82,6 +82,7 @@ import {
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { BrowserSplit, shouldCloseBrowser, type BrowserContext } from "@/features/desktop-browser";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
@@ -4175,6 +4176,27 @@ export function ChatPage({
     selectedArtifact &&
       (view.mode === "compare" || artifactSurface === "overlay"),
   );
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const browserThreadId = view.mode === "single" ? (view.threadId ?? activeThreadId ?? null) : null;
+  const browserNewNonce = view.mode === "single" ? (view.newThreadNonce ?? null) : null;
+  const browserContext: BrowserContext = useMemo(() => ({
+    active,
+    mode: view.mode,
+    threadId: browserThreadId,
+    selectedThreadId: search.thread ?? null,
+    newNonce: browserNewNonce,
+    projectId: currentProjectId ?? null,
+    research: Boolean(openResearchRunId),
+    canvas: Boolean(selectedArtifact),
+  }), [active, view.mode, browserThreadId, browserNewNonce, search.thread, currentProjectId, openResearchRunId, selectedArtifact]);
+  const previousBrowserContext = useRef(browserContext);
+  useEffect(() => {
+    if (browserOpen && shouldCloseBrowser(previousBrowserContext.current, browserContext)) {
+      queueMicrotask(() => setBrowserOpen(false));
+    }
+    previousBrowserContext.current = browserContext;
+  }, [browserOpen, browserContext]);
+  const showDesktopBrowser = isTauri && active && view.mode === "single" && !browserContext.research && !browserContext.canvas;
 
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
@@ -4199,6 +4221,7 @@ export function ChatPage({
           subtree, which walks the whole thread on every mutation - 17.5 ms per append on a 357k-
           element thread, against 0.10 ms without this rule (Chromium). ChatModelNotice renders a
           direct child, which tests/thread-ancestor-has-scope.test.ts asserts. */}
+      <BrowserSplit open={showDesktopBrowser && browserOpen} onClose={() => setBrowserOpen(false)}>
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll beneath it, instead of a hard cut. */}
@@ -4347,6 +4370,19 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
+            {showDesktopBrowser ? (
+              <button
+                type="button"
+                data-testid="desktop-browser-toggle"
+                aria-label="Browser"
+                aria-pressed={browserOpen}
+                title={browserOpen ? "Close browser" : "Open browser"}
+                onClick={() => setBrowserOpen((open) => !open)}
+                className="flex h-[var(--studio-chat-control-height,34px)] items-center rounded-lg px-2 text-xs text-nav-fg hover:bg-nav-surface-hover"
+              >
+                Browser
+              </button>
+            ) : null}
             {showContextWindowUsage &&
             view.mode === "single" &&
             (contextUsage || contextWindowKnown) ? (
@@ -4566,6 +4602,7 @@ export function ChatPage({
           />
         ) : null}
       </div>
+      </BrowserSplit>
 
       <ChatSettingsPanel
         open={active && modelConfigRequest === null && settingsOpen}

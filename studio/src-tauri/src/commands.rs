@@ -864,7 +864,7 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
 
 /// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
-pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
+pub fn open_logs_dir(window: tauri::Webview) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
     open_existing_dir(&diagnostics::logs_dir())
 }
@@ -872,7 +872,7 @@ pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the
 /// system file manager.
 #[tauri::command]
-pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+pub fn open_models_dir(window: tauri::Webview, path: String) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
     open_existing_dir(std::path::Path::new(&path))
 }

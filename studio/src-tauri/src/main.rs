@@ -2,6 +2,10 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_webview;
+mod browser_platform;
+#[cfg(target_os = "linux")]
+mod browser_linux;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -835,7 +839,7 @@ fn log_panics() {
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let window = app.get_webview_window("main").ok_or_else(|| {
+    let window = app.get_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.set_decorations(false)?;
@@ -855,7 +859,7 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
     };
 
-    let window = app.get_webview_window("main").ok_or_else(|| {
+    let window = app.get_webview("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.with_webview(|webview| {
@@ -892,7 +896,7 @@ fn setup_windows_browser_guards(app: &tauri::App) -> Result<(), Box<dyn std::err
         GetKeyState, VK_CONTROL, VK_F5, VK_MENU, VK_R, VK_SHIFT,
     };
 
-    let window = app.get_webview_window("main").ok_or_else(|| {
+    let window = app.get_webview("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.with_webview(|webview| unsafe {
@@ -1328,7 +1332,7 @@ fn show_main_window(app: &tauri::AppHandle) {
     // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -1599,7 +1603,7 @@ where
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
                             || {
-                                app.get_webview_window("main")
+                                app.get_window("main")
                                     .map(|window| window.is_visible().map_err(|e| e.to_string()))
                             },
                         )
@@ -1690,7 +1694,11 @@ extern "C-unwind" fn application_should_terminate(
     let Some(app) = TERMINATE_APP_HANDLE.get() else {
         return NS_TERMINATE_NOW;
     };
-    match begin_or_attach_termination(quit_requires_confirmation(app)) {
+    // Even an otherwise immediate native quit must await child removal, so
+    // AppKit's Exit path can persist the main window through window-state 2.x.
+    match begin_or_attach_termination(
+        quit_requires_confirmation(app) || browser_webview::has_open_session(app),
+    ) {
         TerminationConfirmation::Now => NS_TERMINATE_NOW,
         TerminationConfirmation::Attached => NS_TERMINATE_LATER,
         TerminationConfirmation::Duplicate => NS_TERMINATE_CANCEL,
@@ -1712,14 +1720,25 @@ extern "C-unwind" fn application_should_terminate(
 fn reply_to_termination_request(app: &tauri::AppHandle, proceed: bool) {
     use objc2::runtime::{AnyObject, Bool};
 
-    let result = app.run_on_main_thread(move || unsafe {
-        let nsapp: *mut AnyObject =
-            objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
-        let () = objc2::msg_send![nsapp, replyToApplicationShouldTerminate: Bool::new(proceed)];
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if proceed {
+            if let Err(error) = browser_webview::prepare_exit(&app).await {
+                warn!("Could not close browser before native termination: {error}");
+            }
+            let _ = app.save_window_state(
+                StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+            );
+        }
+        let result = app.run_on_main_thread(move || unsafe {
+            let nsapp: *mut AnyObject =
+                objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
+            let () = objc2::msg_send![nsapp, replyToApplicationShouldTerminate: Bool::new(proceed)];
+        });
+        if let Err(error) = result {
+            warn!("Could not reply to the pending termination request: {error}");
+        }
     });
-    if let Err(error) = result {
-        warn!("Could not reply to the pending termination request: {error}");
-    }
 }
 
 /// Dock quits, logout and AppleScript quits ask the delegate via
@@ -2194,7 +2213,15 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
-        .invoke_handler(tauri::generate_handler![
+        .manage(browser_webview::BrowserState::default())
+        .invoke_handler(|invoke| {
+            // A browser child shares the OS window, not the application's authority.
+            let caller = invoke.message.webview_ref();
+            if caller.label() != "main" || caller.window_ref().label() != "main" {
+                invoke.resolver.reject("Studio commands are only available to the main webview.");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
             set_training_active,
             set_renderer_activity,
@@ -2261,7 +2288,16 @@ fn main() {
             get_launch_at_login,
             set_launch_at_login,
             set_tray_server_status,
-        ])
+            browser_webview::desktop_browser_open,
+            browser_webview::desktop_browser_close,
+            browser_webview::desktop_browser_navigate,
+            browser_webview::desktop_browser_set_bounds,
+            browser_webview::desktop_browser_action,
+            browser_webview::desktop_browser_snapshot,
+            browser_webview::desktop_browser_clear_data,
+        ];
+            handler(invoke)
+        })
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
             let launched_hidden = was_launched_hidden(app.handle().clone());
@@ -2295,6 +2331,8 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
+            #[cfg(target_os = "linux")]
+            browser_linux::install(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]
@@ -2331,6 +2369,23 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { code, api, .. }
+                if browser_webview::begin_exit(app) =>
+            {
+                api.prevent_exit();
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = browser_webview::prepare_exit(&app).await {
+                        warn!("Could not close browser before exit: {error}");
+                    }
+                    // The plugin can now enumerate main again, including maximized
+                    // state not present in its incremental resize-event cache.
+                    let _ = app.save_window_state(
+                        StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+                    );
+                    app.exit(code.unwrap_or(0));
+                });
+            }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
                 has_visible_windows: false,

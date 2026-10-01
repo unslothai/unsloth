@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{Manager, WebviewWindow};
+use tauri::{Manager, Webview};
 
 use tauri_plugin_window_state::AppHandleExt;
 
@@ -141,7 +141,7 @@ fn app_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// migrated unless it matches the fixed setup-window size at any display scale.
 #[tauri::command]
 pub fn has_initialized_app_window_layout(
-    window: WebviewWindow,
+    window: Webview,
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     crate::native_intents::ensure_main_window(&window)?;
@@ -153,7 +153,7 @@ pub fn has_initialized_app_window_layout(
 /// shown, constrained, and minimum-sized the full application window.
 #[tauri::command]
 pub fn mark_app_window_layout_initialized(
-    window: WebviewWindow,
+    window: Webview,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
@@ -164,11 +164,12 @@ pub fn mark_app_window_layout_initialized(
 /// overwrite the plugin's saved full-app dimensions before the process exits.
 #[tauri::command]
 pub fn reset_app_window_layout_initialized(
-    window: WebviewWindow,
+    window: Webview,
     app: tauri::AppHandle,
     native_restored: tauri::State<'_, NativeLayoutRestored>,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
+    let window = window.window();
     reset_initialized(&app_config_dir(&app)?)?;
     native_restored.0.store(false, Ordering::SeqCst);
     // Native restore may have maximized it; compact before setup can be revealed.

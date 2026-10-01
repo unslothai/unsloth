@@ -17,7 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, Webview};
 use tauri_plugin_dialog::DialogExt;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -406,8 +406,13 @@ fn prune_expired(inner: &mut NativeIntakeInner) {
         .retain(|intent| intent.path.expires_at_ms > now);
 }
 
-pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
-    if window.label() == "main" {
+// Check the invoking webview as well as its parent: a browser child shares the main window.
+fn is_main_webview_caller(webview_label: &str, window_label: &str) -> bool {
+    webview_label == "main" && window_label == "main"
+}
+
+pub(crate) fn ensure_main_window(webview: &Webview) -> Result<(), String> {
+    if is_main_webview_caller(webview.label(), webview.window().label()) {
         Ok(())
     } else {
         Err("Native path commands are only available to the main window.".to_string())
@@ -416,7 +421,7 @@ pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 pub fn drain_native_intents(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Vec<NativeIntent>, String> {
     ensure_main_window(&window)?;
@@ -425,7 +430,7 @@ pub fn drain_native_intents(
 
 #[tauri::command]
 pub fn register_native_model_path(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
@@ -435,7 +440,7 @@ pub fn register_native_model_path(
 
 #[tauri::command]
 pub fn register_native_attachment_path(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
@@ -445,7 +450,7 @@ pub fn register_native_attachment_path(
 
 #[tauri::command]
 pub fn register_native_dataset_path(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
@@ -455,7 +460,7 @@ pub fn register_native_dataset_path(
 
 #[tauri::command]
 pub async fn pick_native_model(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeIntent>, String> {
@@ -481,7 +486,7 @@ pub async fn pick_native_model(
 
 #[tauri::command]
 pub async fn pick_hugging_face_cache_dir(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
     ensure_main_window(&window)?;
@@ -509,7 +514,7 @@ pub async fn pick_hugging_face_cache_dir(
 
 #[tauri::command]
 pub async fn pick_native_document_folder(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeDocumentFolderSelection>, String> {
@@ -532,7 +537,7 @@ pub async fn pick_native_document_folder(
 
 #[tauri::command]
 pub fn consume_native_path_token(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
     operation: NativePathOperation,
@@ -548,7 +553,7 @@ pub fn consume_native_path_token(
 
 #[tauri::command]
 pub fn register_artifact_path(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     kind: NativeArtifactKind,
     path: String,
@@ -559,7 +564,7 @@ pub fn register_artifact_path(
 
 #[tauri::command]
 pub fn reveal_path_token(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<(), String> {
@@ -594,7 +599,7 @@ pub fn reveal_path_token(
 
 #[tauri::command]
 pub fn open_path_token(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<(), String> {
@@ -849,7 +854,7 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
 // token lookup stays here; State is not 'static and validation hits the disk.
 #[tauri::command]
 pub async fn read_native_attachment_file(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<NativeAttachmentFile, String> {
