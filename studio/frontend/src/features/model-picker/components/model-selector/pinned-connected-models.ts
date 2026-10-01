@@ -155,7 +155,7 @@ export const usePinnedConnectedModelsStore = create<PinnedConnectedModelsState>(
         // turns an unpin into a pin and writes back what the user was removing.
         const unpinning = state.pinned.includes(modelId);
         const without = base.filter((id) => id !== modelId);
-        // Newest first, as On Device does, so "Pin to top" lands on top of the pinned group.
+        // Newest first, as On Device does, so a new pin lands on top of the pinned group.
         const next = unpinning ? without : [modelId, ...without];
         writePinned(next, unpinning ? null : modelId);
         return { pinned: next };

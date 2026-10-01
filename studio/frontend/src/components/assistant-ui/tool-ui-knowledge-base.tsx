@@ -7,10 +7,11 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileTextIcon, LibraryBigIcon } from "lucide-react";
+import { LibraryBigIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { useToolAwaitingApproval } from "@/features/chat";
+import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useMemo } from "react";
 import { Badge } from "./badge";
@@ -65,7 +66,7 @@ export function CitationBadge({
       }`}
     >
       <span className="tabular-nums text-muted-foreground">{index + 1}</span>
-      <FileTextIcon className="size-3 shrink-0" />
+      <FileGlyph className="size-3 shrink-0" />
       <span className="truncate">{label}</span>
     </Badge>
   );

@@ -55,6 +55,20 @@ def _params_text(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# Pillow's default zlib level 6 costs ~0.4 s per 1024x1024 PNG on the request path; level 1 ~0.1 s, ~10% larger, lossless.
+PNG_COMPRESS_LEVEL_ENV = "UNSLOTH_IMAGE_PNG_COMPRESS_LEVEL"
+_DEFAULT_PNG_COMPRESS_LEVEL = 1
+
+
+def png_compress_level() -> int:
+    raw = os.environ.get(PNG_COMPRESS_LEVEL_ENV, "").strip()
+    try:
+        level = int(raw)
+    except ValueError:
+        return _DEFAULT_PNG_COMPRESS_LEVEL
+    return level if 0 <= level <= 9 else _DEFAULT_PNG_COMPRESS_LEVEL
+
+
 def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     import io
 
@@ -64,7 +78,7 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
     buf = io.BytesIO()
-    image.save(buf, format = "PNG", pnginfo = info)
+    image.save(buf, format = "PNG", pnginfo = info, compress_level = png_compress_level())
     return buf.getvalue()
 
 
@@ -169,6 +183,21 @@ def owned_image_path(image_id: str) -> Optional[Path]:
     if path is None or _read_meta(path) is None:
         return None
     return path
+
+
+def thumbnail(path: Path, size: int) -> bytes:
+    """Return a WebP thumbnail with its longest side at most ``size`` pixels."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im.thumbnail((size, size), Image.LANCZOS)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
+        buf = io.BytesIO()
+        im.save(buf, format = "WEBP", quality = 85, method = 4)
+    return buf.getvalue()
 
 
 def _mtime(path: Path) -> float:

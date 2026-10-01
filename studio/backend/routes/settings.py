@@ -85,6 +85,7 @@ from utils.download_transport_settings import (
 from utils.hub_settings import (
     HubSettings,
     active_source,
+    claim_automatic_source,
     get_hub_settings,
     set_hub_settings,
     set_hub_source,
@@ -632,6 +633,13 @@ class SystemOneModelOption(BaseModel):
     download_bytes: int
 
 
+class SystemOneConnectionOption(BaseModel):
+    name: str
+    provider_id: str
+    provider: str
+    model: str
+
+
 class SystemOneSettingsResponse(BaseModel):
     enabled: bool
     enabled_locked: bool
@@ -646,12 +654,15 @@ class SystemOneSettingsResponse(BaseModel):
     loading_model: Optional[str] = None
     installing: bool = False
     error: Optional[str] = None
+    mcp_url: str
 
 
 class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    expected_enabled: Optional[bool] = None
+    expected_model: Optional[str] = None
 
 
 class SystemOneDownloadPlan(BaseModel):
@@ -698,6 +709,10 @@ class HubSettingsResponse(BaseModel):
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
     active_source: Literal["huggingface", "modelscope"]
+
+
+class HubSourceNoticeResponse(BaseModel):
+    granted: bool
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -748,6 +763,9 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # False when the running llama.cpp child has no host copy to lock (full offload to a discrete GPU),
+    # so a keep-resident user is told why no lock is taken. True with nothing loaded.
+    mlock_applicable: bool = True
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
     # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
@@ -1161,6 +1179,13 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     return bool(state and state[0])
 
 
+def _model_memory_mlock_applicable() -> bool:
+    state, _policy_active, applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
+    return state is _NO_LAUNCH or bool(applicable)
+
+
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
     mlock_active = _model_memory_mlock_active(should_mlock())
@@ -1168,6 +1193,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
+        mlock_applicable = _model_memory_mlock_applicable(),
         reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
@@ -1368,8 +1394,9 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
-def _systemone_response() -> SystemOneSettingsResponse:
+def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
+    from routes.systemone import MCP_PATH
 
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
@@ -1377,6 +1404,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
+    port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
@@ -1396,24 +1424,18 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
+        mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
     )
 
 
-@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
-def get_systemone_settings(
-    current_subject: str = Depends(get_current_subject),
-) -> SystemOneSettingsResponse:
-    return _systemone_response()
+_SYSTEMONE_SETTINGS_LOCK = threading.Lock()
 
 
-@_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
-def update_systemone_settings(
-    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
-) -> SystemOneSettingsResponse:
-    from core.systemone import laya_runtime
-
+def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
-        values = systemone_settings.validate(**payload.model_dump(exclude_none = True))
+        return systemone_settings.validate(
+            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+        )
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -1422,34 +1444,132 @@ def update_systemone_settings(
             event = "settings.update_systemone_failed",
             log = logger,
         ) from exc
-    if values:
-        # The resident model was built from the old settings; drop it so the next request uses the new ones.
-        try:
-            laya_runtime.unload()
-        except laya_runtime.Unavailable as exc:
-            raise HTTPException(status_code = 409, detail = exc.message) from None
-        systemone_settings.save(values)
-    return _systemone_response()
+
+
+def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    changed = (
+        payload.expected_enabled is not None
+        and systemone_settings.get_enabled() != payload.expected_enabled
+    ) or (
+        payload.expected_model is not None
+        and catalog.default_checkpoint().name != payload.expected_model
+    )
+    if changed:
+        raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
+
+
+@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+def get_systemone_settings(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> SystemOneSettingsResponse:
+    return _systemone_response(request)
+
+
+async def _refresh_decision_models(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+    if catalog.parse_connection(payload.model):
+        await refresh_listed_decision_models()
+
+
+@_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
+async def update_systemone_settings(
+    payload: SystemOneSettingsPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    await _refresh_decision_models(payload)
+    return await asyncio.to_thread(_save_systemone_settings, payload, request)
+
+
+def _save_systemone_settings(
+    payload: SystemOneSettingsPayload, request: Request
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            # The resident model was built from the old settings; drop it so the next request uses the new ones.
+            try:
+                laya_runtime.unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
+            systemone_settings.save(values)
+    return _systemone_response(request)
+
+
+@_owner_settings_router.post("/systemone/validate", status_code = 204)
+async def validate_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> None:
+    await _refresh_decision_models(payload)
+    await asyncio.to_thread(_validate_systemone_settings, payload)
+
+
+def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import laya_runtime
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            try:
+                laya_runtime.ensure_can_unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
+
+
+@_owner_settings_router.get(
+    "/systemone/connections", response_model = list[SystemOneConnectionOption]
+)
+async def list_systemone_connections(
+    current_subject: str = Depends(get_current_subject),
+) -> list[SystemOneConnectionOption]:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+
+    await refresh_listed_decision_models()
+    return [
+        SystemOneConnectionOption(
+            name = catalog.Connection(row["id"], model).name,
+            provider_id = row["id"],
+            provider = row["display_name"],
+            model = model,
+        )
+        for row, models in await asyncio.to_thread(catalog.decision_connections)
+        for model in models
+    ]
 
 
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
-    current_subject: str = Depends(get_current_subject),
+    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(catalog.default_checkpoint()))
+
+    checkpoint = (
+        catalog.default_checkpoint()
+        if model is None
+        else catalog.parse_connection(model) or catalog.resolve(model)
+    )
+    if checkpoint is None:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    if isinstance(checkpoint, catalog.Connection):
+        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
 def unload_systemone_model(
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     try:
         laya_runtime.unload()
     except laya_runtime.Unavailable as exc:
         raise HTTPException(status_code = 409, detail = exc.message) from None
-    return _systemone_response()
+    return _systemone_response(request)
 
 
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
@@ -1520,6 +1640,16 @@ def update_hub_source(
 ) -> HubSettingsResponse:
     require_ui_session(via_api_key)
     return _hub_settings_response(set_hub_source(payload.source))
+
+
+@_owner_settings_router.post("/hub/source-notice", response_model = HubSourceNoticeResponse)
+def claim_hub_source_notice(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSourceNoticeResponse:
+    """Keep the automatic ModelScope default; granted once, to the UI that tells the owner."""
+    require_ui_session(via_api_key)
+    return HubSourceNoticeResponse(granted = claim_automatic_source())
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
@@ -3934,7 +4064,6 @@ class PersonalizationCustomization(BaseModel):
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
-    composerAttachments: Literal["cards", "compact"] = "cards"
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
@@ -4046,7 +4175,6 @@ class PersonalizationResponse(PersonalizationPayload):
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
     chatWidthSaved: bool = False
-    composerAttachmentsSaved: bool = False
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
@@ -4064,9 +4192,6 @@ def get_personalization_settings(
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
-    response.composerAttachmentsSaved = (
-        isinstance(customization, dict) and "composerAttachments" in customization
-    )
     response.sentAttachmentsSaved = (
         isinstance(customization, dict) and "sentAttachments" in customization
     )
@@ -4128,6 +4253,7 @@ class DebugLogSourceModel(BaseModel):
 class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
+    matched_source_id: Optional[str] = None
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
@@ -4158,6 +4284,7 @@ class DebugLogResponse(BaseModel):
 
 @_owner_settings_router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
+    diagnostic_path: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogSourcesResponse:
@@ -4179,6 +4306,7 @@ def get_debug_log_sources(
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
+        matched_source_id = debug_log_sources.source_id_for_path(diagnostic_path, sources),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
         log_root = log_root,
     )

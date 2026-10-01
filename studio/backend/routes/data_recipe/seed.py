@@ -881,7 +881,72 @@ def _load_preview_rows(
     *, load_dataset_fn, load_kwargs: dict[str, Any], preview_size: int
 ) -> list[dict[str, Any]]:
     streamed_ds = load_dataset_fn(**load_kwargs)
-    return [row for row in islice(streamed_ds, preview_size)]
+    features = getattr(streamed_ds, "features", None) if managed_account() else None
+    undecoded = _images_undecoded(features) if features else None
+    if undecoded is None or undecoded == features:
+        return [row for row in islice(streamed_ds, preview_size)]
+    # Image cells, nested ones included, stay {bytes, path} dicts so a local path is checked
+    # against the account before it is opened; Hub-hosted images are decoded here.
+    tokens = getattr(streamed_ds, "_token_per_repo_id", None)
+    return [
+        _decode_hub_images(undecoded, row, tokens)
+        for row in islice(streamed_ds.cast(undecoded), preview_size)
+    ]
+
+
+def _images_undecoded(feature):
+    import dataclasses
+
+    from datasets import Image
+
+    if isinstance(feature, Image):
+        return dataclasses.replace(feature, decode = False)
+    if isinstance(feature, dict):
+        return type(feature)({key: _images_undecoded(value) for key, value in feature.items()})
+    if isinstance(feature, list):
+        return [_images_undecoded(value) for value in feature]
+    if dataclasses.is_dataclass(feature) and getattr(feature, "feature", None) is not None:
+        return dataclasses.replace(feature, feature = _images_undecoded(feature.feature))
+    return feature
+
+
+def _is_hub_path(path) -> bool:
+    from datasets import config
+
+    if not isinstance(path, str):
+        return False
+    parts = path.split("::")
+    source = parts[-1]
+    return (source.startswith("hf://") or source.startswith(f"{config.HF_ENDPOINT}/")) and not any(
+        part.startswith("file:") for part in parts
+    )
+
+
+def _decode_hub_images(feature, value, tokens):
+    from datasets import Image
+
+    if isinstance(feature, Image):
+        if (
+            isinstance(value, dict)
+            and value.get("bytes") is None
+            and _is_hub_path(value.get("path"))
+        ):
+            try:
+                return Image(mode = feature.mode).decode_example(value, token_per_repo_id = tokens)
+            except Exception:
+                return value
+        return value
+    if isinstance(feature, dict) and isinstance(value, dict):
+        return {
+            key: _decode_hub_images(feature[key], item, tokens) if key in feature else item
+            for key, item in value.items()
+        }
+    inner = (
+        feature[0] if isinstance(feature, list) and feature else getattr(feature, "feature", None)
+    )
+    if inner is not None and isinstance(value, list):
+        return [_decode_hub_images(inner, item, tokens) for item in value]
+    return value
 
 
 def _extract_columns(rows: list[dict[str, Any]]) -> list[str]:

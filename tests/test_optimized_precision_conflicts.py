@@ -15,6 +15,17 @@ class DispatchReached(Exception):
     pass
 
 
+def _mistral_format_names(tree):
+    """Names loader.py imports from .mistral_format, and its own *mistral_format* helpers."""
+    names = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "mistral_format":
+            names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.FunctionDef) and "mistral_format" in node.name:
+            names.add(node.name)
+    return names
+
+
 @pytest.fixture
 def loader():
     path = Path(__file__).resolve().parents[1] / "unsloth/models/loader.py"
@@ -73,6 +84,11 @@ def loader():
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
     )
+    # Mistral-format checkpoints (#12144) are redirected before the precision check. None of
+    # these fixtures is one, so every helper that decides that answers False and the redirect
+    # is an exception nothing raises. Read off loader.py so a new helper is covered too.
+    for name in _mistral_format_names(tree):
+        env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
     exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 

@@ -80,6 +80,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -101,7 +102,7 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  Globe02Icon,
+  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -138,7 +139,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
@@ -255,6 +256,7 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import { toast } from "@/lib/toast";
@@ -558,13 +560,6 @@ function formatRelativeShort(iso: string): string {
   return `${d}d`;
 }
 
-function createNavigationNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
@@ -799,6 +794,13 @@ function ImagesWorkflowList({
   );
 }
 
+// Hugeicons' three dots, spread 1.5 units and centred vertically (its own sit half a unit low).
+const MORE_DOTS_ICON: IconSvgElement = [
+  ["circle", { cx: "4.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+];
+
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
   icon,
@@ -1004,39 +1006,58 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
-  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
+  // Mouse hover previews the flyout; a press pins or unpins it. Touch and keyboard pin it.
   const [moreHoverOpen, setMoreHoverOpen] = useState(false);
   const [morePinnedOpen, setMorePinnedOpen] = useState(false);
   const moreOpen = moreHoverOpen || morePinnedOpen;
+  const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const moreContentRef = useRef<HTMLDivElement | null>(null);
+  // A hover preview must not move focus in or out of the composer.
+  const moreChosen = useRef(false);
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearMoreCloseTimer = useCallback(() => {
     if (!moreCloseTimer.current) return;
     clearTimeout(moreCloseTimer.current);
     moreCloseTimer.current = null;
   }, []);
-  const openMorePreview = useCallback(() => {
-    clearMoreCloseTimer();
-    setMoreHoverOpen(true);
-  }, [clearMoreCloseTimer]);
-  const closeMorePreviewSoon = useCallback(() => {
-    clearMoreCloseTimer();
-    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
-  }, [clearMoreCloseTimer]);
-  const handleMoreOpenChange = useCallback((next: boolean) => {
-    if (next) {
-      setMorePinnedOpen(true);
-      return;
-    }
-    setMorePinnedOpen(false);
-    setMoreHoverOpen(false);
-  }, []);
-  useEffect(
-    () => () => {
+  const openMorePreview = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
       clearMoreCloseTimer();
+      setMoreHoverOpen(true);
     },
     [clearMoreCloseTimer],
   );
+  // Grace period for crossing the gap to the flyout.
+  const closeMorePreviewSoon = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
+      clearMoreCloseTimer();
+      moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
+    },
+    [clearMoreCloseTimer],
+  );
+  const setMoreOpen = useCallback(
+    (next: boolean) => {
+      clearMoreCloseTimer();
+      if (next) moreChosen.current = true;
+      setMorePinnedOpen(next);
+      if (!next) setMoreHoverOpen(false);
+    },
+    [clearMoreCloseTimer],
+  );
+  useEffect(() => clearMoreCloseTimer, [clearMoreCloseTimer]);
+  // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
+  const moreContentFocusProps = {
+    onOpenAutoFocus: (event: Event) => {
+      if (!moreChosen.current) event.preventDefault();
+    },
+  } as Record<string, unknown>;
+  const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
+  const moreFocusReturning = useRef(false);
+  const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
+    if (!(next && moreFocusReturning.current)) setMoreTooltipOpen(next);
+  }, []);
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -1051,7 +1072,25 @@ export function AppSidebar() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
-  const [canScrollDown, setCanScrollDown] = useState(false);
+  // Written to the DOM like the rail: the observer below drives it, and state there loops (#185).
+  const fadeRef = useRef<HTMLDivElement | null>(null);
+  const syncFade = useCallback((el: HTMLDivElement) => {
+    const fade = fadeRef.current;
+    if (!fade) return;
+    // Only rows count: what is left below the bottom padding. Scrolling also grows the pinned
+    // group above by a few px, which leaves that much padding out of view at the very bottom.
+    const hidden = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const visible = String(hidden > parseFloat(getComputedStyle(el).paddingBottom) + 1);
+    if (fade.dataset.visible !== visible) fade.dataset.visible = visible;
+  }, []);
+  // The footer mounts after the scroller, so the first measure lands here.
+  const attachFade = useCallback(
+    (node: HTMLDivElement | null) => {
+      fadeRef.current = node;
+      if (node && scrollRef.current) syncFade(scrollRef.current);
+    },
+    [syncFade],
+  );
   // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
   // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
   // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
@@ -1067,38 +1106,59 @@ export function AppSidebar() {
   // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
   // stable callback never re-runs. Still runs before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
+  const sectionObserverRef = useRef<MutationObserver | null>(null);
   const attachScroller = useCallback(
     (el: HTMLDivElement | null) => {
       railObserverRef.current?.disconnect();
       railObserverRef.current = null;
+      sectionObserverRef.current?.disconnect();
+      sectionObserverRef.current = null;
       scrollRef.current = el;
       // Per node: a new parent has no variable yet even at the same rail, and
       // the cache would otherwise skip the write.
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
+      syncFade(el);
       // Watch the box, not renders: the Images disclosure and the project toggles change the row count
       // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
-      // the earlier observer was not: it writes a variable, never state, so nothing feeds back.
-      const observer = new ResizeObserver(() => measureScrollRail(el));
+      // the earlier observer was not: it writes the DOM, never state, so nothing feeds back.
+      const observer = new ResizeObserver(() => {
+        measureScrollRail(el);
+        syncFade(el);
+      });
       observer.observe(el);
+      // The sections too, so the fade follows the content height, not just the box.
+      for (const section of el.children) observer.observe(section);
+      // Sections come and go with their disclosures. A new one reports its size on its own; a gone
+      // one is unobserved, or the observer keeps the detached subtree alive, so re-measure here.
+      const sections = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.removedNodes) {
+            if (node instanceof Element) observer.unobserve(node);
+          }
+          for (const node of record.addedNodes) {
+            if (node instanceof Element) observer.observe(node);
+          }
+        }
+        syncFade(el);
+      });
+      sections.observe(el, { childList: true });
       railObserverRef.current = observer;
+      sectionObserverRef.current = sections;
     },
-    [measureScrollRail],
+    [measureScrollRail, syncFade],
   );
 
-  // Driven only from onScroll + a content-change effect below. No
-  // ResizeObserver: its callback-driven setState caused a render loop (React
-  // #185). Both setters bail out when unchanged, so neither path can loop.
-  const syncScrollState = useCallback((el: HTMLDivElement) => {
-    const nextScrolled = el.scrollTop > 0;
-    setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
-    const nextCanScrollDown =
-      el.scrollHeight - el.scrollTop - el.clientHeight > 1;
-    setCanScrollDown((prev) =>
-      prev === nextCanScrollDown ? prev : nextCanScrollDown,
-    );
-  }, []);
+  // The setter bails out when unchanged, so this cannot loop.
+  const syncScrollState = useCallback(
+    (el: HTMLDivElement) => {
+      const nextScrolled = el.scrollTop > 0;
+      setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
+      syncFade(el);
+    },
+    [syncFade],
+  );
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -1667,20 +1727,7 @@ export function AppSidebar() {
       return next;
     });
   }, []);
-  // Rows the open custom sections draw. Creating, filling, hiding or folding one changes the list's
-  // height with no scroll to re-measure the bottom fade off.
-  const customSectionRowCount = useMemo(
-    () =>
-      visibleCustomSections.reduce(
-        (count, section) =>
-          collapsedSectionIds.has(section.id)
-            ? count
-            : count + (customSectionRows.get(section.id)?.length ?? 0),
-        0,
-      ),
-    [visibleCustomSections, collapsedSectionIds, customSectionRows],
-  );
-  // The folders the custom sections draw, open or not: the bottom fade counts their chats.
+  // The folders the custom sections draw, open or not.
   const customSectionProjectRecords = useMemo(
     () =>
       visibleCustomSections.flatMap((section) =>
@@ -1888,35 +1935,6 @@ export function AppSidebar() {
     }
     return map;
   }, [sortedChatsByProjectId]);
-  // Nested rows across both sections, so the bottom fade re-measures when the list height changes.
-  const projectChatRowCount = useMemo(() => {
-    // Only folders list chats, and only this organization has folders that do.
-    if (organizeBy !== "project") return 0;
-    let rows = 0;
-    for (const project of [
-      ...pinnedProjectRecords,
-      ...customSectionProjectRecords,
-      ...visibleProjectRecords,
-    ]) {
-      if (collapsedProjectIds.has(project.id)) continue;
-      const chats = sortedChatsByProjectId.get(project.id) ?? [];
-      rows += expandedChatProjectIds.has(project.id)
-        ? chats.length
-        : Math.min(chats.length, PROJECT_CHAT_LIMIT);
-      // "Show more" and an empty folder's "No chats" are rows too.
-      if (chats.length > PROJECT_CHAT_LIMIT) rows += 1;
-      if (chats.length === 0) rows += 1;
-    }
-    return rows;
-  }, [
-    organizeBy,
-    pinnedProjectRecords,
-    customSectionProjectRecords,
-    visibleProjectRecords,
-    collapsedProjectIds,
-    expandedChatProjectIds,
-    sortedChatsByProjectId,
-  ]);
 
   // Multi-select. Ids only: a row that gets deleted elsewhere drops out of
   // selectedChatItems on its own rather than leaving a ghost to act on.
@@ -2501,54 +2519,6 @@ export function AppSidebar() {
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
 
-  // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
-  // for short, non-scrolling lists. Guarded setState below can't loop.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const next = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
-    setCanScrollDown((prev) => (prev === next ? prev : next));
-  }, [
-    recentChatItems.length,
-    runItems.length,
-    projects.length,
-    chatOpen,
-    runsOpen,
-    pinnedOpen,
-    isStudioRoute,
-    // The update card grows the footer, so the scroll area shrinks under it.
-    showUpdateCard,
-    // Regrouping, collapsing a folder or revealing more adds and removes rows
-    // with no scroll and no collapsible animation to re-measure off.
-    projectsOpen,
-    projectChatRowCount,
-    visibleProjectRecords.length,
-    // Pinning a folder moves rows between sections, leaving both counts above unchanged.
-    pinnedProjectRecords.length,
-    // Pinning a project chat adds a Pinned row while Recents and the folder
-    // counts both stay put, so nothing else here moves.
-    pinnedChatItems.length,
-    // And with no chats in them, folders appear and disappear on their own.
-    organizeBy,
-    // Custom sections: an empty one still draws its header and hint, and folding it hides both.
-    visibleCustomSections.length,
-    collapsedSectionIds,
-    customSectionRowCount,
-    projectsSectionHidden,
-  ]);
-
-  // Resizing changes clientHeight without firing onScroll, so the fade would
-  // stay hidden while rows are still clipped. Window events only: no element
-  // observer, so this can't feed back into the loop that caused React #185.
-  useEffect(() => {
-    const onResize = () => {
-      const el = scrollRef.current;
-      if (el) syncScrollState(el);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [syncScrollState]);
-
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
@@ -2727,7 +2697,7 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: Globe02Icon,
+      icon: InternetIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
@@ -3844,8 +3814,7 @@ export function AppSidebar() {
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
                     Always drawn, never only while a row is carried: a row appearing at drag
-                    start shifts every section under it after the pointer was sampled, and the
-                    bottom fade measures a height this one would not be counted in.
+                    start shifts every section under it after the pointer was sampled.
                     It draws its own line, since the line under the folder's last chat already
                     means "into the folder, last" and the same pixels cannot mean both. */}
                 <SidebarMenuItem
@@ -4988,6 +4957,8 @@ export function AppSidebar() {
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
         usesNativeMacTitlebar &&
           "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+        usesDesktopTitlebar && !usesNativeMacTitlebar && pinned &&
+          "[&_[data-sidebar=sidebar]]:border-r-0",
       )}
     >
       <SidebarHeader
@@ -5041,7 +5012,7 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5059,10 +5030,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -5288,37 +5259,38 @@ export function AppSidebar() {
                 >
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={handleMoreOpenChange}
+                    onOpenChange={setMoreOpen}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
-                    <Tooltip>
+                    <Tooltip
+                      open={moreTooltipOpen && !moreOpen}
+                      onOpenChange={handleMoreTooltipOpenChange}
+                    >
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
+                            ref={moreTriggerRef}
                             // More is a container, not a destination: no active style just because the current page
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
-                            onPointerDownCapture={(event) => {
-                              if (event.button !== 0 || event.ctrlKey) return;
+                            // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
+                            onPointerDown={(event) => {
+                              if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
                               event.preventDefault();
-                              event.stopPropagation();
-                              event.currentTarget.focus({ preventScroll: true });
-                              clearMoreCloseTimer();
-                              if (morePinnedOpen) {
-                                setMorePinnedOpen(false);
-                                setMoreHoverOpen(false);
-                              } else {
-                                setMorePinnedOpen(true);
+                              // An open preview never mounts again, so focus it as a click-open would.
+                              if (!morePinnedOpen && moreHoverOpen) {
+                                moreContentRef.current?.focus({ preventScroll: true });
                               }
+                              setMoreOpen(!morePinnedOpen);
                             }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MoreHorizontalIcon}
+                              icon={MORE_DOTS_ICON}
                               strokeWidth={1.75}
-                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                              className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
                             <span className="text-ui-14p5 leading-ui-19 tracking-nav">
                               {t("shell.navigation.more")}
@@ -5337,12 +5309,30 @@ export function AppSidebar() {
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent
+                      ref={moreContentRef}
                       side="right"
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
                       onPointerEnter={openMorePreview}
                       onPointerLeave={closeMorePreviewSoon}
+                      // The trigger handles its own presses.
+                      onPointerDownOutside={(event) => {
+                        if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+                      }}
+                      {...moreContentFocusProps}
+                      onCloseAutoFocus={(event) => {
+                        const chosen = moreChosen.current;
+                        moreChosen.current = false;
+                        if (!chosen) {
+                          event.preventDefault();
+                          return;
+                        }
+                        moreFocusReturning.current = true;
+                        queueMicrotask(() => {
+                          moreFocusReturning.current = false;
+                        });
+                      }}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
@@ -5607,6 +5597,7 @@ export function AppSidebar() {
             shows fully (Gemini-style). Stops at the rail: the thumb ends its
             travel in this band and a full-width gradient washed it out. */}
         <div
+          ref={attachFade}
           aria-hidden="true"
           className={cn(
             // The scroll area hard-clips at the fade's bottom edge, so a plain ramp is still part-transparent
@@ -5616,7 +5607,8 @@ export function AppSidebar() {
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",
-            canScrollDown ? "opacity-100" : "opacity-0",
+            // data-visible is written by syncFade, not React.
+            "opacity-0 data-[visible=true]:opacity-100",
           )}
         />
         {/* Collapsed: cog sits one nav-row step above the avatar. */}
@@ -5732,7 +5724,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
@@ -5930,7 +5922,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}
