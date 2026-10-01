@@ -611,17 +611,13 @@ def _donor_vectors(conn: sqlite3.Connection, source: dict, chunk_ids) -> list:
     rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
     if rows is not None:
         return rows
-    source_ids = list(chunk_ids)
-    rows = []
-    # Filter in SQL so only the donor's rows reach Python; batched for SQLITE_MAX_VARIABLE_NUMBER.
-    for start in range(0, len(source_ids), 500):
-        batch = source_ids[start : start + 500]
-        rows += conn.execute(
-            f"SELECT scope, chunk_id, embedding FROM chunks_vec WHERE scope=? "
-            f"AND chunk_id IN ({','.join('?' * len(batch))})",
-            [source["scope"], *batch],
-        ).fetchall()
-    return rows
+    # One pass over the partition: chunk ids are "<document id>:<index>" and ';' sorts right after ':'.
+    rows = conn.execute(
+        "SELECT scope, chunk_id, embedding FROM chunks_vec "
+        "WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+        (source["scope"], f"{source['id']}:", f"{source['id']};"),
+    ).fetchall()
+    return [r for r in rows if r["chunk_id"] in chunk_ids]
 
 
 def prefetch_donor_vectors(conn: sqlite3.Connection, source: dict) -> list | None:
