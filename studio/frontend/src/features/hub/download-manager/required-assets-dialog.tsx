@@ -195,9 +195,11 @@ function DownloadChoice({
             <span>Total download</span>
             <span className="tabular-nums">{total}</span>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Downloading will not load this model or switch your current model.
-          </p>
+          {mode === "download" && (
+            <p className="text-xs text-muted-foreground">
+              Downloading will not load this model or switch your current model.
+            </p>
+          )}
         </div>
       </div>
       <AlertDialogFooter>

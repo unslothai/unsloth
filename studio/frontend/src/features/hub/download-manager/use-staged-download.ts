@@ -47,7 +47,6 @@ export function useStagedDownload({
   /** Clears the consumer's pending auto-load when the plan ends without every entry on disk: leaving it behind lets a later completion load a model nobody asked for. */
   onCancelled?: () => void;
 }) {
-  const downloadOnly = useRef(false);
   const confirmAssetsRef = useRef(confirmAssets);
   confirmAssetsRef.current = confirmAssets;
   const [pendingAssets, setPendingAssets] = useState<StagedDownloadEntry[] | null>(null);
@@ -89,13 +88,7 @@ export function useStagedDownload({
       inFlight.current = null;
       const remaining = (queue ?? []).slice(1);
       advance();
-      if (remaining.length === 0) {
-        if (downloadOnly.current) {
-          downloadOnly.current = false;
-          onCancelled?.(); // Clear the pending load, including its optimistic picker label.
-          toast.success("Required files downloaded", { description: "Select the model when you are ready to load it." });
-        } else onReady();
-      }
+      if (remaining.length === 0) onReady();
     },
     onError: (variant) => {
       if (!isOurs(variant)) return;
@@ -161,7 +154,6 @@ export function useStagedDownload({
   }, [current, activeVariant, scopeId]);
 
   const stage = useCallback((entries: StagedDownloadEntry[]): number => {
-    downloadOnly.current = false;
     generation.current += 1;
     inFlight.current = null;
     if (confirmAssetsRef.current && additionalAssetDownloads(entries).length > 0) {
@@ -193,7 +185,6 @@ export function useStagedDownload({
   const assetDownloadPrompt = {
     entries: pendingAssets,
     onConfirm: () => {
-      downloadOnly.current = true;
       setPendingAssets(null);
       setQueue(pendingAssets);
     },

@@ -134,6 +134,18 @@ def _assert_a_queued_select_does_not_steal_focus(page) -> None:
     )
 
 
+def _accept_required_files(page, timeout_ms: int) -> bool:
+    """Confirm the missing-files disclosure a companion-bearing pick now raises before staging."""
+    dialog = page.get_by_role("alertdialog").filter(has_text = "Required files are missing")
+    try:
+        dialog.wait_for(state = "visible", timeout = timeout_ms)
+    except PWTimeoutError:
+        return False
+    dialog.get_by_role("button", name = "Download", exact = True).click()
+    dialog.wait_for(state = "hidden", timeout = 10_000)
+    return True
+
+
 def _open_quant(page, *, navigate: bool) -> None:
     if navigate:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
@@ -482,8 +494,10 @@ def main() -> None:
             [COMPANION_REPO] if CHECKPOINT_CACHED else [REPO_ID, COMPANION_REPO]
         )
         deadline = time.monotonic() + 20
+        disclosed = False
         while len(state["starts"]) < len(expected_initial_starts) and time.monotonic() < deadline:
-            page.wait_for_timeout(250)
+            disclosed = _accept_required_files(page, 250) or disclosed
+        assert disclosed, "the missing companion files were never disclosed before staging"
         if len(state["starts"]) < len(expected_initial_starts):
             page.screenshot(
                 path = str(ART_DIR / "image-download-companion-timeout.png"), full_page = True
@@ -520,6 +534,7 @@ def main() -> None:
         assert state["load_calls"] == 0, "cancelled staging unexpectedly loaded the model"
 
         _open_quant(page, navigate = False)
+        assert _accept_required_files(page, 15_000), "the retry staged without disclosing the files"
         if DOWNLOAD_ONLY:
             page.locator(".hub-download-panel li").filter(has_text = COMPANION_REPO).get_by_text(
                 "Downloaded", exact = True
