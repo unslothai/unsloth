@@ -57,6 +57,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -69,11 +70,14 @@ import {
 } from "streamdown";
 import {
   DeferredFenceShell,
+  FenceBody,
+  type FenceTokens,
   fenceMode,
   trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
+import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
 import { withMathBlockMarker } from "./math-block-marker";
 import {
@@ -309,15 +313,71 @@ const STREAMDOWN_ALLOWED_TAGS = {
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
 const COPY_RESET_MS = 2000;
-const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-function getMermaidSource(blockContent: string): string | null {
-  const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
-  return source && source.length > 0 ? source : null;
+/**
+ * THE MERMAID FENCE IN THIS BLOCK, found with fence context.
+ *
+ * One walk answers both questions the renderer asks: whether a mermaid fence is still open (so an
+ * incomplete reply shows the loading card), and where its body starts. Scanning lines with no
+ * context made a `~~~mermaid` shown as EXAMPLE inside an outer fence look like a diagram, which
+ * replaced the whole block with the loading card and gave ordinary code a diagram copy action.
+ */
+type MermaidFence =
+  | { open: true }
+  | { open: false; indent: string; body: string };
+
+function findMermaidFence(blockContent: string): MermaidFence {
+  const lines = blockContent.split("\n");
+  let enclosing: { char: string; run: number } | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!match) continue;
+    const [, marker, rest] = match;
+    const isClose =
+      rest.replace(/[\t ]*\r?$/, "") === "" && marker.length >= 3;
+    if (enclosing === null) {
+      if (marker[0] === "`" && rest.includes("`")) continue; // an info string may not hold a backtick
+      if (/^[\t ]*mermaid\b/i.test(rest)) {
+        const indent = /^( *)/.exec(line)?.[1] ?? "";
+        const body = lines.slice(index + 1).join("\n");
+        // The close is "at least as many" of the opener's own character, on its own line.
+        const closeRe = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[\\t ]*\\r?$`, "m");
+        const close = closeRe.exec(body);
+        if (close === null) return { open: true };
+        const raw = body.slice(0, close.index);
+        const stripped = indent
+          ? raw
+              .split("\n")
+              .map((l) => l.slice(Math.min(indent.length, /^ */.exec(l)?.[0].length ?? 0)))
+              .join("\n")
+          : raw;
+        return { open: false, indent, body: stripped.replace(/[\t ]*\r?\n?$/, "") };
+      }
+      // A bare run at top level is an OPENER (an info string may be empty). Reading it as a close
+      // made a four-backtick outer fence holding a nested mermaid example look like a diagram.
+      enclosing = { char: marker[0], run: marker.length };
+    } else if (marker[0] === enclosing.char && marker.length >= enclosing.run && isClose) {
+      enclosing = null;
+    }
+  }
+  return { open: false, indent: "", body: "" };
+}
+
+/** The diagram source for a walk already performed, so the block is not scanned twice. */
+function mermaidSourceOf(blockContent: string, found: MermaidFence): string | null {
+  if (found.open) return null;
+  if (found.body.trim().length > 0) return found.body.trim();
+  const fence = markdownBlockFallback(blockContent);
+  if (fence.fenced && fence.language === "mermaid") {
+    const source = fence.text.trim();
+    return source.length > 0 ? source : null;
+  }
+  return null;
 }
 
 function getCodeFilename(language: string | null) {
@@ -436,7 +496,7 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
-function CodeBlockActions({
+export function CodeBlockActions({
   disabled,
   language,
   source,
@@ -529,8 +589,13 @@ function StreamdownBlockContent(props: BlockProps) {
   const messageHasRenderableRenderHtmlTool = useContext(
     RenderHtmlToolPresenceContext,
   );
-  const hasMermaidFence = props.content.includes("```mermaid");
-  const mermaidSource = getMermaidSource(props.content);
+  // ONE walk, both answers. `findMermaidFence` splits the block and scans every line, and asking
+  // the two questions separately walked it twice on every render of every block. Measured on a
+  // 3,000 line fence: 0.118 ms per walk, so the redundant one cost 0.092 ms per render, about
+  // 5.5 ms per second while streaming at 60 fps.
+  const mermaidFence = findMermaidFence(props.content);
+  const hasMermaidFence = mermaidFence.open;
+  const mermaidSource = mermaidSourceOf(props.content, mermaidFence);
   const codeFence = getCodeFence(props.content);
 
   if (props.isIncomplete && hasMermaidFence) {
@@ -613,7 +678,6 @@ function StreamdownBlockContent(props: BlockProps) {
     return (
       <>
         <FenceBlock
-          blockProps={blockProps}
           isIncomplete={props.isIncomplete}
           language={codeFence.language}
           source={codeFence.source}
@@ -633,6 +697,43 @@ function StreamdownBlockContent(props: BlockProps) {
      * boundary existed, 0 copy and 0 download buttons on both. Guarding it keeps the failure inside the renderer
      * boundary, so the completed block mounts `FenceBlock` normally and keeps its controls.
      */
+  /*
+   * The streaming fence, which used to fall through to the bare `Block`: `getCodeFence` needs a
+   * close, so an arriving fence never reached `FenceBlock`. That is the route #10769 measured as
+   * unusable and #10779 fixed by giving up the colours. `FenceBody` is the same per-line rendering
+   * the completed fence gets, so the block does not change shape when its delimiter lands.
+   * `markdownBlockFallback`, not `getCodeFence`, because it recognises every CommonMark fence.
+   */
+  /*
+   * RECOGNISED FORMS STAY ON THE BOUNDED RENDERER AT COMPLETION TOO. `getCodeFence` does not match
+   * tildes, four or more backticks or up to three spaces of indent, so a completed fence on those
+   * forms used to fall to streamdown's whole-token `Block` and remount every span -- and a stopped
+   * reply never settles. NOT routed through `FenceBlock`: that branch also owns the reach latch,
+   * the action bar and the mode switch, which are wired to the narrower form on purpose.
+   */
+  const settledFence = props.isIncomplete ? null : markdownBlockFallback(props.content);
+  if (settledFence?.fenced && !(settledFence.language === "mermaid" && mermaidSource)) {
+    return (
+      <StreamingFenceBlock
+        isIncomplete={false}
+        language={settledFence.language}
+        source={settledFence.text}
+      />
+    );
+  }
+
+  if (props.isIncomplete) {
+    const openFence = markdownBlockFallback(props.content);
+    if (openFence.fenced) {
+      return (
+        <StreamingFenceBlock
+          language={openFence.language}
+          source={openFence.text}
+        />
+      );
+    }
+  }
+
   return (
     <MarkdownRendererBoundary
       fallback={<MarkdownBlockFallbackView content={props.content} />}
@@ -642,19 +743,105 @@ function StreamdownBlockContent(props: BlockProps) {
   );
 }
 
+/**
+ * This fence's tokens, or `null` while its grammar chunk is still loading.
+ *
+ * The same shape streamdown's own `HighlightedCodeBlockBody` uses -- ask the plugin, take the
+ * synchronous answer when the grammar is already in hand, take the callback's when it is not --
+ * because `latchNow` in `code-fence-defer.tsx` is built around exactly that shape. Its nested
+ * `flushSync` exists to make React run this passive effect inside the task that latched the fence,
+ * so a jump or a print swaps straight to a COLOURED block rather than painting a plain one first.
+ *
+ * The guard on `wanted` is what a streamed fence needs and a settled one does not: the callback for
+ * chunk N can arrive after chunk N+1 has already been rendered, and letting it through would walk
+ * the fence backwards by a frame.
+ */
+function useFenceTokens(
+  source: string,
+  languageToken: string | null,
+  enabled: boolean,
+): FenceTokens | null {
+  const [tokens, setTokens] = useState<FenceTokens | null>(null);
+  const wanted = useRef("");
+  /*
+   * ONE effect, and a layout one. This was two -- a passive effect for the result and the
+   * callback, plus a layout effect so an already-cached fence is coloured before its first paint.
+   * Both called `code.highlight` with the same inputs on the same deps, and the plugin's
+   * throttled `approximateResult` returns a FRESH object each call, so both `setTokens` were
+   * observable and every source change scheduled a second render of the whole body: exactly the
+   * work this branch exists to remove. A layout effect gets the before-paint colour on its own,
+   * so the passive one bought nothing.
+   */
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const body = trimTrailingNewlines(source);
+    wanted.current = body;
+    const settled = code.highlight(
+      {
+        code: body,
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      (late) => {
+        if (wanted.current === body) setTokens(late);
+      },
+    );
+    // `settled === null` means the plugin caught a tokenization error; keeping the previous
+    // tokens would show an older, shorter body. The callback restores them if it succeeds later.
+    setTokens(settled ?? null);
+  }, [enabled, source, languageToken]);
+  return tokens;
+}
+
+/**
+ * A fence that is still being written.
+ *
+ * No reach latch and no deferral: the block being written is the one the reader is looking at, so
+ * it is highlighted from its first character, which is the rule `useFenceReached` already spells
+ * for a streaming fence. No action bar either, because the bare `Block` this replaces never had
+ * one and a performance change is the wrong place to add controls.
+ */
+function StreamingFenceBlock({
+  language,
+  source,
+  isIncomplete = true,
+}: {
+  language: string | null;
+  source: string;
+  isIncomplete?: boolean;
+}) {
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+  const tokens = useFenceTokens(source, languageToken, true);
+  return (
+    <MarkdownRendererBoundary
+      fallback={<DeferredFenceShell language={languageToken} source={source} />}
+    >
+      <FenceBody
+        isIncomplete={isIncomplete}
+        language={languageToken}
+        result={tokens}
+        source={source}
+        windowing={fenceMode() === "window"}
+      />
+    </MarkdownRendererBoundary>
+  );
+}
+
 /*
  * The fence branch, extracted so the reach latch can be a hook. With the flag off this renders exactly what the
- * branch rendered before: the same `relative isolate` wrapper, the same `<Block>`, the same action bar. The
- * wrapper is reused as the intersection target rather than a new one being introduced, so the DOM the off arm
- * produces is byte-for-byte what main produces and the on arm differs only in what is INSIDE the wrapper.
+ * branch rendered before: the same `relative isolate` wrapper, the same action bar, and inside them a body
+ * whose elements and classes are streamdown's own. The wrapper is reused as the intersection target rather
+ * than a new one being introduced, so the DOM the off arm produces is byte-for-byte what main produces and
+ * the on arm differs only in what is INSIDE the wrapper.
+ * `<Block>` is gone from this branch. It maps the WHOLE token array on every render and memoizes on the
+ * identity of a result object the plugin rebuilds every frame, so the fence re-rendered end to end sixty
+ * times a second. See `FenceBody` in `code-fence-defer.tsx` for what replaced it and why.
  */
 function FenceBlock({
-  blockProps,
   isIncomplete,
   language,
   source,
 }: {
-  blockProps: BlockProps;
   isIncomplete: boolean | undefined;
   language: string | null;
   source: string;
@@ -663,18 +850,11 @@ function FenceBlock({
   const mode = fenceMode();
 
   /*
-     * WHICH FENCES THIS COVERS, and which it does not. `CODE_FENCE_RE` accepts exactly three backticks, unindented.
-     * CommonMark also allows tildes, four or more backticks (which is how a model writes a fence whose body contains
-     * one), and up to three spaces of indent. Those forms never reach here, so they render exactly as they do today
-     * and get no deferral: unrealised benefit, not a wrong result.
-     * Left alone deliberately rather than overlooked. `getCodeFence` is also what decides whether a block is an SVG
-     * or a full HTML document to be shown as an artifact, and a fence that does not match it renders a bare
-     * `<Block>` with no `relative isolate` wrapper and no copy button. Widening the regex would therefore add an
-     * artifact path and a copy overlay to blocks that do not have them today, which is a rendering change, and a
-     * performance PR is the wrong place to smuggle one in. It also does not move any number here: over the frozen
-     * corpus, 2,467,069 characters, all 1,456 fence delimiters are unindented triple backticks. Not one tilde, not
-     * one four-backtick fence, not one indented one.
-     */
+   * `CODE_FENCE_RE` claims only unindented triple-backtick fences. Tildes, four or more backticks
+   * and indented fences do not reach THIS branch; they are picked up by the settled-fence rung
+   * below. The regex is deliberately not widened: it also decides the SVG and HTML-artifact paths,
+   * so widening it would add an artifact path and a copy overlay to blocks that lack them today.
+   */
   // `getCodeFence` hands back the WHOLE info string, so a fence opened with metadata such as ```python startLine=10
   // arrives here as "python startLine=10". Markdown treats everything after the first word as metadata and
   // Streamdown highlights it as `python`, so passing the raw string on would label the shell with the metadata
@@ -714,6 +894,11 @@ function FenceBlock({
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the document at the
   // deferred size, so the two costs can be told apart. `code.highlight` caches on the source string, so the work
   // happens exactly once and the discarded result is the same object the real path would have used.
+  // Asked for only once the fence is reached, so a deferred fence still tokenizes nothing. The
+  // latch calls `warm(true)` synchronously on the way in, so this is a cache hit rather than the
+  // first tokenization of the body.
+  const tokens = useFenceTokens(source, languageToken, reached);
+
   const pretokenize = mode === "tokenize" && !reached;
   useEffect(() => {
     if (!pretokenize) return;
@@ -744,7 +929,13 @@ function FenceBlock({
         }
       >
         {reached ? (
-          <Block {...blockProps} />
+          <FenceBody
+            isIncomplete={isIncomplete}
+            language={languageToken}
+            result={tokens}
+            source={source}
+            windowing={mode === "window"}
+          />
         ) : (
           <DeferredFenceShell language={languageToken} source={source} />
         )}
@@ -1037,7 +1228,7 @@ const MarkdownTextSourceImpl = ({
 );
 
 export const MarkdownText = withSmoothContextProvider(MarkdownTextImpl);
-// Reasoning pages render at message-group scope, where assistant-ui deliberately
+// Reasoning fragments render at message-group scope, where assistant-ui deliberately
 // exposes no `part`. Its smooth wrapper reads that property, so the source-fed
 // renderer must stay independent of both the part adapter and that wrapper.
 export const MarkdownTextSource = MarkdownTextSourceImpl;

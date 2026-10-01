@@ -84,6 +84,7 @@ import {
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
+import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -124,10 +125,6 @@ async function downloadBlob(
   return downloadFile(content, filename, mimeType);
 }
 
-function csvEscape(val: string): string {
-  return `"${val.replace(/"/g, '""')}"`;
-}
-
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
   return downloadBlob(
     ndjsonBody([JSON.stringify({ name: entry.name, text: entry.text })]),
@@ -138,9 +135,9 @@ function exportPromptJsonl(entry: PromptEntry): Promise<void> {
 
 function exportPromptCsv(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
+    csvDocument(["name,text", `${csvEscape(entry.name)},${csvEscape(entry.text)}`]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -151,7 +148,7 @@ function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(csvDocument(["name,text", rows]), "prompts.csv", CSV_MIME);
 }
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
@@ -172,9 +169,9 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
   return downloadBlob(
-    `list_name,order,prompt_text\n${rows}`,
+    csvDocument(["list_name,order,prompt_text", rows]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -182,7 +179,7 @@ function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -461,9 +458,9 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    rows.join("\n"),
+    csvDocument(rows),
     "conversation-" + exportTs() + ".csv",
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -622,7 +619,7 @@ function exportExt(format: ConvExportFormat): string {
 }
 
 function exportMime(format: ConvExportFormat): string {
-  return format === "csv" ? "text/csv" : "application/x-ndjson";
+  return format === "csv" ? CSV_MIME : "application/x-ndjson";
 }
 
 export async function exportBulkConversationsMerged(
@@ -647,7 +644,7 @@ export async function exportBulkConversationsMerged(
   if (parts.length === 0) { toast.info("No exportable content."); return; }
 
   const body = header
-    ? header + "\n" + parts.join("\n")
+    ? csvDocument([header, ...parts])
     : ndjsonBody(parts);
 
   await downloadBlob(
@@ -672,7 +669,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : ndjsonBody([content]);
+    const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
@@ -1204,7 +1201,7 @@ function ExportModal({
   return (
     <Dialog open onOpenChange={onClose}>
       {/* */}
-      <DialogContent className="sm:max-w-[520px] gap-0 p-0 overflow-hidden">
+      <DialogContent className="sm:max-w-[calc(520px*var(--ui-space-scale,1))] gap-0 p-0 overflow-hidden">
         <div className="flex flex-col gap-5 p-6">
           {/* */}
           <DialogTitle className="text-base font-semibold tracking-tight">Export</DialogTitle>
@@ -1790,6 +1787,9 @@ function PromptListDetail({
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
+  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
+  const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -1932,6 +1932,19 @@ function PromptListDetail({
         )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
+        <button
+          type="button"
+          onClick={() => togglePinnedList(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            isPinned
+              ? "text-primary hover:bg-primary/10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
         <button
           type="button"
           onClick={() => onExport(exportValue)}
@@ -2108,6 +2121,7 @@ export function PromptStorageDialog({
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
@@ -2519,7 +2533,7 @@ export function PromptStorageDialog({
               wraps on a narrow dialog. */}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
-            <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+            <div className="flex min-h-[calc(132px*var(--ui-space-scale,1))] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2575,6 +2589,11 @@ export function PromptStorageDialog({
                       selected={!showNewList && entry.id === selectedListId}
                       current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
+                      leading={
+                        pinnedListIds.includes(entry.id) ? (
+                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
                       onSelect={() => {
                         setShowNewList(false);
                         setSelectedListId(entry.id);
@@ -2602,7 +2621,7 @@ export function PromptStorageDialog({
             </div>
 
             {/* */}
-            <div className="min-h-[272px] rounded-xl border border-border/60 bg-card p-4">
+            <div className="min-h-[calc(272px*var(--ui-space-scale,1))] rounded-xl border border-border/60 bg-card p-4">
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm

@@ -165,12 +165,12 @@ def test_a_16_bit_image_keeps_its_levels_instead_of_clipping_to_white(monkeypatc
 
     delivered = _call(monkeypatch, turn).calls[0]["image"]
 
-    assert [pixel[0] for pixel in delivered.convert("RGB").get_flattened_data()] == [
-        0,
-        77,
-        155,
-        255,
-    ]
+    # getpixel, like the multi-image test below, because the flattened read is spelled
+    # getdata() on Pillow 10 and 11 and get_flattened_data() only from 12. This file runs on
+    # both: no-torch-runtime.txt pins pillow 12.3.0 from Python 3.10 and 11.3.0 below it, so
+    # the 12-only spelling made this the one test in the file that could not.
+    levels = delivered.convert("RGB")
+    assert [levels.getpixel(at)[0] for at in ((0, 0), (1, 0), (0, 1), (1, 1))] == [0, 77, 155, 255]
 
 
 def _as_image(delivered):

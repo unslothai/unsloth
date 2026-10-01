@@ -16,7 +16,6 @@ const { DISPLAY_VISIBILITIES } = await import(
 const {
   reasoningFollowsPreference,
   resolveReasoningOpen,
-  resolveReasoningToggle,
   startsNewReasoningRound,
 } = await import("../src/features/chat/utils/reasoning-visibility.ts");
 
@@ -28,7 +27,7 @@ interface BlockState {
 
 // Mirrors the component: toggle results feed straight back into the open state.
 function applyToggle(state: BlockState, open: boolean): BlockState {
-  return { ...state, override: resolveReasoningToggle(open, state).override };
+  return { ...state, override: open };
 }
 
 // Mirrors the component's render-time reset when the setting moves.
@@ -167,34 +166,4 @@ test("regenerating drops the previous round's override", () => {
   assert.equal(startsNewReasoningRound(state.isStreaming, wasStreaming), true);
   state = { ...state, override: null };
   assert.equal(resolveReasoningOpen(state), false);
-});
-
-test("streaming height cap is released only for a block opened against the setting", () => {
-  assert.equal(
-    resolveReasoningToggle(true, { isStreaming: true, visibility: "collapsed" })
-      .releaseStreamingHeight,
-    true,
-  );
-  // Re-opening a block that opened itself keeps the cap, so live text stays scrolled.
-  assert.equal(
-    resolveReasoningToggle(true, { isStreaming: true, visibility: "auto" })
-      .releaseStreamingHeight,
-    false,
-  );
-  assert.equal(
-    resolveReasoningToggle(true, { isStreaming: true, visibility: "expanded" })
-      .releaseStreamingHeight,
-    false,
-  );
-  // Opening a finished block that auto would have left closed still needs its full height.
-  assert.equal(
-    resolveReasoningToggle(true, { isStreaming: false, visibility: "auto" })
-      .releaseStreamingHeight,
-    true,
-  );
-  assert.equal(
-    resolveReasoningToggle(false, { isStreaming: false, visibility: "auto" })
-      .releaseStreamingHeight,
-    false,
-  );
 });

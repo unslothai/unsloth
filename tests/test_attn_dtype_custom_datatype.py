@@ -82,6 +82,11 @@ def _selected(dtype, do_forced_float32, correct_dtype):
         "auto_model": None,
         "model_name": "",
         "resolve_model_class": lambda *args, **kwargs: None,
+        "model_class": None,
+        "attention_class_for_load": lambda *args, **kwargs: (None, True),
+        "_builds_remote_class": False,
+        "_remote_class": None,
+        "supports_sdpa": True,
     }
     module = ast.Module(body = list(PREAMBLE), type_ignores = [])
     ast.fix_missing_locations(module)
@@ -117,6 +122,7 @@ def test_custom_datatype_load_does_not_disable_flash_attention():
 
     class SupportsFlashAndSdpa:
         _supports_flash_attn_2 = True
+        _supports_flash_attn = True  # the flag transformers >= 4.53 dispatches on
         _supports_flex_attn = False
         _supports_sdpa = True
 

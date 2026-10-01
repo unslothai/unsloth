@@ -231,7 +231,7 @@ export function KnowledgeBaseDialog({
                 disabled={ragUnavailable}
                 title={ragUnavailableHint}
               >
-                <HugeiconsIcon icon={PlusSignIcon} size={14} />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 New knowledge base
               </Button>
             </div>
@@ -275,7 +275,7 @@ export function KnowledgeBaseDialog({
                         onClick={() => startEdit(kb)}
                         aria-label="Rename knowledge base"
                       >
-                        <HugeiconsIcon icon={Edit03Icon} size={14} />
+                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>
                       <Button
                         type="button"
@@ -284,7 +284,7 @@ export function KnowledgeBaseDialog({
                         onClick={() => setConfirmingDelete(kb)}
                         aria-label="Delete knowledge base"
                       >
-                        <HugeiconsIcon icon={Delete02Icon} size={14} />
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>

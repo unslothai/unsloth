@@ -56,6 +56,13 @@ build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
 
+@pytest.fixture(autouse = True)
+def _no_caller_cuda_visible_devices(monkeypatch):
+    # The samplers scope nvidia-smi by it; a CPU-only run with it set to "" read as no card
+    # visible and failed the mocked-listing tests. Tests that need a value set it themselves.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+
 # --------------------------------------------------------------- nvidia-smi
 
 

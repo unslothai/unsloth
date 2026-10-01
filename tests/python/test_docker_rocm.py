@@ -416,7 +416,16 @@ class TestBuildShRocm:
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
         assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
-        assert "6.2" not in body.replace("ubuntu-22.04", "")
+        # ROCm 6.2, which is what this file must no longer mention anywhere. The plain
+        # substring also matched the version comment on a pinned action
+        # (`docker/metadata-action@<sha>  # v6.2.0`), which has nothing to do with ROCm
+        # and would have forced the next person to either unpin the action or weaken the
+        # check. Comments and the `runs-on` image name are dropped first; everything the
+        # workflow actually executes still has to be free of it.
+        meaningful = "\n".join(line.split("#", 1)[0] for line in body.splitlines()).replace(
+            "ubuntu-22.04", ""
+        )
+        assert "6.2" not in meaningful
         # per RUN on main: a sha would still pair a scheduled run with a dispatch on
         # an unchanged main, and the group keeps only one pending run
         assert "github.ref == 'refs/heads/main' && github.run_id" in body
@@ -450,11 +459,13 @@ class TestTheUserFacingDocsCoverWsl:
             assert needle in text, needle
 
     def test_the_readme_no_longer_says_native_linux_only(self):
+        # The README keeps one line for AMD and sends the reader to the Hub page, whose WSL
+        # flags the test above pins. What it must not do is bring back the claim that sent
+        # Windows users away, or lose the link that replaces the detail.
         text = open(_README, encoding = "utf-8").read()
         assert "needs native Linux" not in text
-        assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
-        assert "UNSLOTH_IMAGE=unsloth-rocm:latest" in text
-        assert "RDNA3 cards have no bridge path yet" in text
+        assert "native Linux only" not in text
+        assert "https://hub.docker.com/r/unsloth/unsloth-rocm" in text
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
@@ -545,7 +556,10 @@ class TestRocmEntrypoint:
         assert "modprobe" not in err, err
         assert "run.sh --rocm" in err
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads a mode-0 file")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason = "needs POSIX mode bits, and root reads a mode-0 file regardless",
+    )
     def test_an_unreadable_kfd_names_the_group_ids(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, readable = False)
         assert rc == 1 and not ran
