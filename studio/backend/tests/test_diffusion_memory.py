@@ -961,6 +961,8 @@ def _streaming_apply_kwargs(
     *,
     env = None,
     request_background = False,
+    sizes = (4000, 7500),
+    top_calls = None,
 ):
     """{component: apply kwargs} and the modules handed to a deferred pinner, for one streaming apply."""
     import sys
@@ -1009,7 +1011,15 @@ def _streaming_apply_kwargs(
         "_defer_pinning",
         lambda pipe, module, device, logger: deferred.append(module.name) or True,
     )
-    parts = {"transformer": Module(4000), "text_encoder": Module(7500), "vae": Module(200)}
+    if top_calls is not None:
+        monkeypatch.setattr(
+            mem,
+            "_pin_top_level_group",
+            lambda module, logger = None, reserved_mib = 0: top_calls.append(
+                (module.name, reserved_mib)
+            ),
+        )
+    parts = {"transformer": Module(sizes[0]), "text_encoder": Module(sizes[1]), "vae": Module(200)}
     for name, module in parts.items():
         module.name = name
     pipe = types.SimpleNamespace(transformer = parts["transformer"], components = parts)
@@ -1027,6 +1037,34 @@ def test_streaming_pins_the_transformer_within_the_host_budget(monkeypatch):
     assert seen["text_encoder"]["low_cpu_mem_usage"] is True
     assert seen["text_encoder"]["record_stream"] is True
     assert deferred == []
+
+
+@pytest.mark.parametrize(
+    "sizes, reserved",
+    [((9000, 4096), 4096), ((4000, 7500), 0)],
+)
+def test_streaming_top_group_leaves_room_for_planned_encoder_pins(monkeypatch, sizes, reserved):
+    # DiT over budget, encoders pinned: the top group must not take the encoders' share
+    top_calls: list = []
+    _streaming_apply_kwargs(monkeypatch, 6000, sizes = sizes, top_calls = top_calls)
+    assert top_calls == [("transformer", reserved)]
+
+
+def test_top_level_group_refuses_what_planned_pins_already_claim(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    module, group = _top_group_module(monkeypatch)
+    monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 10)
+    group.modules = [
+        types.SimpleNamespace(
+            parameters = lambda: [__import__("torch").empty(1 << 20)], buffers = lambda: []
+        )
+    ]
+    assert mem._pin_top_level_group(module, reserved_mib = 7) is False
+    assert group.onload_ == "diffusers"
 
 
 def test_streaming_pins_everything_on_a_ram_rich_host(monkeypatch):

@@ -2251,10 +2251,15 @@ def install_group_offload_buffer_restore() -> bool:
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
 
 
-def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
+def _pin_top_level_group(
+    module: Any,
+    logger: Any = None,
+    reserved_mib: int = 0,
+) -> bool:
     """Onload a block-streamed DiT's top-level group (stream-less in diffusers) from one pinned copy, no copy back.
 
-    Skipped for torchao weights (not re-pointable via .data) and when the copy exceeds the pin budget."""
+    Skipped for torchao weights (not re-pointable via .data) and when the copy exceeds the pin budget less
+    ``reserved_mib`` (planned pins not yet made)."""
     if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     try:
@@ -2307,7 +2312,7 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
             if int(t.numel()) * int(t.element_size()) > 0
         ) // (1024 * 1024)
         budget = None if _pinned_memory_capped() else _pin_budget_mib()
-        if budget is None or need_mib > budget:
+        if budget is None or need_mib + max(0, int(reserved_mib)) > budget:
             return False
         host = {
             t: (t.data if t.data.device.type == "cpu" else t.data.cpu()).pin_memory()
@@ -2450,11 +2455,12 @@ def _apply_group_offload(
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
         # Encoders the plan pins count against the same budget as any torchao denoiser pinned below.
-        pinned_mib = [
+        pinned_mib_encoders = (
             sum(_module_host_mib(m) for m in streamed_encoders.values())
             if stream_text_encoders and pin_streamed[1]
             else 0
-        ]
+        )
+        pinned_mib = [pinned_mib_encoders]
         for module in streamed.values():
             # torchao weights need their up-front pin (lazy pinning refuses them), so they never defer.
             if (
@@ -2470,7 +2476,8 @@ def _apply_group_offload(
                 )
             installed += 1
             if use_stream:
-                _pin_top_level_group(module, logger)
+                # a planned DiT pin already covers its top group; otherwise leave the planned encoder pins room
+                _pin_top_level_group(module, logger, 0 if pin_streamed[0] else pinned_mib_encoders)
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
         # recognisable block list can refuse), and this tier is a rescue: the alternative to streaming an encoder is
@@ -3045,12 +3052,14 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
         # Overlap needs pinned host copies and record_stream: record_stream=False drains the compute stream per group.
         prefetch = use_stream and _streaming_prefetch_enabled()
         pin_dits, pin_encoders = False, False
+        encoder_mib = sum(_module_host_mib(m) for m, t in streamed.values() if t != "block_level")
         if prefetch:
             pin_dits, pin_encoders = _streamed_pin_plan(
                 sum(_module_host_mib(m) for m, t in streamed.values() if t == "block_level"),
-                sum(_module_host_mib(m) for m, t in streamed.values() if t != "block_level"),
+                encoder_mib,
                 logger,
             )
+        top_reserved_mib = encoder_mib if pin_encoders and not pin_dits else 0
         defer = (
             prefetch
             and bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
@@ -3082,7 +3091,7 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 _defer_pinning(pipe, module, onload, logger)
             installed += 1
             if use_stream and offload_type == "block_level":
-                _pin_top_level_group(module, logger)
+                _pin_top_level_group(module, logger, top_reserved_mib)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
     except Exception as exc:
