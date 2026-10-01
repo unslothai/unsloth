@@ -236,7 +236,7 @@ export function DownloadManagerPanel({
               <HugeiconsIcon
                 icon={Download01Icon}
                 strokeWidth={1.75}
-                className="size-[18px]"
+                className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
               {activeCount > 0 && (
                 <span className="hub-download-fab-badge">{activeCount}</span>

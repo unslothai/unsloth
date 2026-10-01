@@ -54,6 +54,13 @@ on:
       - '.github/scripts/Collect-InstallerEvidence.ps1'
       - '.github/scripts/compare_installer_evidence.py'
       - '.github/workflows/windows-installer-differential-ci.yml'
+      # The labelled lane sets UNSLOTH_CI_SOURCE_OVERLAY, so setup.ps1 runs this
+      # checkout's installer modules and reads its prebuilt pins on the head side of the
+      # comparison.
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
   schedule:
     # Weekly, against main's own merge base, so the lane is known to work before it is relied on to
     # judge a change. A differential lane that has not run in a month is not evidence of anything.
@@ -70,7 +77,7 @@ concurrency:
   # `installer-differential` now share a group of their own, so they cancel each other and never a
   # measurement.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'installer-differential') && 'unrelated-label' || 'measure' }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'

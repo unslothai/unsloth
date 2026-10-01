@@ -44,28 +44,3 @@ export function startsNewReasoningRound(
 ): boolean {
   return isStreaming && !wasStreaming;
 }
-
-export interface ReasoningToggleResult {
-  /** The user's choice for this block, kept until the round restarts or the setting changes. */
-  override: boolean;
-  /** Drop the streaming height cap so a hand-opened block shows in full. */
-  releaseStreamingHeight: boolean;
-}
-
-/** Resolves a trigger click into the next open state. Every click records an override, which is
- *  what keeps a hand-opened block open once its stream ends. */
-export function resolveReasoningToggle(
-  open: boolean,
-  {
-    isStreaming,
-    visibility,
-  }: Pick<ReasoningOpenStateInput, "isStreaming" | "visibility">,
-): ReasoningToggleResult {
-  return {
-    override: open,
-    // A block that opened on its own keeps the streaming cap. One opened against the setting
-    // is there to be read, so it gets its full height.
-    releaseStreamingHeight:
-      open && !defaultOpenFor(visibility, isStreaming),
-  };
-}

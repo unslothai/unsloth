@@ -155,7 +155,7 @@ export function PromptQueueList({
     // rounding and the clip live on this frame instead.
     <div
       data-queue-frame=""
-      className="relative z-0 mx-3 mb-[-8px] overflow-hidden rounded-t-[20px] border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
+      className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-[20px] border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
     >
       <div
         ref={listRef}
@@ -258,6 +258,7 @@ export function PromptQueueList({
                                 keyCode: event.nativeEvent.keyCode,
                               },
                               sendShortcut,
+                              event.currentTarget.value,
                             )
                           ) {
                             event.preventDefault();

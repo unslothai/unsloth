@@ -307,7 +307,7 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
     monkeypatch.setattr(
         diffusion_module,
         "select_transformer_quant_scheme",
-        lambda target, mode, family = None: engaged,
+        lambda target, mode, family = None, **_kw: engaged,
     )
     monkeypatch.setattr(diffusion_module, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
