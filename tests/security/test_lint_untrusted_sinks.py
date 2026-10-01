@@ -324,3 +324,98 @@ def test_no_shipped_package_is_left_out_of_the_default_targets():
     }
     missing = sorted(shipped - set(L.DEFAULT_TARGETS))
     assert not missing, f"shipped packages outside the gate's default scope: {missing}"
+
+
+def test_taint_flows_through_an_instance_method(tmp_path):
+    """`self.parse(...)` is a call like any other, and it was resolving to nothing.
+
+    Most code in this tree is methods, so an analysis that cannot follow one is not
+    following much: a class that read an untrusted config in one method and imported
+    the result in another was accepted in full.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Loader:\n"
+        "    def parse(self, path):\n"
+        "        with open(path + '/config.json') as handle:\n"
+        "            return json.load(handle)['model_type']\n"
+        "    def load(self, path):\n"
+        "        return importlib.import_module('a.' + self.parse(path))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_taint_reaches_a_method_through_an_instance_attribute(tmp_path):
+    """The other half of the same shape: one method stores, another consumes."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Loader:\n"
+        "    def read(self, path):\n"
+        "        with open(path + '/config.json') as handle:\n"
+        "            self.model_type = json.load(handle)['model_type']\n"
+        "    def load(self):\n"
+        "        return importlib.import_module('a.' + self.model_type)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_global_initialised_by_a_helper_is_tainted(tmp_path):
+    """Module-level taint has to see the helper's return summary.
+
+    Running the module pass once before the interprocedural fixpoint left the global
+    trusted, because the summary for `parse_config` did not exist yet.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def parse_config():\n"
+        "    with open('config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n"
+        "MODEL_TYPE = parse_config()\n"
+        "def load():\n"
+        "    return importlib.import_module('a.' + MODEL_TYPE)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_weights_download_beside_an_unrelated_import_is_not_a_code_fetch(tmp_path):
+    """Co-location is not correlation.
+
+    Downloading weights and separately importing a fixed optional backend satisfied
+    "both appear in this function", and none of the fetched bytes are executed.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    weights = snapshot_download(repo)\n"
+        "    backend = importlib.import_module('my_backend')\n"
+        "    return weights, backend\n",
+    )
+    assert "unpinned code fetch" not in _sinks(findings)
+
+
+def test_a_stale_baseline_allowance_fails_the_gate(tmp_path, monkeypatch):
+    """An allowance for a sink that is gone is an allowance a later change inherits.
+
+    The key is the path, the qualname and a hash of the call, so restoring the identical
+    call in the same place would consume it silently.
+    """
+    baseline = tmp_path / "untrusted_sinks_baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "comment": "test",
+                "entries": {"nowhere.py::gone::importlib.import_module::deadbeefdeadbeef": 1},
+            }
+        ),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(L, "BASELINE_PATH", baseline)
+    clean = tmp_path / "clean.py"
+    clean.write_text("VALUE = 1\n", encoding = "utf-8")
+
+    assert L.main(["--paths", str(clean)]) == 1

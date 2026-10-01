@@ -472,7 +472,11 @@ class _FileFacts:
             return name
         return f"{dotted}.{tail}" if separator else dotted
 
-    def target_of(self, callee: ast.AST) -> tuple[Path, str] | None:
+    def target_of(
+        self,
+        callee: ast.AST,
+        class_name: str = "",
+    ) -> tuple[Path, str] | None:
         """Resolve a call target to a first-party (file, qualname), or None.
 
         This is what makes the analysis inter-procedural. Three forms matter:
@@ -486,6 +490,15 @@ class _FileFacts:
         # Bare call to a function defined in this file.
         if not tail and name in self.functions:
             return (self.path, name)
+        # `self.method(...)` and `cls.method(...)`. Without this an instance method is
+        # outside the analysis entirely: taint neither enters it nor returns from it, so
+        # a class that parses an untrusted config in one method and dynamically imports
+        # the result in another was accepted. Most code in this tree is methods.
+        if head in ("self", "cls") and tail and class_name:
+            candidate = f"{class_name}.{tail}"
+            if candidate in self.functions:
+                return (self.path, candidate)
+            return None
         # `from pkg.mod import f` then `f(...)`.
         dotted = self.imports.get(head)
         if dotted is None:
@@ -647,7 +660,7 @@ class _TaintPass(ast.NodeVisitor):
                     return reason
             return None
         # A first-party callee that returns tainted data.
-        target = self.facts.target_of(node.func)
+        target = self.facts.target_of(node.func, self.class_name)
         if target is not None:
             returned = self.state.returns_tainted.get(target)
             if returned:
@@ -734,7 +747,7 @@ class _TaintPass(ast.NodeVisitor):
 
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
-        target = self.facts.target_of(node.func)
+        target = self.facts.target_of(node.func, self.class_name)
         if target is None:
             return
         params = self.state.params.get(target)
@@ -946,7 +959,7 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
     return findings
 
 
-def _unpinned_code_fetches(facts: _FileFacts) -> list[dict]:
+def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, bool]) -> list[dict]:
     """A download with no `revision` whose bytes the same function then imports.
 
     `snapshot_download(repo)` without a revision resolves to whatever the branch points
@@ -955,16 +968,22 @@ def _unpinned_code_fetches(facts: _FileFacts) -> list[dict]:
     tree is then put on `sys.path` and imported: the import executes the current tip of
     a remote branch.
 
-    Narrow on purpose. The test is not "does this function contain an import" - lazy
-    imports are everywhere in this tree and that version of the rule reported sixty
-    weights downloads, where following the branch is the correct behaviour and not a
-    flaw. The test is whether the function puts what it fetched on the import path,
-    which is what separates fetching code from fetching weights.
+    Narrow on purpose, twice over. The test is not "does this function contain an
+    import" - lazy imports are everywhere in this tree and that version of the rule
+    reported sixty weights downloads, where following the branch is correct behaviour
+    and not a flaw. Nor is it "does this function contain both" - a function that
+    downloads weights and separately imports a fixed optional backend satisfies
+    co-location while none of the fetched bytes are executed.
+
+    The test is whether the fetched value REACHES the import, which the taint analysis
+    has already decided: `reached` carries the sinks in this function whose tainted
+    argument came from one of these downloads. Correlation, not proximity.
     """
     findings: list[dict] = []
     for qualname, node in sorted(facts.functions.items()):
+        if not reached.get(qualname):
+            continue
         fetches: list[ast.Call] = []
-        on_import_path = False
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
                 continue
@@ -972,21 +991,6 @@ def _unpinned_code_fetches(facts: _FileFacts) -> list[dict]:
             if _matches(name, {"snapshot_download", "hf_hub_download"}):
                 if not any(keyword.arg == "revision" for keyword in child.keywords):
                     fetches.append(child)
-            elif _matches(
-                name,
-                {
-                    "sys.path.insert",
-                    "sys.path.append",
-                    "path.insert",
-                    "path.append",
-                    "importlib.import_module",
-                    "import_module",
-                    "import_pinned_module",
-                },
-            ):
-                on_import_path = True
-        if not on_import_path:
-            continue
         for call in fetches:
             findings.append(
                 {
@@ -995,7 +999,7 @@ def _unpinned_code_fetches(facts: _FileFacts) -> list[dict]:
                     "qualname": qualname,
                     "sink": "unpinned code fetch",
                     "argument": _short(call),
-                    "why": "no revision, and this function imports what it fetched",
+                    "why": "no revision, and the fetched path reaches an import",
                     "artefacts": [],
                     "tier": "A",
                     "hash": _norm_hash(call),
@@ -1089,9 +1093,6 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             if seeded:
                 state.named_params[key] = seeded
 
-    for path, facts in sorted(facts_by_path.items()):
-        _module_level_taint(facts, state)
-
     # Fixpoint. Bounded: taint only ever grows, and the bound keeps a pathological tree
     # from running the lint job forever.
     for _ in range(12):
@@ -1099,6 +1100,10 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
         state.pending_params = {}
         state.pending_attrs = {}
         for path, facts in sorted(facts_by_path.items()):
+            # Inside the loop, not once before it: a global initialised through a
+            # first-party helper (`MODEL_TYPE = parse_config()`) is only tainted once
+            # that helper's return summary exists, which the fixpoint produces.
+            _module_level_taint(facts, state)
             for qualname, node in sorted(facts.functions.items()):
                 visitor = _TaintPass(facts, qualname, state)
                 for child in ast.iter_child_nodes(node):
@@ -1119,10 +1124,33 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
         if state.snapshot() == before:
             break
 
+    # Sinks whose tainted argument came from a download, per function. This is what
+    # lets the unpinned-fetch rule ask whether the fetched path reaches an import
+    # rather than whether the two merely appear in the same function.
+    _DOWNLOADS = ("snapshot_download()", "hf_hub_download()")
+    _IMPORT_SINKS = frozenset(
+        {
+            "sys.path.insert",
+            "sys.path.append",
+            "path.insert",
+            "path.append",
+            "importlib.import_module",
+            "import_module",
+            "__import__",
+            "spec_from_file_location",
+            "importlib.util.spec_from_file_location",
+        }
+    )
+
     findings: list[dict] = []
     for path, facts in sorted(facts_by_path.items()):
+        reached: dict[str, bool] = {}
         for qualname, node in sorted(facts.functions.items()):
-            findings.extend(_collect(facts, qualname, ast.iter_child_nodes(node), state))
+            found = _collect(facts, qualname, ast.iter_child_nodes(node), state)
+            reached[qualname] = any(
+                f["sink"] in _IMPORT_SINKS and f["why"] in _DOWNLOADS for f in found
+            )
+            findings.extend(found)
         body = [
             child
             for child in ast.iter_child_nodes(facts.tree)
@@ -1130,7 +1158,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
         ]
         findings.extend(_collect(facts, "<module>", body, state))
         findings.extend(_remote_code_defaults(facts))
-        findings.extend(_unpinned_code_fetches(facts))
+        findings.extend(_unpinned_code_fetches(facts, reached))
 
     deduplicated = {
         (f["path"], f["qualname"], f["sink"], f["hash"], f["line"]): f for f in findings
@@ -1294,6 +1322,16 @@ def main(argv: list[str] | None = None) -> int:
         if counted[key] > baseline.get(key, 0):
             new.append(finding)
 
+    # An allowance for a sink that is no longer there is a loaded gun: the key is the
+    # path, the qualname and a hash of the call, so a later change that restores the
+    # identical call in the same place inherits the allowance and is never reported.
+    # Removing a sink therefore has to be accompanied by --update.
+    stale = sorted(
+        f"{key} ({count - counted.get(key, 0)} unused)"
+        for key, count in baseline.items()
+        if count > counted.get(key, 0)
+    )
+
     shown = [
         f
         for f in findings
@@ -1316,6 +1354,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    reads    {', '.join(finding['artefacts'])}")
             print()
         print("Validate the value at its producer, or justify it and run --update.")
+        return 1
+
+    if stale:
+        print(f"\n{len(stale)} baseline allowance(s) no longer match a sink in the tree:\n")
+        for entry in stale:
+            print(f"  {entry}")
+        print("\nRun --update so a later change cannot inherit the allowance.")
         return 1
 
     if arguments.tier != "a" or shown:
