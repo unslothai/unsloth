@@ -164,16 +164,23 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
     """
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
+    from core.inference.video_families import detect_video_family
+
     # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
     # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
-    return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
+    leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
+    # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
+    if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
+        return None
+    return _name_hint_media_task(leaves, None)
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        return None
+        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
+        return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
     if normalized == "qwen3" and any(
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
@@ -312,7 +319,7 @@ def _gguf_folder_task(
             complete = False
             continue
         if task is None:
-            # A truncated header gives no architecture, and _arch_to_task answers None.
+            # No architecture and a name that says nothing: unclassified.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:

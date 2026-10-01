@@ -41,7 +41,10 @@ def _rocminfo(*arches: str) -> str:
     )
 
 
-@pytest.fixture
+# Autouse: _pick_rocm_gfx_target reads the visibility masks, so a test that forgot to ask for
+# this passed on a bare CI runner and failed wherever CUDA_VISIBLE_DEVICES is set, a GPU box
+# included. Tests that want a mask set it after this runs.
+@pytest.fixture(autouse = True)
 def unmasked(monkeypatch):
     for name in _VISIBILITY_ENV:
         monkeypatch.delenv(name, raising = False)
@@ -79,6 +82,41 @@ def test_gfx906_is_never_the_repick(unmasked):
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906", "gfx1200")) == "gfx1200"
     # Nothing else to move to: the iGPU stays, rather than gfx906 being chosen.
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906")) == "gfx1036"
+
+
+def test_rocminfo_output_is_not_masked_by_rocr_twice(unmasked):
+    """rocminfo already applied ROCR_VISIBLE_DEVICES=1,0: its survivors are R9700, iGPU."""
+    out = _rocminfo("gfx1201", "gfx1036")
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "1,0")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1201"
+    unmasked.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
+    unmasked.delenv("HIP_VISIBLE_DEVICES")
+    assert ILP._pick_rocm_gfx_target(out) == "gfx1036"
+
+
+def test_rocr_over_filtered_output_is_still_an_explicit_choice(unmasked):
+    """ROCR=0,1 leaves the iGPU first; it was chosen, so the discrete repick must not undo it."""
+    out = _rocminfo("gfx1036", "gfx1200")
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "0,1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "-1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) is None
+
+
+def test_the_rocminfo_probe_says_its_output_is_rocr_filtered():
+    import ast
+
+    tree = ast.parse(Path(ILP.__file__).read_text(encoding = "utf-8"))
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "detect_host"
+    )
+    calls = [
+        c
+        for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_pick_rocm_gfx_target"
+    ]
+    assert any(k.arg == "rocr_filtered" for c in calls for k in c.keywords)
 
 
 @pytest.mark.parametrize("env", _VISIBILITY_ENV)

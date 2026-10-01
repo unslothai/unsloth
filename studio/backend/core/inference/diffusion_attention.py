@@ -29,6 +29,7 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from typing import Any, Optional
@@ -274,6 +275,63 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
+# sageattn dispatches on an exact arch match whose set varies by build (2.2.0: sm80/86/89/90/120; community builds add
+# sm75/87/100) and diffusers only checks the version, so ask the kernel. (device, dtype) -> "" or its error.
+_SAGE_PROBE_CACHE: dict[tuple[str, str], str] = {}
+
+
+def _run_sage_probe(device: str, dtype: Any) -> str:
+    """Empty when a tiny ``sageattn`` ran on ``device``, else its error; raises when unaskable (import, device, OOM)."""
+    import torch
+    from sageattention import sageattn
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.float16
+    q = torch.zeros((1, 128, 2, 128), device = device, dtype = dtype)
+    try:
+        sageattn(q, q, q, tensor_layout = "NHD")
+        torch.cuda.synchronize(device)
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
+def _indexed_cuda_device(device: str) -> str:
+    """Bare "cuda" -> the card pinned on this thread, so one card's verdict is never reused for another."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+        return f"cuda:{torch.cuda.current_device()}"
+    except Exception:  # noqa: BLE001
+        return device
+
+
+def _sage_kernel_runs(target: Any, logger: Any = None) -> Optional[bool]:
+    """False only when the kernel raised; None (unaskable, not cached) keeps the requested backend."""
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return None
+    device = _indexed_cuda_device(device)
+    dtype = getattr(target, "dtype", None)
+    key = (device, str(dtype))
+    error = _SAGE_PROBE_CACHE.get(key)
+    if error is None:
+        try:
+            error = _run_sage_probe(device, dtype)
+        except Exception:  # noqa: BLE001
+            return None
+        error = _SAGE_PROBE_CACHE.setdefault(key, error)
+    if error and logger is not None:
+        logger.warning(
+            "diffusion.attention: SageAttention does not run on this GPU (%s); using the default backend",
+            error,
+        )
+    return not error
+
+
 # Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only
 # (--only-binary=:all:), since a source build needs a CUDA toolchain the host may lack.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
@@ -444,6 +502,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     """
     import importlib.util
     import os
+    import sys
 
     spec = _INSTALLABLE_BACKENDS.get(backend)
     if spec is None:
@@ -453,6 +512,18 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
         return None
+    # A hidden package stays unusable until restart; skip without recording an attempt.
+    if module in sys.modules and sys.modules[module] is None:
+        reason = f"{module} is disabled in this process because it requires a different torch"
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: not installing %s for backend=%s: %s; restart Studio "
+                "once the installer has removed it. Using the default backend",
+                package,
+                backend,
+                reason,
+            )
+        return reason
     # Refusing is a POLICY decision, not a failed attempt, so it is checked before the _INSTALL_ATTEMPTED memo below and
     # records nothing: a later request on a fixed environment must still be able to install. Scoped to kernels; the sage
     # / flash-attn / xformers wheels do not import huggingface_hub at module scope.
@@ -507,7 +578,6 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
         return None
     _INSTALL_ATTEMPTED.add(package)
     import subprocess
-    import sys
 
     if logger is not None:
         logger.info(
@@ -570,6 +640,112 @@ def _attention_dits(pipe: Any) -> list:
     return dits
 
 
+# head_dim 256 (Ideogram 4) has no cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19/9.20); a pinned cuDNN then has no fallback.
+_CUDNN_HEAD_DIM_CACHE: dict[tuple[str, str, int], bool] = {}
+
+
+def _dit_head_dims(pipe: Any) -> set[int]:
+    """The attention head dims of every denoiser DiT: ``config.attention_head_dim``, else any module's ``head_dim``."""
+    dims: set[int] = set()
+    for dit in _attention_dits(pipe):
+        config = getattr(dit, "config", None)
+        value = None
+        try:
+            value = config.get("attention_head_dim") if hasattr(config, "get") else None
+        except Exception:  # noqa: BLE001
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool):
+            dims.add(value)
+            continue
+        if isinstance(value, (list, tuple)) and value and all(isinstance(v, int) for v in value):
+            dims.update(value)
+            continue
+        modules = getattr(dit, "modules", None)
+        if not callable(modules):
+            continue
+        try:
+            for module in modules():
+                hd = getattr(module, "head_dim", None)
+                if isinstance(hd, int) and not isinstance(hd, bool) and hd > 0:
+                    dims.add(hd)
+        except Exception:  # noqa: BLE001
+            continue
+    return dims
+
+
+CUDNN_HEAD_DIM_PROBE_ENV = "UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE"
+
+
+def _run_cudnn_head_dim_probe(device: str, dtype: Any, head_dim: int) -> bool:
+    """True when cuDNN attention serves ``head_dim`` per SDPA's own gate (launches no kernel); raises when unaskable."""
+    import torch
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.bfloat16
+    q = torch.empty((1, 2, 8, int(head_dim)), device = device, dtype = dtype)
+    try:
+        from torch.backends.cuda import SDPAParams, can_use_cudnn_attention
+    except ImportError:
+        SDPAParams = can_use_cudnn_attention = None
+    if SDPAParams is not None and can_use_cudnn_attention is not None:
+        try:
+            params = SDPAParams(q, q, q, None, 0.0, False, False)
+        except TypeError:  # torch < 2.5 has no enable_gqa argument
+            params = SDPAParams(q, q, q, None, 0.0, False)
+        return bool(can_use_cudnn_attention(params, False))
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    try:
+        with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):
+            torch.nn.functional.scaled_dot_product_attention(q, q, q)
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception:  # noqa: BLE001 - "No available kernel" is the answer
+        return False
+    return True
+
+
+def _cudnn_runs_head_dim(target: Any, head_dim: int) -> Optional[bool]:
+    """Whether cuDNN attention runs at ``head_dim`` on ``target``; None when unaskable (not cached)."""
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return None
+    device = _indexed_cuda_device(device)
+    dtype = getattr(target, "dtype", None)
+    key = (device, str(dtype), int(head_dim))
+    cached = _CUDNN_HEAD_DIM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        ran = _run_cudnn_head_dim_probe(device, dtype, head_dim)
+    except Exception:  # noqa: BLE001 - no torch, no device, allocator trouble: no answer about the kernel
+        return None
+    return _CUDNN_HEAD_DIM_CACHE.setdefault(key, bool(ran))
+
+
+def _cudnn_serves_pipe(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+) -> bool:
+    """False only when cuDNN demonstrably lacks a DiT head_dim. ``UNSLOTH_DIFFUSION_CUDNN_HEAD_DIM_PROBE=0`` skips it."""
+    if (os.environ.get(CUDNN_HEAD_DIM_PROBE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return True
+    missing = sorted(d for d in _dit_head_dims(pipe) if _cudnn_runs_head_dim(target, d) is False)
+    if missing and logger is not None:
+        logger.warning(
+            "diffusion.attention: cuDNN attention has no kernel for head_dim %s with this torch/cuDNN build; "
+            "keeping the default SDPA dispatch",
+            ",".join(str(d) for d in missing),
+        )
+    return not missing
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -604,6 +780,15 @@ def apply_attention_backend(
         return None
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
+        if backend == "sage" and target is not None and _sage_kernel_runs(target, logger) is False:
+            backend = None
+        if (
+            backend == "_native_cudnn"
+            and target is not None
+            and not _cudnn_serves_pipe(pipe, target, logger)
+        ):
+            backend = None
+    if backend is not None:
         engaged = False
         for fn in setters:
             try:
@@ -689,10 +874,8 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 # eager forward pre-hook (outside the compiled blocks): drop the all-zero image stream (t2v), trim the mllm/byt5
 # streams to their globally-valid columns, and, when nothing partially-padded remains, flag the DiT so the processor
 # skips the dense mask and runs the fused path. Mixed-padding batches fall back to the stock dense mask. SHAPE NOTE:
-# the trimmed text length is prompt-dependent, so the compiled blocks see a new shape per prompt. Free on the default
-# speed tier (dynamic=True) but not on ``max`` (dynamic=False), where each length is its own graph and a fullgraph
-# region hard-errors at dynamo's recompile limit. The caller therefore only installs the trim on a tier that compiles
-# dynamically; see the call site in video.py.
+# trimmed length varies per prompt; safe because ``max`` compiles with dynamic=None (one generalising recompile). A
+# static (dynamic=False) compile would recompile per prompt length and hit dynamo's recompile limit under fullgraph.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"

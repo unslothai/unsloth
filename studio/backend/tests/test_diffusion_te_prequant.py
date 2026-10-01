@@ -25,6 +25,13 @@ from core.inference.diffusion_te_prequant import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _safetensors_readable_regardless_of_the_installed_torchao(monkeypatch):
+    """Pin the torchao floor so planning tests ignore the installed release."""
+    import core.inference.prequant_safetensors as prequant_safetensors
+    monkeypatch.setattr(prequant_safetensors, "_torchao_version", lambda: None)
+
+
 def _fam(
     te_prequant_repos = (),
     name = "ltx-2",

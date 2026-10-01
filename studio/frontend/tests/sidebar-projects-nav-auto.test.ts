@@ -114,10 +114,10 @@ test("the rail keeps the Projects row, since the section is hidden there", async
     /const projectsSectionShowing =\n\s*projectsSectionConfigured && \(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   // The section itself still mounts on the rail, as it did before, and CSS hides it.
-  assert.match(sidebar, /\{projectsSectionRendered && \(/);
+  assert.match(sidebar, /if \(!projectsSectionRendered\) return null;/);
   assert.match(
     sidebar,
-    /\{projectsSectionRendered && \(\n[\s\S]{0,400}?group-data-\[collapsible=icon\]:hidden/,
+    /if \(!projectsSectionRendered\) return null;\n[\s\S]{0,400}?group-data-\[collapsible=icon\]:hidden/,
   );
 });
 
@@ -173,7 +173,7 @@ test("a route that borrows the section does not bring the row back", async () =>
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     sidebar,
-    /const projectsSectionConfigured =\n\s*organizeBy === "project" && projects\.length > 0;/,
+    /const projectsSectionConfigured =\n\s*organizeBy === "project" &&\n\s*!projectsSectionHidden &&\n\s*\(projects\.length > 0 \|\| projectsLoaded\);/,
   );
   // The section itself still stands down on those routes; only the row stopped following it.
   assert.match(

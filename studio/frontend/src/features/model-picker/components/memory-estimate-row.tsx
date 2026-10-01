@@ -299,11 +299,20 @@ export function MemoryEstimateRow({
         <MemoryBreakdownLine
           label="KV cache"
           value={
-            estimate.kvEstimable ? formatMemoryGb(estimate.kvBytes) : "unknown"
+            estimate.kvEstimable
+              ? formatMemoryGb(estimate.kvBytes - estimate.kvCheckpointBytes)
+              : "unknown"
           }
           note={estimate.kvEstimable ? kvNote : undefined}
           muted={!estimate.kvEstimable}
         />
+        {estimate.kvEstimable && estimate.kvCheckpointBytes > 0 && (
+          <MemoryBreakdownLine
+            label="Context checkpoints"
+            value={formatMemoryGb(estimate.kvCheckpointBytes)}
+            note="host RAM, filled as conversations grow"
+          />
+        )}
         <MemoryBreakdownLine
           label="Compute buffers"
           value={formatMemoryGb(estimate.computeBytes)}

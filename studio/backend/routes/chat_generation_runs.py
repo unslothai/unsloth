@@ -27,6 +27,10 @@ from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
 from utils.api_errors import safe_validation_errors
+from utils.current_date_prompt_settings import (
+    CURRENT_DATE_TIMEZONE_HEADER,
+    CURRENT_DATE_TIMEZONE_OFFSET_HEADER,
+)
 
 router = APIRouter()
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
@@ -67,6 +71,7 @@ _EXTERNAL_ROUTING_FIELDS = {
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
+    "extra_audio_base64",
     "video_base64",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
@@ -243,6 +248,14 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     return sanitized
 
 
+def _timezone_headers(request: Request) -> dict[str, str]:
+    return {
+        name: value
+        for name in (CURRENT_DATE_TIMEZONE_HEADER, CURRENT_DATE_TIMEZONE_OFFSET_HEADER)
+        if 0 < len(value := request.headers.get(name, "").strip()) <= 64
+    }
+
+
 def _require_run(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     if run is None:
@@ -299,6 +312,11 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
+    from routes.inference import _request_used_api_key
+
+    sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
+    if timezone_headers := _timezone_headers(request):
+        sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
     # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():

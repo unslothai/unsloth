@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import SessionNotCreatedException
+from _en_catalog import aria_label_selector, en_string
 from _playwright_robust import (
     open_session_with_retry,
     start_vite,
@@ -39,7 +40,7 @@ def main():
 
         def label(name):
             return wait.until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, f'[aria-label="{name}"]'))
+                EC.visibility_of_element_located((By.CSS_SELECTOR, aria_label_selector(name)))
             )
 
         def order(ids):
@@ -123,7 +124,7 @@ def main():
         label("Message")
         driver.execute_script("localStorage.clear()")
         driver.refresh()
-        label("Plain text composer").click()
+        label(en_string("composerSettings.plainText")).click()
         editor = label("Message")
         driver.execute_script(
             "window.composerInputTrace = []; for (const type of ['keydown', 'keyup', 'input']) document.addEventListener(type, e => window.composerInputTrace.push({type, key:e.key, meta:e.metaKey, ctrl:e.ctrlKey, value:e.target.value, label:e.target.getAttribute('aria-label')}), true)"
@@ -132,7 +133,7 @@ def main():
         editor.send_keys("**Safari preview**")
         wait.until(lambda d: editor.get_attribute("value") == "**Safari preview**")
         wait.until(lambda d: "Safari preview" in label("Formatted preview").text)
-        label("Show context window usage").click()
+        label(en_string("composerSettings.showContext")).click()
         text_button("Steer").click()
         editor.click()
         editor.send_keys(Keys.ENTER)
@@ -149,8 +150,13 @@ def main():
             == "queue"
         )
         driver.refresh()
-        assert label("Plain text composer").get_attribute("aria-checked") == "false"
-        assert label("Show context window usage").get_attribute("aria-checked") == "false"
+        assert (
+            label(en_string("composerSettings.plainText")).get_attribute("aria-checked") == "false"
+        )
+        assert (
+            label(en_string("composerSettings.showContext")).get_attribute("aria-checked")
+            == "false"
+        )
         report["passed"] = True
         print(
             "PASS: native Safari queue controls, keyboard, pointer, preview, shortcuts and persistence",

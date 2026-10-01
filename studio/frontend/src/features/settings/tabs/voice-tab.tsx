@@ -49,8 +49,8 @@ import { toast } from "@/lib/toast";
 import {
   AudioWave01Icon,
   Search01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
@@ -891,7 +891,7 @@ export function VoiceTab() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.voice.title")}
@@ -1015,22 +1015,10 @@ export function VoiceTab() {
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
-            >
-              <div className="flex w-56 flex-col items-stretch gap-2">
-                <SttModelPicker
-                  value={sttModel}
-                  language={dictationLanguage}
-                  onChange={(next) => {
-                    if (next !== sttModel) {
-                      void unloadSttModel().catch(() => {});
-                      void autoLoadSttModel(next);
-                    }
-                    setSttModel(next);
-                  }}
-                />
-                {/* Progress lives in the shared downloads panel; a second bar
-                    here said the same thing twice. */}
-                <div className="flex min-h-7 items-center justify-between gap-3">
+              // Progress lives in the shared downloads panel; a second bar here
+              // said the same thing twice.
+              below={
+                <div className="flex min-h-7 w-56 items-center justify-between gap-3">
                   <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                     {effectiveSttDownloadAvailability === "checking" ||
                     sttPhase === "loading" ||
@@ -1122,6 +1110,20 @@ export function VoiceTab() {
                     )
                   ) : null}
                 </div>
+              }
+            >
+              <div className="w-56">
+                <SttModelPicker
+                  value={sttModel}
+                  language={dictationLanguage}
+                  onChange={(next) => {
+                    if (next !== sttModel) {
+                      void unloadSttModel().catch(() => {});
+                      void autoLoadSttModel(next);
+                    }
+                    setSttModel(next);
+                  }}
+                />
               </div>
             </SettingsRow>
           ) : (
@@ -1520,7 +1522,7 @@ export function VoiceTab() {
                 ) : (
                   <>
                     <HugeiconsIcon
-                      icon={VolumeHighIcon}
+                      icon={Volume02Icon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.previewAction")}

@@ -50,6 +50,15 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
+      # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
+      # checkout's unsloth CLI (unsloth_cli:app). The selftests run pytest
+      # tests/studio/studiobench from the repo root, which loads tests/conftest.py, the
+      # tests package and the tests/_shared helpers.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       # The harness drives the shipped frontend through the real backend, so a
       # change to either can break it without touching a file under tests/.
       - 'studio/frontend/**'
@@ -78,6 +87,15 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
+      # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
+      # checkout's unsloth CLI (unsloth_cli:app). The selftests run pytest
+      # tests/studio/studiobench from the repo root, which loads tests/conftest.py, the
+      # tests package and the tests/_shared helpers.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       - 'studio/frontend/**'
       - 'studio/backend/**'
       - 'install.sh'
@@ -96,7 +114,7 @@ concurrency:
   # Unique per commit on main, so a merge burst cannot cancel a pending run
   # before it starts. Matches studio-ui-smoke.yml, for the reasons documented there.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

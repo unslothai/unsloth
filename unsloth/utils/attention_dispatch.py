@@ -24,8 +24,6 @@ from torch.nn.functional import scaled_dot_product_attention
 
 from ..models._utils import *
 from ..utils.packing import (
-    _XFormersBidirectionalMask,
-    _XFormersBlockMask,
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
     move_xformers_attention_bias,
@@ -93,11 +91,7 @@ XFORMERS = "xformers"
 SDPA = "sdpa"
 
 
-XFORMERS_BLOCK_DIAG_CLS = (
-    tuple(cls for cls in (_XFormersBlockMask, _XFormersBidirectionalMask) if cls is not None)
-    if HAS_XFORMERS
-    else None
-)
+XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
 # flash-attn 2 varlen backward int32 overflow guard: the varlen BACKWARD kernel allocates
@@ -287,12 +281,6 @@ def run_attention(
     and SDPA handle packing via a block-diagonal mask.
     """
 
-    if not context.is_causal:
-        if context.sliding_window is not None and context.sliding_window > 0:
-            raise ValueError("Bidirectional attention does not support sliding_window")
-        if context.prefix_seg_info is not None:
-            raise ValueError("Shared-prefix attention requires causal attention")
-
     # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
     # takes and returns [1, T, H, D], matching the other backends.
     if context.prefix_seg_info is not None:
@@ -325,20 +313,6 @@ def run_attention(
         XFORMERS,
     ):
         backend = SDPA
-
-    # A build without the matching block-mask class must not attend across
-    # packed sentence boundaries. Older xFormers builds may lack the
-    # bidirectional class while still supporting causal packed attention.
-    if backend == XFORMERS and HAS_XFORMERS and context.seq_info is not None:
-        mask_class = _XFormersBlockMask if context.is_causal else _XFormersBidirectionalMask
-        if mask_class is None:
-            softcap = _configured_softcap(config)
-            if softcap:
-                raise RuntimeError(
-                    f"xFormers lacks the packed block mask required for this attention; "
-                    f"SDPA cannot preserve softcap={softcap}."
-                )
-            backend = SDPA
 
     # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both before
     # the int32 overflow aborts the process. Integer arithmetic only, no device sync.
@@ -449,10 +423,20 @@ def run_attention(
             bsz, q_len, n_heads, head_dim
         )
     elif backend == XFORMERS:
+        base_mask = context.causal_mask
+        # Only CausalLM_fast_forward supplies the mask; a direct decoder call (Liger, TRL's get_decoder paths) would attend bidirectionally.
+        if (
+            base_mask is None
+            and context.is_causal
+            and xformers is not None
+            and context.seq_info is None
+            and q_len == kv_seq_len
+        ):
+            base_mask = xformers.attn_bias.LowerTriangularMask()
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
             sliding_window = sliding_window,
-            base_mask = context.causal_mask,
+            base_mask = base_mask,
             is_causal = context.is_causal,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
@@ -582,8 +566,6 @@ def run_attention(
         kwargs = dict(sdpa_kwargs)
         kwargs.setdefault("attn_mask", local_mask)
         kwargs.setdefault("is_causal", is_causal_local)
-        if not context.is_causal:
-            kwargs["is_causal"] = False
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
         if (

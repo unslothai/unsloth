@@ -25,7 +25,9 @@ from typing import Any, Iterable, Optional, Sequence, Tuple
 import torch
 
 try:
-    from xformers.ops.fmha.attn_bias import BlockDiagonalCausalMask as _XFormersBlockMask
+    from xformers.ops.fmha.attn_bias import (
+        BlockDiagonalCausalMask as _XFormersBlockMask,
+    )
 except Exception:
     try:
         from xformers.attn_bias import BlockDiagonalCausalMask as _XFormersBlockMask
@@ -41,9 +43,7 @@ except Exception:
         _XFormersBidirectionalMask = None
 
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool], Any] = (
-    OrderedDict()
-)
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool], Any] = OrderedDict()
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
@@ -114,8 +114,6 @@ def _get_cached_block_mask(
     is_causal: bool = True,
 ):
     mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
-    if not is_causal and sliding_window is not None and sliding_window > 0:
-        raise ValueError("Bidirectional packed attention does not support sliding_window")
     if mask_class is None:
         return None
 
@@ -610,8 +608,6 @@ def build_xformers_block_causal_mask(
     base_mask: Optional[Any] = None,
     is_causal: bool = True,
 ):
-    if not is_causal and sliding_window is not None and sliding_window > 0:
-        raise ValueError("Bidirectional packed attention does not support sliding_window")
     mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
     if mask_class is None:
         return None
@@ -656,8 +652,6 @@ def build_sdpa_packed_attention_mask(
     sliding_window: Optional[int] = None,
     is_causal: bool = True,
 ) -> torch.Tensor:
-    if not is_causal and sliding_window is not None and sliding_window > 0:
-        raise ValueError("Bidirectional packed attention does not support sliding_window")
     seq_lengths, _, _ = seq_info
 
     params = (dtype, sliding_window, is_causal)

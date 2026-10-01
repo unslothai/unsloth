@@ -15,11 +15,14 @@ const {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  getProviderCapabilities,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  providerSupportsPreserveThinking,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
 const {
@@ -385,6 +388,19 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
   );
 });
 
+test("custom Responses exposes OpenAI hosted tools only on managed cloud hosts", () => {
+  const model = "gpt-5.5";
+  for (const [baseUrl, apiType, expected] of [
+    ["https://api.openai.com/v1", "responses", true],
+    ["https://team.openai.azure.com/openai/v1", "responses", true],
+    ["https://api.openai.com.attacker.example/v1", "responses", false],
+    ["https://api.openai.com/v1", "chat_completions", false],
+  ] as const) {
+    assert.equal(providerSupportsBuiltinCodeExecution("custom", model, baseUrl, apiType), expected);
+    assert.equal(providerSupportsBuiltinImageGeneration("custom", model, baseUrl, apiType), expected);
+  }
+});
+
 test("generic Custom connections use only their explicit max-output override", () => {
   // no capability row targets `custom`, so a model id resembling a hosted family
   // never enters the decision
@@ -448,6 +464,37 @@ test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can se
   );
 });
 
+test("the Claude sampling panel offers only what the backend sends Anthropic", () => {
+  for (const id of [
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-20241022",
+    "claude-opus-4-20250514",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.temperature, true, id);
+    assert.equal(caps?.topK, true, id);
+  }
+  for (const id of [
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-preview",
+    " Claude-Opus-4.7-20260414 ",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.temperature, false, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.topK, false, id);
+  }
+  assert.equal(
+    getProviderCapabilities("custom", "chat_completions", "claude-opus-4-7")?.temperature,
+    true,
+  );
+});
+
 // #11557: claiming a sandbox the backend registry lacks sends `code_execution` to a connection that runs nothing.
 test("hosted Code is only claimed where the backend registry hosts code_execution", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -492,5 +539,13 @@ test("hosted Code is only claimed where the backend registry hosts code_executio
         assert.ok(backendSandboxes.has(providerType), `${providerType} ${model}`);
       }
     }
+  }
+});
+
+
+test("preserve thinking is available only for explicit llama.cpp connections", () => {
+  assert.equal(providerSupportsPreserveThinking("llama_cpp"), true);
+  for (const provider of [undefined, null, "custom", "vllm", "ollama", "openai", "anthropic", "openrouter"]) {
+    assert.equal(providerSupportsPreserveThinking(provider), false);
   }
 });
