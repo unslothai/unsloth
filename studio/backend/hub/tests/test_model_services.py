@@ -738,8 +738,8 @@ def test_custom_dedupe_overlapping_symlink_scans_collapse_to_one_row(tmp_path):
     scan_root = tmp_path / "scan-link"
     try:
         scan_root.symlink_to(target, target_is_directory = True)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
     row = _custom_gguf_row(tmp_path, load_path = scan_root / "model.gguf")
     assert local_inventory._dedupe_custom_local_models([row, row]) == [row]
 
@@ -751,8 +751,8 @@ def test_custom_dedupe_collapses_duplicate_scanner_rows_for_one_symlink_alias(tm
     alias = tmp_path / "alias"
     try:
         alias.symlink_to(target, target_is_directory = True)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
     row = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf")
     duplicate = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf", size_bytes = 20)
     result = local_inventory._dedupe_custom_local_models([row, duplicate])
@@ -769,8 +769,8 @@ def test_custom_dedupe_distinct_symlink_aliases_stay_separate_rows(tmp_path):
     try:
         alias_a.symlink_to(target, target_is_directory = True)
         alias_b.symlink_to(target, target_is_directory = True)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
     row_a = _custom_gguf_row(tmp_path, load_path = alias_a / "model.gguf")
     row_b = _custom_gguf_row(tmp_path, load_path = alias_b / "model.gguf")
     result = local_inventory._dedupe_custom_local_models([row_a, row_b])

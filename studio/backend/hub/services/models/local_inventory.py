@@ -672,6 +672,17 @@ def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelI
     )
 
 
+def _custom_alias_key(model: LocalModelInfo) -> str:
+    # Resolve only the scan root: two registered roots reaching one folder are one alias, links below it are not.
+    root = model._scan_root
+    if not root:
+        return model.path
+    try:
+        return os.path.join(os.path.realpath(root), os.path.relpath(model.path, root))
+    except (OSError, ValueError):
+        return model.path
+
+
 def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     """Distinct symlink aliases of one model stay separate rows so each keeps its own settings (#10605)."""
     by_physical: dict[tuple[str, str], list[LocalModelInfo]] = {}
@@ -683,7 +694,7 @@ def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[Loc
     for group in by_physical.values():
         by_alias_path: dict[str, list[LocalModelInfo]] = {}
         for model in group:
-            by_alias_path.setdefault(model.path, []).append(model)
+            by_alias_path.setdefault(_custom_alias_key(model), []).append(model)
         unique_rows: list[LocalModelInfo] = []
         for alias_group in by_alias_path.values():
             winner = alias_group[0]
@@ -889,7 +900,10 @@ async def _collect_models_from_default_sources(
             continue
         # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
-        local_models.extend(_promote_to_custom_source(model) for model in custom_models)
+        for model in custom_models:
+            row = _promote_to_custom_source(model)
+            row._scan_root = str(folder_path)
+            local_models.append(row)
 
     return local_models
 

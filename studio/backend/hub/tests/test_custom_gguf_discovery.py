@@ -31,10 +31,10 @@ def _write_gguf(path: Path, size: int = 4) -> Path:
 def _custom_rows(*roots: Path):
     rows = []
     for root in roots:
-        rows.extend(
-            local_inventory._promote_to_custom_source(row)
-            for row in local_inventory._scan_custom_folder(root)
-        )
+        for row in local_inventory._scan_custom_folder(root):
+            row = local_inventory._promote_to_custom_source(row)
+            row._scan_root = str(root)
+            rows.append(row)
     return local_inventory._dedupe_local_models(rows)
 
 
@@ -609,6 +609,19 @@ def test_two_symlink_aliases_to_one_model_stay_distinct(tmp_path):
 
     assert {Path(row.path) for row in rows} == {alias_a, alias_b}
     assert {row.load_id for row in rows} == {str(alias_a), str(alias_b)}
+
+
+def test_two_symlinked_scan_roots_to_one_folder_list_the_model_once(tmp_path):
+    real_root = tmp_path / "real"
+    _write_gguf(real_root / "model" / "model-Q4_K_M.gguf")
+    _write_gguf(real_root / "model" / "model-Q8_0.gguf")
+    link_a = tmp_path / "link-a"
+    link_b = tmp_path / "link-b"
+    _symlink_dir(link_a, real_root)
+    _symlink_dir(link_b, real_root)
+
+    assert len(_custom_rows(link_a, link_b)) == 1
+    assert len(_custom_rows(real_root, link_a)) == 1
 
 
 def test_physical_identity_preserves_native_posix_names(tmp_path):
