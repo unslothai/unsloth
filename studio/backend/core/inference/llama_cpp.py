@@ -21082,9 +21082,19 @@ class LlamaCppBackend:
                 prism_legacy_q2_gguf_user_message,
             )
 
+            # A Hub load passes no gguf_path, so also probe the file llama-server named.
             legacy_tensor: Optional[str] = None
-            if gguf_path and Path(gguf_path).is_file():
-                legacy_tensor = gguf_mainline_q2_offset_mismatch(gguf_path)
+            for _candidate in [gguf_path] + re.findall(
+                r"loading model '([^'\n]+)'|failed to load model from ([^\n]+?)\s*$",
+                output or "",
+                re.MULTILINE,
+            ):
+                if isinstance(_candidate, tuple):
+                    _candidate = _candidate[0] or _candidate[1]
+                if _candidate and Path(_candidate).is_file():
+                    legacy_tensor = gguf_mainline_q2_offset_mismatch(_candidate)
+                    if legacy_tensor is not None:
+                        break
             if legacy_tensor is not None:
                 return LlamaCppBackend._with_startup_diagnostics(
                     prism_legacy_q2_gguf_user_message(tensor_name = legacy_tensor),

@@ -808,6 +808,16 @@ class TestPrismLegacyQ2Gguf:
         assert "enough memory" not in msg.lower()
         assert not msg.startswith("llama-server failed to start.")
 
+    def test_hub_load_probes_the_file_llama_server_named(self, tmp_path: Path):
+        gguf = _write_legacy_q2_offset_mismatch_gguf(
+            tmp_path / "Ternary-Bonsai-27B-dspark-Q4_1.gguf",
+            mismatch_tensor = "dspark.fc.weight",
+        )
+        out = self._OUT.replace("'Ternary-Bonsai-27B-dspark-Q4_1.gguf'", f"'{gguf}'")
+        msg = _classify(out, None, "prism-ml/Ternary-Bonsai-27B-gguf", 1)
+        assert "Q2_g64" in msg
+        assert "enough memory" not in msg.lower()
+
     def test_tensor_offset_mismatch_without_legacy_probe_falls_back_generic(self):
         msg = _classify(
             self._OUT,
