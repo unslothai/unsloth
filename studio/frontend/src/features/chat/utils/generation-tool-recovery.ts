@@ -458,14 +458,19 @@ export function createGenerationToolRecovery(
       if (!toolName) {
         return;
       }
+      // A save can already hold this start's card past its cursor; minting it again gives the
+      // message two parts with one key, which assistant-ui refuses to render.
+      const toolCallId = `${backendId || "tool"}:${runId}:${seq}`;
+      entry ??= carried.find(({ part }) => {
+        const card = record(part);
+        return (
+          card?.type === "tool-call" &&
+          (card.toolCallId === toolCallId ||
+            card.generationToolCallId === `${runId}:${seq}`)
+        );
+      });
       if (!entry) {
-        entry = {
-          at,
-          part: {
-            type: "tool-call",
-            toolCallId: `${backendId || "tool"}:${runId}:${seq}`,
-          },
-        };
+        entry = { at, part: { type: "tool-call", toolCallId } };
         carried.push(entry);
       }
       const args = record(event.arguments) ?? {};
