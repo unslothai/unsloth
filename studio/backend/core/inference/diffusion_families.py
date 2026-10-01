@@ -1340,8 +1340,7 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
 
 
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
-# (stems, extension), safetensors first as from_pretrained prefers it. Default variant only: the
-# pipeline loads at variant=None, which cannot open fp16/bf16-suffixed files.
+# safetensors first, default variant only: the load uses variant=None, which cannot open *.fp16.safetensors.
 _LOCAL_PIPELINE_WEIGHT_FORMATS = (
     (("diffusion_pytorch_model", "model"), "safetensors"),
     (("diffusion_pytorch_model", "pytorch_model"), "bin"),
@@ -1378,8 +1377,7 @@ def _safe_relative_parts(text: str) -> Optional[tuple[str, ...]]:
 def _local_weights_are_complete(component: Path, library_name: str) -> bool:
     # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
     for stems, ext in _LOCAL_PIPELINE_WEIGHT_FORMATS:
-        # Transformers never reads diffusion_pytorch_model*, so a stale index of that name (LTX-2's
-        # text_encoder ships both shard sets) cannot veto its own weights.
+        # Transformers never reads diffusion_pytorch_model* (LTX-2's text_encoder ships both shard sets).
         if library_name == "transformers":
             stems = tuple(s for s in stems if s != "diffusion_pytorch_model")
             # Transformers opens a single checkpoint before a shard index (_get_resolved_checkpoint_files).
@@ -1830,7 +1828,6 @@ def family_selectable(fam) -> bool:
 
 
 def pipeline_available_family_names() -> tuple[str, ...]:
-    """Family overrides whose diffusers pipeline can be built on this host."""
     return tuple(fam.name for fam in _FAMILIES if family_selectable(fam))
 
 

@@ -103,7 +103,6 @@ def _is_model_directory(d: Path) -> bool:
 
 
 def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArtifactKind]:
-    """Return the root-manifest contract for a complete Diffusers pipeline directory."""
     if path is None:
         return None
     from core.inference.diffusion_families import local_pipeline_components_are_complete

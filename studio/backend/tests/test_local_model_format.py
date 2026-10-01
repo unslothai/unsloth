@@ -638,7 +638,6 @@ def test_local_pipeline_completeness_checks_configs_and_every_indexed_shard(tmp_
     assert _complete(tmp_path) is True
     _weight_map(index, "..\\outside.safetensors")
     assert _complete(tmp_path) is False
-    # An unused .bin index does not stand in for the safetensors weights.
     index.unlink()
     (component / "weights-00001-of-00001.safetensors").unlink()
     _touch(component / "diffusion_pytorch_model.safetensors")

@@ -44,7 +44,6 @@ test("an on-device copy of the pipeline reaches the same dialog", () => {
   );
   // Not a Hub-id equality test any more: the local directory never matches one.
   assert.match(predicate, /split\("\/"\)\.at\(-1\)/);
-  // An opaque pipeline explicitly identified as H3 counts too.
   assert.match(predicate, /familyOverride\?\.trim\(\)\.toLowerCase\(\) === "minimax-h3"/);
   assert.match(predicate, /H3_BF16_REPO\.split\("\/"\)\[1\]\.toLowerCase\(\)/);
   // And the generic local-pipeline branch consults it, not only the curated branch.

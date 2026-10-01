@@ -77,7 +77,7 @@ export function familyOverrideArtifactKind(
     : "diffusers_pipeline";
 }
 
-/** Family selection, its Advanced select props, and what the selector shows: a pinned snapshot is labelled by its logical id. */
+/** A pinned snapshot is labelled by its logical id in the selector. */
 export function useFamilyOverride(
   status: { loaded: boolean; repo_id: string | null; display_repo_id?: string | null; modular_families?: string[] } | null,
   supportedFamilies?: readonly string[],

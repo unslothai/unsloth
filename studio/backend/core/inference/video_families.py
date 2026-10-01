@@ -414,7 +414,6 @@ def supported_video_family_names() -> tuple[str, ...]:
 
 
 def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[VideoFamily, ...]:
-    """Video-family overrides whose pipeline can be built by installed Diffusers."""
     from .diffusion_families import family_selectable
     return tuple(
         fam

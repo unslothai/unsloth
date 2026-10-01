@@ -2140,8 +2140,7 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     assert "e.files.includes(opts.filename)" in entries.group(
         0
     ), f"{page} does not mark the picked repo's entry as the checkpoint"
-    # The plan's own answer wins over both local guesses: a gated pipeline is staged from an ungated
-    # mirror, so only the planner knows the swap. `??`, not `||`: a planner answering false is final.
+    # The plan's answer wins (only it knows a gated pipeline is staged from an ungated mirror); false is final.
     assert "e.checkpoint ??" in entries.group(
         0
     ), f"{page} ignores the checkpoint flag the plan carried"
