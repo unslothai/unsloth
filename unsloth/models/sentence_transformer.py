@@ -1195,27 +1195,150 @@ class FastSentenceTransformer(FastModel):
         return transformer_module
 
     @staticmethod
+    def _resolve_module_class(
+        class_ref,
+        model_name,
+        trust_remote_code,
+        token = None,
+        cache_dir = None,
+        revision = None,
+    ):
+        """Resolve a modules.json "type" to a class, gated like sentence-transformers >= 6.0.
+
+        modules.json ships inside the model directory or Hub repo, so its "type" is untrusted
+        input: resolving it imports that dotted path and runs its top-level code in this process,
+        with no .py needed anywhere in the model folder. sentence-transformers 6.0 refuses any
+        class outside sentence_transformers.* without trust_remote_code (its #3801); since
+        _load_modules reimplements their module scan, that gate has to be mirrored here.
+        """
+        from sentence_transformers.util import import_from_string
+
+        if not isinstance(class_ref, str):
+            raise ValueError(
+                f"Unsloth: modules.json of {model_name} declares a module type that is not a string "
+                f"({class_ref!r}). Refusing to resolve it."
+            )
+
+        if class_ref.startswith("sentence_transformers."):
+            return import_from_string(class_ref)
+
+        if not trust_remote_code:
+            # Not transformers' resolve_trust_remote_code: it appends a hf.co URL that is bogus for local dirs.
+            is_local_dir = isinstance(model_name, (str, os.PathLike)) and os.path.isdir(model_name)
+            location = (
+                os.path.abspath(model_name) if is_local_dir else f"https://hf.co/{model_name}"
+            )
+            raise ValueError(
+                f"Unsloth: The model {model_name} references the module class {class_ref!r}, which is not "
+                f"part of Sentence Transformers. Importing it executes third-party code. You can inspect the "
+                f"repository content at {location}.\n"
+                f"Please pass the argument `trust_remote_code=True` to allow custom code to be run."
+            )
+
+        # Consented: prefer the repo's own modeling file over a same-named installed package, like stock ST >= 6.
+        try:
+            from sentence_transformers.util import import_module_class
+        except ImportError:
+            # sentence-transformers < 6 has no dynamic-module resolver; the gate above still applies.
+            return import_from_string(class_ref)
+
+        return import_module_class(
+            class_ref,
+            model_name_or_path = model_name,
+            trust_remote_code = True,
+            revision = revision,
+            token = token,
+            cache_folder = cache_dir,
+        )
+
+    @staticmethod
     def _is_transformer_module_ref(class_ref):
-        if class_ref in {
+        """Name ST's Transformer without importing anything, since importing to compare is the same
+        execution the gate refuses. Any other spelling is caught by `is Transformer` in
+        _load_modules, after gating; refusals all live in _resolve_module_class."""
+        if not isinstance(class_ref, str):
+            return False
+
+        return class_ref in {
             "sentence_transformers.models.Transformer",
             "sentence_transformers.models.transformer.Transformer",
             "sentence_transformers.base.modules.transformer.Transformer",
-        }:
-            return True
+        }
 
-        try:
-            from sentence_transformers.models import Transformer
-            from sentence_transformers.util import import_from_string
+    # A module's own config carries further dotted class paths that the ST < 6 loaders import
+    # ungated, so an allowed in-namespace "type" could walk around the gate above: Dense imports AND
+    # CALLS config["activation_function"], WordEmbeddings imports config["tokenizer_class"], and
+    # Router/Asym import every value of config["types"]. The prefixes are upstream's own rules
+    # (ST >= 6 allows only "torch.*" for Dense and routes the rest through import_module_class),
+    # applied only where the installed library has no gate.
+    _MODULE_CONFIG_CLASS_REFS = (
+        ("activation_function", "torch."),
+        ("tokenizer_class", "sentence_transformers."),
+    )
 
-            module_class = import_from_string(class_ref)
-            return module_class is Transformer
-        except (ImportError, AttributeError, TypeError, ValueError) as exception:
-            logging.debug(
-                "Unsloth: Could not resolve SentenceTransformer module ref %r: %s",
-                class_ref,
-                exception,
-            )
-            return False
+    @staticmethod
+    def _check_module_config_class_refs(
+        load_path, class_ref, model_name, trust_remote_code, module_class
+    ):
+        if trust_remote_code:
+            return
+
+        import sentence_transformers
+        import sentence_transformers.util as st_util
+
+        if hasattr(st_util, "import_module_class"):
+            # sentence-transformers >= 6 applies these gates in the module loaders themselves.
+            return
+
+        # Read what the loader will read: each module names its own file (Router
+        # "router_config.json", WordEmbeddings "wordembedding_config.json"), and Router falls back to
+        # "config.json", which is also Module's default and so Dense's. Hard-coding "config.json"
+        # would skip exactly the two modules this check exists for.
+        config_names = []
+        config_file_name = getattr(module_class, "config_file_name", None)
+        if isinstance(config_file_name, str):
+            config_names.append(config_file_name)
+        config_names.append("config.json")
+
+        refs = []
+        for config_name in dict.fromkeys(config_names):
+            config_path = os.path.join(load_path, config_name)
+            if not os.path.isfile(config_path):
+                continue
+            try:
+                with open(config_path, encoding = "utf8") as f:
+                    config = json.load(f)
+            except (OSError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not read module config %s: %s", config_path, exception
+                )
+                continue
+            if not isinstance(config, dict):
+                continue
+
+            refs += [
+                (key, config[key], prefix)
+                for key, prefix in FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS
+                if isinstance(config.get(key), str)
+            ]
+            types = config.get("types")
+            if isinstance(types, dict):
+                refs += [
+                    ("types", value, "sentence_transformers.")
+                    for value in types.values()
+                    if isinstance(value, str)
+                ]
+
+        for key, value, prefix in refs:
+            if not value.startswith(prefix):
+                raise ValueError(
+                    f"Unsloth: The model {model_name} declares the module {class_ref} whose config "
+                    f"{key} is {value!r}, a class outside {prefix}*. Importing it executes third-party "
+                    f"code, and the installed sentence-transformers "
+                    f"({getattr(sentence_transformers, '__version__', 'unknown')}) does not gate it. "
+                    f"Upgrade to sentence-transformers >= 6.0, or pass the argument "
+                    f"`trust_remote_code=True` to allow custom code to be run."
+                )
 
     @staticmethod
     def _load_modules(
@@ -1230,8 +1353,8 @@ class FastSentenceTransformer(FastModel):
         revision = None,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules. Returns (modules, no_modules_json)."""
-        from sentence_transformers.util import import_from_string, load_dir_path
-        from sentence_transformers.models import Pooling, Normalize
+        from sentence_transformers.util import load_dir_path
+        from sentence_transformers.models import Pooling, Normalize, Transformer
 
         modules = OrderedDict()
         modules_json_path = FastSentenceTransformer._module_path(
@@ -1246,7 +1369,24 @@ class FastSentenceTransformer(FastModel):
                 class_ref = module_config["type"]
                 name = module_config.get("name", str(module_config.get("idx", len(modules))))
 
+                # Gate before any download: a refused type must fail the load outright, not fall
+                # through the "could not download" skip below. Resolved once, since a consented
+                # repo-local ref costs a Hub round trip.
+                module_class = None
                 if FastSentenceTransformer._is_transformer_module_ref(class_ref):
+                    is_transformer_module = True
+                else:
+                    module_class = FastSentenceTransformer._resolve_module_class(
+                        class_ref,
+                        model_name,
+                        trust_remote_code,
+                        token = token,
+                        cache_dir = cache_dir,
+                        revision = revision,
+                    )
+                    is_transformer_module = module_class is Transformer
+
+                if is_transformer_module:
                     transformer_module = FastSentenceTransformer._create_transformer_module(
                         model_name,
                         model,
@@ -1276,7 +1416,10 @@ class FastSentenceTransformer(FastModel):
                             print(f"Unsloth Warning: Could not download module {module_path}: {e}")
                             continue
 
-                    module_class = import_from_string(class_ref)
+                    FastSentenceTransformer._check_module_config_class_refs(
+                        load_path, class_ref, model_name, trust_remote_code, module_class
+                    )
+
                     try:
                         module = module_class.load(load_path)
                         modules[name] = module

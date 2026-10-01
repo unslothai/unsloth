@@ -156,7 +156,7 @@ export function ProgressSection({
     data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
   const handleCompareInChat = async () => {
-    setTrainingCompareHandoff(data.modelName);
+    setTrainingCompareHandoff(data.modelName, data.outputDir);
     await navigate({ to: "/chat" });
   };
 

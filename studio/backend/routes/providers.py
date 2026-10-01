@@ -12,6 +12,7 @@ import time
 import uuid
 from typing import Optional
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -32,6 +33,7 @@ from core.inference.key_exchange import (
     get_public_key_pem,
 )
 from core.inference.providers import (
+    answers_decisions_only,
     get_base_url,
     get_connectable_provider_info,
     get_provider_info,
@@ -750,6 +752,41 @@ async def _test_custom_provider_connectivity(
         )
 
 
+async def _test_decision_connectivity(client, model_id: str) -> ProviderTestResult:
+    if not model_id:
+        return ProviderTestResult(
+            success = False, message = "Connection failed: add a model ID to test with."
+        )
+    try:
+        result = await client.create_decision(
+            model_id,
+            "The ticket says the checkout page is down.",
+            {"outage": {"type": "noul", "instructions": "Is something broken?"}},
+        )
+        answer = result["answers"]["outage"]
+        speaks_system_one = answer["type"] == "noul" and isinstance(answer["noul"], (int, float))
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code not in (404, 405):
+            return ProviderTestResult(
+                success = False, message = f"Connection failed: {safe_curated_detail(exc)}"
+            )
+        speaks_system_one = False
+    except httpx.HTTPError as exc:
+        return ProviderTestResult(
+            success = False, message = f"Connection failed: {safe_curated_detail(exc)}"
+        )
+    except (ValueError, TypeError, KeyError):
+        speaks_system_one = False
+    if not speaks_system_one:
+        return ProviderTestResult(
+            success = False,
+            message = "Connection failed: this endpoint does not speak the System One API.",
+        )
+    return ProviderTestResult(
+        success = True, message = "Connected successfully. It answered a decision."
+    )
+
+
 @router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
     payload: ProviderTestRequest,
@@ -805,6 +842,8 @@ async def test_provider(
     )
 
     try:
+        if answers_decisions_only(payload.provider_type, payload.api_type):
+            return await _test_decision_connectivity(client, (payload.model_id or "").strip())
         if payload.provider_type == "custom":
             return await _test_custom_provider_connectivity(
                 client, payload.model_id or "", payload.api_type
@@ -1013,6 +1052,31 @@ async def list_provider_models(
         api_type = payload.api_type,
         timeout = 15.0,
     )
+
+    if answers_decisions_only(payload.provider_type, payload.api_type):
+        try:
+            ids = await client.list_decision_models()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise HTTPException(
+                    status_code = 502, detail = f"The server refused the API key (HTTP {status})."
+                ) from None
+            if status not in (404, 405):
+                raise HTTPException(
+                    status_code = 502,
+                    detail = f"The server answered HTTP {status} when asked for its models.",
+                ) from None
+            ids = []
+        except httpx.HTTPError:
+            raise HTTPException(
+                status_code = 502, detail = "Couldn't reach the server. Check the base URL."
+            ) from None
+        except ValueError:
+            ids = []
+        return [
+            ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None) for m in ids
+        ]
 
     try:
         models = await client.list_models()
