@@ -742,7 +742,11 @@ jobs:
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
+          # sentence-transformers rides the transformers pin rather than a separate install, so
+          # resolving it cannot bump transformers past the ceiling. It is an extra, not a core
+          # dependency, and tests/test_st_modules_json_trust_gate.py skips without it, so
+          # installing it here is what makes that gate run in this shard instead of skipping.
+          pip install 'transformers>=4.51,<5.5' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
           pip install 'bitsandbytes>=0.45'

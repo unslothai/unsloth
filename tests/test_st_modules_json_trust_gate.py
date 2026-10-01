@@ -27,7 +27,14 @@ import sys
 
 import pytest
 
-from unsloth import FastSentenceTransformer
+# sentence-transformers is an extra (`huggingfacenotorch`), not a core dependency, and
+# one CI shard installs the core set only. Without this the whole file errors there with
+# ModuleNotFoundError instead of skipping. The workflow installs the package for this
+# shard so these tests do run rather than quietly skipping everywhere, which would make
+# the gate unfailable in CI.
+pytest.importorskip("sentence_transformers")
+
+from unsloth import FastSentenceTransformer  # noqa: E402
 
 
 MARKER = "unsloth_st_gate_marker"
