@@ -757,24 +757,49 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
-const WORDPROCESSINGML_NAMESPACE =
-  "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+// Transitional, then Strict OOXML (Word's "Strict Open XML Document").
+const WORDPROCESSINGML_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+  "http://purl.oclc.org/ooxml/wordprocessingml/main",
+]);
 const DOCX_NOTE_BREAKS = new Set(["p", "tab", "br", "cr"]);
 const DOCX_NOTE_SKIP = new Set(["del", "moveFrom", "rt", "Fallback"]);
 
-function docxNoteText(node: Node): string {
+function childElements(node: Node, ns: string, name: string): Element[] {
+  return Array.from(node.childNodes).filter(
+    (child): child is Element =>
+      child.nodeType === 1 &&
+      (child as Element).localName === name &&
+      (child as Element).namespaceURI === ns,
+  );
+}
+
+/** An unfilled content control holds Word's prompt ("Click or tap here to enter text."), not a value. */
+function isDocxPlaceholder(element: Element, ns: string): boolean {
+  const flag = childElements(element, ns, "sdtPr").flatMap((pr) =>
+    childElements(pr, ns, "showingPlcHdr"),
+  )[0];
+  return (
+    flag !== undefined &&
+    !["0", "false", "off"].includes(flag.getAttributeNS(ns, "val") ?? "")
+  );
+}
+
+function docxNoteText(node: Node, ns: string): string {
   let text = "";
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType !== 1) continue;
     const element = child as Element;
     const name = element.localName;
     if (DOCX_NOTE_SKIP.has(name)) continue;
-    if (name === "t" && element.namespaceURI === WORDPROCESSINGML_NAMESPACE) {
+    if (name === "sdt" && isDocxPlaceholder(element, ns)) continue;
+    if (name === "t" && element.namespaceURI === ns) {
       text += element.textContent ?? "";
     } else if (name === "noBreakHyphen") {
       text += "-";
     } else {
-      text += (DOCX_NOTE_BREAKS.has(name) ? " " : "") + docxNoteText(element);
+      text +=
+        (DOCX_NOTE_BREAKS.has(name) ? " " : "") + docxNoteText(element, ns);
     }
   }
   return text;
@@ -806,7 +831,6 @@ function romanNumeral(n: number): string {
   return out;
 }
 
-const DOCX_NOTE_SENTINEL_RE = /\uE000(\d+)\uE001/g;
 
 /**
  * Puts a sentinel after each note reference in the main document; `label` numbers the
@@ -860,14 +884,14 @@ export function markDocxNotes(archive: Uint8Array): {
       strFromU8(xml),
       "application/xml",
     );
-    for (const note of Array.from(
-      doc.getElementsByTagNameNS(WORDPROCESSINGML_NAMESPACE, kind),
-    )) {
-      const type = note.getAttributeNS(WORDPROCESSINGML_NAMESPACE, "type");
+    const ns = doc.documentElement?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(ns)) continue;
+    for (const note of Array.from(doc.getElementsByTagNameNS(ns, kind))) {
+      const type = note.getAttributeNS(ns, "type");
       if (type && type !== "normal") continue;
       notes.bodies.set(
-        note.getAttributeNS(WORDPROCESSINGML_NAMESPACE, "id") ?? "",
-        docxNoteText(note).replace(/\s+/g, " ").trim(),
+        note.getAttributeNS(ns, "id") ?? "",
+        docxNoteText(note, ns).replace(/\s+/g, " ").trim(),
       );
     }
   }
@@ -876,6 +900,9 @@ export function markDocxNotes(archive: Uint8Array): {
   }
 
   const refs: { kind: keyof typeof kinds; id: string }[] = [];
+  // Per call, so text that already looks like a sentinel is left alone.
+  const nonce = Math.random().toString(36).slice(2, 10);
+  const sentinel = new RegExp(`\\uE000${nonce}\\.(\\d+)\\uE001`, "g");
   const mainXml = read(main);
   const markedXml = mainXml
     ? strFromU8(mainXml).replace(
@@ -891,7 +918,8 @@ export function markDocxNotes(archive: Uint8Array): {
           kinds[kind].referenced.add(id);
           const t = prefix ? `${prefix}:t` : "t";
           refs.push({ kind, id });
-          return `${reference}<${t}>\uE000${refs.length - 1}\uE001</${t}>`;
+          const marker = `\uE000${nonce}.${refs.length - 1}\uE001`;
+          return `${reference}<${t}>${marker}</${t}>`;
         },
       )
     : "";
@@ -900,8 +928,10 @@ export function markDocxNotes(archive: Uint8Array): {
       footnote: new Map<string, number>(),
       endnote: new Map<string, number>(),
     };
-    const body = text.replace(DOCX_NOTE_SENTINEL_RE, (_, index: string) => {
-      const { kind, id } = refs[Number(index)];
+    const body = text.replace(sentinel, (match, index: string) => {
+      const ref = refs[Number(index)];
+      if (!ref) return match;
+      const { kind, id } = ref;
       const seen = numbers[kind];
       if (!seen.has(id)) seen.set(id, seen.size + 1);
       return `[${kinds[kind].label(seen.get(id)!)}]`;

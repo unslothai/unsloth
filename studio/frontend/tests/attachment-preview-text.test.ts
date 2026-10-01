@@ -1066,7 +1066,8 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
       "word/document.xml": strToU8(
         `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
           `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
-          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}</w:p></w:body></w:document>`,
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r></w:p></w:body></w:document>`,
       ),
       "word/_rels/document.xml.rels": relationships([
         ["footnotes", "notes/foot.xml"],
@@ -1092,10 +1093,37 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
     });
     assert.equal(
       marked.label(value),
-      "First.[1] Second.[2][i]\n\n" +
+      "First.[1] Second.[2][i] \uE0007\uE001\n\n" +
         "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n\n" +
         "Endnotes\n[i] Source: ENDNOTEBODY",
     );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
+  const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "strict.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>${run(" Click or tap here to enter text.")}</w:sdtContent></w:sdt>` +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr w:val="0"/></w:sdtPr><w:sdtContent>${run(" FILLED")}</w:sdtContent></w:sdt>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
   } finally {
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
   }

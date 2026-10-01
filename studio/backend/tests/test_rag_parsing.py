@@ -582,7 +582,8 @@ def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
         parse_xml(
             f"<w:p {_DOCX_XMLNS}><w:del w:id=\"9\">{ref('footnote', 4)}</w:del>"
             f"{_r('First.')}{ref('footnote', 2)}"
-            f"{_r(' Second.')}{ref('footnote', 1)}{ref('endnote', 1)}</w:p>"
+            f"{_r(' Second.')}{ref('footnote', 1)}{ref('endnote', 1)}"
+            f"{_r(' ' + chr(0xE000) + '7' + chr(0xE001))}</w:p>"
         )
     )
     for kind, content_type, reltype, body in (
@@ -606,7 +607,7 @@ def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
 
     text = "\n".join(pg.text for pg in parsers.parse(str(path)))
     assert text == (
-        "First.[1] Second.[2][i]\n"
+        "First.[1] Second.[2][i] \ue0007\ue001\n"
         "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n"
         "Endnotes\n[i] Source: ENDNOTEBODY"
     )

@@ -14,6 +14,7 @@ import codecs
 import logging
 import os
 import re
+import secrets
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -606,9 +607,6 @@ def _roman(n: int) -> str:
     return out
 
 
-_DOCX_NOTE_SENTINEL = re.compile("\ue000(\\d+)\ue001")
-
-
 def _docx_mark_notes(document):
     """Puts a sentinel after each body note reference; the returned function numbers the
     references that survived extraction as Word does (footnotes 1, 2; endnotes i, ii),
@@ -649,6 +647,9 @@ def _docx_mark_notes(document):
         return lambda text: text
 
     refs: list[tuple[int, str]] = []
+    # Per call, so text that already looks like a sentinel is left alone.
+    nonce = secrets.token_hex(4)
+    sentinel = re.compile(f"\ue000{nonce}\\.(\\d+)\ue001")
     referenced: list[set[str]] = [set() for _ in kinds]
     for k, (kind, _, bodies) in enumerate(kinds):
         for ref in document.element.body.iter(_W + kind + "Reference"):
@@ -656,7 +657,7 @@ def _docx_mark_notes(document):
             if note_id in bodies:
                 referenced[k].add(note_id)
                 marker = OxmlElement("w:t")
-                marker.text = f"\ue000{len(refs)}\ue001"
+                marker.text = f"\ue000{nonce}.{len(refs)}\ue001"
                 refs.append((k, note_id))
                 ref.addnext(marker)
 
@@ -664,11 +665,14 @@ def _docx_mark_notes(document):
         numbers: list[dict[str, int]] = [{} for _ in kinds]
 
         def label(match) -> str:
-            k, note_id = refs[int(match.group(1))]
+            index = int(match.group(1))
+            if index >= len(refs):
+                return match.group(0)
+            k, note_id = refs[index]
             number = numbers[k].setdefault(note_id, len(numbers[k]) + 1)
             return f"[{kinds[k][1](number)}]"
 
-        text = _DOCX_NOTE_SENTINEL.sub(label, text)
+        text = sentinel.sub(label, text)
         lines = [text] if text else []
         for k, (kind, label_of, bodies) in enumerate(kinds):
             # A note no reference points at still carries text; one referenced only from deleted
