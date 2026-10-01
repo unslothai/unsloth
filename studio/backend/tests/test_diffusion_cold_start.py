@@ -405,3 +405,48 @@ def test_the_model_prewarm_has_its_own_switch(monkeypatch):
     monkeypatch.setenv(torch_warmup.DIFFUSERS_PREWARM_MODELS_ENV_VAR, "0")
     assert torch_warmup.prewarm_diffusers_if_image_models_exist() is True
     assert imported == []
+
+
+# ---------------------------------------------------------------------------------------------- load-progress latch
+
+
+def test_load_progress_stops_rescanning_once_every_byte_is_on_disk(monkeypatch):
+    from core.inference import diffusion as D
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PROGRESS_LATCH", raising = False)
+    scans = []
+    loading = D._LoadingState(repo_id = "r", base_repo = "r", expected_bytes = 100)
+    fake = types.SimpleNamespace(
+        _loading = loading,
+        _state = None,
+        _cache_bytes = lambda repo: scans.append(repo) or 100,
+        _cache_file_bytes = lambda repo, filename: 0,
+    )
+    first = D.DiffusionBackend.load_progress(fake)
+    second = D.DiffusionBackend.load_progress(fake)
+    assert first["phase"] == second["phase"] == "finalizing"
+    assert len(scans) == 1, "a finished download was rescanned on every poll"
+    loading.expected_bytes = 200  # a revised estimate is a new question
+    D.DiffusionBackend.load_progress(fake)
+    assert len(scans) == 2
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "0")
+    loading.expected_bytes = 100
+    loading.finalized_scan = (100, 100)
+    D.DiffusionBackend.load_progress(fake)
+    assert len(scans) == 3
+
+
+def test_load_progress_keeps_scanning_while_downloading():
+    from core.inference import diffusion as D
+
+    scans = []
+    loading = D._LoadingState(repo_id = "r", base_repo = "r", expected_bytes = 100)
+    fake = types.SimpleNamespace(
+        _loading = loading,
+        _state = None,
+        _cache_bytes = lambda repo: scans.append(repo) or 40,
+        _cache_file_bytes = lambda repo, filename: 0,
+    )
+    for _ in range(3):
+        assert D.DiffusionBackend.load_progress(fake)["phase"] == "downloading"
+    assert len(scans) == 3 and loading.finalized_scan is None

@@ -1071,6 +1071,8 @@ class _LoadingState:
     # ONE named file: the scan counts what this load adds, not every byte already in the repo.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
+    # (expected_bytes, downloaded) once a scan found every expected byte on disk; see load_progress.
+    finalized_scan: Optional[tuple[int, int]] = None
 
 
 def _account_owned_load(method):
@@ -1851,6 +1853,11 @@ def _dense_fast_path_reason(
     if note:
         return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
     return "engaged on the dense fast path"
+
+
+def _progress_latch_enabled() -> bool:
+    """UNSLOTH_DIFFUSION_PROGRESS_LATCH=0 rescans the cache on every load-progress poll, as before."""
+    return os.environ.get("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "").strip().lower() not in ("0", "false", "no", "off")
 
 
 def _bg_compile_module(
@@ -3299,6 +3306,12 @@ class DiffusionBackend:
             return _progress("error", error = loading.error)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
+        finalized = loading.finalized_scan
+        if finalized is not None and finalized[0] == loading.expected_bytes and _progress_latch_enabled():
+            # Every expected byte was already on disk: the rest of the load reads and places weights, so another walk
+            # of the repo trees (tens of ms, holding the GIL the load thread needs, at the UI's poll rate for the whole
+            # load) cannot change the answer. A changed estimate rescans.
+            return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
         # else a mirrored companion download reads as zero and the bar sits still.
@@ -3328,6 +3341,7 @@ class DiffusionBackend:
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
+            loading.finalized_scan = (expected, min(downloaded, expected))
             return _progress("finalizing", min(downloaded, expected), expected, 1.0)
         if expected <= 0:
             # No size estimate: report the phase with no byte claim, since `downloaded` scans what is PRESENT.
