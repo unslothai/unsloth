@@ -23433,10 +23433,6 @@ class LlamaCppBackend:
             error = self._cuda_sm_gate_error(binary)
             if error:
                 raise CustomConfigError(error)
-            if self._arch_gate_survivors(binary):
-                raise CustomConfigError(
-                    "The selected runtime requires a GPU compatibility mask; set an administrative device visibility mask before using custom mode"
-                )
         from utils.model_memory_settings import get_model_memory_settings
 
         memory = resolve_effective_memory_state(compiled.argv, {})
@@ -23626,6 +23622,17 @@ class LlamaCppBackend:
             ):
                 env.pop(name, None)
         self._reject_implicit_custom_config(env)
+        # Same ROCm arch-gate mask as managed loads: HSA enumeration dies on an uncovered agent
+        # before --device is read. INI device names then index the surviving cards.
+        survivors = (
+            self._arch_gate_survivors(binary)
+            if tuning.get("gpu_layers") != 0 and tuning.get("device") != "none"
+            else []
+        )
+        if survivors:
+            self._emit_child_gpu_visibility(
+                env, ",".join(str(i) for i in survivors), prefer_rocr = True
+            )
         from utils.llama_cpp_path_settings import llama_cpp_path_selection_guard
 
         cmd, port, api_key, slot_path, slot_binary = self._prepare_custom_launch_command(
@@ -23694,7 +23701,7 @@ class LlamaCppBackend:
                     )
                     self._mmproj_projector_type = read_mmproj_projector_type(projector)
                 if cancelled() or not self._start_llama_process(
-                    cmd, env, child_gpu_physical_ids = None
+                    cmd, env, child_gpu_physical_ids = tuple(survivors) or None
                 ):
                     self._kill_process()
                     return False

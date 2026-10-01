@@ -26341,6 +26341,15 @@ def _chat_template_reasoning_kwargs(payload) -> dict:
 _CHAT_TEMPLATE_REASONING_KEYS = ("enable_thinking", "reasoning_effort", "preserve_thinking")
 
 
+def _passthrough_chat_template_kwargs(payload) -> Optional[dict]:
+    """Non-reasoning ``chat_template_kwargs`` from ``extra_body``; reasoning keys go through the typed lift."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return None
+    return {k: v for k, v in template_kwargs.items() if k not in _CHAT_TEMPLATE_REASONING_KEYS}
+
+
 def _consume_chat_template_reasoning_kwargs(payload) -> None:
     """Drop the reasoning keys a lift has just taken onto the typed fields, which is what makes the lift a fixed point; every render rebuilds the nested dict from those fields through ``_reasoning_template_kwargs``. Rebinds a filtered copy rather than popping: the dict is the parsed request body, shared with anything else holding it."""
     extra = getattr(payload, "model_extra", None)
@@ -27982,7 +27991,7 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
-                    request_template_kwargs = payload.chat_template_kwargs,
+                    request_template_kwargs = _passthrough_chat_template_kwargs(payload),
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
                     tools = tools_to_use,
@@ -28830,7 +28839,7 @@ async def produce_openai_chat_completions(
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
-                request_template_kwargs = payload.chat_template_kwargs,
+                request_template_kwargs = _passthrough_chat_template_kwargs(payload),
                 messages = gguf_messages,
                 image_b64 = image_b64,
                 temperature = payload.temperature,
@@ -36914,7 +36923,7 @@ async def chat_count_tokens(
         payload.enable_thinking,
         payload.reasoning_effort,
         payload.preserve_thinking,
-        request_template_kwargs = payload.chat_template_kwargs,
+        request_template_kwargs = _passthrough_chat_template_kwargs(payload),
     )
 
     # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load
@@ -40196,8 +40205,8 @@ def _build_openai_passthrough_body(
             payload.reasoning_effort,
             payload.preserve_thinking,
             **(
-                {"request_template_kwargs": payload.chat_template_kwargs}
-                if payload.chat_template_kwargs is not None
+                {"request_template_kwargs": _request_kwargs}
+                if (_request_kwargs := _passthrough_chat_template_kwargs(payload))
                 else {}
             ),
         )

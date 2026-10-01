@@ -602,3 +602,20 @@ def test_unreported_native_flash_is_conservative_and_diagnosed(launch):
     assert any(
         "not reported" in note for note in launch.backend.llama_cpp_config_summary["diagnostics"]
     )
+
+
+def test_custom_gpu_launch_masks_rocm_arch_gate_survivors(launch, monkeypatch):
+    seen = []
+
+    def spawn(cmd, env, *, child_gpu_physical_ids):
+        seen.append((dict(env), child_gpu_physical_ids))
+        launch.backend._process = SimpleNamespace(poll = lambda: None)
+        return True
+
+    monkeypatch.setattr(launch.backend, "_arch_gate_survivors", lambda p: [0, 2])
+    monkeypatch.setattr(launch.backend, "_start_llama_process", spawn)
+    intent = replace(launch.intent, llama_cpp_config = source("[*]\nnp=2\nc=56000\nngl=99"))
+    assert launch.backend.load_model(intent)
+    env, child_ids = seen[0]
+    assert child_ids == (0, 2)
+    assert env["CUDA_VISIBLE_DEVICES"] in {"0,2", "0,1"}

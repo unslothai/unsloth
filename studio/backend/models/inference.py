@@ -2284,7 +2284,6 @@ class ChatCompletionRequest(BaseModel):
     Non-OpenAI extension fields are marked with 'x-unsloth'.
     """
 
-    chat_template_kwargs: Optional[Dict[str, Any]] = None
     sampling_fields_explicit: Optional[List[str]] = Field(
         None,
         max_length = 16,
@@ -2934,8 +2933,6 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     """Count prompt tokens for a local chat without generating."""
 
     model_config = {"extra": "allow"}
-
-    chat_template_kwargs: Optional[Dict[str, Any]] = None
 
     model: str = Field(
         "default",
