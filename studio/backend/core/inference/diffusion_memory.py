@@ -2888,6 +2888,19 @@ def raise_on_image_activation_shortfall(
     return verdict
 
 
+STREAMING_PREFETCH_ENV = "UNSLOTH_DIFFUSION_STREAMING_PREFETCH"
+
+
+def _streaming_prefetch_enabled() -> bool:
+    """Kill switch for the streaming tier's overlapped onload (pinned host copies + record_stream); default on."""
+    return (os.environ.get(STREAMING_PREFETCH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
 def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
     """Stream transformer blocks and text-encoder leaves without whole-component onloads.
 
@@ -2927,6 +2940,26 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 component.to(onload)
 
         pinned_mib = [0]
+        # The copy of block i+1 only overlaps block i's compute when (a) its host copy is already pinned: an unpinned
+        # copy is re-pinned on the CPU at every onload, and (b) the offload does not drain the compute stream:
+        # record_stream=False makes every group's offload synchronize it, so that pinning runs with the GPU idle. Pin
+        # within the same host budget the group tier uses (DiTs first), off the load path when the caller asked.
+        prefetch = use_stream and _streaming_prefetch_enabled()
+        pin_dits, pin_encoders = False, False
+        if prefetch:
+            pin_dits, pin_encoders = _streamed_pin_plan(
+                sum(_module_host_mib(m) for m, t in streamed.values() if t == "block_level"),
+                sum(_module_host_mib(m) for m, t in streamed.values() if t != "block_level"),
+                logger,
+            )
+        defer = (
+            prefetch
+            and bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
+            and _background_pin_enabled()
+        )
+        if defer:
+            install_group_pin_wait()
+
         for module, offload_type in streamed.values():
             kwargs: dict[str, Any] = {
                 "onload_device": onload,
@@ -2940,12 +2973,14 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
             if use_stream and "non_blocking" in params:
                 kwargs["non_blocking"] = True
             if use_stream and "record_stream" in params:
-                kwargs["record_stream"] = False
+                kwargs["record_stream"] = prefetch
+            pin = pin_dits if offload_type == "block_level" else pin_encoders
             if use_stream and "low_cpu_mem_usage" in params:
-                kwargs["low_cpu_mem_usage"] = True
-            apply_group_offloading(
-                module, **_torchao_group_offload_kwargs(module, kwargs, pinned_mib)
-            )
+                kwargs["low_cpu_mem_usage"] = not (pin and not defer)
+            kwargs = _torchao_group_offload_kwargs(module, kwargs, pinned_mib)
+            apply_group_offloading(module, **kwargs)
+            if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
+                _defer_pinning(pipe, module, onload, logger)
             installed += 1
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
