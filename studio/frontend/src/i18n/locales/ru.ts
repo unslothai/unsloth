@@ -1859,6 +1859,11 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
+      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
+      scrollToBottomButtonDescription:
+        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
+      scrollToBottomButtonKeywords:
+        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
@@ -2230,11 +2235,13 @@ export const ru = {
       revoking: "Отзыв...",
       decisionApi: {
         title: "API решений",
-        description: "Отвечайте на вопросы «да/нет», с выбором и с оценкой о тексте с помощью локальной модели Laya. Работает с SDK TypeSafe.",
+        description: "Отвечайте на вопросы «да/нет», с выбором и с оценкой о тексте с помощью модели на этом компьютере или модели решений из подключений. Работает с SDK TypeSafe.",
         enable: "Обрабатывать запросы",
         enableDescription: "Обслуживает /v1/systemone. При включении модель скачивается.",
+        enableRemoteDescription: "Обслуживает /v1/systemone.",
         lockedByEnv: "Задано переменной {name}.",
         model: "Модель",
+        thisMachine: "Этот компьютер",
         modelMultilingual: "Многоязычная",
         modelEnglish: "Английская",
         modelTypedDecisions: "Типизированные решения",
@@ -2259,6 +2266,10 @@ export const ru = {
         downloadFailed: "Не удалось начать скачивание.",
         saveFailed: "Не удалось сохранить настройку API решений.",
         loadError: "Не удалось загрузить настройки API решений.",
+        sendsTo: "Запросы отправляются в {provider}.",
+        connectionMissing: "Этого подключения больше нет или в нём нет моделей решений. Выберите другую модель.",
+        addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
+        openConnections: "Открыть подключения",
       },
       usageNoModel:
         "Загрузите или скачайте модель, чтобы увидеть готовые к запуску примеры. На этом сервере пока нет модели, которую можно подставить в примеры.",

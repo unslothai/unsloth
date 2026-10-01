@@ -633,6 +633,13 @@ class SystemOneModelOption(BaseModel):
     download_bytes: int
 
 
+class SystemOneConnectionOption(BaseModel):
+    name: str
+    provider_id: str
+    provider: str
+    model: str
+
+
 class SystemOneSettingsResponse(BaseModel):
     enabled: bool
     enabled_locked: bool
@@ -1462,11 +1469,25 @@ def get_systemone_settings(
     return _systemone_response(request)
 
 
+async def _refresh_decision_models(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+    if catalog.parse_connection(payload.model):
+        await refresh_listed_decision_models()
+
+
 @_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
-def update_systemone_settings(
+async def update_systemone_settings(
     payload: SystemOneSettingsPayload,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    await _refresh_decision_models(payload)
+    return await asyncio.to_thread(_save_systemone_settings, payload, request)
+
+
+def _save_systemone_settings(
+    payload: SystemOneSettingsPayload, request: Request
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
@@ -1483,9 +1504,14 @@ def update_systemone_settings(
 
 
 @_owner_settings_router.post("/systemone/validate", status_code = 204)
-def validate_systemone_settings(
+async def validate_systemone_settings(
     payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
 ) -> None:
+    await _refresh_decision_models(payload)
+    await asyncio.to_thread(_validate_systemone_settings, payload)
+
+
+def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
@@ -1497,15 +1523,43 @@ def validate_systemone_settings(
                 raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
+@_owner_settings_router.get(
+    "/systemone/connections", response_model = list[SystemOneConnectionOption]
+)
+async def list_systemone_connections(
+    current_subject: str = Depends(get_current_subject),
+) -> list[SystemOneConnectionOption]:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+
+    await refresh_listed_decision_models()
+    return [
+        SystemOneConnectionOption(
+            name = catalog.Connection(row["id"], model).name,
+            provider_id = row["id"],
+            provider = row["display_name"],
+            model = model,
+        )
+        for row, models in await asyncio.to_thread(catalog.decision_connections)
+        for model in models
+    ]
+
+
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
     model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
 
-    checkpoint = catalog.default_checkpoint() if model is None else catalog.resolve(model)
+    checkpoint = (
+        catalog.default_checkpoint()
+        if model is None
+        else catalog.parse_connection(model) or catalog.resolve(model)
+    )
     if checkpoint is None:
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    if isinstance(checkpoint, catalog.Connection):
+        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
     return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
 
 

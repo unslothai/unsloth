@@ -464,6 +464,28 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
     },
+    "typesafe": {
+        "display_name": "TypeSafe",
+        "base_url": "https://api.typesafe.ai/v1",
+        "default_models": ["jev-latest", "jev-1.13"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
+    "liquid": {
+        "display_name": "Liquid AI",
+        "base_url": "https://api.liquid.ai/decisions/v1",
+        "default_models": ["d1:free"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
 }
 
 
@@ -475,6 +497,13 @@ def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
     """Return a user-configurable provider, excluding Studio-managed runtimes."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return None if info is None or info.get("managed") else info
+
+
+def answers_decisions_only(provider_type: str | None, api_type: str | None = None) -> bool:
+    info = PROVIDER_REGISTRY.get(provider_type) if isinstance(provider_type, str) else None
+    return bool(info and info.get("decisions_only")) or (
+        provider_type == "custom" and api_type == "systemone"
+    )
 
 
 def get_base_url(provider_type: str) -> str | None:

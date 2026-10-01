@@ -1882,6 +1882,11 @@ export const en = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual",
+      scrollToBottomButton: "Scroll to bottom button",
+      scrollToBottomButtonDescription:
+        "Show a button to jump back to the latest message after you scroll up.",
+      scrollToBottomButtonKeywords:
+        "scroll bottom jump latest newest arrow down button floating hide show",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2252,11 +2257,13 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
-        description: "Answer yes/no, multiple choice and score questions about text with a local Laya model. Works with the TypeSafe SDK.",
+        description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
+        enableRemoteDescription: "Serves /v1/systemone.",
         lockedByEnv: "Set by {name}.",
         model: "Model",
+        thisMachine: "This machine",
         modelMultilingual: "Multilingual",
         modelEnglish: "English",
         modelTypedDecisions: "Typed decisions",
@@ -2281,6 +2288,10 @@ export const en = {
         downloadFailed: "Couldn't start the download.",
         saveFailed: "Couldn't save the Decision API setting.",
         loadError: "Couldn't load Decision API settings.",
+        sendsTo: "Requests are sent to {provider}.",
+        connectionMissing: "This connection is gone or has no decision models. Pick another model.",
+        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        openConnections: "Open Connections",
       },
     },
     about: {
