@@ -347,6 +347,46 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
     return _torch_load_prequant(path, **kwargs)
 
 
+# UNSLOTH_DIFFUSION_PREQUANT_MMAP: 1 (default) maps a pickle checkpoint headed for an accelerator instead of reading it
+# into anonymous host memory first; 0 restores the full read. The tensors only pass through host memory on their way
+# to the device, so a mapping skips one whole copy: FLUX.1-schnell INT8 (15.2 GB, warm page cache, B200 host) went
+# from 9.1 s read + 3.3 s to(cuda) to 1.0 s map + 3.5 s to(cuda), and the host peak drops by the checkpoint size.
+_PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
+
+
+def prequant_mmap_enabled(destination: Any) -> bool:
+    """Whether a pickle pre-quant checkpoint bound for ``destination`` is read through a file mapping.
+
+    Only for a non-CPU destination: a module PLACED on the host would keep serving its weights out of the mapping
+    (copy-on-write, so never written back, but the file would stay open under the loaded model, which Windows then
+    refuses to delete or replace)."""
+    import os
+
+    raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    dest = str(destination or "").strip().lower()
+    return bool(dest) and not dest.startswith("cpu") and dest != "meta"
+
+
+def _read_prequant_for(path: str, destination: Any, logger: Any = None) -> Any:
+    """``_load_prequant_checkpoint`` mapped when ``prequant_mmap_enabled``, falling back to the full read.
+
+    The fallback covers what a mapping cannot open (a legacy non-zip pickle, a filesystem without mmap); a refusal the
+    mapping did not cause raises again from the plain read, so nothing that failed before passes now."""
+    if prequant_mmap_enabled(destination):
+        try:
+            return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
+        except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
+            if logger is not None:
+                logger.info(
+                    "diffusion.prequant: mapped read failed (%s: %s); reading the checkpoint into memory",
+                    type(exc).__name__,
+                    str(exc).splitlines()[0][:200] if str(exc) else "",
+                )
+    return _load_prequant_checkpoint(path, map_location = "cpu")
+
+
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
 
 
@@ -1157,7 +1197,7 @@ def load_prequantized_transformer(
         # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
         # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
         # hand back the same dict, so every check below applies to them equally.
-        ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
+        ckpt = _read_prequant_for(path, placement_device or device, logger)
         if not _validate_checkpoint(
             ckpt,
             scheme,
