@@ -7364,9 +7364,8 @@ def _evict_xformers_built_for_another_torch(
     """Remove a resident xFormers whose extension was built against another torch. True iff removed.
 
     xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
-    and a package install never uninstalls what an earlier run left behind. family_only keeps a
-    build whose accelerator family matches: PyPI's 0.0.35 (built for 2.10.0+cu128) loads its
-    extension under 2.11.0+cu130 (stable ABI since 0.0.34), but never under a ROCm torch (#11639).
+    and a package install never uninstalls what an earlier run left behind. family_only: a cu128
+    build loads under cu130 (stable ABI since 0.0.34), never under ROCm (#11639).
     """
     built_for = _resident_xformers_build_torch()
     resident = str(_probe_installed_torch_version() or "")
@@ -12136,8 +12135,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
-        # The requirement check cannot see a family move (torch==2.10.0 accepts 2.10.0+rocm7.1),
-        # and an earlier run may have made it, so this runs whether or not torch moved here.
+        # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
 

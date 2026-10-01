@@ -1991,7 +1991,6 @@ class TestEvictXformersMismatch:
         uninstall.assert_not_called()
 
     def test_a_same_family_build_is_kept_on_the_linux_path(self):
-        # PyPI's 0.0.35 is built for 2.10.0+cu128 and loads under 2.11.0+cu130 (stable ABI).
         with (
             patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+cu130"),
             patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
