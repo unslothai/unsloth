@@ -32,8 +32,6 @@ test("text without a player is passed through untouched", () => {
 });
 
 test("the renderer no longer returns the bare player for a reply that has text", () => {
-  // The old branch returned <AudioPlayer/> for ANY match, which discarded the
-  // transcript the adapter had just appended.
   const src = readSrc("components/assistant-ui/markdown-text.tsx");
   assert.doesNotMatch(src, /displayText\.match\(AUDIO_PLAYER_RE\)/);
   assert.match(src, /splitAudioReply\(displayText\)/);
