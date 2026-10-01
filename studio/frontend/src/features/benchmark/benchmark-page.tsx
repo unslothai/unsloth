@@ -420,10 +420,10 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
 
         <div className="flex min-w-0 flex-col gap-4">
           {showPanel && (
-            <section className={cn(BENCH_CARD, "p-4 sm:p-5")}>
-              <BenchmarkRunPanel onClose={handleClosePanel} />
+            <div>
+              <BenchmarkRunPanel task={selectedTask} onClose={handleClosePanel} />
               <div ref={panelEndRef} aria-hidden="true" className="h-px w-full" />
-            </section>
+            </div>
           )}
           <EvalScoreboard />
           <section className={cn(BENCH_CARD, "p-4 sm:p-5")}>
