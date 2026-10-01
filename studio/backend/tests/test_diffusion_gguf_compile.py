@@ -127,6 +127,30 @@ class TestGgufTrimmedDimsAreRestored:
         out = _restore_gguf_trimmed_dims(model, sd)
         assert tuple(out["proj.weight"].shape) == (8, 4)
 
+    def test_a_packed_one_dimensional_norm_is_dequantized_on_the_no_conversion_path(self):
+        """Pre-converted Qwen-Image-2.1 GGUFs skip the mapping fn; 1-D norms must dequant here."""
+        try:
+            import gguf
+            from diffusers.quantizers.gguf.utils import GGUFParameter, dequantize_gguf_tensor
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"gguf support is not importable here: {type(exc).__name__}")
+        import torch
+
+        from core.inference.diffusion import _dequantize_gguf_one_dimensional
+
+        qtype = gguf.GGMLQuantizationType.BF16
+        block_size, type_size = gguf.GGML_QUANT_SIZES[qtype]
+        n = 4 * block_size
+        raw = torch.randint(0, 255, (n // block_size * type_size,), dtype = torch.uint8)
+        packed = GGUFParameter(raw, quant_type = qtype)
+        expected = dequantize_gguf_tensor(GGUFParameter(raw.clone(), quant_type = qtype))
+
+        out = _dequantize_gguf_one_dimensional({"txt_in.text_norm.weight": packed})
+        tensor = out["txt_in.text_norm.weight"]
+        assert not hasattr(tensor, "quant_type")
+        assert tuple(tensor.shape) == (n,)
+        assert torch.equal(tensor, expected)
+
     def test_the_shim_reaches_the_name_single_file_model_actually_calls(self):
         """``single_file_model`` imports the loader at module level, so it holds its own reference.
         Patching only the defining module leaves the real call site bound to the original, which is
