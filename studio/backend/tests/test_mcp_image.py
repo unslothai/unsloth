@@ -211,6 +211,18 @@ def test_one_shot_calls_recheck_the_config_after_connecting(monkeypatch):
     assert out.startswith("Error:") and sent == []
 
 
+def test_api_keys_cannot_read_a_local_servers_tool_schemas(mapped_server):
+    from routes import mcp_servers as routes_mcp
+
+    assert routes_mcp.list_mcp_server_tools("srv1", current_subject = "u", via_api_key = True)
+    mcp_servers_db.update_server("srv1", {"url": "trace-mcp --stdio"})
+    mcp_client.cache_tools("srv1", [LOOKUP])
+    with pytest.raises(HTTPException) as exc:
+        routes_mcp.list_mcp_server_tools("srv1", current_subject = "u", via_api_key = True)
+    assert exc.value.status_code == 403
+    assert routes_mcp.list_mcp_server_tools("srv1", current_subject = "u", via_api_key = False)
+
+
 def test_app_only_tools_are_not_mapping_candidates(mapped_server):
     from routes import mcp_servers as routes_mcp
 
@@ -402,6 +414,30 @@ def test_mappings_round_trip_through_the_routes(mapped_server):
         )
     )
     assert cleared.image_input_mappings == []
+
+
+def test_every_local_exit_without_a_tool_loop_refuses_the_image():
+    import ast
+    import inspect
+    import textwrap
+
+    from routes import inference as inf
+
+    src = textwrap.dedent(inspect.getsource(inf.produce_openai_chat_completions))
+    statements = {
+        ast.unparse(node) for node in ast.walk(ast.parse(src)) if isinstance(node, ast.stmt)
+    }
+    for guard in (
+        "if not use_tools:\n    _refuse_unused_mcp_image(_mcp_image)",
+        "if not _sf_use_tools:\n    _refuse_unused_mcp_image(_mcp_image)",
+    ):
+        assert guard in statements
+    # NPU, both speech models, audio input and the GGUF passthrough return before either loop.
+    assert src.count("_refuse_unused_mcp_image(_mcp_image)") == 7
+    with pytest.raises(HTTPException) as exc:
+        inf._refuse_unused_mcp_image(McpImage(mime = "image/png", data = _png_bytes()))
+    assert exc.value.status_code == 400
+    inf._refuse_unused_mcp_image(None)
 
 
 def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():

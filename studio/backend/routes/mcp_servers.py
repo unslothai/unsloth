@@ -482,10 +482,17 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
 
 
 @router.get("/{server_id}/tools")
-def list_mcp_server_tools(server_id: str, current_subject: str = Depends(get_current_subject)):
+def list_mcp_server_tools(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
     """Cached tool names and input schemas, for choosing an image input mapping."""
-    if not mcp_servers_db.get_server(server_id):
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
     tools = get_cached_tools(server_id)
     if tools is None:
         raise HTTPException(status_code = 409, detail = "Refresh this server's tools first")
