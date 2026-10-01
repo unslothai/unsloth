@@ -6,6 +6,8 @@ import {
   PRESET_SAMPLING_WIRES,
   SAMPLING_WIRE_FIELDS,
   explicitSamplingFields,
+  iniSamplingDefaults,
+  type LlamaCppConfigSummary,
 } from "@/features/model-picker/model-config/llama-cpp-config";
 import { Button } from "@/components/ui/button";
 import {
@@ -549,6 +551,9 @@ export function ChatSettingsPanel({
   // body drops. An external selection carries an `external::` id no local entry matches, so
   // the summary answers that case without a separate guard.
   const showSeed = modelReadsSamplingSeed(activeModel);
+  const llamaCppConfigSummary = useChatRuntimeStore(
+    (s) => s.llamaCppConfigSummary,
+  );
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
@@ -1525,6 +1530,10 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
           <div className="flex flex-col gap-5">
+            <IniSamplingNote
+              summary={llamaCppConfigSummary}
+              explicit={params.samplingFieldsExplicit}
+            />
             {showTemperature ? (
               <ParamSlider
                 label="Temperature"
@@ -2092,5 +2101,27 @@ function BypassPermissionsToggle() {
         </span>
       ) : null}
     </div>
+  );
+}
+
+// The sliders show what a pinned value would be, not what the INI runs with, so say which is which.
+function IniSamplingNote({
+  summary,
+  explicit,
+}: {
+  summary: LlamaCppConfigSummary | null;
+  explicit: readonly string[] | undefined;
+}) {
+  const { applied, overridden } = iniSamplingDefaults(summary, explicit);
+  if (!applied.length && !overridden.length) return null;
+  return (
+    <p className="text-ui-11 text-muted-foreground">
+      {applied.length
+        ? `From your custom config: ${applied.map(([k, v]) => `${k} ${String(v)}`).join(", ")}. Moving a control here overrides it.`
+        : null}
+      {overridden.length
+        ? ` Set here over the config: ${overridden.join(", ")}.`
+        : null}
+    </p>
   );
 }
