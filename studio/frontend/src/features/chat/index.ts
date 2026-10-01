@@ -42,6 +42,7 @@ export type {
   ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
+  GgufVariantsResponse,
   InferenceStatusResponse,
 } from "./types/api";
 export {
