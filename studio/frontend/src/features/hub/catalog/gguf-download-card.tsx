@@ -417,7 +417,7 @@ export function QuantOptionsMenu({
               strokeWidth={1.75}
               className="size-icon"
             />
-            <span>{pinned ? "Unpin" : "Pin to top"}</span>
+            <span>{pinned ? "Unpin" : "Pin"}</span>
           </DropdownMenuItem>
         )}
         {downloaded && (
