@@ -1508,17 +1508,30 @@ class FastSentenceTransformer(FastModel):
         routes hand the whole load to sentence-transformers and so never reached it.
 
         Scoped to the classes that actually read a class ref, so the usual load adds no
-        request. A config that cannot be fetched is left to the gate above, which has already
-        established whether the repo is readable at all.
+        request, and skipped entirely where sentence-transformers gates the name itself,
+        so no version that does not need this pays for it.
         """
         if getattr(module_class, "__name__", "") not in (
             FastSentenceTransformer._CONFIG_REF_MODULE_CLASSES
         ):
             return
 
-        folder = module_config.get("path")
-        if not isinstance(folder, str) or not folder:
+        import sentence_transformers
+
+        if Version(sentence_transformers.__version__).major >= 6:
+            # Upstream resolves these through its own gate from 6.0, so there is nothing
+            # to add and no reason to spend a request. Deliberately the version and not
+            # hasattr(import_module_class): 5.5 exports that helper while its module
+            # loaders still resolve the name ungated.
             return
+
+        folder = module_config.get("path")
+        if not isinstance(folder, str):
+            return
+        # An empty path is the repository root, which sentence-transformers accepts and
+        # loads the root config.json from. Skipping it left the whole check bypassable by
+        # declaring Dense with "path": "".
+        folder = folder.strip("/")
 
         config_names = []
         config_file_name = getattr(module_class, "config_file_name", None)
@@ -1533,19 +1546,42 @@ class FastSentenceTransformer(FastModel):
 
         folders = []
         if is_local:
-            folders.append(os.path.join(model_name, *folder.strip("/").split("/")))
+            folders.append(os.path.join(model_name, *folder.split("/")) if folder else model_name)
         else:
+            from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
             for config_name in dict.fromkeys(config_names):
                 try:
                     downloaded = hf_hub_download(
                         model_name,
-                        f"{folder.strip('/')}/{config_name}",
+                        f"{folder}/{config_name}" if folder else config_name,
                         token = token,
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                except Exception:
+                except LocalEntryNotFoundError as exception:
+                    # Checked first: it subclasses EntryNotFoundError, so catching the parent
+                    # above it would read "could not reach" as "not present".
+                    raise ValueError(
+                        f"Unsloth: Could not read {config_name} of the module {class_ref} in "
+                        f"{model_name} to check the class it names "
+                        f"({type(exception).__name__}: {exception}). Loading would resolve that "
+                        f"name on this sentence-transformers, so this refuses rather than "
+                        f"loading unchecked. Retry, or pass the argument "
+                        f"`trust_remote_code=True` to allow custom code to be run."
+                    ) from exception
+                except EntryNotFoundError:
+                    # A genuine 404: this module ships no such config, so there is no class
+                    # ref in it to check.
                     continue
+                except Exception as exception:
+                    raise ValueError(
+                        f"Unsloth: Could not read {config_name} of the module {class_ref} in "
+                        f"{model_name} to check the class it names "
+                        f"({type(exception).__name__}: {exception}). Loading would resolve that "
+                        f"name on this sentence-transformers, so this refuses rather than "
+                        f"loading unchecked. Retry, or pass the argument "
+                        f"`trust_remote_code=True` to allow custom code to be run."
+                    ) from exception
                 folders.append(os.path.dirname(downloaded))
 
         for load_path in dict.fromkeys(folders):

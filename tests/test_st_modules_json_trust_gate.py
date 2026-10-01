@@ -448,6 +448,20 @@ def test_unreachable_is_tolerated_where_upstream_gates_it_anyway(tmp_path, monke
     assert FastSentenceTransformer._modules_json_for_gating("acme/embedder", None) is None
 
 
+def _simulate_pre_six(monkeypatch):
+    """Report sentence-transformers 5.x and hide the 6.x helper.
+
+    Both are needed: the delegated check skips on major >= 6 because upstream gates the
+    name there, and _check_module_config_class_refs on this branch still keys off the
+    helper, which #12444 removes.
+    """
+    import sentence_transformers
+    import sentence_transformers.util as st_util
+
+    monkeypatch.setattr(sentence_transformers, "__version__", "5.2.0", raising = False)
+    monkeypatch.delattr(st_util, "import_module_class", raising = False)
+
+
 def _delegated_model(tmp_path, activation_function):
     """A local model whose Dense module config names a class, as the Hub form would."""
     model = tmp_path / "model"
@@ -486,9 +500,7 @@ def test_a_delegated_route_also_checks_the_module_config_class_ref(tmp_path, mon
     ungated loader lives; on this branch the config check still keys off that attribute,
     and #12444 removes the fork so it runs on every version.
     """
-    import sentence_transformers.util as st_util
-
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
+    _simulate_pre_six(monkeypatch)
 
     model = _delegated_model(tmp_path, f"{MARKER}.Thing")
 
@@ -498,9 +510,7 @@ def test_a_delegated_route_also_checks_the_module_config_class_ref(tmp_path, mon
 
 def test_a_delegated_route_leaves_a_real_dense_config_alone(tmp_path, monkeypatch):
     """embeddinggemma-300m's Dense modules name torch.nn.modules.linear.Identity."""
-    import sentence_transformers.util as st_util
-
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
+    _simulate_pre_six(monkeypatch)
 
     model = _delegated_model(tmp_path, "torch.nn.modules.linear.Identity")
 
@@ -581,3 +591,127 @@ def test_the_cached_absence_lookup_uses_the_cache_the_download_uses(tmp_path, mo
     assert (
         seen["cache_dir"] is None
     ), "a cache of our own choosing is not the cache hf_hub_download reads"
+
+
+def test_a_module_at_the_repository_root_is_checked_too(tmp_path, monkeypatch):
+    """ "path": "" is the repository root, which sentence-transformers accepts.
+
+    Skipping an empty path left the whole module-config check bypassable by declaring
+    Dense at the root and putting the class ref in the root config.json.
+    """
+    _simulate_pre_six(monkeypatch)
+
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "modules.json").write_text(
+        json.dumps(
+            [{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Dense"}]
+        ),
+        encoding = "utf-8",
+    )
+    (model / "config.json").write_text(
+        json.dumps({"in_features": 8, "out_features": 8, "activation_function": f"{MARKER}.Thing"}),
+        encoding = "utf-8",
+    )
+
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_an_unreadable_module_config_refuses_rather_than_passing(tmp_path, monkeypatch):
+    """A fetch that fails is not a module without a config.
+
+    Swallowing the error meant the gate recorded "nothing to check" while the load that
+    follows makes its own request, which can succeed and resolve the unchecked name.
+    """
+    _simulate_pre_six(monkeypatch)
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_modules_json_for_gating",
+        staticmethod(lambda *a, **k: str(tmp_path / "modules.json")),
+    )
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "1_Dense",
+                    "type": "sentence_transformers.models.Dense",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    def unreachable(*args, **kwargs):
+        raise OSError("hub unreachable")
+
+    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", unreachable)
+
+    with pytest.raises(ValueError, match = "refuses rather than loading unchecked"):
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+
+def test_a_module_that_ships_no_config_is_not_a_refusal(tmp_path, monkeypatch):
+    """A genuine 404 means there is no class ref to check, which is not an error."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    _simulate_pre_six(monkeypatch)
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_modules_json_for_gating",
+        staticmethod(lambda *a, **k: str(tmp_path / "modules.json")),
+    )
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "1_Dense",
+                    "type": "sentence_transformers.models.Dense",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    def absent(*args, **kwargs):
+        raise EntryNotFoundError("no such file")
+
+    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", absent)
+
+    FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+
+def test_the_module_config_check_is_skipped_where_upstream_gates_it(tmp_path, monkeypatch):
+    """On 6.0 and later there is nothing to add, so it must not spend a request."""
+    model = tmp_path / "model"
+    (model / "1_Dense").mkdir(parents = True)
+    (model / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "1_Dense",
+                    "type": "sentence_transformers.models.Dense",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    (model / "1_Dense" / "config.json").write_text(
+        json.dumps({"activation_function": f"{MARKER}.Thing"}), encoding = "utf-8"
+    )
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("no fetch expected where upstream gates the name")
+
+    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", refuse)
+
+    import sentence_transformers
+
+    monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
+    FastSentenceTransformer._check_modules_json_types(str(model), None, False)
