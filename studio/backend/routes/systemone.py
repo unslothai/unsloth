@@ -129,20 +129,23 @@ async def system_one(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_enabled()
+    # Settings and key checks read SQLite: keep them off the event loop.
+    await asyncio.to_thread(_require_enabled)
     if payload.model_extra:
         raise _error(
             400,
             "api_usage_error",
             f"Unsupported field(s): {', '.join(sorted(payload.model_extra))}",
         )
-    checkpoint = catalog.resolve(payload.model)
+    checkpoint = await asyncio.to_thread(catalog.resolve, payload.model)
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
     from auth.authentication import request_admitted_without_credential
 
     # Same rule as the OpenAI routes: a keyless caller never downloads or swaps in another model.
-    if checkpoint != catalog.default_checkpoint() and request_admitted_without_credential(request):
+    if checkpoint != await asyncio.to_thread(
+        catalog.default_checkpoint
+    ) and await asyncio.to_thread(request_admitted_without_credential, request):
         raise _error(
             403,
             "permission_error",
@@ -303,7 +306,10 @@ def _upstream_error(name: str, response: httpx.Response) -> HTTPException:
     except ValueError:
         body = None
     detail = (body.get("detail") or body.get("error")) if isinstance(body, dict) else None
-    detail = detail if isinstance(detail, dict) else {}
+    if isinstance(detail, str):
+        detail = {"message": detail}
+    elif not isinstance(detail, dict):
+        detail = {}
     message = str(detail.get("message") or f"'{name}' answered HTTP {response.status_code}.")
     if response.status_code in (429, 503, 529):
         try:
@@ -317,7 +323,7 @@ def _upstream_error(name: str, response: httpx.Response) -> HTTPException:
 
 class DecisionsAvailability(Middleware):
     async def on_list_tools(self, context, call_next):
-        if not systemone_settings.get_enabled():
+        if not await asyncio.to_thread(systemone_settings.get_enabled):
             return []
         return await call_next(context)
 
@@ -334,8 +340,9 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
     "noul" is yes/no and answers a probability; "choice" needs criteria mapping each option name
     to a description; "score" needs criteria listing 1 to 10 levels, lowest first."""
     try:
-        _require_enabled()
-        return await _decide(catalog.default_checkpoint(), state, questions)
+        await asyncio.to_thread(_require_enabled)
+        checkpoint = await asyncio.to_thread(catalog.default_checkpoint)
+        return await _decide(checkpoint, state, questions)
     except HTTPException as exc:
         raise ToolError(exc.detail["message"]) from None
 

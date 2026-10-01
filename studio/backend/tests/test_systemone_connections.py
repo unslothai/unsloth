@@ -304,6 +304,33 @@ def test_upstream_backpressure_keeps_the_decision_api_error_shape(upstream, stat
     assert response.json() == {"detail": {"error_type": "rate_limited", "message": "Slow down"}}
 
 
+def test_an_upstream_text_detail_reaches_the_caller(upstream):
+    client = _client()
+    client.put("/api/settings/systemone", json = {"model": _connection()})
+    upstream.replies[0] = httpx.Response(400, json = {"detail": "Unknown model jev-9"})
+    response = _post(client)
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "Unknown model jev-9"
+
+
+def test_durable_research_refuses_a_decision_connection():
+    from routes.research_runs import CreateResearchRun, _sanitize_config
+
+    _connection("custom", "systemone", "http://decider.example/v1")
+    payload = CreateResearchRun(
+        threadId = "t",
+        userMessageId = "u",
+        inferenceRequest = {
+            "providerId": "deciders",
+            "providerType": "custom",
+            "externalModel": "jev-latest",
+        },
+    )
+    with pytest.raises(HTTPException) as refused:
+        _sanitize_config(payload, {"modelId": "local-model"})
+    assert refused.value.status_code == 400
+
+
 def test_a_disabled_connection_is_not_called(upstream):
     client = _client()
     client.put("/api/settings/systemone", json = {"model": _connection()})
@@ -325,6 +352,39 @@ def test_decisions_mcp_uses_the_connection(upstream):
 
     assert asyncio.run(call()).structured_content == UPSTREAM
     assert len(upstream.calls) == 1
+
+
+def test_decision_settings_are_read_off_the_event_loop(upstream, studio, monkeypatch):
+    import threading
+
+    from fastmcp import Client
+
+    client = _client()
+    loop_threads = []
+    read_on_loop = []
+
+    @client.app.middleware("http")
+    async def note_loop_thread(request, call_next):
+        loop_threads.append(threading.current_thread())
+        return await call_next(request)
+
+    assert client.put("/api/settings/systemone", json = {"model": _connection()}).status_code == 200
+
+    def read(key, fallback = None):
+        if threading.current_thread() in loop_threads:
+            read_on_loop.append(key)
+        return studio.get(key, fallback)
+
+    monkeypatch.setattr(systemone_settings, "_owner_setting", read)
+    assert _post(client, "default").status_code == 200
+
+    async def call():
+        loop_threads.append(threading.current_thread())
+        async with Client(systemone.decisions_mcp) as mcp:
+            return await mcp.call_tool("decide", {"state": "x", "questions": QUESTIONS})
+
+    assert asyncio.run(call()).structured_content == UPSTREAM
+    assert read_on_loop == []
 
 
 def test_managed_accounts_lose_the_decisions_mcp_bypass_for_a_connection():
@@ -364,6 +424,16 @@ def test_a_system_one_connection_lists_only_decision_models(upstream):
     )
     assert [model["id"] for model in listed] == ["upstage/solar-decide", "typesafe/jev-1.13"]
     assert upstream.calls[0].url.params["output_modalities"] == "decisions"
+
+    _providers_post(
+        "/providers/models",
+        {
+            "provider_type": "custom",
+            "api_type": "systemone",
+            "base_url": "http://localhost:8888/v1/systemone",
+        },
+    )
+    assert upstream.calls[-1].url.path == "/v1/models"
 
     upstream.replies[0] = httpx.Response(200, json = {"data": [{"id": "HuggingFaceTB/SmolLM2-135M"}]})
     chat = _providers_post(

@@ -6926,7 +6926,7 @@ class ExternalProviderClient:
 
     async def list_decision_models(self) -> list[str]:
         response = await _client().get(
-            f"{self.base_url}/models",
+            re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
             params = {"output_modalities": "decisions"},
             headers = self._auth_headers(),
             timeout = self._timeout,
