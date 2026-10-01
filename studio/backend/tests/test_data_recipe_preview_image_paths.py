@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed preview rows can carry Hugging Face image cells that point at a file path.
-
-The path is row data, so a managed account must not get the pixels of a file outside its own
-workspace back as a preview. The owner, and paths inside the account's workspace, still preview.
-"""
+"""Image cells are row data: a managed account must not preview pixels outside its workspace."""
 
 from __future__ import annotations
 
