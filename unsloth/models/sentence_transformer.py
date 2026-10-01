@@ -1220,7 +1220,9 @@ class FastSentenceTransformer(FastModel):
             )
 
         if class_ref.startswith("sentence_transformers."):
-            return import_from_string(class_ref)
+            return FastSentenceTransformer._import_sentence_transformers_class(
+                class_ref, model_name
+            )
 
         if not trust_remote_code:
             # Not transformers' resolve_trust_remote_code: it appends a hf.co URL that is bogus for local dirs.
@@ -1252,6 +1254,43 @@ class FastSentenceTransformer(FastModel):
         )
 
     @staticmethod
+    def _import_sentence_transformers_class(class_ref, model_name):
+        """Resolve an in-namespace "type" and confirm what came back is really one of
+        sentence-transformers' module classes.
+
+        The prefix test pins the import to the installed sentence_transformers package, so the
+        import itself reaches only trusted code. It does not say the name denotes a module class:
+        the same dotted syntax reaches any public attribute, a submodule, or a plain function, and
+        the caller goes straight on to call .load() on whatever is returned. So confirm the result
+        before handing it the load, which also keeps a ref that merely looks in-namespace from
+        reaching code that isn't.
+        """
+        from sentence_transformers.util import import_from_string
+
+        if not class_ref.split(".")[-1] or not all(
+            part.isidentifier() for part in class_ref.split(".")
+        ):
+            raise ValueError(
+                f"Unsloth: The model {model_name} declares the module type {class_ref!r}, which is "
+                f"not a dotted class path. Refusing to resolve it."
+            )
+
+        resolved = import_from_string(class_ref)
+        module_name = getattr(resolved, "__module__", "") or ""
+        if not (
+            isinstance(resolved, type)
+            and issubclass(resolved, torch.nn.Module)
+            and module_name.split(".")[0] == "sentence_transformers"
+            and hasattr(resolved, "load")
+        ):
+            raise ValueError(
+                f"Unsloth: The model {model_name} declares the module type {class_ref!r}, which "
+                f"resolves to {resolved!r} rather than a sentence-transformers module class. "
+                f"Refusing to load it."
+            )
+        return resolved
+
+    @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Name ST's Transformer without importing anything, since importing to compare is the same
         execution the gate refuses. Any other spelling is caught by `is Transformer` in
@@ -1265,12 +1304,14 @@ class FastSentenceTransformer(FastModel):
             "sentence_transformers.base.modules.transformer.Transformer",
         }
 
-    # A module's own config carries further dotted class paths that the ST < 6 loaders import
-    # ungated, so an allowed in-namespace "type" could walk around the gate above: Dense imports AND
-    # CALLS config["activation_function"], WordEmbeddings imports config["tokenizer_class"], and
-    # Router/Asym import every value of config["types"]. The prefixes are upstream's own rules
-    # (ST >= 6 allows only "torch.*" for Dense and routes the rest through import_module_class),
-    # applied only where the installed library has no gate.
+    # A module's own config carries further dotted class paths that some sentence-transformers
+    # loaders import ungated, so an allowed in-namespace "type" could walk around the gate above:
+    # Dense imports AND CALLS config["activation_function"], WordEmbeddings imports
+    # config["tokenizer_class"], and Router/Asym import every value of config["types"]. The prefixes
+    # are upstream's own rules, so applying them unconditionally only ever agrees with a version
+    # that gates for itself. Which versions those are cannot be feature-detected: 5.5 exports
+    # util.import_module_class while its WordEmbeddings.load still calls import_from_string on
+    # tokenizer_class, so keying off that attribute skipped the check on the versions needing it.
     _MODULE_CONFIG_CLASS_REFS = (
         ("activation_function", "torch."),
         ("tokenizer_class", "sentence_transformers."),
@@ -1281,13 +1322,6 @@ class FastSentenceTransformer(FastModel):
         load_path, class_ref, model_name, trust_remote_code, module_class
     ):
         if trust_remote_code:
-            return
-
-        import sentence_transformers
-        import sentence_transformers.util as st_util
-
-        if hasattr(st_util, "import_module_class"):
-            # sentence-transformers >= 6 applies these gates in the module loaders themselves.
             return
 
         # Read what the loader will read: each module names its own file (Router
@@ -1334,10 +1368,8 @@ class FastSentenceTransformer(FastModel):
                 raise ValueError(
                     f"Unsloth: The model {model_name} declares the module {class_ref} whose config "
                     f"{key} is {value!r}, a class outside {prefix}*. Importing it executes third-party "
-                    f"code, and the installed sentence-transformers "
-                    f"({getattr(sentence_transformers, '__version__', 'unknown')}) does not gate it. "
-                    f"Upgrade to sentence-transformers >= 6.0, or pass the argument "
-                    f"`trust_remote_code=True` to allow custom code to be run."
+                    f"code. Please pass the argument `trust_remote_code=True` to allow custom code to "
+                    f"be run."
                 )
 
     @staticmethod

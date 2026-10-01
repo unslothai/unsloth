@@ -172,13 +172,9 @@ def test_an_untrusted_type_is_not_probed_as_a_transformer_ref(model_dir):
     assert not witness.exists()
 
 
-def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, monkeypatch):
-    """Simulate sentence-transformers < 6, whose Dense loader imports AND CALLS
-    activation_function ungated, by hiding import_module_class."""
-    import sentence_transformers.util as st_util
+def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path):
+    """Dense imports AND CALLS activation_function, on whichever version is installed."""
     from sentence_transformers.models import Dense
-
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
     load_path = tmp_path / "2_Dense"
     load_path.mkdir()
@@ -187,7 +183,7 @@ def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, mo
         encoding = "utf-8",
     )
 
-    with pytest.raises(ValueError, match = "does not gate it"):
+    with pytest.raises(ValueError, match = "executes third-party code"):
         FastSentenceTransformer._check_module_config_class_refs(
             str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
         )
@@ -203,14 +199,12 @@ def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, mo
     ],
 )
 def test_an_in_namespace_type_cannot_smuggle_a_path_via_its_own_config_file(
-    module_name, config_name, config, model_dir, monkeypatch
+    module_name, config_name, config, model_dir
 ):
     """Through _load_modules, not the helper: the type is an allowed sentence_transformers.* class,
     so the refusal has to come from reading the config file that module's loader reads."""
-    import sentence_transformers.util as st_util
     from sentence_transformers import models as st_models
 
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
     if getattr(st_models, module_name, None) is None:
         pytest.skip(f"installed sentence-transformers has no {module_name}")
 
@@ -231,19 +225,16 @@ def test_an_in_namespace_type_cannot_smuggle_a_path_via_its_own_config_file(
         encoding = "utf-8",
     )
 
-    with pytest.raises(ValueError, match = "does not gate it"):
+    with pytest.raises(ValueError, match = "executes third-party code"):
         _load_modules(model, False)
 
     assert not witness.exists()
 
 
-def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
+def test_a_real_dense_config_is_untouched_by_that_check(tmp_path):
     """embeddinggemma-300m's Dense modules declare torch.nn.modules.linear.Identity, exactly what
     ST >= 6 allows unconsented."""
-    import sentence_transformers.util as st_util
     from sentence_transformers.models import Dense
-
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
     load_path = tmp_path / "2_Dense"
     load_path.mkdir()
@@ -268,13 +259,20 @@ def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
     )
 
 
-def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path):
-    """ST >= 6 gates its own config refs, so the check is a no-op rather than a diverging copy."""
+@pytest.mark.parametrize("helper", ["present", "absent", "none"])
+def test_the_check_does_not_key_off_the_import_module_class_attribute(
+    helper, tmp_path, monkeypatch
+):
+    """util.import_module_class is not a version test: 5.5 exports it while its WordEmbeddings.load
+    still calls import_from_string on tokenizer_class. Keying off it skipped the check on exactly
+    the versions that need it, so the refusal must hold whatever the attribute is."""
     import sentence_transformers.util as st_util
     from sentence_transformers.models import Dense
 
-    if not hasattr(st_util, "import_module_class"):
-        pytest.skip("installed sentence-transformers has no gate of its own")
+    if helper == "absent":
+        monkeypatch.delattr(st_util, "import_module_class", raising = False)
+    elif helper == "none":
+        monkeypatch.setattr(st_util, "import_module_class", None, raising = False)
 
     load_path = tmp_path / "2_Dense"
     load_path.mkdir()
@@ -282,6 +280,7 @@ def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path
         json.dumps({"activation_function": f"{MARKER}.Thing"}), encoding = "utf-8"
     )
 
-    FastSentenceTransformer._check_module_config_class_refs(
-        str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
-    )
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
+        )
