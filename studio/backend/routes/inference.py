@@ -4187,8 +4187,8 @@ async def artifact_preview_frame(allow_network: bool = False):
 
 # A bare "*" is refused: such a template gets the default-deny.
 _MCP_APP_DOMAIN_RE = _re.compile(
-    r"^(?:(?:https?|wss?)://)?"  # optional scheme
-    r"(?:\*\.)?"  # optional leading wildcard label
+    r"^(?:(?:https?|wss?)://)?"
+    r"(?:\*\.)?"
     r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*"
     r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
     r"(?::[0-9]{1,5})?$"

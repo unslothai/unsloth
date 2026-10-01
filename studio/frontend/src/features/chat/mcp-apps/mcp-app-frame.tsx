@@ -200,7 +200,6 @@ export function McpAppFrame(props: McpAppFrameProps) {
       if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
         throw new RpcError("Too many tool requests are waiting");
       }
-      // Untrusted HTML: the same confirm gate as the model's own call.
       const preview = argsPreview(args);
       const [allow, always] = await new Promise<[boolean, boolean]>((done) =>
         setQueue([
@@ -265,7 +264,6 @@ export function McpAppFrame(props: McpAppFrameProps) {
         }
         case "ui/open-link": {
           const url = String(params.url);
-          // http(s) only: never a javascript:, data: or file: URL.
           if (!isHttpUrl(url)) {
             throw new RpcError(
               "Only http(s) links can be opened",
@@ -353,8 +351,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       }
     };
 
-    // Only the handshake is read off the window: it delivers the port, token-checked.
-    // Source and origin survive navigation and prove nothing, so all else goes through the port.
+    // Only the token-checked handshake is read off the window: source and origin survive navigation.
     const onHandshake = (event: MessageEvent) => {
       const data = event.data;
       const port = event.ports[0];

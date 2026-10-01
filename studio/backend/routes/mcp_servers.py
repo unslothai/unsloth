@@ -729,7 +729,6 @@ async def call_mcp_ui_tool(
             status_code = 403, detail = f"Tool '{tool_name}' is not callable by an MCP app"
         )
     arguments = payload.arguments or {}
-    # Same refusal execute_tool applies to the model's MCP calls, in every permission mode.
     if _mcp_arguments_reference_studio_credential(arguments):
         raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
     mode = payload.permission_mode

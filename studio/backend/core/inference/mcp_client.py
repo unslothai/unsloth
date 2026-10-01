@@ -1839,7 +1839,6 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             images.append({"data": data, "mimeType": mime})
             seed.append((block, mime))
             continue
-        # (block, image mime) pairs: serialised only when an envelope is built.
         seed.append((block, None))
         attachment = _block_attachment(block)
         if attachment is not None:
@@ -1943,7 +1942,6 @@ def _call_session_tool(
     use_oauth: bool = False,
     dispatch = None,
 ) -> Any:
-    """Run ``dispatch`` (default: the tool call) on a stdio server's persistent session."""
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
     # One deadline covers the key-lock wait, connect, call-lock wait, and the call itself, matching the one-shot path
@@ -2178,7 +2176,6 @@ def _content_block_json(block: Any) -> dict:
 
 
 def _structured_result(result: Any) -> dict:
-    """Keyed as McpUiToolCallResult."""
     out: dict = {
         "content": [_content_block_json(b) for b in getattr(result, "content", None) or []],
         "is_error": bool(getattr(result, "is_error", False)),

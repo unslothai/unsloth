@@ -146,6 +146,5 @@ export function withBridgeShim(html: string, shim: string): string {
   return doctype + doc.documentElement.outerHTML;
 }
 
-// Height for a view that never reports one. html is measured at max-content (as ext-apps' App does):
-// documentElement.scrollHeight never drops below the frame, so a widget could grow but never shrink.
+// Height for a view that never reports one, at max-content: scrollHeight never drops below the frame.
 export const RESIZE_FALLBACK = `<script>(()=>{let last=0;const post=()=>{const html=document.documentElement,prev=html.style.height;html.style.height="max-content";const h=Math.ceil(html.getBoundingClientRect().height);html.style.height=prev;if(h!==last){last=h;parent.postMessage({mcpAppHeight:h},"*");}};const ro=new ResizeObserver(post);ro.observe(document.documentElement);if(document.body)ro.observe(document.body);addEventListener("load",post);post();})();</script>`;

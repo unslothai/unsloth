@@ -11,8 +11,7 @@ import {
   newBridgeToken,
 } from "../src/features/chat/mcp-apps/mcp-ui.ts";
 
-// No DOM renderer here; the shim and the resize fallback run in a real browser in
-// tests/studio/playwright_mcp_app_bridge_smoke.py.
+// The shim and resize fallback run in a browser in tests/studio/playwright_mcp_app_bridge_smoke.py.
 const frame = readFileSync(
   new URL("../src/features/chat/mcp-apps/mcp-app-frame.tsx", import.meta.url),
   "utf8",

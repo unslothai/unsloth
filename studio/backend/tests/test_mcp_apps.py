@@ -499,7 +499,6 @@ def test_a_mounted_widget_can_still_call_after_the_server_is_toggled(routes, mon
     from core.inference import mcp_client
 
     routes.warm([_APP])
-    # Off/on (or any endpoint edit) empties the cache while the widget stays on screen.
     mcp_client.invalidate_tool_cache("s1")
 
     async def probe(url, headers, timeout, use_oauth):
