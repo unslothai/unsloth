@@ -77,8 +77,12 @@ export function SharedRunConfigActions({
 }
 
 function reviewTitle(changed: boolean, model?: string, ggufVariant?: string) {
-  if (changed) return "Settings changed by link";
-  if (model) return "Model selected by link";
+  if (changed) {
+    return "Settings changed by link";
+  }
+  if (model) {
+    return "Model selected by link";
+  }
   return ggufVariant
     ? "GGUF variant selected by link"
     : "Link settings already match this editor";

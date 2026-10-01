@@ -162,7 +162,13 @@ export function parseRunConfigLink(raw: string): RunConfigLinkResult {
     const query = linkQuery(raw, url, url.protocol === "unsloth:");
     return { kind: "valid", value: parseParameters(query) };
   } catch (error) {
-    return { kind: "invalid", error: (error as Error).message };
+    return {
+      kind: "invalid",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Invalid run configuration link.",
+    };
   }
 }
 

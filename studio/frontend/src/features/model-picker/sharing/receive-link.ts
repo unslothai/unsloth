@@ -141,9 +141,11 @@ async function receiveRunConfigUrl(
       return;
     }
     clearPendingImport();
-    toast.error("Could not open shared run settings", {
-      description: parsed.kind === "invalid" ? parsed.error : undefined,
-    });
+    if (parsed.kind === "invalid") {
+      toast.error("Could not open shared run settings", {
+        description: parsed.error,
+      });
+    }
   } catch {
     if (revision !== intakeRevision) {
       return;

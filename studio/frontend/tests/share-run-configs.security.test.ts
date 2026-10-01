@@ -97,13 +97,67 @@ const fullConfig: Omit<
   selectedGpuIndexKind: "physical",
 };
 
-// One flag per refused capability: model files, credentials, network, templates, tools, unknown.
 const sensitiveFlags = [
   "--model",
+  "-m",
+  "--model-url",
+  "--hf-repo",
   "--hf-token",
+  "--model-draft",
+  "--spec-draft-model",
+  "--spec-draft-hf",
+  "--mmproj",
+  "--mmproj-url",
+  "--lora",
+  "--lora-scaled",
+  "--control-vector",
+  "--control-vector-scaled",
+  "--rpc",
+  "--rpc-server",
   "--host",
+  "--port",
+  "--api-key",
+  "--api-key-file",
+  "--ssl-key-file",
+  "--ssl-cert-file",
+  "--path",
+  "--media-path",
+  "--log-file",
+  "--logdir",
+  "--log-disable",
+  "--slot-save-path",
+  "--prompt-cache",
+  "--prompt-cache-all",
+  "--file",
+  "-f",
+  "--grammar-file",
+  "--grammar",
+  "--json-schema",
+  "--json-schema-file",
   "--chat-template",
+  "--chat-template-file",
+  "--chat-template-kwargs",
+  "--jinja",
+  "--tools",
   "--agent",
+  "-ag",
+  "--tools-runtime",
+  "--mcp-servers-json",
+  "--mcp-servers-config",
+  "--ui-mcp-proxy",
+  "--webui-config-file",
+  "--cors-origins",
+  "--cors-credentials",
+  "--models-dir",
+  "--models-preset",
+  "--models-autoload",
+  "--device",
+  "--override-tensor",
+  "--props",
+  "--slots",
+  "--metrics",
+  "--help",
+  "--completion-bash",
   "--new-unknown-option",
 ];
 
@@ -645,4 +699,52 @@ test("live shared links supersede delayed desktop startup URLs and disposal igno
   assert.equal(app.navigations.length, 0);
   assert.deepEqual(app.errors, []);
   assert.deepEqual(app.counts, { subscriptions: 1, unsubscriptions: 1 });
+});
+
+test("10,000 deterministic adversarial inputs reject against independent expectations", () => {
+  let seed = 0x5eed;
+  const next = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed;
+  };
+  const prototypes = Object.getOwnPropertyDescriptors(Object.prototype);
+  const hostile = [";", "\\", "/", "\n", "\u0000", "\u202e", "$", "`", " "];
+  const mutations = [
+    () =>
+      query("llamaExtraArgs", [
+        "--threads",
+        `${1 + (next() % 1024)}${hostile[next() % hostile.length]}`,
+      ]),
+    () =>
+      query("llamaExtraArgs", [
+        sensitiveFlags[next() % sensitiveFlags.length],
+        String(next()),
+      ]),
+    () => new URLSearchParams({ nParallel: String(65 + next()) }).toString(),
+    () => new URLSearchParams({ model: `owner/../model${next()}` }).toString(),
+    () =>
+      new URLSearchParams({ ggufVariant: `../model${next()}.gguf` }).toString(),
+    () => `nParallel=2&%6eParallel=${1 + (next() % 64)}`,
+    () => query("__proto__", { polluted: next() }),
+    () =>
+      query("llamaExtraArgs", [
+        "-t",
+        "4",
+        "--threads",
+        String(1 + (next() % 1024)),
+      ]),
+    () =>
+      new URLSearchParams({
+        customContextLength: "4096",
+        maxSeqLength: String(4097 + (next() % 1000)),
+      }).toString(),
+    () => query("tensorParallel", { value: next() }),
+  ];
+  for (let index = 0; index < 10_000; index += 1) {
+    rejects(mutations[index % mutations.length]());
+  }
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptors(Object.prototype),
+    prototypes,
+  );
 });

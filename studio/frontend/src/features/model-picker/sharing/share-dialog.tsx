@@ -62,7 +62,11 @@ function linkPreview(value: SharedRunConfig, destination: string) {
       error: "",
     };
   } catch (cause) {
-    return { link: "", error: (cause as Error).message };
+    return {
+      link: "",
+      error:
+        cause instanceof Error ? cause.message : "Could not create this link.",
+    };
   }
 }
 

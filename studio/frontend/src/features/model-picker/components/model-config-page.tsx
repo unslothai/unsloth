@@ -3297,9 +3297,11 @@ export function ModelConfigPage({
   return (
     <div
       className="hint-on-hover flex flex-col"
-      onChange={(event) =>
-        isRunConfigEditorChange(event) && handleSharedConfigEdit()
-      }
+      onChange={(event) => {
+        if (isRunConfigEditorChange(event)) {
+          handleSharedConfigEdit();
+        }
+      }}
     >
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
