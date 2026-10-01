@@ -2960,6 +2960,27 @@ def test_top_level_group_respects_the_pinned_allocator_rounding(monkeypatch):
     assert group.onload_ == "diffusers"
 
 
+def test_top_level_group_counts_against_the_running_pin_total(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    module, group = _top_group_module(monkeypatch)
+    monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    group.modules = [
+        types.SimpleNamespace(
+            parameters = lambda: [__import__("torch").empty(1 << 18)], buffers = lambda: []
+        )
+    ]
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 8)
+    # 8 MiB budget, 8 MiB of encoders already pinned: the 1 MiB top group no longer fits
+    assert mem._pin_top_level_group(module, None, [8]) is False
+    assert group.onload_ == "diffusers"
+    total = [4]
+    assert mem._pin_top_level_group(module, None, total) is True
+    assert total == [5]
+
+
 @pytest.mark.parametrize("kind", ["streamed_group", "torchao"])
 def test_top_level_group_left_alone_when_not_the_streamless_top_group(monkeypatch, kind):
     import core.inference.diffusion_memory as mem

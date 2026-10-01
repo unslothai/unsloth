@@ -2901,7 +2901,11 @@ def install_group_offload_buffer_restore() -> bool:
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
 
 
-def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
+def _pin_top_level_group(
+    module: Any,
+    logger: Any = None,
+    pinned_mib: Optional[list] = None,
+) -> bool:
     """Onload a block-streamed DiT's top-level group (embedders, norm_out, proj_out) from one pinned host copy.
 
     diffusers gives that group no stream: every forward uploaded it from pageable memory and every offload copied it
@@ -2961,7 +2965,9 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
             if int(t.numel()) * int(t.element_size()) > 0
         ) // (1024 * 1024)
         budget = None if _pinned_memory_capped() else _pin_budget_mib()
-        if budget is None or need_mib > budget:
+        # on the running total the encoders and torchao denoisers already pinned (or will, deferred) count against
+        already = pinned_mib[0] if pinned_mib else 0
+        if budget is None or already + need_mib > budget:
             return False
         host = {
             t: (t.data if t.data.device.type == "cpu" else t.data.cpu()).pin_memory()
@@ -2989,6 +2995,8 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        if pinned_mib is not None:
+            pinned_mib[0] = already + need_mib
         if logger is not None:
             logger.info(
                 "diffusion.memory: %s top-level weights (%d MiB) onload from a pinned copy, no copy back",
@@ -3126,7 +3134,7 @@ def _apply_group_offload(
                 )
             installed += 1
             if use_stream:
-                _pin_top_level_group(module, logger)
+                _pin_top_level_group(module, logger, pinned_mib)
         if resident_transformer_mib:
             room = int(resident_transformer_mib)
             for module in streamed.values():
@@ -3756,7 +3764,7 @@ def _apply_streaming_offload(
                 _defer_pinning(pipe, module, onload, logger)
             installed += 1
             if use_stream and offload_type == "block_level":
-                _pin_top_level_group(module, logger)
+                _pin_top_level_group(module, logger, pinned_mib)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
         if resident_transformer_mib:
