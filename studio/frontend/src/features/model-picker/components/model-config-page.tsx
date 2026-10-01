@@ -3490,7 +3490,7 @@ export function ModelConfigPage({
       </fieldset>
 
       {target.isGguf && (
-        <>
+        <div className="mt-5 space-y-5">
           <AdvancedSettingsToggle
             checked={showAdvanced}
             onCheckedChange={toggleAdvanced}
@@ -3500,7 +3500,7 @@ export function ModelConfigPage({
               <fieldset
                 disabled={customActive}
                 inert={customActive ? true : undefined}
-                className={customActive ? "min-w-0 opacity-50" : "min-w-0"}
+                className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
                 aria-label="Managed llama.cpp settings"
               >
                 <GgufAdvancedSettings
@@ -3523,12 +3523,12 @@ export function ModelConfigPage({
               </fieldset>
               {/* The projector choice still reaches a custom load, so it stays editable there. */}
               {customActive && (
-                <div className="mt-3.5">
+                <div>
                   <VisionRow config={config} update={update} />
                 </div>
               )}
               {!resolvedIsDiffusion && (
-                <div className="mt-3.5">
+                <div>
                   <CustomLlamaConfigEditor
                     value={config.llamaCppConfig}
                     onChange={(llamaCppConfig) => update({ llamaCppConfig })}
@@ -3545,7 +3545,7 @@ export function ModelConfigPage({
               )}
             </>
           )}
-        </>
+        </div>
       )}
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
