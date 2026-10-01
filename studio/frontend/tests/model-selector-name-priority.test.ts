@@ -11,10 +11,22 @@ import { readSrc } from "./helpers/kit.ts";
 const selector = readSrc("features/model-picker/components/model-selector.tsx");
 
 test("the suffix shrinks first, then the description, and the name last", () => {
-  assert.match(selector, /"min-w-0 shrink-\[1000000\] truncate whitespace-nowrap text-xs leading-none text-muted-foreground"/);
+  assert.match(selector, /"min-w-0 shrink-\[1000000\] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground"/);
   assert.match(selector, /"min-w-0 shrink-\[1000\] truncate text-xs leading-tight text-muted-foreground"/);
   // the name only truncates once its group is narrower than it
   assert.match(selector, /"flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading/);
+});
+
+test("no truncating span pairs truncate with leading-none, which clips descenders", () => {
+  // At text-xs a 12px line box ends 1.5px above the bottom of g, j, p, q and y, and truncate
+  // hides the overflow, so the suffix showed its format and quant with flat descenders.
+  for (const literal of selector.match(/"[^"\n]*"/g) ?? []) {
+    const tokens = literal.slice(1, -1).split(/\s+/);
+    assert.ok(
+      !(tokens.includes("truncate") && tokens.includes("leading-none")),
+      `truncate with leading-none clips descenders: ${literal}`,
+    );
+  }
 });
 
 test("the gap before the description or suffix truncates away with it", () => {
