@@ -2,7 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import ts from "typescript";
+
+import type { MessageStatus } from "@assistant-ui/react";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -27,7 +33,7 @@ const assistantRuntime = (id: string, text: string) =>
     role: "assistant" as const,
     createdAt: new Date(0),
     content: [{ type: "text" as const, text }],
-    status: { type: "complete" as const, reason: "unknown" as const },
+    status: { type: "complete", reason: "unknown" } as MessageStatus,
     metadata: { custom: {}, steps: [], unstable_annotations: [], unstable_data: [], unstable_state: null },
   });
 
@@ -56,7 +62,7 @@ test("ordinary saved assistant text reconciles into the open export", () => {
     { editingMessageId: null },
   );
   assert.equal(changed, true);
-  const text = (messages[0].message.content as { text: string }[])[0].text;
+  const text = (messages[0].message.content as unknown as { text: string }[])[0].text;
   assert.equal(text, "New saved checkpoint");
 });
 
@@ -139,4 +145,47 @@ test("window focus triggers recovery when the document is visible", () => {
   windowTarget.dispatchEvent(new Event("focus"));
   unsubscribe();
   assert.equal(recoveries, 1);
+});
+
+// The wake handler is the only caller; deleting the call leaves every test above green.
+test("recoverCurrentThread reconciles ordinary saved messages", () => {
+  const source = fileURLToPath(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+  );
+  const parsed = ts.createSourceFile(
+    "runtime-provider.tsx",
+    readFileSync(source, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let handler: ts.Node | null = null;
+  const walk = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "recoverCurrentThread"
+    ) {
+      handler = node;
+      return;
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(parsed);
+  assert.ok(handler, "recoverCurrentThread not found");
+  const calls = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      calls.add(node.expression.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(handler);
+  for (const name of [
+    "beginSavedHistoryReconciliation",
+    "isSavedHistoryReconciliationSuperseded",
+    "reconcileOrdinarySavedMessagesInView",
+  ]) {
+    assert.ok(calls.has(name), `${name} not called from recoverCurrentThread`);
+  }
 });
