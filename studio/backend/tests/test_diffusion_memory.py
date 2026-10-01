@@ -3065,3 +3065,25 @@ def test_top_level_weights_replaced_while_offloaded_are_picked_up(monkeypatch):
         got = net(x.cuda()).cpu()
         want = ref(x)
     assert torch.allclose(got, want, atol = 1e-5)
+
+
+def test_streaming_counts_pinned_encoders_before_a_torchao_denoiser_pins(monkeypatch):
+    # The torchao denoiser pins within a running total; encoders the plan pins must already be on it (as on the group
+    # tier), or the two together exceed the pinnable host budget.
+    import core.inference.diffusion_memory as mem
+
+    seen_totals: dict = {}
+    real = mem._torchao_group_offload_kwargs
+
+    def _spy(
+        module,
+        kwargs,
+        pinned_mib = None,
+    ):
+        seen_totals[module.name] = pinned_mib[0] if pinned_mib else None
+        return real(module, kwargs, pinned_mib)
+
+    monkeypatch.setattr(mem, "_torchao_group_offload_kwargs", _spy)
+    _streaming_apply_kwargs(monkeypatch, 40_000)
+    # the 7500 MiB encoder, rounded up to a power of two like the pinned allocator
+    assert seen_totals["transformer"] == 8192

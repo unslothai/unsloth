@@ -1362,6 +1362,38 @@ def install_torchao_v1_int8_pin_ops() -> bool:
                 )
             return t.pin_memory()
 
+        # diffusers restores / record_streams a torchao weight through its class's ``tensor_data_names``, which the v1
+        # classes lack: offload then left every streamed payload on the GPU (the whole denoiser accumulated) and the
+        # copy stream recorded no allocation. Teach both helpers the v1 nesting; v2 tensors keep diffusers' path.
+        from diffusers.hooks import group_offloading as go
+
+        restore = go._restore_torchao_tensor
+        if not getattr(restore, "_unsloth_v1_int8", False):
+
+            def _restore_v1(param: Any, source: Any) -> None:
+                if isinstance(source, LAQT):
+                    param.original_weight_tensor = source.original_weight_tensor
+                elif isinstance(source, AQT):
+                    param.tensor_impl = source.tensor_impl
+                else:
+                    restore(param, source)
+
+            _restore_v1._unsloth_v1_int8 = True
+            go._restore_torchao_tensor = _restore_v1
+
+        record = go._record_stream_torchao_tensor
+        if not getattr(record, "_unsloth_v1_int8", False):
+
+            def _record_v1(param: Any, stream: Any) -> None:
+                if isinstance(param, (LAQT, AQT)):
+                    for x in _payload(param):
+                        x.record_stream(stream)
+                else:
+                    record(param, stream)
+
+            _record_v1._unsloth_v1_int8 = True
+            go._record_stream_torchao_tensor = _record_v1
+
         for cls in (LAQT, AQT):
 
             @cls.implements([aten.is_pinned.default])
@@ -3664,6 +3696,12 @@ def _apply_streaming_offload(
         )
         if defer:
             install_group_pin_wait()
+        # Encoders the plan pins (now or deferred) count against the budget a torchao denoiser pins within, as on the
+        # group tier: otherwise both pin and the host total exceeds the pinnable budget.
+        if pin_encoders:
+            pinned_mib[0] = sum(
+                _module_host_mib(m) for m, t in streamed.values() if t != "block_level"
+            )
 
         for module, offload_type in streamed.values():
             kwargs: dict[str, Any] = {
