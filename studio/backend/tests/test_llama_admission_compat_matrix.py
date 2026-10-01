@@ -185,7 +185,12 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
 
 # In the order they were added, so older positional callers keep their meaning.
-_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
+_TOOL_LOOP_HOOKS = (
+    "on_conversation_grew",
+    "on_decode_slot",
+    "thinking_budget_tokens",
+    "request_template_kwargs",
+)
 
 
 class TestOldCallers:
@@ -240,7 +245,6 @@ class TestOldCallers:
         )
         tail = names[-len(_TOOL_LOOP_HOOKS) :]
         assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
-        assert names[-len(_TOOL_LOOP_HOOKS) - 1] == "request_template_kwargs"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect
