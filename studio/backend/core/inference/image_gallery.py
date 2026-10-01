@@ -55,6 +55,23 @@ def _params_text(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# zlib level for gallery PNGs. The encode sits between the last denoise step and the HTTP response, single threaded on
+# the host: Pillow's default (6) costs ~0.4 s on a 1024x1024 render (measured on a Xeon host), level 1 ~0.1 s for files
+# ~10% larger. Lossless either way: only the deflate effort changes, the pixels and the embedded recipe are identical.
+# Set 6 to restore the old encode.
+PNG_COMPRESS_LEVEL_ENV = "UNSLOTH_IMAGE_PNG_COMPRESS_LEVEL"
+_DEFAULT_PNG_COMPRESS_LEVEL = 1
+
+
+def png_compress_level() -> int:
+    raw = os.environ.get(PNG_COMPRESS_LEVEL_ENV, "").strip()
+    try:
+        level = int(raw)
+    except ValueError:
+        return _DEFAULT_PNG_COMPRESS_LEVEL
+    return level if 0 <= level <= 9 else _DEFAULT_PNG_COMPRESS_LEVEL
+
+
 def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     import io
 
@@ -64,7 +81,7 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
     buf = io.BytesIO()
-    image.save(buf, format = "PNG", pnginfo = info)
+    image.save(buf, format = "PNG", pnginfo = info, compress_level = png_compress_level())
     return buf.getvalue()
 
 
