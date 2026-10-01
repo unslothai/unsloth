@@ -806,7 +806,7 @@ function docxNoteText(node: Node, ns: string): string {
 }
 
 const DOCX_NOTE_REFERENCE_RE =
-  /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(?:<\/(?:[\w.-]+:)?\2Reference>)?/g;
+  /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
 const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
 
 function romanNumeral(n: number): string {
@@ -914,9 +914,13 @@ export function markDocxNotes(archive: Uint8Array): {
           _prefix: string | undefined,
           kind: keyof typeof kinds,
           attributes: string,
+          selfClosing: string,
+          endTag: string | undefined,
         ) => {
           const id = DOCX_NOTE_ID_RE.exec(attributes)?.[1];
           const notes = kinds[kind];
+          // Never write inside a reference whose end tag is not right after its start.
+          if (!selfClosing && !endTag) return reference;
           if (id === undefined || !notes.bodies.has(id)) return reference;
           notes.referenced.add(id);
           refs.push({ kind, id });

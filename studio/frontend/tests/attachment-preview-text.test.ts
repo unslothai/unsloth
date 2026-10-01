@@ -1057,7 +1057,9 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
         `</w:${kind}s>`,
     );
   const ref = (kind: string, id: number) =>
-    `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
+    kind === "endnote"
+      ? `<w:r><w:${kind}Reference w:id="${id}">\n</w:${kind}Reference >\n</w:r>`
+      : `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
   const archive = repackDocxAttachmentArchive(
     "paper.docx",
     zipSync({
