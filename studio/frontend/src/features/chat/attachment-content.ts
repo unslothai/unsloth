@@ -952,6 +952,52 @@ export function getPdfAttachmentTextError(
     : `PDF has no readable text: ${fileName}. Scanned pages can't be read.`;
 }
 
+function pdfFormFieldLines(
+  annotations: {
+    fieldType?: string;
+    fieldName?: string;
+    fieldValue?: unknown;
+    alternativeText?: string;
+    radioButton?: boolean;
+    hidden?: boolean;
+    password?: boolean;
+    options?: { exportValue?: unknown; displayValue?: unknown }[];
+  }[],
+): string[] {
+  const fields = new Map<string, string>();
+  for (const {
+    fieldType,
+    fieldName,
+    fieldValue,
+    alternativeText,
+    radioButton,
+    hidden,
+    password,
+    options,
+  } of annotations) {
+    const value = [fieldValue]
+      .flat()
+      .filter((part) => typeof part === "string")
+      .map((part) => {
+        const shown = options?.find((option) => option.exportValue === part);
+        return typeof shown?.displayValue === "string"
+          ? shown.displayValue
+          : part;
+      })
+      .join(", ");
+    const unchecked = fieldType === "Btn" && value === "Off";
+    if (!fieldName || !value.trim() || unchecked || hidden || password) {
+      continue;
+    }
+    // The tooltip (/TU) is the human label behind codes like f1_01[0]; a radio
+    // widget's tooltip names one option, not the group's selected value.
+    const tooltip = radioButton ? "" : alternativeText;
+    const label = tooltip?.replace(/\s+/g, " ").trim() || fieldName;
+    fields.set(fieldName, `${label}: ${value}`);
+  }
+  return [...fields.values()];
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
@@ -962,7 +1008,21 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
-    return normalizeExtractedText(text.join("\n\n"));
+    // getAnnotations re-reads the text under each link, so only forms call it
+    const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
+    const pages = await Promise.all(
+      text.map(async (pageText, index) => {
+        const annotations = hasFields
+          ? await pdf
+              .getPage(index + 1)
+              .then((page) => page.getAnnotations())
+              .catch(() => [])
+          : [];
+        const fields = pdfFormFieldLines(annotations);
+        return [pageText, ...fields].filter(Boolean).join("\n");
+      }),
+    );
+    return normalizeExtractedText(pages.join("\n\n"));
   } finally {
     await pdf.destroy();
   }

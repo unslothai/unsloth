@@ -17,23 +17,27 @@ import threading
 from collections import deque
 import time
 import os
-import importlib.util
+import importlib.util as _importlib_util
 
 
-def _hf_transfer_importable():
+def _hf_transfer_importable() -> bool:
+    # huggingface_hub < 1.0 raises on every download when the flag is on and the package is
+    # missing (it is optional, and absent on Windows on ARM). find_spec never imports it, and
+    # raises ValueError for a sys.modules stub whose __spec__ is None.
     try:
-        return importlib.util.find_spec("hf_transfer") is not None
+        return _importlib_util.find_spec("hf_transfer") is not None
     except (ImportError, ValueError):
         return False
 
 
-# Same gate as unsloth_zoo: huggingface_hub < 1.0 refuses every download when the flag is set
-# without hf_transfer (--no-deps installs, Windows ARM64), and an explicit value is the caller's.
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
 if (
     "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
-    and os.environ.get("HF_HUB_OFFLINE", "").strip().lower() not in _OFFLINE_VALS
-    and os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() not in _OFFLINE_VALS
+    and not (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+    )
     and _hf_transfer_importable()
 ):
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"

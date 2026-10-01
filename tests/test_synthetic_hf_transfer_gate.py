@@ -1,77 +1,94 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`import unsloth` must not force HF_HUB_ENABLE_HF_TRANSFER=1: huggingface_hub < 1.0 then refuses
-every download when hf_transfer is missing, and Studio's explicit "0" (Xet fallback) was overwritten."""
+"""``unsloth/dataprep/synthetic.py`` turns ``HF_HUB_ENABLE_HF_TRANSFER`` on at import, and
+``import unsloth`` imports it. On huggingface_hub < 1.0 that flag without the ``hf_transfer``
+package makes every Hub download raise ``ValueError: Fast download using 'hf_transfer' is
+enabled``, so the flag may only be set when the package is importable.
 
-import os
-import subprocess
-import sys
+The module itself needs torch, requests and unsloth_zoo, so the guard is run from its own
+source: the probe function and the module-level ``if`` that sets the flag."""
+
+import ast
+import types
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-_PROBE = """
-import sys
-if {hide}:
-    sys.modules["hf_transfer"] = None
-import unsloth.dataprep.synthetic, os
-print("HF_TRANSFER=" + repr(os.environ.get("HF_HUB_ENABLE_HF_TRANSFER")))
-"""
+_SOURCE = Path(__file__).resolve().parents[1] / "unsloth" / "dataprep" / "synthetic.py"
+_TREE = ast.parse(_SOURCE.read_text(encoding = "utf-8"))
 
 
-def _flag_after_import(
-    tmp_path,
-    *,
-    hide,
-    preset = None,
-    stub = False,
-    offline = False,
-):
-    env = dict(os.environ)
-    for key in (
-        "HF_HUB_ENABLE_HF_TRANSFER",
-        "HF_HUB_OFFLINE",
-        "TRANSFORMERS_OFFLINE",
-    ):
-        env.pop(key, None)
-    if preset is not None:
-        env["HF_HUB_ENABLE_HF_TRANSFER"] = preset
-    if offline:
-        env["HF_HUB_OFFLINE"] = "1"
-    env["UNSLOTH_ALLOW_CPU"] = "1"
-    paths = [str(REPO_ROOT)]
-    if stub:
-        (tmp_path / "hf_transfer").mkdir()
-        (tmp_path / "hf_transfer" / "__init__.py").write_text("")
-        paths.append(str(tmp_path))
-    env["PYTHONPATH"] = os.pathsep.join(paths + [env.get("PYTHONPATH", "")])
-    out = subprocess.run(
-        [sys.executable, "-c", _PROBE.format(hide = hide)],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 600,
+def _nodes():
+    probe = next(
+        (
+            n
+            for n in _TREE.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_hf_transfer_importable"
+        ),
+        None,
     )
-    lines = [l for l in out.stdout.splitlines() if l.startswith("HF_TRANSFER=")]
-    if not lines:
-        pytest.skip(f"unsloth did not import here: {out.stderr[-500:]}")
-    return lines[-1].split("=", 1)[1]
+    offline = next(
+        n
+        for n in _TREE.body
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "_OFFLINE_VALS" for t in n.targets)
+    )
+    gate = [
+        n
+        for n in _TREE.body
+        if isinstance(n, ast.If) and "HF_HUB_ENABLE_HF_TRANSFER" in ast.dump(n)
+    ]
+    assert (
+        len(gate) == 1
+    ), "expected exactly one module-level if that sets HF_HUB_ENABLE_HF_TRANSFER"
+    return probe, offline, gate[0]
 
 
-def test_flag_not_forced_when_hf_transfer_missing(tmp_path):
-    assert _flag_after_import(tmp_path, hide = True) == "None"
+def _resolve(environ, find_spec):
+    probe, offline, gate = _nodes()
+    env = dict(environ)
+    namespace = {
+        "os": types.SimpleNamespace(environ = env),
+        "_importlib_util": types.SimpleNamespace(find_spec = find_spec),
+    }
+    body = [node for node in (probe, offline, gate) if node is not None]
+    exec(compile(ast.Module(body = body, type_ignores = []), str(_SOURCE), "exec"), namespace)
+    return env
 
 
-def test_explicit_zero_survives_import(tmp_path):
-    assert _flag_after_import(tmp_path, hide = False, preset = "0", stub = True) == "'0'"
+def _installed(name):
+    return object() if name == "hf_transfer" else None
 
 
-def test_flag_enabled_when_hf_transfer_present(tmp_path):
-    assert _flag_after_import(tmp_path, hide = False, stub = True) == "'1'"
+def _missing(name):
+    return None
 
 
-def test_flag_not_set_offline(tmp_path):
-    assert _flag_after_import(tmp_path, hide = False, stub = True, offline = True) == "None"
+def _stub_without_spec(name):
+    raise ValueError(f"{name}.__spec__ is None")
+
+
+def test_an_installed_hf_transfer_turns_the_flag_on():
+    assert _resolve({}, _installed).get("HF_HUB_ENABLE_HF_TRANSFER") == "1"
+
+
+def test_a_missing_hf_transfer_leaves_the_flag_unset():
+    assert "HF_HUB_ENABLE_HF_TRANSFER" not in _resolve({}, _missing)
+
+
+def test_a_spec_less_stub_reads_as_not_installed():
+    assert "HF_HUB_ENABLE_HF_TRANSFER" not in _resolve({}, _stub_without_spec)
+
+
+@pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_offline_mode_leaves_the_flag_unset_even_when_installed(var):
+    assert "HF_HUB_ENABLE_HF_TRANSFER" not in _resolve({var: "1"}, _installed)
+
+
+@pytest.mark.parametrize("value", ["0", "1"])
+def test_an_explicit_value_is_kept_even_when_installed(value):
+    assert (
+        _resolve({"HF_HUB_ENABLE_HF_TRANSFER": value}, _installed)["HF_HUB_ENABLE_HF_TRANSFER"]
+        == value
+    )
