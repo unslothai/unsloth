@@ -171,6 +171,21 @@ def owned_image_path(image_id: str) -> Optional[Path]:
     return path
 
 
+def thumbnail(path: Path, size: int) -> bytes:
+    """Return a WebP thumbnail with its longest side at most ``size`` pixels."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im.thumbnail((size, size), Image.LANCZOS)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
+        buf = io.BytesIO()
+        im.save(buf, format = "WEBP", quality = 85, method = 4)
+    return buf.getvalue()
+
+
 def _mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime

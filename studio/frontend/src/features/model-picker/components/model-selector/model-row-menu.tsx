@@ -23,6 +23,7 @@ import {
 import { useRevealLabel } from "@/features/library";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import {
   Delete02Icon,
   Folder01Icon,
@@ -31,7 +32,6 @@ import {
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCw } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -271,7 +271,7 @@ export function ModelRowMenu({
                 setUpdateOpen(true);
               }}
             >
-              <RefreshCw className="size-icon" />
+              <RefreshGlyph className="size-icon" />
               <span>Update</span>
             </DropdownMenuItem>
           )}

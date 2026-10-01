@@ -273,6 +273,9 @@ BENIGN_TIMING = {
         "test_account_local_model_resolver.py",
         "test_a_warm_scan_queues_behind_another_accounts_scan",
     ),
+    # A poll deadline: FakeSmi.wait_for_call loops until the fake nvidia-smi has logged the expected children and only
+    # asserts `time.monotonic() < deadline` against a 30s budget, so a descheduled worker just polls longer.
+    ("test_gpu_query_cache.py", "wait_for_call"),
 }
 
 
