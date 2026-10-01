@@ -89,10 +89,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
-  BrowserPanel,
   BrowserToggleButton,
-  FullViewChatBar,
-  FullViewChatButton,
   openUrlInBrowser,
   pinBrowserPage,
   setBrowserPanelAvailable,
@@ -296,6 +293,22 @@ import {
   exportConversationShareGPT,
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
+
+const BrowserPanel = lazy(() =>
+  import("@/features/browser/browser-panel").then((module) => ({
+    default: module.BrowserPanel,
+  })),
+);
+const FullViewChatBar = lazy(() =>
+  import("@/features/browser/full-view-chat").then((module) => ({
+    default: module.FullViewChatBar,
+  })),
+);
+const FullViewChatButton = lazy(() =>
+  import("@/features/browser/full-view-chat").then((module) => ({
+    default: module.FullViewChatButton,
+  })),
+);
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -828,12 +841,14 @@ const SingleContent = memo(function SingleContent({
                   : "chat-full-view-dock group/dock"),
             )}
           >
-            {browserFullView && chatDock !== "minimized" ? (
-              <FullViewChatBar title={fullViewChatTitle} />
-            ) : null}
-            {browserFullView && chatDock === "minimized" ? (
-              <FullViewChatButton />
-            ) : null}
+            <Suspense fallback={null}>
+              {browserFullView && chatDock !== "minimized" ? (
+                <FullViewChatBar title={fullViewChatTitle} />
+              ) : null}
+              {browserFullView && chatDock === "minimized" ? (
+                <FullViewChatButton />
+              ) : null}
+            </Suspense>
             {threadPane}
           </div>
         </ResizablePanel>
@@ -910,7 +925,9 @@ const SingleContent = memo(function SingleContent({
                  onClose={closeResearchPanel}
                />
              ) : showBrowserPanel ? (
-              <BrowserPanel />
+              <Suspense fallback={null}>
+                <BrowserPanel />
+              </Suspense>
             ) : showArtifactPanel && artifact ? (
               <ArtifactSurface
                 artifact={artifact}

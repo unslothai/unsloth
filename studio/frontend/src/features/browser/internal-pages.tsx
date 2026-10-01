@@ -30,7 +30,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { hostOf } from "./address";
-import { ClearBrowsingDataDialog } from "./browser-panel";
+import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { proxiedFavicon } from "./favicon";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { type InternalPage, useBrowserStore } from "./store";

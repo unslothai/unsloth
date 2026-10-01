@@ -4,11 +4,10 @@
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type OpenFileInput, useBrowserStore } from "./store";
 
-export { BrowserPanel, ClearBrowsingDataDialog } from "./browser-panel";
+export { ClearBrowsingDataDialog } from "./clear-data-dialog";
 export { BrowserToggleButton } from "./browser-toggle";
 export { saveLinkAs } from "./downloads";
-export { browserTabType, textFileKind } from "./file-view";
-export { FullViewChatBar, FullViewChatButton } from "./full-view-chat";
+export { browserTabType, textFileKind } from "./file-kind";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
 export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-view";

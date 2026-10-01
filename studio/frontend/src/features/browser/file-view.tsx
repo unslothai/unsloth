@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { CodeSourceView } from "@/components/code-source-view";
-import { DocumentView, MAX_DOCUMENT_PREVIEW_BYTES, documentKind, isMarkdown } from "@/components/file-viewer";
+import { DocumentView, MAX_DOCUMENT_PREVIEW_BYTES, documentKind } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Spinner } from "@/components/ui/spinner";
 import { ArtifactHtmlFrame, attachmentTextLanguage, truncateAttachmentPreviewText } from "@/features/chat";
@@ -10,22 +10,8 @@ import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
-
-const HTML_NAME = /\.(html?|xhtml)$/i;
-const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\b/i;
-const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-yaml|yaml|toml|x-sh|sql)\b)/i;
-const TEXT_NAME =
-  /\.(txt|log|md|markdown|mdx|json|jsonl|ya?ml|toml|ini|cfg|conf|csv|tsv|xml|svg|py|ipynb|js|mjs|cjs|ts|tsx|jsx|css|scss|sh|bash|zsh|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb|php|swift|sql|r|lua|pl|tex)$/i;
-
-type Media = "image" | "video" | "audio";
-
-function mediaKind(name: string, contentType: string): Media | null {
-  if (/^image\//i.test(contentType) || /\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(name)) return "image";
-  if (/^video\//i.test(contentType) || /\.(mp4|webm|mov|m4v|ogv)$/i.test(name)) return "video";
-  if (/^audio\//i.test(contentType) || /\.(mp3|wav|ogg|oga|flac|m4a|aac|opus)$/i.test(name)) return "audio";
-  return null;
-}
 
 function useObjectUrl(blob: Blob, enabled: boolean, svg: boolean): string | null {
   const [url, setUrl] = useState<string | null>(null);
@@ -56,33 +42,6 @@ function Unavailable({ message }: { message: string }) {
 
 // Streamdown's highlighted source and the plain fallback both use <pre>; wrapping is a class away.
 const WRAP_CLASS = "[&_pre]:whitespace-pre-wrap! [&_pre]:break-words [&_code]:whitespace-pre-wrap! [&_.min-w-max]:min-w-0!";
-
-export type TextFileKind = "html" | "markdown" | "code" | "text";
-
-function isHtml(name: string, contentType: string): boolean {
-  return HTML_NAME.test(name) || HTML_TYPE.test(contentType);
-}
-
-/** How a text file shows, or null for documents, media and files that don't show as text. */
-export function textFileKind(name: string, contentType: string, plainText = false): TextFileKind | null {
-  if (plainText) return "text";
-  if (mediaKind(name, contentType) || documentKind(name, contentType)) return null;
-  if (!(TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType)) return null;
-  if (isHtml(name, contentType)) return "html";
-  if (isMarkdown(name, contentType)) return "markdown";
-  return attachmentTextLanguage(name, null) ? "code" : "text";
-}
-
-// Types a blob URL shows without running anything. Anchored, so SVG or smuggled params fail.
-const SAFE_TAB_TYPE =
-  /^(application\/pdf|image\/(png|jpe?g|gif|webp|avif|bmp)|video\/[\w.+-]+|audio\/[\w.+-]+|text\/plain)\s*(;|$)/i;
-
-/** Type to open a file as in the user's browser, or null if unsafe: a blob URL has Studio's origin. */
-export function browserTabType(name: string, contentType: string): string | null {
-  const kind = textFileKind(name, contentType);
-  if (kind) return kind === "html" ? null : "text/plain";
-  return SAFE_TAB_TYPE.test(contentType) ? contentType : null;
-}
 
 function TextFile({
   blob,

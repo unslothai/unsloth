@@ -573,6 +573,8 @@ def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
             ["wslpath", "-w", target],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             check = True,
             timeout = 10,
         ).stdout.strip()
