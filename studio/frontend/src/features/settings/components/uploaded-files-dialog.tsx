@@ -17,19 +17,23 @@ import {
   deleteChatAttachment,
   emitChatAttachmentDeleted,
   fetchChatAttachmentBlob,
+  isTextAttachmentName,
   listChatAttachments,
 } from "@/features/chat";
 import {
+  type UploadedDocument,
   deleteDocument,
   getDocumentFileUrl,
+  isLinkedFolderManaged,
   listAllDocuments,
-  type UploadedDocument,
 } from "@/features/rag";
+import { isTauri } from "@/lib/api-base";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
   Delete02Icon,
-  File02Icon,
+  FileEmpty02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -150,7 +154,7 @@ function ChatImageThumb({
 function FileIconThumb() {
   return (
     <HugeiconsIcon
-      icon={File02Icon}
+      icon={FileEmpty02Icon}
       strokeWidth={1.75}
       className="size-4 text-muted-foreground"
     />
@@ -176,8 +180,8 @@ interface UploadedFileRow {
   /** Compare-chat rows navigate by pair id instead of opening one pane alone. */
   pairId?: string | null;
   open: () => Promise<void>;
-  remove: () => Promise<void>;
-  deleteDescription: string;
+  remove?: () => Promise<void>;
+  deleteDescription?: string;
 }
 
 function toSortTime(value: string | number | null | undefined): number {
@@ -186,11 +190,20 @@ function toSortTime(value: string | number | null | undefined): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-// Safari and Firefox block window.open after an await (the user gesture is
-// gone), so open a blank tab synchronously and point it at the URL once
-// resolved. A blocked synchronous open is surfaced instead of silently losing
-// the file after the asynchronous URL lookup.
-async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
+// Safari and Firefox block window.open after an await (the user gesture is gone), so open a blank
+// tab synchronously and point it at the URL once resolved. A blocked synchronous open is surfaced
+// instead of silently losing the file after the asynchronous URL lookup. The Tauri webview has no
+// window.open at all, so it goes through the OS opener.
+async function openResolvedUrl(
+  resolve: () => Promise<string | null>,
+): Promise<void> {
+  if (isTauri) {
+    const url = await resolve();
+    if (url === null) return;
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
   const win = window.open("", "_blank");
   if (!win) {
     throw new Error(
@@ -198,12 +211,16 @@ async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
     );
   }
   win.opener = null;
-  let url: string;
+  let url: string | null;
   try {
     url = await resolve();
   } catch (err) {
     win.close();
     throw err;
+  }
+  if (url === null) {
+    win.close();
+    return;
   }
   win.location.replace(url);
 }
@@ -222,12 +239,50 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     // RAG uploads are documents (pdf, txt, md, docx, html), not images.
     thumb: <FileIconThumb />,
     open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
-    remove: async () => {
-      await deleteDocument(doc.id, doc.projectId);
-    },
-    deleteDescription:
-      "The file and its indexed content are removed. This cannot be undone.",
+    remove: isLinkedFolderManaged(doc)
+      ? undefined
+      : async () => {
+          await deleteDocument(doc.id, doc.projectId);
+        },
+    deleteDescription: isLinkedFolderManaged(doc)
+      ? undefined
+      : "The file and its indexed content are removed. This cannot be undone.",
   };
+}
+
+const EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/webm": "webm",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+};
+
+// Name the save after the bytes the route actually returns. Uploaded documents come back as
+// with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
+// not an extension: treating it as one would strip the whole name and save a bare ".txt".
+function extensionStart(name: string): number {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? dot : -1;
+}
+
+function savedAttachmentName(name: string, blobType: string): string {
+  const mime = blobType.split(";")[0].trim().toLowerCase();
+  const dot = extensionStart(name);
+  if (mime === "text/plain") {
+    if (name.toLowerCase().endsWith(".txt") || isTextAttachmentName(name)) return name;
+    return `${dot === -1 ? name : name.slice(0, dot)}.txt`;
+  }
+  if (dot !== -1) return name;
+  const ext = EXT_BY_MIME[mime];
+  return ext ? `${name}.${ext}` : name;
 }
 
 function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
@@ -249,14 +304,32 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     ) : (
       <FileIconThumb />
     ),
-    open: () =>
-      openResolvedUrl(async () => {
+    // Bearer-gated bytes: no URL the OS can fetch, so desktop saves instead.
+    // The fetch stays inside the resolver on web, where openResolvedUrl must
+    // reach window.open while the click's user activation is still live.
+    open: async () => {
+      if (isTauri) {
         const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
+        await downloadFile(
+          blob,
+          savedAttachmentName(att.name, blob.type),
+          blob.type || undefined,
+        );
+        return;
+      }
+      await openResolvedUrl(async () => {
+        const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
+        // A kept original is served as octet-stream: a tab would save it nameless.
+        if (blob.type === "application/octet-stream") {
+          await downloadFile(blob, att.name, blob.type);
+          return null;
+        }
         const url = URL.createObjectURL(blob);
         // Give the new tab time to load the blob before revoking.
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
         return url;
-      }),
+      });
+    },
     remove: async () => {
       await deleteChatAttachment(att.messageId, att.id);
       // Patch any loaded runtime copy so a later repo sync cannot write the
@@ -412,6 +485,7 @@ export function UploadedFilesView() {
     try {
       await row.open();
     } catch (err) {
+      if (isDownloadCancelled(err)) return;
       toast.error("Failed to open file", {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -421,7 +495,7 @@ export function UploadedFilesView() {
   async function handleDelete(row: UploadedFileRow) {
     // Offset pages and destructive mutations must not race: a deletion shifts
     // the boundary used by an in-flight page request.
-    if (loadingMore) return;
+    if (loadingMore || !row.remove) return;
     try {
       await row.remove();
       if (row.source === "rag") {
@@ -522,11 +596,11 @@ export function UploadedFilesView() {
                   <span className="flex min-w-0 items-center gap-2">
                     {/* Floor keeps the name visible when the chip and fixed
                       columns squeeze the cell at narrow widths. */}
-                    <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                    <span className="min-w-[calc(3.5rem*var(--ui-space-scale,1))] truncate underline-offset-2 group-hover/name:underline">
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                      <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
                         {row.typeLabel}
                       </span>
                     ) : null}
@@ -575,20 +649,22 @@ export function UploadedFilesView() {
                     className="size-4"
                   />
                 </button>
-                <button
-                  type="button"
-                  disabled={loadingMore}
-                  onClick={() => setConfirmingDelete(row)}
-                  aria-label={`Delete ${row.name}`}
-                  title="Delete"
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
-                >
-                  <HugeiconsIcon
-                    icon={Delete02Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
+                {row.remove ? (
+                  <button
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => setConfirmingDelete(row)}
+                    aria-label={`Delete ${row.name}`}
+                    title="Delete"
+                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
+                  >
+                    <HugeiconsIcon
+                      icon={Delete02Icon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                ) : null}
               </span>
             </div>
           ))}

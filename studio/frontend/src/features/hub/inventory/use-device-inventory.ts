@@ -7,19 +7,23 @@ import {
   type CachedModelRepo,
   type LocalDatasetInfo,
   type LocalModelInfo,
+  fetchCachedGgufInventory,
+  fetchCachedModelsInventory,
   listCachedDatasets,
-  listCachedGguf,
-  listCachedModels,
   listLocalDatasets,
   listLocalModels,
 } from "./api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ensureHiddenModelMatchers } from "../lib/hidden-models";
-import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
-import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
+import { fingerprintToken } from "../lib/token-fingerprint";
+import { useInventoryVersion } from "../stores/inventory-events";
 import { useCallback, useEffect, useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import {
+  inventoryRefreshDecision,
+  nextRevalidationStamp,
+} from "./inventory-freshness";
 
 export type DeviceInventorySource =
   | "cachedGguf"
@@ -42,6 +46,9 @@ export type DeviceInventorySourceState<Rows extends readonly unknown[]> = {
   ready: boolean;
   error: string | null;
   key: string | null;
+  refreshedAt: number | null;
+  refreshStartedAt: number | null;
+  revalidatedAt: number | null;
 };
 
 type DeviceInventoryState = {
@@ -66,6 +73,12 @@ type UseDeviceInventoryResult<
   Sources extends readonly DeviceInventorySource[],
 > = Pick<DeviceInventoryState, Sources[number]> & {
   refresh: () => Promise<void>;
+  refreshIfOlderThan: (maxAgeMs: number) => Promise<void>;
+};
+
+type InventorySourceFetchResult<K extends DeviceInventorySource> = {
+  rows: DeviceInventoryRows[K];
+  scanConfirmed: boolean;
 };
 
 const TOKEN_SCOPED_SOURCES = new Set<DeviceInventorySource>([
@@ -86,6 +99,9 @@ function emptySource<
     ready: false,
     error: null,
     key: null,
+    refreshedAt: null,
+    refreshStartedAt: null,
+    revalidatedAt: null,
   };
 }
 
@@ -144,21 +160,41 @@ function logInventorySourceFailure(
 async function runSourceFetch<K extends DeviceInventorySource>(
   source: K,
   hfToken?: string | null,
-): Promise<DeviceInventoryRows[K]> {
+): Promise<InventorySourceFetchResult<K>> {
   switch (source) {
-    case "cachedGguf":
+    case "cachedGguf": {
       await ensureHiddenModelMatchers();
-      return (await listCachedGguf(hfToken)) as DeviceInventoryRows[K];
-    case "cachedModels":
+      const result = await fetchCachedGgufInventory(hfToken);
+      return {
+        rows: result.cached as DeviceInventoryRows[K],
+        scanConfirmed: result.scan_confirmed !== false,
+      };
+    }
+    case "cachedModels": {
       await ensureHiddenModelMatchers();
-      return (await listCachedModels(hfToken)) as DeviceInventoryRows[K];
+      const result = await fetchCachedModelsInventory(hfToken);
+      return {
+        rows: result.cached as DeviceInventoryRows[K],
+        scanConfirmed: result.scan_confirmed !== false,
+      };
+    }
     case "cachedDatasets":
-      return (await listCachedDatasets()) as DeviceInventoryRows[K];
-    case "localModels":
+      return {
+        rows: (await listCachedDatasets()) as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
+    case "localModels": {
       await ensureHiddenModelMatchers();
-      return (await listLocalModels()).models as DeviceInventoryRows[K];
+      return {
+        rows: (await listLocalModels()).models as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
+    }
     case "localDatasets":
-      return (await listLocalDatasets()).datasets as DeviceInventoryRows[K];
+      return {
+        rows: (await listLocalDatasets()).datasets as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
     default:
       throw new Error("Unsupported inventory source");
   }
@@ -214,29 +250,53 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     forceQueue.set(key, refetch);
     return refetch;
   }
-  if (!options.force && current.ready && current.key === key) {
+  if (
+    !options.force &&
+    current.ready &&
+    current.error === null &&
+    current.key === key
+  ) {
     return Promise.resolve(current.rows);
   }
 
-  // Carry `ready` across refetches so a stale-but-known state doesn't flip to
-  // "loading" on a bump and flash a spinner in every consumer; keep showing
-  // prior rows until the success path lands fresh data.
+  // Carry `ready` across refetches so a stale-but-known state doesn't flip to "loading" and
+  // flash a spinner; keep showing prior rows until the success path lands fresh data.
   updateSourceState(source, {
     loading: true,
     ready: current.ready,
     error: null,
     key,
+    refreshedAt: current.key === key ? current.refreshedAt : null,
+    refreshStartedAt: current.key === key ? current.refreshStartedAt : null,
+    revalidatedAt: current.key === key ? current.revalidatedAt : null,
   });
 
+  const refreshStartedAt = Date.now();
   const request = runSourceFetch(source, options.hfToken)
-    .then((rows) => {
+    .then(({ rows, scanConfirmed }) => {
       if (useDeviceInventoryStore.getState()[source].key === key) {
+        const refreshedAt = Date.now();
         updateSourceState(source, {
           rows,
           loading: false,
           ready: true,
           error: null,
           key,
+          refreshedAt,
+          refreshStartedAt: scanConfirmed ? refreshStartedAt : null,
+          revalidatedAt: nextRevalidationStamp({
+            force: Boolean(options.force),
+            requestKey: key,
+            previous: {
+              key: current.key,
+              ready: current.ready,
+              error: current.error,
+              rowCount: current.rows.length,
+              revalidatedAt: current.revalidatedAt,
+            },
+            rowCount: rows.length,
+            now: refreshedAt,
+          }),
         });
       }
       return rows;
@@ -264,21 +324,30 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
   return request;
 }
 
-export function inventoryEmptyRevalidationSignature(
-  sources: readonly Pick<
-    DeviceInventorySourceState<readonly unknown[]>,
-    "error" | "key" | "ready"
-  >[],
-): string {
-  return sources
-    .map((source) =>
-      [
-        source.key ?? "pending",
-        source.ready ? "ready" : "pending",
-        source.error ?? "",
-      ].join("\u0001"),
-    )
-    .join("\u0002");
+export function useTokenScopedInventoryRequestOptions(
+  inventoryVersion: number,
+  hfToken?: string | null,
+) {
+  const debouncedInventoryVersion = useDebouncedValue(
+    inventoryVersion,
+    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
+  );
+  const debouncedHfToken = useDebouncedValue(
+    hfToken ?? undefined,
+    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
+  );
+  const tokenFingerprint = useMemo(
+    () => fingerprintToken(debouncedHfToken),
+    [debouncedHfToken],
+  );
+  return useMemo(
+    () => ({
+      hfToken: debouncedHfToken,
+      inventoryVersion: debouncedInventoryVersion,
+      tokenFingerprint,
+    }),
+    [debouncedHfToken, debouncedInventoryVersion, tokenFingerprint],
+  );
 }
 
 export function useDeviceInventorySources<
@@ -289,13 +358,9 @@ export function useDeviceInventorySources<
 ): UseDeviceInventoryResult<Sources> {
   const rawInventoryVersion = useInventoryVersion();
   const rawHfToken = options.hfToken ?? undefined;
-  const debouncedInventoryVersion = useDebouncedValue(
+  const tokenScopedOptions = useTokenScopedInventoryRequestOptions(
     rawInventoryVersion,
-    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
-  );
-  const debouncedHfToken = useDebouncedValue(
     rawHfToken,
-    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
   );
   const enabled = options.enabled ?? true;
   const sourceKey = sources.join("|");
@@ -308,10 +373,14 @@ export function useDeviceInventorySources<
     [sourceList],
   );
   const inventoryVersion = hasTokenScopedSources
-    ? debouncedInventoryVersion
+    ? tokenScopedOptions.inventoryVersion
     : rawInventoryVersion;
-  const hfToken = hasTokenScopedSources ? debouncedHfToken : rawHfToken;
-  const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
+  const hfToken = hasTokenScopedSources
+    ? tokenScopedOptions.hfToken
+    : rawHfToken;
+  const tokenFingerprint = hasTokenScopedSources
+    ? tokenScopedOptions.tokenFingerprint
+    : fingerprintToken(rawHfToken);
   const state = useDeviceInventoryStore(
     useShallow((s) => {
       const selected = {} as Pick<DeviceInventoryState, Sources[number]>;
@@ -343,6 +412,43 @@ export function useDeviceInventorySources<
     }
   }, [sourceList, hfToken, tokenFingerprint, inventoryVersion]);
 
+  const refreshIfOlderThan = useCallback(
+    async (maxAgeMs: number) => {
+      const now = Date.now();
+      const requests = sourceList.flatMap((source) => {
+        const key = sourceRequestKey(
+          source,
+          inventoryVersion,
+          tokenFingerprint,
+        );
+        const current = useDeviceInventoryStore.getState()[source];
+        const decision = inventoryRefreshDecision(current, key, now, maxAgeMs);
+        if (decision === "reuse") return [];
+        return [
+          {
+            source,
+            request: fetchInventorySource(source, {
+              hfToken,
+              tokenFingerprint,
+              inventoryVersion,
+              force: decision === "refresh",
+            }),
+          },
+        ];
+      });
+      const results = await Promise.allSettled(
+        requests.map(({ request }) => request),
+      );
+      for (const [index, result] of results.entries()) {
+        if (result.status === "rejected") {
+          const source = requests[index]?.source;
+          if (source) logInventorySourceFailure(source, result.reason);
+        }
+      }
+    },
+    [sourceList, hfToken, tokenFingerprint, inventoryVersion],
+  );
+
   useEffect(() => {
     if (!enabled) {
       return;
@@ -359,5 +465,6 @@ export function useDeviceInventorySources<
   return {
     ...state,
     refresh,
+    refreshIfOlderThan,
   } as UseDeviceInventoryResult<Sources>;
 }

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy: auto-detect first, manual table fallback.
+"""Completion-only masking policy shared across CUDA and MLX training.
 
 Covers utils.datasets.completion_masking.apply_completion_masking, shared by
 the CUDA trainer (core/training/trainer.py) and the MLX worker
@@ -11,6 +11,7 @@ the CUDA trainer (core/training/trainer.py) and the MLX worker
   - gpt-oss goes auto-first too (its quantized checkpoints ship a template
     the manual markers cannot match),
   - an auto-detection failure falls back to the template table markers,
+  - explicit dataset templates take precedence over tokenizer markers,
   - a table miss after an auto failure warns and leaves the trainer unchanged.
 """
 
@@ -90,6 +91,115 @@ def test_mapped_model_prefers_auto_detection():
 
     assert applied is True
     assert train_fn.calls == [dict(_AUTO)]
+
+
+def test_dataset_template_uses_alpaca_markers_without_detection():
+    trainer = _Trainer()
+    train_fn = _Recorder()
+
+    def detect(_processor):
+        raise AssertionError("dataset template must bypass tokenizer detection")
+
+    result, applied = apply_completion_masking(
+        trainer,
+        "unsloth/Llama-3.2-1B-Instruct",
+        train_fn,
+        detect_fn = detect,
+        dataset_template = "alpaca",
+    )
+
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["alpaca"]
+    assert applied is True
+    assert result.wrapped_from is trainer
+    assert train_fn.calls == [
+        {
+            "instruction_part": expected["instruction"],
+            "response_part": expected["response"],
+        }
+    ]
+
+
+def test_dataset_template_temporarily_replaces_tokenizer_markers():
+    class _Tok:
+        _unsloth_input_part = "<MODEL_INPUT>"
+        _unsloth_output_part = "<MODEL_OUTPUT>"
+
+    trainer = _Trainer()
+    trainer.processing_class = _Tok()
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["alpaca"]
+    calls = []
+
+    def train_fn(current_trainer, **kwargs):
+        if kwargs and hasattr(current_trainer.processing_class, "_unsloth_input_part"):
+            raise ValueError("custom markers conflict with tokenizer markers")
+        calls.append(kwargs)
+        assert current_trainer.processing_class._unsloth_input_part == expected["instruction"]
+        assert current_trainer.processing_class._unsloth_output_part == expected["response"]
+        return current_trainer
+
+    result, applied = apply_completion_masking(
+        trainer,
+        "unsloth/Llama-3.2-1B-Instruct",
+        train_fn,
+        dataset_template = "alpaca",
+    )
+
+    assert applied is True
+    assert result is trainer
+    assert calls == [{}]
+    assert trainer.processing_class._unsloth_input_part == "<MODEL_INPUT>"
+    assert trainer.processing_class._unsloth_output_part == "<MODEL_OUTPUT>"
+
+
+def test_dataset_template_restores_tokenizer_markers_after_failure():
+    class _Tok:
+        _unsloth_input_part = "<MODEL_INPUT>"
+        _unsloth_output_part = "<MODEL_OUTPUT>"
+
+    trainer = _Trainer()
+    trainer.processing_class = _Tok()
+
+    def train_fn(_trainer, **_kwargs):
+        raise RuntimeError("masking failed")
+
+    with pytest.raises(RuntimeError, match = "masking failed"):
+        apply_completion_masking(
+            trainer,
+            "unsloth/Llama-3.2-1B-Instruct",
+            train_fn,
+            dataset_template = "alpaca",
+        )
+
+    assert trainer.processing_class._unsloth_input_part == "<MODEL_INPUT>"
+    assert trainer.processing_class._unsloth_output_part == "<MODEL_OUTPUT>"
+
+
+def test_dataset_template_forwards_num_proc():
+    train_fn = _Recorder()
+
+    apply_completion_masking(
+        _Trainer(),
+        "unsloth/Llama-3.2-1B-Instruct",
+        train_fn,
+        num_proc = 4,
+        dataset_template = "alpaca",
+    )
+
+    assert train_fn.calls[0]["num_proc"] == 4
+
+
+def test_unknown_dataset_template_fails_loudly():
+    train_fn = _Recorder()
+
+    with pytest.raises(ValueError, match = "Unknown completion masking template"):
+        apply_completion_masking(
+            _Trainer(),
+            "unsloth/Llama-3.2-1B-Instruct",
+            train_fn,
+            dataset_template = "missing",
+        )
+
+    assert train_fn.calls == []
 
 
 def test_gpt_oss_uses_auto_detection_first():

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { bumpInventoryVersion } from "@/features/hub";
 import { toastError, toastSuccess } from "@/shared/toast";
 import {
-  RecipeApiError,
   getRecipeJobAnalysis,
   getRecipeJobDataset,
   getRecipeJobStatus,
@@ -34,7 +34,6 @@ type TrackRecipeExecutionParams = {
   kind: RecipeExecutionKind;
   rows: number;
   jobId: string;
-  expectedSubjectKey: string;
   initialExecution: RecipeExecutionRecord;
   notify: boolean;
   onUpsert: (record: RecipeExecutionRecord) => void;
@@ -95,7 +94,6 @@ export async function trackRecipeExecution({
   kind,
   rows,
   jobId,
-  expectedSubjectKey,
   initialExecution,
   notify,
   onUpsert,
@@ -110,7 +108,6 @@ export async function trackRecipeExecution({
   const eventsAbortController = new AbortController();
   void streamRecipeJobEvents({
     jobId,
-    expectedSubjectKey,
     signal: eventsAbortController.signal,
     lastEventId: latestExecution.lastEventId,
     onEvent: (event) => {
@@ -213,7 +210,7 @@ export async function trackRecipeExecution({
 
   try {
     while (!done) {
-      const status = await getRecipeJobStatus(jobId, { expectedSubjectKey });
+      const status = await getRecipeJobStatus(jobId);
       if (done && isTerminalStatus(lastStatus)) {
         break;
       }
@@ -230,17 +227,6 @@ export async function trackRecipeExecution({
   } catch (error) {
     const terminal = isTerminalStatus(lastStatus);
     if (!terminal) {
-      if (!notify && error instanceof RecipeApiError && error.status === 404) {
-        latestExecution = {
-          ...latestExecution,
-          status: "error",
-          error:
-            "This run belonged to a previous backend session and can no longer be resumed.",
-          finishedAt: Date.now(),
-        };
-        onUpsert(latestExecution);
-        return { success: false, terminal: true };
-      }
       const message = toErrorMessage(error, `${label} failed.`);
       latestExecution = {
         ...latestExecution,
@@ -259,9 +245,7 @@ export async function trackRecipeExecution({
   if (lastStatus === "completed") {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const finalStatus = await getRecipeJobStatus(jobId, {
-          expectedSubjectKey,
-        });
+        const finalStatus = await getRecipeJobStatus(jobId);
         latestExecution = applyExecutionStatusSnapshot(
           latestExecution,
           finalStatus,
@@ -286,6 +270,7 @@ export async function trackRecipeExecution({
       completedPayload.processor_artifacts !== null
         ? (completedPayload.processor_artifacts as Record<string, unknown>)
         : null;
+    const eventDatasetRows = Array.isArray(eventDataset) ? eventDataset : [];
     const shouldFetchPreviewDataset =
       kind === "preview" && !Array.isArray(eventDataset);
     const shouldFetchAnalysis =
@@ -296,15 +281,15 @@ export async function trackRecipeExecution({
 
     const [analysisResult, datasetResult] = await Promise.allSettled([
       shouldFetchAnalysis
-        ? getRecipeJobAnalysis(jobId, { expectedSubjectKey })
+        ? getRecipeJobAnalysis(jobId)
         : Promise.resolve(eventAnalysis),
       shouldFetchPreviewDataset || kind === "full"
-        ? getRecipeJobDataset(jobId, {
-            limit: DATASET_PAGE_SIZE,
-            offset: 0,
-            expectedSubjectKey,
-          })
-        : Promise.resolve({ dataset: eventDataset ?? [], total: rows }),
+        ? getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 })
+        : // The event carries every record produced, which is not always the number asked for.
+          Promise.resolve({
+            dataset: eventDatasetRows,
+            total: eventDatasetRows.length,
+          }),
     ]);
 
     const analysis =
@@ -341,6 +326,9 @@ export async function trackRecipeExecution({
       finishedAt: latestExecution.finishedAt ?? Date.now(),
     };
     onUpsert(latestExecution);
+    if (kind === "full") {
+      bumpInventoryVersion();
+    }
 
     if (notify) {
       if (kind === "preview") {

@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useRecipeExecutions } from "./use-recipe-executions";
+import { useRecipePersistence } from "./use-recipe-persistence";
 import type {
   RecipeExecutionKind,
   RecipeExecutionRecord,
 } from "../execution-types";
 import type { RecipeRunSettings } from "../stores/recipe-executions";
 import type { RecipeSnapshot } from "../utils/import";
-import type {
-  RecipePayload,
-  RecipePayloadResult,
-} from "../utils/payload/types";
-import { useRecipeExecutions } from "./use-recipe-executions";
-import { useRecipePersistence } from "./use-recipe-persistence";
+import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
 
 type SaveTone = "success" | "error";
 
@@ -20,13 +17,9 @@ type PersistRecipeFn = (input: {
   id: string | null;
   name: string;
   payload: RecipePayload;
-  revision?: number;
 }) => Promise<{
   id: string;
   updatedAt: number;
-  revision: number;
-  payload: RecipePayload;
-  removedCredentialPaths: string[];
 }>;
 
 type UseRecipeStudioActionsParams = {
@@ -34,7 +27,6 @@ type UseRecipeStudioActionsParams = {
   initialRecipeName: string;
   initialPayload: RecipePayload;
   initialSavedAt: number;
-  initialRevision: number;
   payloadResult: RecipePayloadResult;
   onPersistRecipe: PersistRecipeFn;
   resetRecipe: () => void;
@@ -71,8 +63,6 @@ type UseRecipeStudioActionsResult = {
   fullLoading: boolean;
   currentSignature: string;
   executions: RecipeExecutionRecord[];
-  hasOlderExecutions: boolean;
-  olderExecutionsLoading: boolean;
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
   persistRecipe: () => Promise<void>;
@@ -88,7 +78,6 @@ type UseRecipeStudioActionsResult = {
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
-  loadOlderExecutions: () => Promise<void>;
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
@@ -99,7 +88,6 @@ export function useRecipeStudioActions({
   initialRecipeName,
   initialPayload,
   initialSavedAt,
-  initialRevision,
   payloadResult,
   onPersistRecipe,
   resetRecipe,
@@ -113,7 +101,6 @@ export function useRecipeStudioActions({
     initialRecipeName,
     initialPayload,
     initialSavedAt,
-    initialRevision,
     payloadResult,
     onPersistRecipe,
     resetRecipe,
@@ -160,8 +147,6 @@ export function useRecipeStudioActions({
     fullLoading: executions.fullLoading,
     currentSignature: persistence.currentSignature,
     executions: executions.executions,
-    hasOlderExecutions: executions.hasOlderExecutions,
-    olderExecutionsLoading: executions.olderExecutionsLoading,
     selectedExecutionId: executions.selectedExecutionId,
     setSelectedExecutionId: executions.setSelectedExecutionId,
     persistRecipe: persistence.persistRecipe,
@@ -173,7 +158,6 @@ export function useRecipeStudioActions({
     runPreview: executions.runPreview,
     runFull: executions.runFull,
     cancelExecution: executions.cancelExecution,
-    loadOlderExecutions: executions.loadOlderExecutions,
     loadExecutionDatasetPage: executions.loadExecutionDatasetPage,
     copyRecipe: persistence.copyRecipe,
     importRecipe: persistence.importRecipe,

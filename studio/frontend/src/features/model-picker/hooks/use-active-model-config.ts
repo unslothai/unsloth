@@ -2,8 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
+import { usePlatformStore } from "@/config/env";
 import { useMemo } from "react";
-import type { PerModelConfig } from "../model-config/per-model-config";
+import {
+  type PerModelConfig,
+  isServedByLlamaCpp,
+  residentIsServedByMlx,
+} from "../model-config/per-model-config";
 
 export interface ActiveModelConfigState {
   checkpoint: string | null;
@@ -15,13 +20,39 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint) || null;
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
+  const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // preserve inherited launch intent until the corresponding control changes.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
+  const nBatch = useChatRuntimeStore((s) => s.nBatch);
+  const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
+  const specDraftCacheDtype = useChatRuntimeStore(
+    (s) => s.specDraftCacheDtype,
+  );
+  const loadMode = useChatRuntimeStore((s) => s.loadMode);
+  const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
+  const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -32,11 +63,25 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const selectedGpuIndexKind = useChatRuntimeStore(
     (s) => s.selectedGpuIndexKind,
   );
+  const splitRatio = useChatRuntimeStore((s) => s.splitRatio);
 
-  const isGguf =
-    activeGgufVariant != null ||
-    ggufContextLength != null ||
-    (checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf,
+    activeGgufVariant,
+    activeNativePathToken,
+    checkpoint,
+  });
+  const platform = usePlatformStore();
+  const isMlx = residentIsServedByMlx(
+    isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+    loadedIsMlx,
+  );
+
+  // Off-backend this stays null, or the model compares unequal to its own defaults
+  // over a field it cannot show.
+  const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -44,12 +89,25 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     }
     const base: PerModelConfig = {
       customContextLength: customContextLength ?? null,
-      maxSeqLength: isGguf ? null : maxSeqLength,
+      // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
+      // is the runtime's resolved length, and reading it back as the user's choice would
+      // pin every reload to whatever the first load happened to get.
+      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
+      mlxKvQuant: effectiveMlxKvQuant,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
+      reasoningBudget: isGguf ? reasoningBudget : -1,
+      reasoningBudgetMessage: isGguf ? reasoningBudgetMessage : "",
+      nBatch: nBatch ?? null,
+      nUbatch: nUbatch ?? null,
+      specDraftCacheDtype: specDraftCacheDtype ?? null,
+      loadMode: loadMode ?? null,
+      ctxCheckpoints: ctxCheckpoints ?? null,
+      cacheRam: cacheRam ?? null,
       tensorParallel: tensorParallel ?? false,
+      disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
@@ -62,23 +120,36 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nCpuMoe,
       selectedGpuIds,
       selectedGpuIndexKind,
+      tensorSplit: splitRatio,
     };
   }, [
     checkpoint,
     isGguf,
+    isMlx,
     maxSeqLength,
     customContextLength,
     kvCacheDtype,
+    effectiveMlxKvQuant,
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
+    nBatch,
+    nUbatch,
+    specDraftCacheDtype,
+    loadMode,
+    ctxCheckpoints,
+    cacheRam,
     tensorParallel,
+    disableVision,
     chatTemplateOverride,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
     selectedGpuIds,
     selectedGpuIndexKind,
+    splitRatio,
   ]);
 
   return { checkpoint, isGguf, config };

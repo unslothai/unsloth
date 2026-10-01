@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { UserAssetApiError } from "@/features/user-assets";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { normalizeNonEmptyName } from "@/utils";
-import { useCallback, useEffect, useMemo, useState } from "react";
 import { removeUnstructuredBlock } from "../api";
 import {
   buildSignature,
-  copyTextToClipboard,
   formatSavedLabel,
 } from "../executions/execution-helpers";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
-import { type RecipeSnapshot, importRecipePayload } from "../utils/import";
+import { importRecipePayload, type RecipeSnapshot } from "../utils/import";
 import type { RecipePayloadResult } from "../utils/payload/types";
 
 type SaveTone = "success" | "error";
@@ -21,13 +20,9 @@ type PersistRecipeFn = (input: {
   id: string | null;
   name: string;
   payload: RecipePayloadResult["payload"];
-  revision?: number;
 }) => Promise<{
   id: string;
   updatedAt: number;
-  revision: number;
-  payload: RecipePayloadResult["payload"];
-  removedCredentialPaths: string[];
 }>;
 
 type UseRecipePersistenceParams = {
@@ -35,7 +30,6 @@ type UseRecipePersistenceParams = {
   initialRecipeName: string;
   initialPayload: RecipePayloadResult["payload"];
   initialSavedAt: number;
-  initialRevision: number;
   payloadResult: RecipePayloadResult;
   onPersistRecipe: PersistRecipeFn;
   resetRecipe: () => void;
@@ -225,7 +219,6 @@ export function useRecipePersistence({
   initialRecipeName,
   initialPayload,
   initialSavedAt,
-  initialRevision,
   payloadResult,
   onPersistRecipe,
   resetRecipe,
@@ -239,12 +232,6 @@ export function useRecipePersistence({
   const [saveLoading, setSaveLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [currentRevision, setCurrentRevision] = useState(initialRevision);
-  const [conflict, setConflict] = useState<"changed" | "unavailable" | null>(
-    null,
-  );
-  const [redactedCredentialSignature, setRedactedCredentialSignature] =
-    useState<string | null>(null);
 
   const normalizedWorkflowName = useMemo(
     () => normalizeNonEmptyName(workflowName, "Unnamed"),
@@ -259,12 +246,7 @@ export function useRecipePersistence({
     savedSignature.length > 0 && currentSignature !== savedSignature;
   const saveTone: SaveTone =
     !isDirty && Boolean(lastSavedAt) ? "success" : "error";
-  const savedAtLabel =
-    conflict === "changed"
-      ? "Changed elsewhere. Save again to overwrite."
-      : conflict === "unavailable"
-        ? "Recipe is no longer available."
-        : formatSavedLabel(lastSavedAt);
+  const savedAtLabel = formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
     setInitialRecipeReady(false);
@@ -272,9 +254,6 @@ export function useRecipePersistence({
     resetRecipe();
     setWorkflowName(nextName);
     setLastSavedAt(initialSavedAt);
-    setCurrentRevision(initialRevision);
-    setConflict(null);
-    setRedactedCredentialSignature(null);
     setCopied(false);
 
     const parsed = importRecipePayload(JSON.stringify(initialPayload), {
@@ -293,7 +272,6 @@ export function useRecipePersistence({
     getCurrentPayloadFromStore,
     initialPayload,
     initialRecipeName,
-    initialRevision,
     initialSavedAt,
     loadRecipe,
     recipeId,
@@ -303,16 +281,6 @@ export function useRecipePersistence({
   const persistRecipe = useCallback(async (): Promise<void> => {
     if (saveLoading) {
       return;
-    }
-    if (conflict === "unavailable") {
-      toastError(
-        "Recipe is unavailable",
-        "It was deleted in another session and cannot be saved.",
-      );
-      return;
-    }
-    if (conflict === "changed") {
-      setConflict(null);
     }
     const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
     if (nextName !== workflowName) {
@@ -325,92 +293,33 @@ export function useRecipePersistence({
         id: recipeId,
         name: nextName,
         payload: currentPayload,
-        revision: currentRevision,
       });
       setLastSavedAt(result.updatedAt);
-      setCurrentRevision(result.revision);
-      setConflict(null);
-      setSavedSignature(buildSignature(nextName, result.payload));
-      if (result.removedCredentialPaths.length > 0) {
-        setRedactedCredentialSignature(currentSignature);
-        toastError(
-          "Credentials were not saved",
-          "Configure replacement environment variables before running this recipe.",
-        );
-      } else {
-        setRedactedCredentialSignature(null);
-      }
-      drainQueuedUploadCleanups(result.payload);
+      setSavedSignature(buildSignature(nextName, currentPayload));
+      drainQueuedUploadCleanups(currentPayload);
     } catch (error) {
       console.error("Save recipe failed:", error);
-      if (error instanceof UserAssetApiError) {
-        if (error.status === 409) {
-          if (
-            typeof error.detail.currentRevision === "number" &&
-            Number.isInteger(error.detail.currentRevision) &&
-            error.detail.currentRevision > 0
-          ) {
-            setCurrentRevision(error.detail.currentRevision);
-          }
-          setConflict("changed");
-          toastError(
-            "Recipe changed elsewhere",
-            "Your edits are still here. Review them, then save again to overwrite the newer server version.",
-          );
-          return;
-        }
-        if (error.status === 404 || error.status === 410) {
-          setConflict("unavailable");
-          toastError(
-            "Recipe is unavailable",
-            "It was deleted in another session and cannot be saved.",
-          );
-          return;
-        }
-      }
       toastError("Save failed", "Could not save recipe.");
     } finally {
       setSaveLoading(false);
     }
-  }, [
-    currentPayload,
-    currentRevision,
-    currentSignature,
-    conflict,
-    onPersistRecipe,
-    recipeId,
-    saveLoading,
-    workflowName,
-  ]);
+  }, [currentPayload, onPersistRecipe, recipeId, saveLoading, workflowName]);
 
   useEffect(() => {
-    if (
-      !isDirty ||
-      saveLoading ||
-      conflict ||
-      redactedCredentialSignature === currentSignature
-    ) {
+    if (!isDirty || saveLoading) {
       return;
     }
     const timeoutId = window.setTimeout(() => {
       void persistRecipe();
     }, 800);
     return () => window.clearTimeout(timeoutId);
-  }, [
-    conflict,
-    currentSignature,
-    isDirty,
-    persistRecipe,
-    redactedCredentialSignature,
-    saveLoading,
-  ]);
+  }, [isDirty, persistRecipe, saveLoading]);
 
-  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add
-  // then remove an unstructured seed before the 800ms debounce) keeps isDirty
-  // false, so the autosave effect never drains and the queued uid leaks its
-  // upload dir. Not-dirty means currentPayload equals the saved recipe, and
-  // drain skips the uid it still references, so only dirs no saved recipe
-  // points at are deleted (keeps the save-first invariant).
+  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add then remove an
+  // unstructured seed before the 800ms debounce) keeps isDirty false, so the autosave effect never
+  // drains and the queued uid leaks its upload dir. Not-dirty means currentPayload equals the saved
+  // recipe, and drain skips the uid it still references, so only dirs no saved recipe points at are
+  // deleted (keeps the save-first invariant).
   useEffect(() => {
     if (!initialRecipeReady || isDirty || saveLoading) {
       return;
@@ -424,9 +333,7 @@ export function useRecipePersistence({
       const safePayload = sanitizeSeedForShare(
         stripApiKeys(payloadResult.payload),
       );
-      const ok = await copyTextToClipboard(
-        JSON.stringify(safePayload, null, 2),
-      );
+      const ok = await copyToClipboard(JSON.stringify(safePayload, null, 2));
       if (!ok) {
         throw new Error("Clipboard not available.");
       }

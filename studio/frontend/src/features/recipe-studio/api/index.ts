@@ -1,23 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthSubjectKey } from "@/features/auth";
+import { authFetch } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import {
   formatFastApiDetail,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const DEFAULT_BASE = "/api/data-recipe";
-
-export class RecipeApiError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "RecipeApiError";
-    this.status = status;
-  }
-}
 
 export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
@@ -32,6 +24,7 @@ export type PublishRecipeJobRequest = {
   description: string;
   hf_token?: string | null;
   private?: boolean;
+  artifact_path?: string | null;
 };
 
 export type PublishRecipeJobResponse = {
@@ -109,8 +102,6 @@ export type JobStatusResponse = {
   dataset_rows?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   artifact_path?: string | null;
-  // biome-ignore lint/style/useNamingConvention: api schema
-  execution_type?: "preview" | "full" | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   started_at?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -236,24 +227,14 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
 }
 
-async function postJson<T>(
-  path: string,
-  payload: unknown,
-  options: { expectedSubjectKey?: string } = {},
-): Promise<T> {
-  const response = await authFetch(
-    `${DATA_DESIGNER_API_BASE}${path}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
     },
-    options.expectedSubjectKey
-      ? { expectedSubjectKey: options.expectedSubjectKey }
-      : undefined,
-  );
+    body: JSON.stringify(payload),
+  });
 
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -262,21 +243,10 @@ async function postJson<T>(
   return response.json();
 }
 
-async function getJson<T>(
-  path: string,
-  options: { expectedSubjectKey?: string } = {},
-): Promise<T> {
-  const expectedSubjectKey = options.expectedSubjectKey ?? getAuthSubjectKey();
-  const response = await authFetch(
-    `${DATA_DESIGNER_API_BASE}${path}`,
-    undefined,
-    { expectedSubjectKey },
-  );
+async function getJson<T>(path: string): Promise<T> {
+  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`);
   if (!response.ok) {
-    throw new RecipeApiError(
-      response.status,
-      await parseErrorResponse(response),
-    );
+    throw new Error(await parseErrorResponse(response));
   }
   return response.json();
 }
@@ -329,23 +299,20 @@ export async function validateRecipe(
 
 export async function createRecipeJob(
   payload: unknown,
-  options: { expectedSubjectKey?: string } = {},
 ): Promise<JobCreateResponse> {
-  return postJson<JobCreateResponse>("/jobs", payload, options);
+  return postJson<JobCreateResponse>("/jobs", payload);
 }
 
 export async function getRecipeJobStatus(
   jobId: string,
-  options: { expectedSubjectKey?: string } = {},
 ): Promise<JobStatusResponse> {
-  return getJson<JobStatusResponse>(`/jobs/${jobId}/status`, options);
+  return getJson<JobStatusResponse>(`/jobs/${jobId}/status`);
 }
 
 export async function getRecipeJobAnalysis(
   jobId: string,
-  options: { expectedSubjectKey?: string } = {},
 ): Promise<Record<string, unknown>> {
-  return getJson<Record<string, unknown>>(`/jobs/${jobId}/analysis`, options);
+  return getJson<Record<string, unknown>>(`/jobs/${jobId}/analysis`);
 }
 
 export async function getRecipeJobDataset(
@@ -353,15 +320,44 @@ export async function getRecipeJobDataset(
   options?: {
     limit?: number;
     offset?: number;
-    expectedSubjectKey?: string;
   },
 ): Promise<JobDatasetResponse> {
   const limit = options?.limit ?? 20;
   const offset = options?.offset ?? 0;
   return getJson<JobDatasetResponse>(
     `/jobs/${jobId}/dataset?limit=${limit}&offset=${offset}`,
-    options,
   );
+}
+
+export type RecipeJobDownloadFormat = "jsonl" | "parquet";
+
+export async function downloadRecipeJobDataset(
+  jobId: string,
+  options?: {
+    format?: RecipeJobDownloadFormat;
+    artifactPath?: string | null;
+    filename?: string | null;
+  },
+): Promise<{ url: string; filename: string }> {
+  const params = new URLSearchParams();
+  params.set("format", options?.format ?? "jsonl");
+  if (options?.artifactPath) {
+    params.set("artifact_path", options.artifactPath);
+  }
+  if (options?.filename) {
+    params.set("filename", options.filename);
+  }
+  // Minted over authFetch: it refreshes an expired session and surfaces an unexportable run
+  // before the save dialog opens. The server names the file, since a JSONL is zipped only when
+  // the artifact has images.
+  const { path, filename } = await getJson<{ path: string; filename: string }>(
+    `/jobs/${jobId}/download-url?${params.toString()}`,
+  );
+  // The same base every other call here uses, so a repointed VITE_DATA_DESIGNER_API is honoured.
+  // Its trailing slash is dropped: authFetch survives the // via FastAPI's redirect, but the
+  // native downloader refuses every 3xx, and only after the save location has been chosen.
+  const base = DATA_DESIGNER_API_BASE.replace(/\/+$/, "");
+  return { url: apiUrl(`${base}${path}`), filename };
 }
 
 export async function cancelRecipeJob(
@@ -405,7 +401,6 @@ export async function listMcpTools(
 export async function streamRecipeJobEvents(options: {
   jobId: string;
   signal: AbortSignal;
-  expectedSubjectKey?: string;
   lastEventId?: number | null;
   onOpen?: () => void;
   onEvent: (event: JobEvent) => void;
@@ -417,16 +412,10 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
-    {
-      expectedSubjectKey: options.expectedSubjectKey ?? getAuthSubjectKey(),
-    },
+    { headers, signal: options.signal },
   );
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -488,13 +477,24 @@ type UnstructuredFileUploadResponse = {
   error?: string;
 };
 
+/** A desktop drop, redeemed server-side: Tauri hands the webview a path, never
+ * a File, so the bytes never cross the bridge. */
+export interface NativeUnstructuredUpload {
+  nativePathLease: string;
+  name: string;
+  size: number;
+}
+
+export type UnstructuredUploadSource = File | NativeUnstructuredUpload;
+
 export async function uploadUnstructuredFile(
-  file: File,
+  file: UnstructuredUploadSource,
   blockId: string,
   signal?: AbortSignal,
 ): Promise<UnstructuredFileUploadResponse> {
   const formData = new FormData();
-  formData.append("file", file);
+  if (file instanceof File) formData.append("file", file);
+  else formData.append("nativePathLease", file.nativePathLease);
   formData.append("block_id", blockId);
 
   const res = await authFetch(

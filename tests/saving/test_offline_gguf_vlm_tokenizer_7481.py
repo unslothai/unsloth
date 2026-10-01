@@ -212,8 +212,8 @@ def test_offline_aware_load_persists_local_only_for_saving(tmp_path, monkeypatch
     """
     from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
 
-    # Snapshot has tokenizer metadata but deliberately no tokenizer.model, so the
-    # cache probe misses and only the local-only stamp can stop the Hub request.
+    # Snapshot has tokenizer metadata but deliberately no tokenizer.model, so the cache probe misses and only the
+    # local-only stamp can stop the Hub request.
     _write_gemma4_cache(tmp_path)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -318,7 +318,6 @@ def test_custom_cache_dir_survives_to_saving(tmp_path, monkeypatch):
     snap = _write_gemma4_cache(custom_cache)
     (snap / "tokenizer.model").write_bytes(b"sp-model")
 
-    # The environment points somewhere else entirely.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unrelated"))

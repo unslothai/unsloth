@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
-import { getInferenceStatus, loadModel } from "@/features/chat";
-import { getServerRecipeExecutionDataset } from "@/features/user-assets";
+import { usePlatformStore } from "@/config/env";
+import {
+  getInferenceStatus,
+  loadModel,
+  offloadCountsFrom,
+  offloadWarning,
+  validateModel,
+} from "@/features/chat";
+import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { isOllamaModelId } from "@/features/hub/lib/model-identity";
+import { DEFAULT_MAX_SEQ_LENGTH, isServedByMlx } from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { cancelRecipeJob, createRecipeJob, validateRecipe } from "../api";
+import {
+  cancelRecipeJob,
+  createRecipeJob,
+  getRecipeJobDataset,
+  validateRecipe,
+} from "../api";
 import { saveRecipeExecution } from "../data/executions-db";
 import type {
   RecipeExecutionKind,
@@ -32,8 +38,7 @@ import {
 } from "../executions/execution-helpers";
 import {
   findResumableExecution,
-  hydrateCompletedFullExecutionDataset,
-  loadSortedRecipeExecutionPage,
+  loadSortedRecipeExecutions,
 } from "../executions/hydration";
 import {
   buildExecutionPayload,
@@ -51,36 +56,6 @@ import type {
 } from "../utils/payload/types";
 
 const GGUF_MODEL_PATTERN = /gguf/i;
-
-type ExecutionHistoryOwner = {
-  subjectKey: string;
-  recipeId: string;
-  generation: number;
-  lifecycle: object;
-};
-
-type ExecutionHistoryState = {
-  owner: ExecutionHistoryOwner | null;
-  cursor: string | null;
-  loadingOlder: boolean;
-};
-
-function sameExecutionHistoryOwner(
-  left: ExecutionHistoryOwner | null,
-  right: ExecutionHistoryOwner,
-): boolean {
-  return Boolean(
-    left === right &&
-      left &&
-      left.subjectKey === right.subjectKey &&
-      left.recipeId === right.recipeId &&
-      left.generation === right.generation,
-  );
-}
-
-function getServerAuthSubjectKey(): string {
-  return "anonymous";
-}
 
 function collectUsedLlmModelAliases(payload: RecipePayload): Set<string> {
   const columns = Array.isArray(payload.recipe.columns)
@@ -104,6 +79,14 @@ type LocalModelSelection = {
   target: string;
   ggufVariant: string;
   aliases: string[];
+  requestedContextLength?: number | null;
+  isMlx?: boolean;
+  /** What that load ASKED for, captured the same way as the context request: a restore
+   *  replays it, while a recipe's own target runs at the defaults. Requested rather than
+   *  effective, because the effective pair folds in a LLAMA_ARG_THINK_BUDGET* no request can
+   *  express, and comparing against that would reload on every run and never converge. */
+  reasoningBudget?: number;
+  reasoningBudgetMessage?: string;
 };
 
 type LocalModelLoadPlan =
@@ -251,20 +234,86 @@ function localSelectionMatchesActive(input: {
   );
 }
 
-async function isLocalModelAlreadyLoaded(
+/** One blob has three spellings and can carry two tags, so a disagreement is put to the server. */
+async function localSelectionMatchesResident(input: {
+  target: string;
+  ggufVariant: string;
+  activeModel: string | null | undefined;
+  activeVariant: string;
+}): Promise<boolean> {
+  if (localSelectionMatchesActive(input)) {
+    return true;
+  }
+  if (!isOllamaModelId(input.target)) {
+    return false;
+  }
+  try {
+    const validated = await validateModel({
+      // biome-ignore lint/style/useNamingConvention: api schema
+      model_path: input.target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      hf_token: null,
+      // Only `resident` is read; these are what /validate assumes when a caller sends none.
+      // biome-ignore lint/style/useNamingConvention: api schema
+      max_seq_length: 0,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      load_in_4bit: true,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      is_lora: false,
+    });
+    return validated.resident === true;
+  } catch {
+    return false;
+  }
+}
+
+/** A context request, read only where it pins: llama.cpp echoes n_ctx while Auto, MLX does not. */
+function contextIntent(
+  value: number | null | undefined,
+  isMlx: boolean | null | undefined,
+): number | null {
+  return isMlx && typeof value === "number" && value > 0 ? value : null;
+}
+
+export async function isLocalModelAlreadyLoaded(
   selection: LocalModelSelection,
 ): Promise<boolean> {
-  const { target, ggufVariant } = selection;
+  const {
+    target,
+    ggufVariant,
+    requestedContextLength,
+    reasoningBudget,
+    reasoningBudgetMessage,
+  } = selection;
   try {
     const status = await getInferenceStatus();
-    return localSelectionMatchesActive({
-      target,
-      ggufVariant,
-      activeModel: status.model_identifier ?? status.active_model,
-      activeVariant: status.gguf_variant?.trim() ?? "",
-    });
+    if (
+      !(await localSelectionMatchesResident({
+        target,
+        ggufVariant,
+        activeModel: status.model_identifier ?? status.active_model,
+        activeVariant: status.gguf_variant?.trim() ?? "",
+      }))
+    ) {
+      return false;
+    }
+    // A different context intent is a different load: asking for nothing inherits no pin.
+    const residentIsMlx = status.is_mlx ?? false;
+    if (
+      contextIntent(requestedContextLength, residentIsMlx) !==
+      contextIntent(status.requested_context_length, residentIsMlx)
+    ) {
+      return false;
+    }
+    // Same rule for reasoning: a recipe asked for the defaults, so Chat's budget would
+    // otherwise change what the run produces. Both sides are REQUESTED values, so an
+    // inherited environment default reads as equal and cannot loop.
+    return (
+      (reasoningBudget ?? -1) === (status.requested_reasoning_budget ?? -1) &&
+      (reasoningBudgetMessage ?? "") ===
+        (status.requested_reasoning_budget_message ?? "")
+    );
   } catch {
-    // Fall through to load attempt; the backend will re-error if needed.
     return false;
   }
 }
@@ -272,7 +321,13 @@ async function isLocalModelAlreadyLoaded(
 async function loadLocalModelSelection(
   selection: LocalModelSelection,
 ): Promise<string | null> {
-  const { target, ggufVariant } = selection;
+  const {
+    target,
+    ggufVariant,
+    requestedContextLength,
+    reasoningBudget,
+    reasoningBudgetMessage,
+  } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
   let loadToastDismissed = false;
   const toastId = toast.message(`Loading ${modelLabel}...`, {
@@ -286,13 +341,26 @@ async function loadLocalModelSelection(
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
-    await loadModel({
+    // A recipe's own target loads the way an unpinned chat model does; restoring the
+    // model it displaced replays what that model's own load asked for.
+    const platform = usePlatformStore.getState();
+    const loadResp = await loadModel({
       // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
       // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
       // biome-ignore lint/style/useNamingConvention: api schema
-      max_seq_length: isGguf ? 0 : 4096,
+      max_seq_length:
+        requestedContextLength ??
+        unpinnedLoadContext(
+          isGguf,
+          isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+          DEFAULT_MAX_SEQ_LENGTH,
+        ),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reasoning_budget: reasoningBudget ?? -1,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reasoning_budget_message: reasoningBudgetMessage ?? "",
       // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -310,15 +378,18 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
+    const offloadNotice = offloadWarning(offloadCountsFrom(loadResp));
     const successOptions = {
-      description: undefined,
-      duration: 2000,
+      description: offloadNotice?.description,
+      duration: offloadNotice ? 8000 : 2000,
       icon: undefined,
     };
+    const title = `Loaded ${modelLabel}${offloadNotice?.titleSuffix ?? ""}`;
+    const showToast = offloadNotice ? toast.warning : toast.success;
     if (loadToastDismissed) {
-      toast.success(`Loaded ${modelLabel}`, successOptions);
+      showToast(title, successOptions);
     } else {
-      toast.success(`Loaded ${modelLabel}`, { ...successOptions, id: toastId });
+      showToast(title, { ...successOptions, id: toastId });
     }
     return null;
   } catch (error) {
@@ -350,6 +421,10 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
       target,
       ggufVariant: status.gguf_variant?.trim() ?? "",
       aliases: ["previous Chat model"],
+      requestedContextLength: status.requested_context_length ?? null,
+      isMlx: status.is_mlx ?? false,
+      reasoningBudget: status.requested_reasoning_budget ?? -1,
+      reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",
     };
   } catch {
     return null;
@@ -374,6 +449,10 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         target,
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
+        requestedContextLength: status.requested_context_length ?? null,
+        isMlx: status.is_mlx ?? false,
+        reasoningBudget: status.requested_reasoning_budget ?? -1,
+        reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",
       },
       unrestorableLabel: null,
     };
@@ -389,7 +468,11 @@ function isSameLocalModelSelection(
   return Boolean(
     left &&
       left.target.toLowerCase() === right.target.toLowerCase() &&
-      left.ggufVariant === right.ggufVariant,
+      left.ggufVariant === right.ggufVariant &&
+      contextIntent(left.requestedContextLength, left.isMlx) ===
+        contextIntent(right.requestedContextLength, right.isMlx) &&
+      (left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1) &&
+      (left.reasoningBudgetMessage ?? "") === (right.reasoningBudgetMessage ?? ""),
   );
 }
 
@@ -494,8 +577,6 @@ type UseRecipeExecutionsResult = {
   previewLoading: boolean;
   fullLoading: boolean;
   executions: RecipeExecutionRecord[];
-  hasOlderExecutions: boolean;
-  olderExecutionsLoading: boolean;
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
   openRunDialog: (kind: RecipeExecutionKind) => void;
@@ -510,7 +591,6 @@ type UseRecipeExecutionsResult = {
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
-  loadOlderExecutions: () => Promise<void>;
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
 };
 
@@ -542,21 +622,7 @@ export function useRecipeExecutions({
   onExecutionStart,
   onPreviewSuccess,
 }: UseRecipeExecutionsParams): UseRecipeExecutionsResult {
-  const authSubjectKey = useSyncExternalStore(
-    subscribeAuthSubject,
-    getAuthSubjectKey,
-    getServerAuthSubjectKey,
-  );
   const [validateLoading, setValidateLoading] = useState(false);
-  const [executionHistory, setExecutionHistory] =
-    useState<ExecutionHistoryState>({
-      owner: null,
-      cursor: null,
-      loadingOlder: false,
-    });
-  const historyGenerationRef = useRef(0);
-  const olderHistoryRequestRef = useRef<object | null>(null);
-  const datasetHydrationRequestsRef = useRef(new Set<string>());
   const [validateResult, setValidateResult] = useState<{
     valid: boolean;
     errors: string[];
@@ -584,7 +650,6 @@ export function useRecipeExecutions({
     setPreviewLoading,
     setFullLoading,
     setExecutions,
-    mergeExecutions,
     upsertExecution,
     selectExecution,
     resetForRecipe,
@@ -611,7 +676,6 @@ export function useRecipeExecutions({
       setPreviewLoading: state.setPreviewLoading,
       setFullLoading: state.setFullLoading,
       setExecutions: state.setExecutions,
-      mergeExecutions: state.mergeExecutions,
       upsertExecution: state.upsertExecution,
       selectExecution: state.selectExecution,
       resetForRecipe: state.resetForRecipe,
@@ -619,182 +683,60 @@ export function useRecipeExecutions({
   );
   const payloadErrorMessage = payloadResult.errors[0] ?? "Invalid payload.";
 
-  const historyLifecycle = useMemo(
-    () => ({
-      subjectKey: authSubjectKey,
-      recipeId,
-      initialRunRows,
-      onPreviewSuccess,
-      resetForRecipe,
-      setExecutions,
-      setPreviewRows,
-      setRunErrors,
-      upsertExecution,
-    }),
-    [
-      authSubjectKey,
-      initialRunRows,
-      onPreviewSuccess,
-      recipeId,
-      resetForRecipe,
-      setExecutions,
-      setPreviewRows,
-      setRunErrors,
-      upsertExecution,
-    ],
-  );
-  const historyLifecycleRef = useRef(historyLifecycle);
-  useLayoutEffect(() => {
-    historyLifecycleRef.current = historyLifecycle;
-  }, [historyLifecycle]);
-  const activeExecutionHistory =
-    executionHistory.owner?.lifecycle === historyLifecycle
-      ? executionHistory
-      : null;
-  const executionHistoryCursor = activeExecutionHistory?.cursor ?? null;
-  const olderExecutionsLoading = activeExecutionHistory?.loadingOlder ?? false;
-  const visibleExecutions = activeExecutionHistory ? executions : [];
-  const visibleSelectedExecutionId = activeExecutionHistory
-    ? selectedExecutionId
-    : null;
-
-  const isExecutionOwnerActive = useCallback(
-    (owner: ExecutionHistoryOwner): boolean =>
-      historyGenerationRef.current === owner.generation &&
-      getAuthSubjectKey() === owner.subjectKey &&
-      historyLifecycleRef.current === owner.lifecycle,
-    [],
-  );
-
-  const upsertAndPersistForOwner = useCallback(
-    (owner: ExecutionHistoryOwner, record: RecipeExecutionRecord): void => {
-      if (
-        !isExecutionOwnerActive(owner) ||
-        record.recipeId !== owner.recipeId
-      ) {
-        return;
-      }
+  const upsertAndPersist = useCallback(
+    (record: RecipeExecutionRecord): void => {
       const normalizedRecord = withExecutionDefaults(record);
       upsertExecution(normalizedRecord);
-      saveRecipeExecution(normalizedRecord, {
-        subjectKey: owner.subjectKey,
-        recipeId: owner.recipeId,
-        generation: owner.generation,
-        isCurrent: () => isExecutionOwnerActive(owner),
-      }).catch((error) => {
+      saveRecipeExecution(normalizedRecord).catch((error) => {
         // biome-ignore lint/suspicious/noConsole: background persistence failures should not interrupt the UI
         console.error("Save recipe execution failed:", error);
       });
     },
-    [isExecutionOwnerActive, upsertExecution],
+    [upsertExecution],
   );
 
   useEffect(() => {
     let cancelled = false;
-    const owner: ExecutionHistoryOwner = {
-      subjectKey: historyLifecycle.subjectKey,
-      recipeId: historyLifecycle.recipeId,
-      generation: historyGenerationRef.current + 1,
-      lifecycle: historyLifecycle,
-    };
-    historyGenerationRef.current = owner.generation;
-    olderHistoryRequestRef.current = null;
-    const datasetHydrationRequests = datasetHydrationRequestsRef.current;
-    datasetHydrationRequests.clear();
 
-    const isActive = (): boolean =>
-      !cancelled &&
-      historyGenerationRef.current === owner.generation &&
-      getAuthSubjectKey() === owner.subjectKey &&
-      historyLifecycleRef.current === owner.lifecycle;
-
-    historyLifecycle.resetForRecipe();
+    resetForRecipe();
 
     // Seed previewRows from the recipe's original run.rows (the loaded JSON, not
     // the rebuilt payload, which hardcodes 5). Templates ship a suggested preview
     // size (e.g. GitHub Support Bot: 10); honor it so users don't see a surprise 5.
     if (
-      typeof historyLifecycle.initialRunRows === "number" &&
-      Number.isFinite(historyLifecycle.initialRunRows) &&
-      historyLifecycle.initialRunRows > 0 &&
-      historyLifecycle.initialRunRows !== 5
+      typeof initialRunRows === "number" &&
+      Number.isFinite(initialRunRows) &&
+      initialRunRows > 0 &&
+      initialRunRows !== 5
     ) {
-      historyLifecycle.setPreviewRows(
-        Math.floor(historyLifecycle.initialRunRows),
-      );
+      setPreviewRows(Math.floor(initialRunRows));
     }
 
     async function hydrate(): Promise<void> {
       try {
-        const page = await loadSortedRecipeExecutionPage(owner.recipeId);
-        if (!isActive()) {
+        const records = await loadSortedRecipeExecutions(recipeId);
+        if (cancelled) {
           return;
         }
 
-        historyLifecycle.setExecutions(page.executions);
-        setExecutionHistory({
-          owner,
-          cursor: page.nextCursor,
-          loadingOlder: false,
-        });
-        const initiallySelected = page.executions[0];
-        if (
-          initiallySelected?.kind === "full" &&
-          initiallySelected.status === "completed" &&
-          initiallySelected.jobId
-        ) {
-          const requestKey = `${owner.generation}:${initiallySelected.id}`;
-          datasetHydrationRequests.add(requestKey);
-          void hydrateCompletedFullExecutionDataset(initiallySelected)
-            .then((hydrated) => {
-              if (
-                isActive() &&
-                useRecipeExecutionsStore.getState().selectedExecutionId ===
-                  initiallySelected.id
-              ) {
-                // Hydrating memory-only pages
-                // must not persist metadata.
-                historyLifecycle.upsertExecution(hydrated);
-              }
-            })
-            .catch((error) => {
-              if (isActive()) {
-                // biome-ignore lint/suspicious/noConsole: hydration failure is a non-blocking diagnostic
-                console.error("Load execution dataset page failed:", error);
-              }
-            })
-            .finally(() => {
-              datasetHydrationRequests.delete(requestKey);
-            });
-        }
-        const resumable = findResumableExecution(page.executions);
+        setExecutions(records);
+        const resumable = findResumableExecution(records);
         if (!resumable?.jobId) {
           return;
         }
 
-        void trackRecipeExecution({
+        trackRecipeExecution({
           label: executionLabel(resumable.kind),
           kind: resumable.kind,
           rows: resumable.rows,
           jobId: resumable.jobId,
-          expectedSubjectKey: owner.subjectKey,
           initialExecution: resumable,
           notify: false,
-          onUpsert: (record) => {
-            if (isActive()) upsertAndPersistForOwner(owner, record);
-          },
-          onSetPreviewErrors: (errors) => {
-            if (isActive()) historyLifecycle.setRunErrors(errors);
-          },
-          onPreviewSuccess: () => {
-            if (isActive()) historyLifecycle.onPreviewSuccess?.();
-          },
+          onUpsert: upsertAndPersist,
+          onSetPreviewErrors: setRunErrors,
+          onPreviewSuccess,
         });
       } catch (error) {
-        if (!isActive()) return;
-        // Keep the cleared owner store active so outages neither hide new runs nor expose stale data.
-        historyLifecycle.setExecutions([]);
-        setExecutionHistory({ owner, cursor: null, loadingOlder: false });
         // biome-ignore lint/suspicious/noConsole: hydration failures are non-blocking diagnostics
         console.error("Load recipe executions failed:", error);
       }
@@ -804,70 +746,16 @@ export function useRecipeExecutions({
 
     return () => {
       cancelled = true;
-      if (historyGenerationRef.current === owner.generation) {
-        historyGenerationRef.current += 1;
-      }
-      olderHistoryRequestRef.current = null;
-      datasetHydrationRequests.clear();
     };
-  }, [historyLifecycle, upsertAndPersistForOwner]);
-
-  const loadOlderExecutions = useCallback(async (): Promise<void> => {
-    const owner = activeExecutionHistory?.owner;
-    if (
-      !owner ||
-      !executionHistoryCursor ||
-      olderExecutionsLoading ||
-      olderHistoryRequestRef.current
-    ) {
-      return;
-    }
-    const cursor = executionHistoryCursor;
-    const request = {};
-    olderHistoryRequestRef.current = request;
-    const isActive = (): boolean =>
-      historyGenerationRef.current === owner.generation &&
-      getAuthSubjectKey() === owner.subjectKey &&
-      historyLifecycleRef.current === owner.lifecycle;
-    setExecutionHistory((current) =>
-      sameExecutionHistoryOwner(current.owner, owner)
-        ? { ...current, loadingOlder: true }
-        : current,
-    );
-    try {
-      const page = await loadSortedRecipeExecutionPage(owner.recipeId, cursor);
-      if (!isActive()) {
-        return;
-      }
-      mergeExecutions(page.executions);
-      setExecutionHistory((current) =>
-        sameExecutionHistoryOwner(current.owner, owner)
-          ? { ...current, cursor: page.nextCursor }
-          : current,
-      );
-    } catch (error) {
-      if (!isActive()) return;
-      toastError(
-        "Could not load older runs",
-        toErrorMessage(error, "Execution history could not be loaded."),
-      );
-    } finally {
-      if (olderHistoryRequestRef.current === request) {
-        olderHistoryRequestRef.current = null;
-        if (isActive()) {
-          setExecutionHistory((current) =>
-            sameExecutionHistoryOwner(current.owner, owner)
-              ? { ...current, loadingOlder: false }
-              : current,
-          );
-        }
-      }
-    }
   }, [
-    activeExecutionHistory,
-    executionHistoryCursor,
-    mergeExecutions,
-    olderExecutionsLoading,
+    initialRunRows,
+    onPreviewSuccess,
+    recipeId,
+    resetForRecipe,
+    setExecutions,
+    setPreviewRows,
+    setRunErrors,
+    upsertAndPersist,
   ]);
 
   const readPayload = useCallback((): RecipePayload | null => {
@@ -898,20 +786,6 @@ export function useRecipeExecutions({
       restorePrevious?: (() => Promise<void>) | null;
     }): Promise<boolean> => {
       const { kind, payload, rows, settings, runName, restorePrevious } = input;
-      const owner = activeExecutionHistory?.owner;
-      if (!owner || !isExecutionOwnerActive(owner)) {
-        toastError(
-          "Runs are still loading",
-          "Wait for this recipe's run history to finish loading and try again.",
-        );
-        return false;
-      }
-      const ownedUpsert = (record: RecipeExecutionRecord): void => {
-        upsertAndPersistForOwner(owner, record);
-      };
-      const setOwnedRunErrors = (errors: string[]): void => {
-        if (isExecutionOwnerActive(owner)) setRunErrors(errors);
-      };
       const setLoading =
         kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
@@ -925,7 +799,7 @@ export function useRecipeExecutions({
         runName,
       });
 
-      ownedUpsert(baseExecution);
+      upsertAndPersist(baseExecution);
       onExecutionStart?.();
       setRunDialogOpen(false);
 
@@ -939,44 +813,37 @@ export function useRecipeExecutions({
           settings,
           runName,
         });
-        const createdJob = await createRecipeJob(jobPayload, {
-          expectedSubjectKey: owner.subjectKey,
-        });
+        const createdJob = await createRecipeJob(jobPayload);
         jobCreated = true;
         const executionWithJob = {
           ...baseExecution,
           jobId: createdJob.job_id,
         };
-        ownedUpsert(executionWithJob);
+        upsertAndPersist(executionWithJob);
 
         const tracked = await trackRecipeExecution({
           label,
           kind,
           rows,
           jobId: createdJob.job_id,
-          expectedSubjectKey: owner.subjectKey,
           initialExecution: executionWithJob,
           notify: true,
-          onUpsert: ownedUpsert,
-          onSetPreviewErrors: setOwnedRunErrors,
-          onPreviewSuccess: () => {
-            if (isExecutionOwnerActive(owner)) onPreviewSuccess?.();
-          },
+          onUpsert: upsertAndPersist,
+          onSetPreviewErrors: setRunErrors,
+          onPreviewSuccess,
         });
         shouldRestorePrevious = tracked.terminal;
         return tracked.success;
       } catch (error) {
         const message = toErrorMessage(error, `${label} request failed.`);
-        if (isExecutionOwnerActive(owner)) {
-          ownedUpsert({
-            ...baseExecution,
-            status: "error",
-            error: message,
-            finishedAt: Date.now(),
-          });
-          setRunErrors([message]);
-          toastError(`${label} failed`, message);
-        }
+        upsertAndPersist({
+          ...baseExecution,
+          status: "error",
+          error: message,
+          finishedAt: Date.now(),
+        });
+        setRunErrors([message]);
+        toastError(`${label} failed`, message);
         if (!jobCreated) {
           shouldRestorePrevious = true;
         }
@@ -985,13 +852,11 @@ export function useRecipeExecutions({
         if (shouldRestorePrevious && restorePrevious) {
           await restorePrevious();
         }
-        if (isExecutionOwnerActive(owner)) setLoading(false);
+        setLoading(false);
       }
     },
     [
-      activeExecutionHistory,
       currentSignature,
-      isExecutionOwnerActive,
       onExecutionStart,
       onPreviewSuccess,
       recipeId,
@@ -999,7 +864,7 @@ export function useRecipeExecutions({
       setPreviewLoading,
       setRunDialogOpen,
       setRunErrors,
-      upsertAndPersistForOwner,
+      upsertAndPersist,
     ],
   );
 
@@ -1082,11 +947,10 @@ export function useRecipeExecutions({
         return false;
       }
 
-      // Recipe and Chat share one singleton local inference backend. This direct
-      // load is a point-in-time handoff to job creation, not a lease: if Chat
-      // swaps models after this succeeds, the backend runs against current state.
-      // A future generation token should be validated across this load and the
-      // `/jobs` loaded-model gate.
+      // Recipe and Chat share one singleton local inference backend. This direct load is a
+      // point-in-time handoff to job creation, not a lease: if Chat swaps models after this
+      // succeeds, the backend runs against current state. A future generation token should be
+      // validated across this load and the `/jobs` loaded-model gate.
       const restorePrevious = await prepareLocalModelForExecution(payload);
       if (restorePrevious === false) {
         return false;
@@ -1234,52 +1098,31 @@ export function useRecipeExecutions({
 
   const cancelExecution = useCallback(
     async (id: string): Promise<void> => {
-      const owner = activeExecutionHistory?.owner;
-      const execution = owner
-        ? executions.find((entry) => entry.id === id)
-        : undefined;
-      if (
-        !owner ||
-        !isExecutionOwnerActive(owner) ||
-        execution?.recipeId !== owner.recipeId ||
-        !execution.jobId
-      ) {
+      const execution = executions.find((entry) => entry.id === id);
+      if (!execution?.jobId) {
         return;
       }
       try {
         await cancelRecipeJob(execution.jobId);
-        upsertAndPersistForOwner(owner, {
+        upsertAndPersist({
           ...execution,
           status: "cancelling",
         });
       } catch (error) {
-        if (isExecutionOwnerActive(owner)) {
-          const message = toErrorMessage(error, "Could not cancel execution.");
-          toastError("Cancel failed", message);
-        }
+        const message = toErrorMessage(error, "Could not cancel execution.");
+        toastError("Cancel failed", message);
       }
     },
-    [
-      activeExecutionHistory,
-      executions,
-      isExecutionOwnerActive,
-      upsertAndPersistForOwner,
-    ],
+    [executions, upsertAndPersist],
   );
 
   const loadExecutionDatasetPage = useCallback(
     async (id: string, page: number): Promise<void> => {
-      const owner = activeExecutionHistory?.owner;
-      const execution = owner
-        ? executions.find((entry) => entry.id === id)
-        : undefined;
+      const execution = executions.find((entry) => entry.id === id);
       if (
-        !owner ||
-        !isExecutionOwnerActive(owner) ||
         !execution ||
-        execution.recipeId !== owner.recipeId ||
         execution.kind !== "full" ||
-        execution.status !== "completed" ||
+        !execution.jobId ||
         page < 1
       ) {
         return;
@@ -1288,90 +1131,34 @@ export function useRecipeExecutions({
       const pageSize = execution.datasetPageSize || DATASET_PAGE_SIZE;
       const offset = (page - 1) * pageSize;
       try {
-        const response = await getServerRecipeExecutionDataset(
-          execution.recipeId,
-          execution.id,
-          {
-            limit: pageSize,
-            offset,
-          },
-        );
+        const response = await getRecipeJobDataset(execution.jobId, {
+          limit: pageSize,
+          offset,
+        });
         const dataset = normalizeDatasetRows(response.dataset);
         const total =
           typeof response.total === "number"
             ? response.total
             : execution.datasetTotal;
-        if (!isExecutionOwnerActive(owner)) return;
-        upsertExecution({
+        upsertAndPersist({
           ...execution,
           dataset,
           datasetTotal: total,
           datasetPage: page,
         });
       } catch (error) {
-        if (isExecutionOwnerActive(owner)) {
-          const message = toErrorMessage(error, "Could not load dataset page.");
-          toastError("Dataset page failed", message);
-        }
+        const message = toErrorMessage(error, "Could not load dataset page.");
+        toastError("Dataset page failed", message);
       }
     },
-    [
-      activeExecutionHistory,
-      executions,
-      isExecutionOwnerActive,
-      upsertExecution,
-    ],
+    [executions, upsertAndPersist],
   );
 
   const setSelectedExecutionId = useCallback(
     (id: string): void => {
       selectExecution(id);
-      const owner = activeExecutionHistory?.owner;
-      const execution = owner
-        ? executions.find((entry) => entry.id === id)
-        : undefined;
-      const requestKey = owner ? `${owner.generation}:${id}` : id;
-      if (
-        !owner ||
-        !execution ||
-        execution.kind !== "full" ||
-        execution.status !== "completed" ||
-        !execution.jobId ||
-        execution.dataset.length > 0 ||
-        datasetHydrationRequestsRef.current.has(requestKey)
-      ) {
-        return;
-      }
-
-      datasetHydrationRequestsRef.current.add(requestKey);
-      void hydrateCompletedFullExecutionDataset(execution)
-        .then((hydrated) => {
-          const stillActive =
-            historyGenerationRef.current === owner.generation &&
-            getAuthSubjectKey() === owner.subjectKey &&
-            useRecipeExecutionsStore.getState().selectedExecutionId === id;
-          if (stillActive) {
-            // Hydrating memory-only pages
-            // must not persist metadata.
-            upsertExecution(hydrated);
-          }
-        })
-        .catch((error) => {
-          if (
-            historyGenerationRef.current === owner.generation &&
-            getAuthSubjectKey() === owner.subjectKey
-          ) {
-            toastError(
-              "Dataset page failed",
-              toErrorMessage(error, "Could not load dataset page."),
-            );
-          }
-        })
-        .finally(() => {
-          datasetHydrationRequestsRef.current.delete(requestKey);
-        });
     },
-    [activeExecutionHistory, executions, selectExecution, upsertExecution],
+    [selectExecution],
   );
 
   return {
@@ -1390,10 +1177,8 @@ export function useRecipeExecutions({
     setRunSettings,
     previewLoading,
     fullLoading,
-    executions: visibleExecutions,
-    hasOlderExecutions: executionHistoryCursor !== null,
-    olderExecutionsLoading,
-    selectedExecutionId: visibleSelectedExecutionId,
+    executions,
+    selectedExecutionId,
     setSelectedExecutionId,
     openRunDialog,
     runFromDialog,
@@ -1403,7 +1188,6 @@ export function useRecipeExecutions({
     runPreview,
     runFull,
     cancelExecution,
-    loadOlderExecutions,
     loadExecutionDatasetPage,
   };
 }

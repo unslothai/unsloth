@@ -2,7 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { ArrowRight01Icon, CheckmarkCircle02Icon, Copy01Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import {
+  CheckmarkCircle02Icon,
+  Copy01Icon,
+  Key01Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,9 +23,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
 import type { RecipeExecutionRecord } from "../../execution-types";
-import { copyTextToClipboard } from "../../executions/execution-helpers";
 
 type PublishExecutionDialogProps = {
   open: boolean;
@@ -29,6 +36,7 @@ type PublishExecutionDialogProps = {
     description: string;
     hf_token?: string | null;
     private: boolean;
+    artifact_path?: string | null;
   }) => Promise<{ url: string }>;
 };
 
@@ -39,7 +47,7 @@ function getExecutionRecordCount(execution: RecipeExecutionRecord | null): numbe
   if (typeof execution.analysis?.num_records === "number") {
     return execution.analysis.num_records;
   }
-  if (execution.datasetTotal > 0) {
+  if (typeof execution.datasetTotal === "number" && execution.datasetTotal > 0) {
     return execution.datasetTotal;
   }
   if (execution.rows > 0) {
@@ -103,8 +111,7 @@ export function PublishExecutionDialog({
   const canSubmit =
     !publishing &&
     Boolean(execution?.jobId) &&
-    execution?.kind === "full" &&
-    execution.status === "completed" &&
+    Boolean(execution?.artifact_path) &&
     repoId.trim().length > 0 &&
     description.trim().length > 0;
 
@@ -112,7 +119,7 @@ export function PublishExecutionDialog({
     if (!publishedUrl) {
       return;
     }
-    const ok = await copyTextToClipboard(publishedUrl);
+    const ok = await copyToClipboard(publishedUrl);
     if (ok) {
       toastSuccess("Dataset link copied");
       return;
@@ -133,6 +140,7 @@ export function PublishExecutionDialog({
         description: description.trim(),
         hf_token: hfToken.trim() || null,
         private: privateRepo,
+        artifact_path: execution.artifact_path,
       });
       setPublishedUrl(result.url);
       toastSuccess("Dataset published");
@@ -193,7 +201,7 @@ export function PublishExecutionDialog({
               <Button asChild={true}>
                 <a href={publishedUrl} target="_blank" rel="noreferrer">
                   Open repo
-                  <HugeiconsIcon icon={ArrowRight01Icon} className="ml-2 size-4" />
+                  <ChevronRightIcon className="ml-2 size-4" />
                 </a>
               </Button>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>

@@ -134,10 +134,7 @@ async fn collect_backend_health(port: u16) -> report::BackendHealthSection {
         fields: Vec::new(),
         warning: None,
     };
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(750))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_millis(750)) {
         Ok(client) => client,
         Err(error) => {
             section.warning = Some(format!("health client unavailable: {error}"));

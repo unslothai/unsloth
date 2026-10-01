@@ -5,10 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import {
-  ArrowLeft01Icon,
   Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { useVoiceSettingsStore } from "../stores/voice-settings-store";
@@ -38,15 +40,15 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex items-center gap-2">
         <button
           type="button"
           onClick={onBack}
           aria-label={t("settings.voice.dictionary.backToVoice")}
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="settings-back-button inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          <ChevronLeftIcon className="size-4 rtl:rotate-180" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}
@@ -54,7 +56,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="settings-heading text-sm font-semibold">
           {t("settings.voice.dictionary.sectionTitle")}
         </h2>
         <p className="text-xs text-muted-foreground">
@@ -84,7 +86,9 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
                 commitDictionaryEntry(index);
               }}
               className="h-8 flex-1 text-sm"
-              aria-label={`Dictionary entry ${index + 1}`}
+              aria-label={t("settings.voice.dictionary.entryAria", {
+                index: index + 1,
+              })}
             />
             <Button
               variant="ghost"
@@ -95,7 +99,9 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
               // commit-splice this row and make onClick delete the next one.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
-              aria-label={`Remove dictionary entry ${index + 1}`}
+              aria-label={t("settings.voice.dictionary.removeEntryAria", {
+                index: index + 1,
+              })}
             >
               <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
             </Button>
@@ -111,9 +117,9 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
                 handleAddEntry();
               }
             }}
-            placeholder="Jane Doe"
+            placeholder={t("settings.voice.dictionary.entryPlaceholder")}
             className="h-8 flex-1 text-sm"
-            aria-label="New dictionary entry"
+            aria-label={t("settings.voice.dictionary.newEntryAria")}
           />
           <Button
             variant="outline"

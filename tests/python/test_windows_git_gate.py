@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,11 +37,30 @@ def _git_gate_block() -> str:
     raise AssertionError("Unclosed git gate block in setup.ps1")
 
 
+def _function(name: str) -> str:
+    """Inject the real helper the block calls; an undefined one is a silent no-op
+    under Continue, which would let the layout scan always report 'nothing built'."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    start = source.index(f"function {name} {{")
+    depth = 0
+    for index in range(source.index("{", start), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"Unclosed function {name} in setup.ps1")
+
+
 def _script() -> str:
     return f"""
 $DefaultLlamaPrForce = "0"
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
+{_function("Test-AccessDeniedError")}
+{_function("Get-PathState")}
+function Exit-PathAccessDenied {{ param($Path, $Label, [switch]$UserSupplied) throw "denied: $Path" }}
 {_git_gate_block()}
 Write-Output $gitNeeded
 """
@@ -49,7 +69,10 @@ Write-Output $gitNeeded
 def _needs_git(env: dict[str, str]) -> bool:
     merged = {k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "STUDIO_"))}
     merged.update(env)
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: every case in this file goes through here, so a pwsh that died at startup would come
+    # back as $gitNeeded computing the wrong answer for one environment.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script()],
         check = True,
         capture_output = True,
@@ -68,9 +91,7 @@ pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShel
     [
         # The consumer install: prebuilt wheels and a prebuilt llama.cpp, so no git.
         ({}, False),
-        # --local clones unsloth-zoo.
         ({"STUDIO_LOCAL_INSTALL": "1"}, True),
-        # Opt-in source builds clone llama.cpp.
         ({"UNSLOTH_LLAMA_FORCE_COMPILE": "1"}, True),
         ({"UNSLOTH_LLAMA_PR": "1234"}, True),
         # PR_FORCE only forces a build for a positive integer.
@@ -102,9 +123,9 @@ def test_a_built_local_llama_dir_drops_the_source_build_git_requirement(tmp_path
 @pwsh_only
 @pytest.mark.parametrize("trigger", ["UNSLOTH_LLAMA_FORCE_COMPILE", "UNSLOTH_LLAMA_PR"])
 def test_an_unbuilt_local_llama_dir_still_requires_git(tmp_path, trigger):
-    # Nothing built at the canonical install location falls through to the normal install,
-    # so the source build still runs and still needs git. Suppressing the requirement here
-    # let a no-git host silently degrade to a prebuilt instead.
+    # Nothing built at the canonical install location falls through to the normal install, so the source build still
+    # runs and still needs git. Suppressing the requirement here let a no-git host silently degrade to a prebuilt
+    # instead.
     env = {
         "UNSLOTH_LOCAL_LLAMA_CPP_DIR": str(tmp_path),
         trigger: "1",

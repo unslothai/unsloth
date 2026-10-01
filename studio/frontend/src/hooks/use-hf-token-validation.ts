@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { validateHfToken } from "@/features/hf-auth";
+import { isCompleteHfTokenShape } from "@/lib/hf-token-shape";
 import { useEffect, useRef, useState } from "react";
 import { useDebouncedValue } from "./use-debounced-value";
 
@@ -26,15 +27,8 @@ const NO_COMPLETED_VALIDATION: CompletedValidation = {
   token: "",
 };
 
-// Current user access tokens contain 34 characters after the hf_ prefix.
-// Action-time validation still accepts legacy shapes without spending quota
-// on every intermediate value typed into a live form field.
-const COMPLETE_HF_TOKEN = /^hf_[A-Za-z0-9]{34}$/;
-
-/**
- * Validates the HF token via the whoami-v2 API, debounced to avoid excessive
- * requests while typing. isValid is null until checked.
- */
+/** Validates the HF token via the whoami-v2 API, debounced to avoid excessive requests
+* while typing. isValid is null until checked. */
 export function useHfTokenValidation(token: string): HfTokenValidationState {
   const normalizedToken = token.trim().replace(/^["']+|["']+$/g, "");
   const debouncedToken = useDebouncedValue(normalizedToken, 500);
@@ -42,7 +36,7 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
     NO_COMPLETED_VALIDATION,
   );
   const versionRef = useRef(0);
-  const shouldValidate = COMPLETE_HF_TOKEN.test(debouncedToken);
+  const shouldValidate = isCompleteHfTokenShape(debouncedToken);
 
   useEffect(() => {
     if (!shouldValidate) {
@@ -100,7 +94,14 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
     );
   }, [debouncedToken, shouldValidate]);
 
-  if (!COMPLETE_HF_TOKEN.test(normalizedToken)) return INITIAL;
+  if (normalizedToken && !normalizedToken.startsWith("hf_")) {
+    return {
+      isValid: false,
+      error: "Token must start with hf_.",
+      isChecking: false,
+    };
+  }
+  if (!isCompleteHfTokenShape(normalizedToken)) return INITIAL;
   if (completed.token !== normalizedToken) {
     return { isValid: null, error: null, isChecking: true };
   }

@@ -45,13 +45,15 @@ export const MessageHtmlArtifacts: FC = () => {
   const loadedIsDiffusion = useChatRuntimeStore(
     (state) => state.loadedIsDiffusion,
   );
-  const cardsEnabled = artifactsEnabled || collapseHtmlArtifacts;
   // Full docs already shown by the in-place collapse; excluded for diffusion,
-  // which keeps its code inline instead.
-  const collapsesFullDocs = cardsEnabled && !loadedIsDiffusion;
+  // which keeps its code inline instead. This picks which path renders a full
+  // document, not whether fenced HTML renders at all: the Canvas control is
+  // gone and both flags default off, so gating the cards on them renders none.
+  const collapsesFullDocs =
+    (artifactsEnabled || collapseHtmlArtifacts) && !loadedIsDiffusion;
 
   const fences = useMemo(() => {
-    if (isRunning || hasRenderHtmlTool || !cardsEnabled) {
+    if (isRunning || hasRenderHtmlTool) {
       return [];
     }
     return textBlob
@@ -62,7 +64,7 @@ export const MessageHtmlArtifacts: FC = () => {
           // Skip only the plain fences the in-place collapse actually handles.
           !(fence.isFullDocument && fence.isPlainFence && collapsesFullDocs),
       );
-  }, [isRunning, hasRenderHtmlTool, cardsEnabled, textBlob, collapsesFullDocs]);
+  }, [isRunning, hasRenderHtmlTool, textBlob, collapsesFullDocs]);
 
   if (fences.length === 0) {
     return null;

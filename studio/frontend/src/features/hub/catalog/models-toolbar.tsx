@@ -10,17 +10,19 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
   CancelCircleIcon,
   Database02Icon,
+  Delete02Icon,
   FolderSearchIcon,
   Search01Icon,
   SlidersHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useMemo, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   clearRecentSearches,
   recordRecentSearch,
@@ -72,6 +74,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
+  onFreeUpSpace,
   onOpenFineTune,
 }: {
   tab: ModelsTab;
@@ -91,6 +94,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
+  onFreeUpSpace: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
   onOpenFineTune: () => void;
@@ -105,6 +109,31 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     searchFocused &&
     query.trim() === "" &&
     recentSearches.length > 0;
+
+  // Anchored to the toolbar bottom so wrapped filter rows stay clickable.
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
+  const [recentPanelTop, setRecentPanelTop] = useState<number | undefined>();
+  useLayoutEffect(() => {
+    if (!showRecentSearches) {
+      return;
+    }
+    const measure = () => {
+      const toolbar = toolbarRef.current;
+      const wrap = searchWrapRef.current;
+      if (!(toolbar && wrap)) {
+        return;
+      }
+      setRecentPanelTop(
+        toolbar.getBoundingClientRect().bottom -
+          wrap.getBoundingClientRect().top,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(toolbarRef.current as HTMLDivElement);
+    return () => observer.disconnect();
+  }, [showRecentSearches]);
 
   const isDataset = resourceType === "datasets";
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
@@ -159,23 +188,30 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       })),
     [],
   );
+  const hubSource = useHubSource();
   const sortOptions = useMemo<HubOption<HfSortKey>[]>(
     () =>
-      SORT_OPTIONS.map((option) => ({
+      SORT_OPTIONS.filter(
+        (option) => hubSource !== "modelscope" || option.value !== "createdAt",
+      ).map((option) => ({
         value: option.value,
         label: option.label,
       })),
-    [],
+    [hubSource],
   );
   const triggerBase = cn(
     "field-trigger hub-menu-trigger field-soft transition-colors",
     "focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-border",
   );
   return (
-    <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
+    <div
+      ref={toolbarRef}
+      className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center"
+    >
       <div
+        data-tour="hub-tabs"
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
+          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[calc(280px*var(--ui-space-scale,1))]",
         )}
         role="radiogroup"
         aria-label="View"
@@ -218,7 +254,11 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </button>
       </div>
 
-      <div className="relative min-w-0 flex-1 lg:flex-[1_1_360px]">
+      <div
+        ref={searchWrapRef}
+        data-tour="hub-search"
+        className="relative min-w-0 flex-1 lg:min-w-[calc(220px*var(--ui-space-scale,1))] lg:flex-[1_1_220px]"
+      >
         <HugeiconsIcon
           icon={Search01Icon}
           strokeWidth={1.8}
@@ -278,7 +318,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             <HugeiconsIcon
               icon={CancelCircleIcon}
               strokeWidth={1.75}
-              className="size-[18px]"
+              className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
           </button>
         ) : isDiscover && isLoading ? (
@@ -286,6 +326,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         ) : null}
         {showRecentSearches && (
           <RecentSearches
+            top={recentPanelTop}
             searches={recentSearches}
             onSelect={(value) => {
               recordRecentSearch(value);
@@ -323,6 +364,32 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           </Tooltip>
         )}
 
+        {tab === "downloaded" && !isDataset && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={onFreeUpSpace}
+                data-testid="free-up-space-trigger"
+                className={cn(
+                  triggerBase,
+                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                Free up space
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Remove shared model assets no installed model needs
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         {!isDataset && (
           <HubOptionMenu<FormatMenuValue>
             value={formatFilter}
@@ -335,7 +402,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               }
             }}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
         )}
 
@@ -345,7 +412,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
         )}
 
@@ -355,7 +422,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={sortOptions}
             onValueChange={onSortChange}
             ariaLabel="Sort models"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
             footer={
               isDataset ? undefined : (
                 <Tooltip>

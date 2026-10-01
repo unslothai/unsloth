@@ -80,9 +80,8 @@ class ExportStatusResponse(BaseModel):
         False,
         description = "True while a load / export / cleanup operation is running",
     )
-    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel
-    # timeout (524 at ~100s), the client polls this endpoint to learn the real
-    # outcome of the operation that kept running on the backend.
+    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel timeout (524 at
+    # ~100s), the client polls this endpoint to learn the real outcome.
     active_op_kind: Optional[str] = Field(
         None,
         description = "Kind of the currently running op (load_checkpoint / export_* / cleanup)",
@@ -182,8 +181,6 @@ class ExportMergedModelRequest(ExportCommonOptions):
 class ExportBaseModelRequest(ExportCommonOptions):
     """Request for exporting a non-PEFT (base) model."""
 
-    # Uses fields from ExportCommonOptions only
-
 
 class ExportGGUFRequest(BaseModel):
     """Request for exporting the current model to GGUF format."""
@@ -224,11 +221,26 @@ class ExportGGUFRequest(BaseModel):
         None,
         description = "Path to a custom imatrix file; overrides the auto-download when set.",
     )
+    private: bool = Field(
+        False,
+        description = "If True, create a private Hugging Face Hub repository",
+    )
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 
+    adapter_format: Optional[Literal["mlx", "peft"]] = Field(
+        None,
+        description = "On-disk adapter format. Omitted resolves per platform "
+        "(Apple-silicon MLX servers write the native MLX format, CUDA servers "
+        "write the native PEFT format — omission always preserves the "
+        "platform's native output), except with gguf=True, where the adapter "
+        "files are always "
+        "PEFT (GGUF LoRA files are built from that format). Explicit 'peft' "
+        "on an MLX server converts the adapter; explicit 'mlx' on a non-MLX "
+        "server — or combined with gguf=True — is an error.",
+    )
     gguf: bool = Field(
         False,
         description = "If True, also convert the adapter to a GGUF LoRA file "

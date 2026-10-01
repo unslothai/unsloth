@@ -1,28 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckmarkCircle02Icon,
+  Download01Icon,
   Flag02Icon,
   Share08Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  RecipeApiError,
-  getRecipeJobStatus,
-  publishRecipeJob,
-} from "../../api";
+import { publishRecipeJob } from "../../api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { toastError, toastSuccess } from "@/shared/toast";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -36,6 +27,10 @@ import { ExecutionDataTab } from "./execution-data-tab";
 import { ExecutionOverviewTab } from "./execution-overview-tab";
 import { ExecutionRawTab } from "./execution-raw-tab";
 import { ExecutionSidebar } from "./execution-sidebar";
+import {
+  type DownloadOutcome,
+  downloadExecutionDataset,
+} from "./download-execution-dataset";
 import { PublishExecutionDialog } from "./publish-execution-dialog";
 import {
   PREVIEW_DATASET_PAGE_SIZE,
@@ -44,7 +39,6 @@ import {
   formatDuration,
   formatPercent,
   isExpandableCellValue,
-  isJobStatusPublishable,
   parseAnalysisColumns,
   parseModelUsageRows,
 } from "./executions-view-helpers";
@@ -53,40 +47,31 @@ type ExecutionsViewProps = {
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
   currentSignature: string;
-  hasOlderExecutions: boolean;
-  olderExecutionsLoading: boolean;
   onSelectExecution: (id: string) => void;
   onCancelExecution: (id: string) => void;
-  onLoadOlderExecutions: () => void;
   onLoadDatasetPage: (id: string, page: number) => void;
 };
 
-type PublishCapability = {
-  candidateJobId: string;
-  requestVersion: number;
-  status: "allowed" | "denied" | "unknown";
-  message: string | null;
-};
+function downloadOutcomeMessage(outcome: DownloadOutcome): string {
+  if (outcome === "saved") return "Dataset downloaded";
+  if (outcome === "started") return "Dataset download started";
+  // The server no longer has this run, so what was written is whatever this client still holds.
+  return "Downloaded the rows still loaded for this run";
+}
 
 export function ExecutionsView({
   executions,
   selectedExecutionId,
   currentSignature,
-  hasOlderExecutions,
-  olderExecutionsLoading,
   onSelectExecution,
   onCancelExecution,
-  onLoadOlderExecutions,
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
   const formatEta = (value: number | null | undefined): string =>
     typeof value === "number" && Number.isFinite(value)
       ? `${value.toLocaleString()} s`
       : "--";
-  const [detailTabState, setDetailTabState] = useState<{
-    executionId: string | null;
-    value: string;
-  }>({ executionId: null, value: "data" });
+  const [detailTab, setDetailTab] = useState("data");
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
   >({});
@@ -94,10 +79,7 @@ export function ExecutionsView({
     Record<string, number>
   >({});
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
-  const [publishRequestVersion, setPublishRequestVersion] = useState(0);
-  const [publishCapability, setPublishCapability] =
-    useState<PublishCapability | null>(null);
-  const publishRequestGenerationRef = useRef(0);
+  const [downloadingDataset, setDownloadingDataset] = useState(false);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTerminalToBottomRef = useRef(true);
   const selectedExecution = useMemo(
@@ -106,23 +88,13 @@ export function ExecutionsView({
       null,
     [executions, selectedExecutionId],
   );
-  const selectedExecutionIdSafe = selectedExecution?.id ?? null;
-  const detailTab =
-    detailTabState.executionId === selectedExecutionIdSafe
-      ? detailTabState.value
-      : "data";
-  const setDetailTab = useCallback(
-    (value: string): void => {
-      setDetailTabState({ executionId: selectedExecutionIdSafe, value });
-    },
-    [selectedExecutionIdSafe],
-  );
   const isStale = Boolean(
     selectedExecution &&
       selectedExecution.recipeSignature.length > 0 &&
       selectedExecution.recipeSignature !== currentSignature,
   );
 
+  const selectedExecutionIdSafe = selectedExecution?.id ?? null;
   const hiddenDatasetColumns = useMemo(() => {
     if (!selectedExecutionIdSafe) {
       return [];
@@ -195,7 +167,7 @@ export function ExecutionsView({
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
-                className="h-24 w-auto max-w-[260px] rounded-md border border-border/60 bg-muted/20 object-contain"
+                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
               />
             </div>
           );
@@ -210,7 +182,7 @@ export function ExecutionsView({
         const value = formatCellValue(rawValue);
         const isWide = wideColumns.has(name);
         return (
-          <div className={cn(isWide ? "min-w-[48rem]" : "min-w-[12rem]")}>
+          <div className={cn(isWide ? "min-w-[calc(48rem*var(--ui-space-scale,1))] max-md:min-w-[calc(20rem*var(--ui-space-scale,1))]" : "min-w-[calc(12rem*var(--ui-space-scale,1))]")}>
             <p className="whitespace-pre-wrap break-all">{value}</p>
           </div>
         );
@@ -236,66 +208,19 @@ export function ExecutionsView({
   const canCancel = Boolean(
     selectedExecution?.jobId && isExecutionInProgress(selectedExecution.status),
   );
-  const publishCandidateJobId =
-    selectedExecution &&
-    selectedExecution.kind === "full" &&
-    selectedExecution.status === "completed"
-      ? selectedExecution.jobId
-      : null;
-  const effectivePublishCapability =
-    publishCandidateJobId &&
-    publishCapability?.candidateJobId === publishCandidateJobId &&
-    publishCapability.requestVersion === publishRequestVersion
-      ? publishCapability
-      : null;
-  const publishCapabilityStatus = publishCandidateJobId
-    ? (effectivePublishCapability?.status ?? "checking")
-    : "denied";
   const canPublish = Boolean(
-    publishCandidateJobId && publishCapabilityStatus === "allowed",
+    selectedExecution &&
+      selectedExecution.kind === "full" &&
+      selectedExecution.status === "completed" &&
+      selectedExecution.jobId &&
+      selectedExecution.artifact_path,
   );
-
-  useEffect(() => {
-    const requestGeneration = publishRequestGenerationRef.current + 1;
-    publishRequestGenerationRef.current = requestGeneration;
-    if (!publishCandidateJobId) {
-      return () => {
-        if (publishRequestGenerationRef.current === requestGeneration) {
-          publishRequestGenerationRef.current += 1;
-        }
-      };
-    }
-    void getRecipeJobStatus(publishCandidateJobId)
-      .then((status) => {
-        if (publishRequestGenerationRef.current !== requestGeneration) return;
-        const allowed = isJobStatusPublishable(status);
-        setPublishCapability({
-          candidateJobId: publishCandidateJobId,
-          requestVersion: publishRequestVersion,
-          status: allowed ? "allowed" : "denied",
-          message: null,
-        });
-      })
-      .catch((error: unknown) => {
-        if (publishRequestGenerationRef.current !== requestGeneration) return;
-        const authoritativeDenial =
-          error instanceof RecipeApiError &&
-          (error.status === 404 || error.status === 409);
-        setPublishCapability({
-          candidateJobId: publishCandidateJobId,
-          requestVersion: publishRequestVersion,
-          status: authoritativeDenial ? "denied" : "unknown",
-          message: authoritativeDenial
-            ? null
-            : "Publish access could not be verified. Check the connection and try again.",
-        });
-      });
-    return () => {
-      if (publishRequestGenerationRef.current === requestGeneration) {
-        publishRequestGenerationRef.current += 1;
-      }
-    };
-  }, [publishCandidateJobId, publishRequestVersion]);
+  const canDownload = Boolean(
+    selectedExecution &&
+      selectedExecution.status === "completed" &&
+      ((selectedExecution.kind === "full" && selectedExecution.jobId) ||
+        selectedExecution.dataset.length > 0),
+  );
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
   const datasetTotal = selectedExecution?.datasetTotal ?? 0;
@@ -337,7 +262,10 @@ export function ExecutionsView({
     if (typeof selectedExecution.analysis?.num_records === "number") {
       return selectedExecution.analysis.num_records;
     }
-    if (selectedExecution.datasetTotal > 0) {
+    if (
+      typeof selectedExecution.datasetTotal === "number" &&
+      selectedExecution.datasetTotal > 0
+    ) {
       return selectedExecution.datasetTotal;
     }
     if (selectedExecution.dataset.length > 0) {
@@ -443,6 +371,10 @@ export function ExecutionsView({
   }, [selectedExecution]);
 
   useEffect(() => {
+    setDetailTab("data");
+  }, [selectedExecution?.id]);
+
+  useEffect(() => {
     if (detailTab !== "overview" || !terminalRef.current) {
       return;
     }
@@ -461,14 +393,11 @@ export function ExecutionsView({
   }, [terminalLines.length]);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 max-md:w-full max-md:flex-col">
       <ExecutionSidebar
         executions={executions}
         selectedExecutionId={selectedExecutionId}
         onSelectExecution={onSelectExecution}
-        hasOlderExecutions={hasOlderExecutions}
-        loadingOlderExecutions={olderExecutionsLoading}
-        onLoadOlderExecutions={onLoadOlderExecutions}
       />
       <section className="min-w-0 flex-1 overflow-auto p-4">
         {!selectedExecution ? (
@@ -543,41 +472,47 @@ export function ExecutionsView({
             )}
 
             <Tabs value={detailTab} onValueChange={setDetailTab}>
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <TabsList className="border border-border/60 bg-card/40">
                   <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="overview">Overview</TabsTrigger>
                   <TabsTrigger value="columns">Columns</TabsTrigger>
                   <TabsTrigger value="raw">Raw</TabsTrigger>
                 </TabsList>
-                <div className="flex items-center gap-2">
-                  {publishCandidateJobId &&
-                    publishCapabilityStatus === "checking" && (
-                      <span className="text-xs text-muted-foreground">
-                        Checking publish access...
-                      </span>
-                    )}
-                  {publishCandidateJobId &&
-                    publishCapabilityStatus === "unknown" && (
-                      <div
-                        className="flex items-center gap-2"
-                        role="status"
-                      >
-                        <span className="text-xs text-amber-700 dark:text-amber-300">
-                          {effectivePublishCapability?.message}
-                        </span>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            setPublishRequestVersion((version) => version + 1)
-                          }
-                        >
-                          Recheck
-                        </Button>
-                      </div>
-                    )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {canDownload && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={downloadingDataset}
+                      aria-label={downloadingDataset ? "Downloading dataset" : "Download dataset"}
+                      title="Download dataset as JSONL"
+                      onClick={() => {
+                        if (!selectedExecution) {
+                          return;
+                        }
+                        setDownloadingDataset(true);
+                        downloadExecutionDataset(selectedExecution)
+                          .then((outcome) => {
+                            toastSuccess(downloadOutcomeMessage(outcome));
+                          })
+                          .catch((error: unknown) => {
+                            const message =
+                              error instanceof Error
+                                ? error.message
+                                : "Could not download this dataset.";
+                            toastError("Download failed", message);
+                          })
+                          .finally(() => {
+                            setDownloadingDataset(false);
+                          });
+                      }}
+                    >
+                      <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                      {downloadingDataset ? "Downloading..." : "Download"}
+                    </Button>
+                  )}
                   {canPublish && (
                     <Button
                       type="button"
@@ -616,8 +551,6 @@ export function ExecutionsView({
                   modelUsageRows={modelUsageRows}
                   terminalLines={terminalLines}
                   terminalRef={terminalRef}
-                  canPublish={canPublish}
-                  onOpenPublish={() => setPublishDialogOpen(true)}
                   onTerminalScroll={(event) => {
                     const element = event.currentTarget;
                     const distanceFromBottom =
@@ -687,14 +620,10 @@ export function ExecutionsView({
         onOpenChange={setPublishDialogOpen}
         execution={canPublish ? selectedExecution : null}
         onPublish={async (payload) => {
-          if (
-            !canPublish ||
-            !publishCandidateJobId ||
-            selectedExecution?.jobId !== publishCandidateJobId
-          ) {
-            throw new Error("Publish access must be verified again.");
+          if (!selectedExecution?.jobId) {
+            throw new Error("This run is missing a job id.");
           }
-          const response = await publishRecipeJob(publishCandidateJobId, payload);
+          const response = await publishRecipeJob(selectedExecution.jobId, payload);
           return { url: response.url };
         }}
       />

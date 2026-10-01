@@ -7,24 +7,16 @@ export type RecipeRecord = {
   id: string;
   name: string;
   payload: RecipePayload;
-  revision: number;
   createdAt: number;
   updatedAt: number;
-  learningRecipeId?: string | null;
-  learningRecipeTitle?: string | null;
-  removedCredentialPaths?: string[];
+  learningRecipeId?: string;
+  learningRecipeTitle?: string;
 };
-
-export type RecipeSummary = Omit<
-  RecipeRecord,
-  "payload" | "removedCredentialPaths"
->;
 
 export type SaveRecipeInput = {
   id?: string | null;
   name: string;
   payload: RecipePayload;
-  revision?: number;
-  learningRecipeId?: string | null;
-  learningRecipeTitle?: string | null;
+  learningRecipeId?: string;
+  learningRecipeTitle?: string;
 };
