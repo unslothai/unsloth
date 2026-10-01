@@ -33,6 +33,14 @@ export function isEngineReady(engine: EngineStatus | undefined): boolean {
     engine.job.state !== "running";
 }
 
+/** SGLang 0.5.18 dropped --torchao-config, its only load-time INT8 / 4-bit conversion. */
+export function convertsToInteger(engine: EngineStatus | undefined): boolean {
+  if (engine?.engine !== "sglang") return true;
+  const parts = (engine.installed_version ?? engine.version).split(".").map(Number);
+  const [major = 0, minor = 0, patch = 0] = parts;
+  return major === 0 && (minor < 5 || (minor === 5 && patch < 18));
+}
+
 export async function listEngines(): Promise<EngineStatus[]> {
   const response = await authFetch("/api/engines");
   if (!response.ok) {

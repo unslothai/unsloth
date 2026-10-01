@@ -21,6 +21,7 @@ import {
   type EngineStatus,
   type InferenceEngine,
   changeEngine,
+  convertsToInteger,
   isEngineReady,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
@@ -399,8 +400,12 @@ export function InferenceEnginePicker({
                   </SelectItem>
                   <SelectItem value="bf16">BF16 (16-bit)</SelectItem>
                   <SelectItem value="fp16">FP16 (16-bit)</SelectItem>
-                  <SelectItem value="int4">4-bit</SelectItem>
-                  <SelectItem value="int8">INT8 (8-bit)</SelectItem>
+                  <SelectItem value="int4" disabled={!convertsToInteger(selected)}>
+                    4-bit
+                  </SelectItem>
+                  <SelectItem value="int8" disabled={!convertsToInteger(selected)}>
+                    INT8 (8-bit)
+                  </SelectItem>
                   <SelectItem value="fp8">FP8 (8-bit)</SelectItem>
                 </SelectContent>
               </Select>
