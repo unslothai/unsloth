@@ -16,6 +16,7 @@ the process holding it lives and the backend must not be the process that takes 
 
 from __future__ import annotations
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 
 import gc
@@ -886,7 +887,7 @@ class _SnapshotDownloadState:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("STT snapshot download failed for %s: %s", repo, exc)
-                    self._error = f"Download failed for '{repo}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{repo}'."
         finally:
             if registry is not None and owner is not None:
                 registry.release_repository_owner(repo, owner)
@@ -1049,6 +1050,18 @@ def _close_engine(engine) -> bool:
         return not _engine_is_alive(engine)
 
 
+def _av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore")
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None is PyAV's own default (probe the container); spelling it keeps this call
+        # distinguishable from Path.open for the text-encoding lint.
+        return av.open(source, mode = "r", format = None)
+
+
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
@@ -1092,7 +1105,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         raw_buffer.write(array)
 
     try:
-        with av.open(io.BytesIO(audio), mode = "r", metadata_errors = "ignore") as container:
+        with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
             frames = iter(container.decode(audio = 0))
@@ -1609,6 +1622,7 @@ class WhisperSttSidecar:
         decoded_audio,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
@@ -1642,6 +1656,15 @@ class WhisperSttSidecar:
                 continue
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
             parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "text": " ".join(part.strip() for part in parts if part.strip()),
+                        "processed_seconds": min(start + window, len(decoded_audio))
+                        / _TARGET_SAMPLE_RATE,
+                        "duration": len(decoded_audio) / _TARGET_SAMPLE_RATE,
+                    }
+                )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
@@ -1653,6 +1676,7 @@ class WhisperSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> dict:
         """Transcribe encoded audio bytes to text.
 
@@ -1693,7 +1717,11 @@ class WhisperSttSidecar:
             generate_kwargs["num_beams"] = 1
         with self._lock:
             try:
-                if cancel_event is None:
+                if on_progress is not None:
+                    text = self._transcribe_decoded(
+                        model_id, decoded_audio, generate_kwargs, cancel_event, on_progress
+                    )
+                elif cancel_event is None:
                     text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
                 else:
                     text = self._transcribe_decoded(

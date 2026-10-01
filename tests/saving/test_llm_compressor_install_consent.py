@@ -1,83 +1,73 @@
-"""Static guards that FP8/FP4 export requires explicit consent before installing llm-compressor (#8904)."""
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-from __future__ import annotations
+"""FP8/FP4 export installs a missing llm-compressor only with install_missing_dependencies=True (#8904)."""
 
-import ast
-from pathlib import Path
+import importlib.abc
+import inspect
+import sys
 
-SAVE_PY = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
+import pytest
 
-_MERGED_ENTRYPOINTS = (
-    "unsloth_save_pretrained_merged",
-    "unsloth_push_to_hub_merged",
-    "unsloth_generic_save_pretrained_merged",
-    "unsloth_generic_push_to_hub_merged",
+import unsloth.save as save
+
+
+class _NoLlmCompressor(importlib.abc.MetaPathFinder):
+    def find_spec(
+        self,
+        name,
+        path,
+        target = None,
+    ):
+        if name == "llmcompressor" or name.startswith("llmcompressor."):
+            raise ImportError("simulated missing llm-compressor")
+
+
+@pytest.fixture
+def pip_calls(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", raising = False)
+    monkeypatch.setattr(save, "_llm_compressor_imports_in_subprocess", lambda: False)
+    calls = []
+    monkeypatch.setattr(save.subprocess, "check_call", lambda cmd, *a, **k: calls.append(cmd))
+    blocker = _NoLlmCompressor()
+    sys.meta_path.insert(0, blocker)
+    yield calls
+    sys.meta_path.remove(blocker)
+
+
+def test_default_raises_with_manual_command_and_never_installs(pip_calls):
+    with pytest.raises(RuntimeError) as e:
+        save.install_llm_compressor()
+    assert pip_calls == []
+    assert save.llm_compressor_manual_install_command() in str(e.value)
+    assert "install_missing_dependencies=True" in str(e.value)
+
+
+def test_consent_runs_the_pinned_install(pip_calls):
+    with pytest.raises(RuntimeError, match = "installed but could not be imported"):
+        save.install_llm_compressor(install_missing_dependencies = True)
+    assert len(pip_calls) == 1
+    assert save._LLM_COMPRESSOR_SPEC in pip_calls[0]
+
+
+def test_env_optout_beats_consent(pip_calls, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "1")
+    with pytest.raises(RuntimeError, match = "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL") as e:
+        save.install_llm_compressor(install_missing_dependencies = True)
+    assert pip_calls == []
+    assert "install_missing_dependencies=True" not in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        save.unsloth_save_pretrained_merged,
+        save.unsloth_push_to_hub_merged,
+        save.unsloth_generic_save_pretrained_merged,
+        save.unsloth_generic_push_to_hub_merged,
+        save._unsloth_save_compressed_tensors,
+    ],
 )
-
-
-def _module() -> ast.Module:
-    return ast.parse(SAVE_PY.read_text(encoding = "utf-8"), filename = str(SAVE_PY))
-
-
-def _get_function(name: str) -> ast.FunctionDef:
-    for node in ast.walk(_module()):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return node
-    raise AssertionError(f"Function {name} not found in save.py")
-
-
-def _first_lineno(fn: ast.AST, predicate) -> int | None:
-    lines = [n.lineno for n in ast.walk(fn) if predicate(n) and hasattr(n, "lineno")]
-    return min(lines) if lines else None
-
-
-def test_manual_install_helper_is_exposed() -> None:
-    names = {n.name for n in ast.walk(_module()) if isinstance(n, ast.FunctionDef)}
-    assert "llm_compressor_manual_install_command" in names
-    assert "_llm_compressor_missing_error" in names
-
-
-def test_install_missing_dependencies_parameter_is_declared() -> None:
-    fn = _get_function("install_llm_compressor")
-    arg_names = [a.arg for a in fn.args.args]
-    assert "install_missing_dependencies" in arg_names
-
-
-def test_consent_gate_precedes_subprocess_install() -> None:
-    fn = _get_function("install_llm_compressor")
-    consent_line = _first_lineno(
-        fn,
-        lambda n: isinstance(n, ast.Name) and n.id == "install_missing_dependencies",
-    )
-    assert consent_line is not None, "install_missing_dependencies must gate installation"
-
-    def _is_check_call(n: ast.AST) -> bool:
-        return (
-            isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "check_call"
-            and isinstance(n.func.value, ast.Name)
-            and n.func.value.id == "subprocess"
-        )
-
-    install_line = _first_lineno(fn, _is_check_call)
-    assert install_line is not None
-    assert consent_line < install_line, "consent must be checked before subprocess.check_call"
-
-
-def test_compressed_export_entrypoints_declare_consent_kwarg() -> None:
-    for name in _MERGED_ENTRYPOINTS:
-        fn = _get_function(name)
-        arg_names = [a.arg for a in fn.args.args]
-        assert "install_missing_dependencies" in arg_names, f"{name} must expose the consent kwarg"
-
-
-def test_compressed_export_forwards_consent_to_helper() -> None:
-    fn = _get_function("_unsloth_save_compressed_tensors")
-    src = ast.get_source_segment(SAVE_PY.read_text(encoding = "utf-8"), fn) or ""
-    assert "install_llm_compressor(install_missing_dependencies" in src
-
-
-def test_arguments_dict_strips_consent_kwarg() -> None:
-    src = SAVE_PY.read_text(encoding = "utf-8")
-    assert src.count('del arguments["install_missing_dependencies"]') >= 4
+def test_entrypoints_default_to_no_install(fn):
+    assert inspect.signature(fn).parameters["install_missing_dependencies"].default is False

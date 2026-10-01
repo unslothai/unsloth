@@ -12,7 +12,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth import policy
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_via_api_key,
+    get_current_subject,
+)
 from core.inference import gpu_arbiter
 from hub.services.models import account_access as access
 from models.inference import LoadRequest, UnloadRequest
@@ -61,6 +65,9 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
+    # A browser session: the isolation these tests check is between ACCOUNTS, not between
+    # caller classes.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
@@ -397,7 +404,7 @@ def test_openai_catalog_and_advertised_paths_are_account_scoped(monkeypatch):
     monkeypatch.setattr(
         models,
         "collect_local_models",
-        lambda path: [SimpleNamespace(model_id = "same/name", path = current_account_id())],
+        lambda *_a, **_kw: [SimpleNamespace(model_id = "same/name", path = current_account_id())],
     )
 
     async def read(account):
@@ -418,7 +425,7 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
 
     rows = [_row(OWNER), _row(ALICE), _row(BOB)]
     monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
-    monkeypatch.setattr(models, "collect_local_models", lambda path: rows)
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: rows)
 
     request = SimpleNamespace(
         scope = {},
@@ -440,7 +447,7 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
         assert run_as(account, inference._own_local_model_for_alias, "other-model") is None
 
     monkeypatch.setattr(inference, "_managed_catalogs", {})
-    monkeypatch.setattr(models, "collect_local_models", lambda path: [_row(OWNER)])
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: [_row(OWNER)])
     for account in (ALICE, BOB):
         with pytest.raises(HTTPException) as refused:
             asyncio.run(resolve(account))

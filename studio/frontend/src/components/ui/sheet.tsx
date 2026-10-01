@@ -88,6 +88,7 @@ function SheetContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
@@ -114,6 +115,12 @@ function SheetContent({
           position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE,
           className,
         )}
+        onInteractOutside={(event) => {
+          onInteractOutside?.(event);
+          if ((event.target as Element | null)?.closest?.("[data-sonner-toaster]")) {
+            event.preventDefault();
+          }
+        }}
         {...props}
       >
         <DialogPortalContainerContext.Provider value={contentEl}>

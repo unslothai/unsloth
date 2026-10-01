@@ -27,7 +27,10 @@ def _read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
-TRIGGER_LABEL_CLASSES = frozenset({"min-w-0", "flex-1", "truncate", "font-heading", "text-ui-16"})
+# The trigger's name label. Since #11757 the label stays whole and the model name truncates in its
+# own span inside it, inheriting the label's line height.
+TRIGGER_LABEL_CLASSES = frozenset({"font-heading", "text-ui-16", "whitespace-nowrap"})
+TRIGGER_NAME_SPAN = '<span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>'
 
 
 SIDEBAR_ACCOUNT_CLASSES = frozenset(
@@ -54,6 +57,8 @@ def test_model_selector_trigger_label_uses_leading_tight():
     src = _read(MODEL_SELECTOR)
     matches = _class_lists(src, TRIGGER_LABEL_CLASSES)
     assert matches, "could not find ModelSelectorTrigger model-name span"
+    # The span that clips sets no line height of its own, so it takes leading-tight from the label.
+    assert TRIGGER_NAME_SPAN in src, "the model name no longer truncates inside the label"
     for cls in matches:
         assert "leading-tight" in cls.split(), f"expected leading-tight, got: {cls}"
         assert (

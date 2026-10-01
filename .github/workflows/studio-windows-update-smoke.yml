@@ -32,16 +32,54 @@ on:
       - 'tests/studio/test_psmodulepath_normalization.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
-      - 'studio/install_python_stack.py'
-      - 'studio/install_llama_prebuilt.py'
       - 'studio/backend/requirements/**'
-      - 'unsloth_cli/commands/studio.py'
-      - 'unsloth_cli/__init__.py'
-      - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
+      # The two installer entrypoints above are not self-contained: these are their
+      # first-order local imports, so a commit touching only one of them changes what
+      # this workflow runs while matching none of the entrypoints. Invisible while the
+      # push trigger was unfiltered, because every commit re-ran this after merge.
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/backend/utils/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'unsloth_cli/**'
+      # frontend-dist-restore keys its cache on exactly these three globs, and a miss
+      # makes the checked-out setup.ps1 run npm run build (setup.ps1:5060), so a
+      # Windows-only build failure changes this job's verdict. Mirrors the cache key
+      # rather than studio/frontend/**: the key excludes tests, scripts and e2e, and a
+      # change confined to those cannot cause the miss that triggers the build.
+      - 'studio/frontend/*'
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/public/**'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
     branches: [main]
+    paths:
+      - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - 'scripts/uninstall.ps1'
+      - 'tests/studio/test_uninstall_*.ps1'
+      - 'tests/studio/test_psmodulepath_normalization.ps1'
+      - 'studio/setup.ps1'
+      - 'studio/setup.bat'
+      - 'studio/backend/requirements/**'
+      - 'pyproject.toml'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'unsloth_cli/**'
+      - 'studio/frontend/*'
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/public/**'
+      - '.github/workflows/studio-windows-update-smoke.yml'
   workflow_dispatch:
 
 concurrency:
@@ -50,7 +88,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

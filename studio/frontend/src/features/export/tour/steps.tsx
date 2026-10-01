@@ -7,34 +7,34 @@ export const exportTourSteps: TourStep[] = [
   {
     id: "training-run",
     target: "export-training-run",
-    title: "Pick training run",
+    title: "Pick a run",
     body: (
       <>
-        Start by selecting the training run. Each run groups the checkpoints
-        produced by that specific fine-tuning job.
+        Start here. Each run holds the checkpoints from one fine-tuning job.
+        Runs you started on the Train page show up automatically.
       </>
     ),
   },
   {
     id: "checkpoint",
     target: "export-checkpoint",
-    title: "Pick checkpoint",
+    title: "Pick a checkpoint",
     body: (
       <>
-        Pick which checkpoint to export. If you trained multiple checkpoints,
-        it’s worth exporting 1-2 candidates and testing in Chat.
+        The last checkpoint is not always the best one. Export one or two
+        candidates and compare them in Chat before you commit.
       </>
     ),
   },
   {
     id: "method",
     target: "export-method",
-    title: "Export method",
+    title: "Choose a format",
     body: (
       <>
-        Choose the packaging. GGUF is for llama.cpp-style runtimes (pick a
-        quant). Safetensors is for HF/Transformers-style usage. If you’re unsure,
-        start with safetensors.
+        Merged is a full 16-bit model for vLLM or Transformers. LoRA Only ships
+        the adapter alone and needs the base model at inference. GGUF is for
+        llama.cpp and Ollama, with a quant level you pick below.
       </>
     ),
   },
@@ -44,8 +44,9 @@ export const exportTourSteps: TourStep[] = [
     title: "Export",
     body: (
       <>
-        Export to local or push to HF Hub. After export, test in Chat and compare
-        against base to confirm behavior is what you expect.
+        Save to this device or push straight to a Hugging Face repo. Anything
+        exported locally shows up in Chat under On Device, so you can test it
+        against the base model right away.
       </>
     ),
   },
