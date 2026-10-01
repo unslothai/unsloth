@@ -3755,6 +3755,8 @@ class SdCppDiffusionBackend:
                     "offload_policy": (
                         "active" if without_device_backend_flags(state.offload_flags) else "none"
                     ),
+                    "speed_mode": state.native_speed,
+                    "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
                     "workflow": workflow if conditioned else "txt2img",
                     "reference_resolution": None,
                     "localized_edit": getattr(localized_edit, "mode", None)
