@@ -716,7 +716,8 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    return not api_only
+    # Desktop-owned api-only still serves the UI (and the autofill) to a loopback browser.
+    return not api_only or _desktop_owner() is not None
 
 
 def bootstrap_banner_lines(
