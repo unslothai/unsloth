@@ -252,11 +252,7 @@ def test_the_tool_loop_resumes_the_thought_and_keeps_it_whole(monkeypatch):
         ],
         payloads,
     )
-    monkeypatch.setattr(
-        "core.inference.llama_cpp.execute_tool",
-        lambda *_a, **_k: "2, 3, 5, 7, 11",
-        raising = False,
-    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "2, 3, 5, 7, 11")
 
     list(
         backend.generate_chat_completion_with_tools(
