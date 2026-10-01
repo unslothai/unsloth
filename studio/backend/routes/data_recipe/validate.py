@@ -81,8 +81,7 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
 
 
 def _all_blocks_dropped_message(columns: list[Any]) -> str:
-    # Data Designer's text says `drop=False`; the UI calls it "Keep out of final dataset". Seed fields
-    # do not count: its profiler also fails with no generated column kept (#10738, #10836).
+    # Reword only: Data Designer's profiler also fails when no generated column is kept (#10836).
     names = [
         column.name
         for column in columns
