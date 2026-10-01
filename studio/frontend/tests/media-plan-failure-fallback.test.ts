@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * A download plan needs the Hub, so offline (or on a Hub hiccup) it errors or comes back
- * plan_failed. The backend's contract is that the load then pulls what it needs inline, so a
- * load pick must fall through to it: refusing there stops an already-downloaded model loading.
- * Download-only picks have no load to fall back to and still report the failure.
- */
+// Offline the plan fails; a load must fall back to its inline download or a cached model cannot load.
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -112,7 +112,6 @@ export function useRequiredAssetsDownload({
     setChecking(true);
     const id = ++sequence.current;
     try {
-      // Resolve missing files at the decision point before authorizing any transfer.
       const p = await resolvePlan();
       if (sequence.current !== id) return;
       const entries = p.entries.map((e) => ({

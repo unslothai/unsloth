@@ -24,7 +24,7 @@ test("only a non-hub pipeline pick skips the plan, so a cached hub pick still ge
   // The bypass is keyed on the pick's SOURCE. A curated artifact already on disk is still
   // source "hub" (localModelMeta is the only thing that emits "local"), so it keeps the plan:
   // "downloaded" is a property of the repo, and an H3 repo can be half downloaded. A local GGUF
-  // still plans, since its companions can be missing.
+  // still plans: its companions can be missing.
   assert.match(
     source,
     /if \(source !== "hub" && opts\.kind === "pipeline"\) return handleLoadRef\.current\(repoId, opts, advanced\);/,

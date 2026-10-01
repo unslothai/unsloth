@@ -3191,8 +3191,7 @@ export function ImagesPage({
           });
           return true;
         }
-        // No plan (offline, older backend, metadata hiccup): the backend contract is that the load
-        // pulls what it needs inline, so refusing here would block cached models offline.
+        // No plan (offline, older backend, metadata hiccup): the load pulls what it needs inline.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
