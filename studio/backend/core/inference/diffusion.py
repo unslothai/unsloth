@@ -6134,8 +6134,7 @@ class DiffusionBackend:
                                         scheme = pipeline_seed_scheme,
                                         dtype = dtype,
                                         device = device,
-                                        # An offloading plan pages the denoiser in from the host: never land it on
-                                        # the GPU whole first (8 GB Qwen-Image-2.1 OOMed in the streaming hooks).
+                                        # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
                                         placement_device = prequant_seed_device(
                                             plan, device, pipeline_seed_scheme
                                         ),
@@ -6781,7 +6780,6 @@ class DiffusionBackend:
                     # Whole-module offload still onloads one complete component for its forward. Refine it from the
                     # loaded, possibly quantized weights so an oversized text encoder uses leaf streaming instead of
                     # failing during prompt encoding.
-                    # An explicit balanced request is fit-checked against the loaded companions first (it never was).
                     refined_plan = refine_memory_plan_for_components(
                         pipe, refine_balanced_plan_for_components(pipe, plan)
                     )
@@ -6793,9 +6791,7 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
-                    # A measured family re-places from its loaded weights + measured activation peak: residency
-                    # the flat 8 GiB-per-megapixel headroom and the family-table sizes declined (no-op elsewhere).
-                    # Not under the legacy cpu_offload flag without a memory_mode: that request asked for offload.
+                    # not under the legacy cpu_offload flag alone: that request asked for offload
                     if not cpu_offload or normalize_memory_mode(memory_mode) is not None:
                         plan = refine_plan_from_loaded_weights(
                             pipe,

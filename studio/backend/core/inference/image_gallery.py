@@ -55,10 +55,7 @@ def _params_text(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# zlib level for gallery PNGs. The encode sits between the last denoise step and the HTTP response, single threaded on
-# the host: Pillow's default (6) costs ~0.4 s on a 1024x1024 render (measured on a Xeon host), level 1 ~0.1 s for files
-# ~10% larger. Lossless either way: only the deflate effort changes, the pixels and the embedded recipe are identical.
-# Set 6 to restore the old encode.
+# Pillow's default zlib level 6 costs ~0.4 s per 1024x1024 PNG on the request path; level 1 ~0.1 s, ~10% larger, lossless.
 PNG_COMPRESS_LEVEL_ENV = "UNSLOTH_IMAGE_PNG_COMPRESS_LEVEL"
 _DEFAULT_PNG_COMPRESS_LEVEL = 1
 

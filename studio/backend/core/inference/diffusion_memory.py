@@ -564,10 +564,8 @@ class MemoryPlan:
     stream_text_encoders: bool = False
     # False only on the tier keeping the transformer resident and streaming just the text encoders.
     stream_transformer: bool = True
-    # MiB of the streamed denoiser that may stay resident instead (whole offload groups, top-level group first, then
-    # blocks in order); None streams every group, today's behaviour. Set only by refine_plan_from_loaded_weights.
+    # MiB of the streamed denoiser / encoders kept resident (whole groups); None streams every group.
     resident_transformer_mib: Optional[int] = None
-    # Same for the streamed text encoders (leaf groups in module order) on the tier keeping the denoiser resident.
     resident_text_encoder_mib: Optional[int] = None
 
     @property
@@ -1009,7 +1007,6 @@ def plan_keeps_transformer_resident(plan: Any) -> bool:
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
 
 
-# Kill switch for prequant_seed_device: "0" restores loading a seeded pre-quantized denoiser onto the GPU on every plan.
 PREQUANT_SEED_ON_HOST_ENV = "UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST"
 
 
@@ -1018,14 +1015,9 @@ def prequant_seed_device(
     device: str,
     scheme: Optional[str] = None,
 ) -> str:
-    """Where a pre-quantized denoiser seeded into pipeline assembly is materialised.
-
-    ``device`` when ``plan`` keeps the denoiser resident (placement is then a no-op). Otherwise the host: every
-    offload tier starts the denoiser on the CPU and pages it in, so loading it onto the GPU first only adds a
-    whole-denoiser spike before placement. On a card that barely fits that spike (Qwen-Image-2.1 int8, ~7 GiB, on
-    8 GB) the streaming hooks then fail to allocate their first block, and the load dies although the plan fit.
-    Same end state as the runtime-quantise path, which converts on the host under an offload plan. Only the
-    schemes measured under offload (``_TORCHAO_GROUP_OFFLOAD_MIN``: int8, fp8); any other keeps today's placement."""
+    """Where a seeded pre-quantized denoiser is materialised: ``device`` when ``plan`` keeps it resident, else "cpu"
+    for the schemes measured under offload. Loading it onto the GPU first adds a whole-denoiser spike that left the
+    streaming hooks no room for their first block (Qwen-Image-2.1 int8 on 8 GB)."""
     if str(os.environ.get(PREQUANT_SEED_ON_HOST_ENV, "")).strip().lower() in (
         "0",
         "off",
@@ -1042,11 +1034,8 @@ def prequant_seed_device(
 
 # Oldest torchao measured bit-exact under streamed group offload; 0.17 int8 (v1, no copy stream) ran 14x slower.
 _TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
-# torchao 0.17 already ships the pinnable ``Int8Tensor`` (0.18 only made it the int8 config's default): the hosted int8
-# checkpoints load as it on 0.17 too and stream bit-identically, and the v1 weights a 0.17 runtime quantise produces
-# get the two pin ops they lack (install_torchao_v1_int8_pin_ops), streaming bit-identically too. A fresh install pins torch < 2.12, so torchao 0.17,
-# and without this the 0.18 floor gave every offloading install the fp8 transformer instead of int8.
-# UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17=0 restores the 0.18 floor.
+# torchao 0.17 already ships the pinnable Int8Tensor (hosted int8 checkpoints) and its v1 int8 weights get the pin
+# ops (install_torchao_v1_int8_pin_ops): without this a fresh install (torchao 0.17) got fp8 whenever it offloaded.
 INT8_STREAM_TORCHAO17_ENV = "UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17"
 _TORCHAO17_INT8_STREAM_MIN = (0, 17)
 
@@ -1304,19 +1293,15 @@ def _torchao_group_offload_kwargs(
     return safe
 
 
-# torchao <= 0.17's v1 int8 weight (a LinearActivationQuantizedTensor over an AffineQuantizedTensor): what 0.17's int8
-# config still produces by default. Only two ops keep it off the copy stream: ``is_pinned`` and ``pin_memory``.
+# torchao <= 0.17's default int8 weight (LinearActivationQuantizedTensor over an AffineQuantizedTensor).
 _TORCHAO_V1_INT8_CLASSES = frozenset(("LinearActivationQuantizedTensor", "AffineQuantizedTensor"))
 _V1_INT8_PIN_OPS_INSTALLED = False
 
 
 def install_torchao_v1_int8_pin_ops() -> bool:
-    """Give torchao's v1 int8 classes ``is_pinned`` / ``pin_memory`` so group offload pins them up front and copies
-    them on its stream. Without these the streamed path refuses them and falls back to synchronous copies (measured
-    14x slower than resident). The pinned copy re-wraps the SAME int8 data, scale and zero point (the class's own
-    ``_apply_fn_to_data``), so outputs stay bit-identical to the resident module. Registered only where torchao still
-    ships the classes WITHOUT the ops (<= 0.17; 0.18 removed the classes). Off with
-    UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17=0."""
+    """Register ``is_pinned`` / ``pin_memory`` on torchao's v1 int8 classes so group offload streams them (else
+    synchronous copies, 14x slower). Re-wraps the same int8 data, scale and zero point, so outputs stay bit-identical.
+    Only where torchao ships the classes without the ops (<= 0.17)."""
     global _V1_INT8_PIN_OPS_INSTALLED
     if _V1_INT8_PIN_OPS_INSTALLED:
         return True
@@ -1362,9 +1347,8 @@ def install_torchao_v1_int8_pin_ops() -> bool:
                 )
             return t.pin_memory()
 
-        # diffusers restores / record_streams a torchao weight through its class's ``tensor_data_names``, which the v1
-        # classes lack: offload then left every streamed payload on the GPU (the whole denoiser accumulated) and the
-        # copy stream recorded no allocation. Teach both helpers the v1 nesting; v2 tensors keep diffusers' path.
+        # diffusers restores / record_streams torchao weights via ``tensor_data_names``, which v1 lacks: the payload stayed
+        # on the GPU after offload.
         from diffusers.hooks import group_offloading as go
 
         restore = go._restore_torchao_tensor
@@ -1814,8 +1798,6 @@ def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
     return max(sizes) if sizes else None
 
 
-# Kill switch for refine_balanced_plan_for_components: "0" restores balanced = group offload with every companion
-# resident whatever the budget.
 BALANCED_FIT_CHECK_ENV = "UNSLOTH_DIFFUSION_BALANCED_FIT_CHECK"
 
 
@@ -1831,17 +1813,10 @@ def _balanced_fit_check_enabled() -> bool:
 def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Fit-check an explicit ``memory_mode=balanced`` plan against the LOADED companions.
 
-    The planner maps balanced to group offload with every companion resident and never checks the budget, so a
-    companion set larger than the card loads and then OOMs at the first generate (Qwen-Image-2.1 int8 at 16 / 12 /
-    8 GB: the 9 GiB fp8 text encoder stays resident). Checked here, after the load, because the pre-load companion
-    estimate can be the dense size of a text encoder that loads quantised (priced 16.7 GB, loads 9.0 GB): judging
-    on it would move a balanced load that fits (24 GB) to a slower tier.
-
-    Same floors as the planner (resident companions + runtime headroom + base overhead), walked down the streamed
-    tiers only, never back to a resident denoiser: companions resident if they fit (unchanged), else the text
-    encoders streamed too, else whole-module offload, which ``refine_memory_plan_for_components`` then turns into
-    granular streaming when a loaded component exceeds the budget. A torchao denoiser cannot take whole-module
-    offload's per-forward ``Module.to()``, so it goes straight to granular streaming instead."""
+    Balanced never checked the budget, so Qwen-Image-2.1 int8 kept its 9 GiB fp8 encoder resident and OOMed at 16 /
+    12 / 8 GB. Judged after the load because the pre-load estimate can be the dense encoder size (16.7 vs 9.0 GB).
+    Walks only the streamed tiers: encoders streamed too, else whole-module offload (granular streaming for torchao
+    denoisers, which cannot take per-forward ``Module.to()``)."""
     if not _balanced_fit_check_enabled():
         return plan
     if getattr(plan, "requested_mode", None) != MEMORY_MODE_BALANCED:
@@ -1978,27 +1953,15 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     )
 
 
-# Measured-activation placement. The load-time planner prices every image family with one flat runtime headroom
-# (estimate_image_runtime_mib: 8192 MiB at 1024x1024) and the transformer / encoder sizes from the family table. For a
-# family whose activation peak has been MEASURED, that over-reserves by several GiB and pushes a load that fits onto a
-# streamed tier: Qwen-Image-2.1 (int8 DiT + fp8 encoder) streams its text encoder on every new prompt on a 24 GB card
-# (resident_required 29870 MiB vs a 21432 MiB budget) although its weights are 16525 MiB and its worst phase needs
-# 1849 MiB more. UNSLOTH_DIFFUSION_MEASURED_ACTIVATION=0 restores the flat plan exactly.
+# The flat planner reserves 8192 MiB/MP of activations: Qwen-Image-2.1 (16525 MiB of weights, 1849 MiB measured peak)
+# streamed its encoder on 24 GB.
 MEASURED_ACTIVATION_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION"
-# Partial residency of a streamed denoiser (resident_transformer_mib): UNSLOTH_DIFFUSION_PARTIAL_RESIDENT=0 streams
-# every group again.
 PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 
-# Worst measured CUDA allocation above the resident weights, MiB, one 1024x1024 image, over the text-encoder pass
-# (resident and leaf-streamed), every denoise step (including the prefix-cache extract step) and the VAE decode,
-# first render included. Keyed on (family, compiled speed tier); only torchao int8 / fp8 denoisers, the configuration
-# measured. Qwen-Image-2.1, torch 2.12.1 / torchao 0.18 / diffusers 0.41.dev, speed default and max, guidance 1 and
-# 4: encoder 1267 resident / 1849 streamed, denoise 721 (step 0) / 1442 (guidance 4), decode 1730. Anything else keeps
-# the flat estimate.
+# Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
+# int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
-# Margin on the measured peak (allocator rounding, prompt length, driver variance); the flat base overhead
-# (fragmentation, CUDA workspaces) and the safe-budget reserve stay on top of it.
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
 
@@ -2033,8 +1996,8 @@ def measured_image_runtime_mib(
 
 
 def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
-    """name -> (MiB, role) for every loaded torch module, role 'dit' / 'text_encoder' / 'other'. Storage bytes, so a
-    torchao int8 weight counts its int8 data + scales (not a bf16-sized numel). None when unreadable."""
+    """name -> (MiB, role in 'dit' / 'text_encoder' / 'other') from storage bytes (a torchao int8 weight counts its
+    int8 data + scales); None when unreadable."""
     try:
         import torch
 
@@ -2073,13 +2036,10 @@ def refine_plan_from_loaded_weights(
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
-    Runs after the pipeline is built and before placement. Only ever moves toward residency, in speed order: every
-    weight resident; then the denoiser resident with the text encoders streamed (they run once per prompt); then the
-    encoders streamed and as much of the denoiser resident as fits (``resident_transformer_mib``), the rest streamed.
-    Every tier must fit the plan's safe budget (free memory at load minus the reserve) with the measured peak x margin
-    plus the flat base overhead on top of the weights, so the activation side is never priced below what was measured.
-    No-op for explicit modes, unified memory, non-CUDA, unmeasured families / speed tiers, non-torchao denoisers and
-    whole-module (``model``) plans, and with UNSLOTH_DIFFUSION_MEASURED_ACTIVATION=0."""
+    Only moves toward residency: everything resident, else the denoiser resident with encoders streamed, else as
+    much of the denoiser resident as fits. Each tier needs the measured peak x margin plus the base overhead on top
+    of the weights within the safe budget. No-op for explicit modes, non-CUDA / unified memory, unmeasured families
+    or speed tiers, non-torchao denoisers and ``model`` plans."""
     try:
         if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
             return plan
@@ -2132,8 +2092,7 @@ def refine_plan_from_loaded_weights(
                 ),
             )
         elif floor + dit <= budget:
-            # What is left after the resident denoiser keeps the first encoder layers resident, so a new prompt
-            # streams only the rest (a 24 GB-class card whose 10% reserve leaves the full encoder just short).
+            # leftover room keeps the first encoder layers resident
             te_room = 0 if _env_off(PARTIAL_RESIDENT_ENV) else max(0, budget - floor - dit)
             new = replace(
                 plan,
@@ -2157,9 +2116,7 @@ def refine_plan_from_loaded_weights(
         else:
             if _env_off(PARTIAL_RESIDENT_ENV):
                 return plan
-            # Streamed tiers keep the encoders off the device (group with streamed encoders, or streaming): what is
-            # left after the resident companions, the peak and the overhead holds denoiser groups. The peak already
-            # covers a streamed group in flight (it was measured with the encoder leaf-streamed).
+            # the measured peak already covers a streamed group in flight
             if policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False)):
                 room = budget - floor - encoders
             else:
@@ -2196,10 +2153,8 @@ def _keep_groups_resident(
     device: Any,
     logger: Any = None,
 ) -> int:
-    """Make whole offload groups of a streamed ``module`` resident, within ``room_mib``: the top-level group first (it
-    is uploaded on every forward), then blocks in order. A resident group is moved once and its onload / offload become
-    no-ops; the groups after it keep streaming, and the last resident block prefetches the first streamed one on the
-    copy stream as before. Host copies of resident groups are released. Returns the MiB made resident."""
+    """Make whole offload groups of a streamed ``module`` resident within ``room_mib`` (top-level group first, then
+    blocks in order); their onload / offload become no-ops and the rest keeps streaming. Returns the MiB kept."""
     if room_mib is None or int(room_mib) <= 0 or _env_off(PARTIAL_RESIDENT_ENV):
         return 0
     try:
@@ -2236,9 +2191,7 @@ def _keep_groups_resident(
             return None
 
         def _resident_onload(stream: Any) -> Callable[[], None]:
-            # diffusers' prefetch protocol: a streamed group that prefetched its successor skips its own wait and
-            # relies on the successor's onload_ to synchronize the copy stream first (_onload_from_memory). A resident
-            # successor must keep that wait, or the streamed group computes on weights still in flight.
+            # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
             def onload_(*args: Any, **kwargs: Any) -> None:
                 if stream is not None:
                     stream.synchronize()
@@ -2253,8 +2206,7 @@ def _keep_groups_resident(
             tensors = _tensors(group)
             need = sum(sum(_storage_nbytes(t)) for t in tensors)
             if need > left:
-                # a group too large for what is left streams; a later, smaller one may still fit (each group's hook
-                # prefetches its successor whether or not that successor is resident)
+                # too large: it streams; a later, smaller group may still fit
                 continue
             cpu = getattr(group, "cpu_param_dict", None) or {}
             for t in tensors:
@@ -2865,15 +2817,12 @@ PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
 
 
 def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
-    """Keep a pinned host copy of a block-streamed DiT's top-level weights instead of copying them back every forward.
+    """Onload a block-streamed DiT's top-level group (embedders, norm_out, proj_out) from one pinned host copy.
 
-    diffusers' block-level offload puts the weights outside the block lists (embedders, norm_out, proj_out, ...) into
-    one top-level group WITHOUT a stream: every forward uploads them synchronously from pageable host memory, and every
-    offload copies them back into a freshly allocated host buffer, a device-to-host copy inference never needs since
-    the weights do not change. With one pinned copy the onload is an async H2D on the compute stream (ordered before
-    the forward's kernels, so no wait and no race) and the offload only re-points the tensors. VRAM is unchanged: the
-    group is resident for exactly the same span. Skipped for torchao weights (their tensors cannot be re-pointed through
-    .data) and when the copy does not fit the pinnable host RAM. UNSLOTH_DIFFUSION_PIN_TOP_GROUP=0 turns it off."""
+    diffusers gives that group no stream: every forward uploaded it from pageable memory and every offload copied it
+    back to a fresh host buffer, which inference never needs. Now the onload is an async H2D on the compute stream and
+    the offload only re-points the tensors; VRAM unchanged. Skipped for torchao weights (not re-pointable via
+    ``.data``) and when the copy does not fit the pinnable host RAM."""
     if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     try:
@@ -3677,10 +3626,7 @@ def _apply_streaming_offload(
                 component.to(onload)
 
         pinned_mib = [0]
-        # The copy of block i+1 only overlaps block i's compute when (a) its host copy is already pinned: an unpinned
-        # copy is re-pinned on the CPU at every onload, and (b) the offload does not drain the compute stream:
-        # record_stream=False makes every group's offload synchronize it, so that pinning runs with the GPU idle. Pin
-        # within the same host budget the group tier uses (DiTs first), off the load path when the caller asked.
+        # Overlap needs a pinned host copy and record_stream (record_stream=False syncs the compute stream per group).
         prefetch = use_stream and _streaming_prefetch_enabled()
         pin_dits, pin_encoders = False, False
         if prefetch:
@@ -3696,8 +3642,7 @@ def _apply_streaming_offload(
         )
         if defer:
             install_group_pin_wait()
-        # Encoders the plan pins (now or deferred) count against the budget a torchao denoiser pins within, as on the
-        # group tier: otherwise both pin and the host total exceeds the pinnable budget.
+        # pinned encoders count against the budget a torchao denoiser pins within, as on the group tier
         if pin_encoders:
             pinned_mib[0] = sum(
                 _module_host_mib(m) for m, t in streamed.values() if t != "block_level"
