@@ -8,7 +8,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [
 if ($errors) { throw "install.ps1 has parse errors" }
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..", "studio", "setup.ps1"))).Path, [ref]$tokens, [ref]$errors)
 $load = 'Test-UvEnvFlag', 'Test-MirrorConfigured', 'Start-MirrorProbe', 'Wait-MirrorProbe', 'Invoke-MirrorFallback', 'Get-MirrorName', 'Set-MirrorEnv', 'Pop-MirrorSpare', 'Use-MirrorSpare', 'Get-MirrorFailedHost',
-    'Install-UvFromRelease', 'Redact-InstallOutput', 'Invoke-InstallCommand', 'Invoke-InstallMirrorRetry', 'Invoke-InstallCommandRetry'
+    'Install-UvFromRelease', 'Test-UvFileMatches', 'Copy-UvSet', 'Redact-InstallOutput', 'Invoke-InstallCommand', 'Invoke-InstallMirrorRetry', 'Invoke-InstallCommandRetry'
 foreach ($pair in @($load | ForEach-Object { , @($ast, $_) }) + (@('Install-UvFromPinnedRelease', 'Get-UvInstallDir', 'Invoke-SetupCommand', 'Invoke-NpmMirrorRetry') | ForEach-Object { , @($setupAst, $_) })) {
     $fn = $pair[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $pair[1] }, $true)
     Invoke-Expression $fn[0].Extent.Text
