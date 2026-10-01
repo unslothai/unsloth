@@ -2170,9 +2170,13 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+_COLUMN_RE = re.compile(r"\{(.+?)\}")
+
+
 def _column_names_in(text):
-    # The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
-    return re.findall(r"\{(.+?)\}", re.sub(r"\{\{|\}\}", "", text))
+    return _COLUMN_RE.findall(_ESCAPED_BRACES_RE.sub("", text))
 
 
 def _parse_combined_prompt(combined_prompt, dataset):
