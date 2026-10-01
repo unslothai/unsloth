@@ -3646,6 +3646,8 @@ from models.inference import (
     LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
+    JoinResidentResponse,
+    ResidentMetadata,
     LlamaFlagCatalogResponse,
     ChatCompletionRequest,
     ChatCountTokensRequest,
@@ -8580,6 +8582,50 @@ def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
     status handler returns so the two cannot drift."""
     display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
     return display_model_id if model_identifier is None else model_identifier
+
+
+def _resident_metadata() -> Optional[ResidentMetadata]:
+    """Return sanitized metadata for the process-wide resident."""
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
+        raw_model = display_model_id or model_identifier
+        if raw_model:
+            public_id = _llama_public_model_id(llama_backend, raw_model) or raw_model
+            return ResidentMetadata(
+                model = display_model_name(public_id),
+                variant = getattr(llama_backend, "hf_variant", None),
+                parallel_slots = getattr(llama_backend, "effective_parallel_slots", None),
+                tensor_parallel = getattr(llama_backend, "tensor_parallel", None),
+            )
+
+    backend = _peek_inference_backend()
+    active_model = getattr(backend, "active_model_name", None) if backend is not None else None
+    if not active_model:
+        return None
+    info = getattr(backend, "models", {}).get(active_model, {})
+    public_id = _orchestrator_public_model_id(backend) or active_model
+    return ResidentMetadata(
+        model = display_model_name(public_id),
+        parallel_slots = info.get("parallel_slots"),
+        tensor_parallel = info.get("tensor_parallel"),
+    )
+
+
+def _raise_if_foreign_resident_load() -> None:
+    """Reject a managed-account replacement while a foreign resident is active."""
+    if not account_access.managed_account() or not account_access.resident_hidden("chat"):
+        return
+    resident = _resident_metadata()
+    detail = {
+        "error": "resident_conflict",
+        "message": (
+            "Another model is currently resident. Join the active model or request "
+            "administrator replacement."
+        ),
+        "resident": resident.model_dump(mode = "json") if resident is not None else None,
+    }
+    raise HTTPException(status_code = 409, detail = detail)
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
@@ -17143,6 +17189,7 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
+
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             if (
@@ -17226,6 +17273,8 @@ async def _load_model_impl(
                     mlx_context_budget = _model_info.get("mlx_context_budget"),
                     chat_template = _chat_template,
                 )
+
+        _raise_if_foreign_resident_load()
 
         _caller_is_owner = _owner_session(fastapi_request) and _load_warnings_reach_user.get()
 
@@ -20351,19 +20400,37 @@ async def inference_status(
     )
 
 
+@router.post("/join-resident", response_model = JoinResidentResponse)
+async def join_resident(current_subject: str = Depends(get_current_subject)):
+    """Attach the current account to the live resident without reloading it."""
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+
+    async with inference_lifecycle_gate():
+        resident = _resident_metadata()
+        if resident is None:
+            raise HTTPException(status_code = 404, detail = "No resident model is loaded")
+        already_joined = account_access.resident_shared_with("chat", current_account_id())
+        account_access.join_resident("chat")
+        return JoinResidentResponse(
+            status = "already_joined" if already_joined else "joined",
+            resident = resident,
+        )
+
+
 async def get_status(current_subject: str):
     """
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.
     """
+    resident = _resident_metadata()
     if account_access.resident_hidden("chat"):
-        return account_access.hidden_chat_status_response()
+        return account_access.hidden_chat_status_response(resident = resident)
     try:
         llama_backend = get_llama_cpp_backend()
         if account_access.managed_account() and account_access.resident_hidden(
             "chat", _loaded_slot_ident()
         ):
-            return account_access.hidden_chat_status_response()
+            return account_access.hidden_chat_status_response(resident = resident)
 
         # The cold subprocess and GitHub probes must not block the event loop or
         # consume the default executor used by local token streaming.
@@ -20405,6 +20472,7 @@ async def get_status(current_subject: str):
         if _npu_resident is not None:
             _npu_model = _npu_resident.model
             return InferenceStatusResponse(
+                resident = resident,
                 active_model = _npu_model.id,
                 model_identifier = _npu_model.model_path,
                 is_npu = True,
@@ -20454,6 +20522,7 @@ async def get_status(current_subject: str):
             _runtime_fields = _llama_runtime_fields(llama_backend)
             _runtime_fields["chat_template_override"] = _reported_chat_template_override
             return InferenceStatusResponse(
+                resident = resident,
                 active_model = _display_model_id,
                 model_identifier = _reported_model_identifier,
                 is_gguf = True,
@@ -20493,6 +20562,7 @@ async def get_status(current_subject: str):
         # nothing is loaded, and the chat UI polls this from first paint.
         if backend is None:
             return InferenceStatusResponse(
+                resident = resident,
                 loading = _loading,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
@@ -20533,6 +20603,7 @@ async def get_status(current_subject: str):
             _loading_models.append(_tracked_loading_id)
 
         return InferenceStatusResponse(
+            resident = resident,
             active_model = backend.active_model_name,
             model_identifier = backend.active_model_name,
             is_vision = is_vision,

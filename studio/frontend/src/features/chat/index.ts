@@ -13,6 +13,7 @@ export {
   fetchGgufStagedMetadata,
   getCachedModelPath,
   getInferenceStatus,
+  joinResident,
   listCachedGguf,
   listChatAttachments,
   listGgufVariants,
@@ -26,6 +27,7 @@ export {
   unloadModel,
   notifyChatHistoryUpdated,
   removeScanFolder,
+  ResidentConflictError,
   revealCachedModel,
   revealFineTunedModel,
   validateModel,
@@ -43,6 +45,8 @@ export type {
   BackendModelDetails,
   GgufVariantDetail,
   InferenceStatusResponse,
+  JoinResidentResponse,
+  ResidentMetadata,
 } from "./types/api";
 export {
   applyActiveModelStatusToStore,

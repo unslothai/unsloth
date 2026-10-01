@@ -160,6 +160,13 @@ def sees_resident(account):
 
 def test_a_matching_load_shares_the_resident_without_a_reload(monkeypatch, shared, accounts):
     assert sees_resident(accounts["bob"])
+    hidden = status_for(accounts["alice"])
+    assert hidden["loaded"] == []
+    assert hidden["yours"] is False
+    assert hidden["resident"]["resident_available"] is True
+    assert hidden["resident"]["variant"] == VARIANT
+    assert "account_id" not in hidden["resident"]
+    assert "references" not in hidden["resident"]
     assert not sees_resident(accounts["alice"])
     reuse_load(monkeypatch, accounts["alice"])
     assert not shared.unloaded
@@ -175,6 +182,19 @@ def test_a_matching_load_shares_the_resident_without_a_reload(monkeypatch, share
     }
 
 
+def test_an_account_can_join_the_resident_without_reloading(monkeypatch, shared, accounts):
+    with client_for(accounts["alice"]) as client:
+        joined = client.post("/api/inference/join-resident")
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["status"] == "joined"
+    assert not shared.unloaded
+    assert access._resident_sharers["chat"] == {
+        accounts["alice"].account_id,
+        accounts["bob"].account_id,
+    }
+    assert sees_resident(accounts["alice"])
+
+
 def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, accounts):
     reuse_load(monkeypatch, accounts["alice"])
     # Bob is mid-generation: alice's share release must not be a gpu_busy refusal.
@@ -185,7 +205,12 @@ def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, ac
     assert not shared.unloaded
     assert sees_resident(accounts["bob"])
     assert not sees_resident(accounts["alice"])
-    assert status_for(accounts["alice"]) == {"loaded": [], "loading": [], "yours": False}
+    assert status_for(accounts["alice"]) == {
+        "loaded": [],
+        "loading": [],
+        "yours": False,
+        "resident": None,
+    }
     # The last sharer's unload is a real teardown and clears the set.
     with client_for(accounts["bob"]) as client:
         gone = client.post("/api/inference/unload", json = {"model_path": RESIDENT})

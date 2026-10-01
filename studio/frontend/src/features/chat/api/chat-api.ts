@@ -36,12 +36,14 @@ import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
+  JoinResidentResponse,
   ListLorasResponse,
   ListModelsResponse,
   LoadModelRequest,
   LoadModelResponse,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
+  ResidentMetadata,
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
@@ -189,6 +191,23 @@ async function parseJsonOrThrow<T>(
 ): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
+    const detail =
+      body && typeof body === "object" && "detail" in body
+        ? (body as { detail?: unknown }).detail
+        : null;
+    if (
+      detail &&
+      typeof detail === "object" &&
+      (detail as { error?: unknown }).error === "resident_conflict"
+    ) {
+      throw new ResidentConflictError(
+        String(
+          (detail as { message?: unknown }).message ??
+            "Another model is currently resident.",
+        ),
+        (detail as { resident?: ResidentMetadata | null }).resident ?? null,
+      );
+    }
     throw new Error(parseErrorText(response.status, body));
   }
   const deferred = deferredError(body);
@@ -199,6 +218,16 @@ async function parseJsonOrThrow<T>(
     assertCompletedPaddedBody(body, paddedLabel);
   }
   return body as T;
+}
+
+export class ResidentConflictError extends Error {
+  readonly resident: ResidentMetadata | null;
+
+  constructor(message: string, resident: ResidentMetadata | null) {
+    super(message);
+    this.name = "ResidentConflictError";
+    this.resident = resident;
+  }
 }
 
 export async function listModels(): Promise<ListModelsResponse> {
@@ -221,6 +250,13 @@ export async function getInferenceStatus(
 ): Promise<InferenceStatusResponse> {
   const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
+}
+
+export async function joinResident(): Promise<JoinResidentResponse> {
+  const response = await authFetch("/api/inference/join-resident", {
+    method: "POST",
+  });
+  return parseJsonOrThrow<JoinResidentResponse>(response, "Join resident model");
 }
 
 export async function getApiMonitor(): Promise<ApiMonitorResponse> {

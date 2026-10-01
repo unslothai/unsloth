@@ -127,7 +127,12 @@ def test_only_the_yours_key_separates_the_two_answers(chat_resident, accounts):
     masked body here is what lets the two teardown tests above assert on "yours".
     """
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
-    assert bob_status(accounts).json() == {"loaded": [], "loading": [], "yours": False}
+    assert bob_status(accounts).json() == {
+        "loaded": [],
+        "loading": [],
+        "yours": False,
+        "resident": None,
+    }
 
 
 def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
@@ -169,7 +174,12 @@ def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
         # Inside the window now, and it stays open until may_release is set.
         assert chat_resident.unloaded, "the backend should already be down here"
         assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
-        assert bob_status(accounts).json() == {"loaded": [], "loading": [], "yours": False}
+        assert bob_status(accounts).json() == {
+            "loaded": [],
+            "loading": [],
+            "yours": False,
+            "resident": None,
+        }
 
         may_release.set()
         for _ in range(500):
