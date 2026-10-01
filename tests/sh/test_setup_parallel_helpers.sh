@@ -71,6 +71,33 @@ fi
 
 rm -f "$_FUNC_FILE"
 
+# ── under set -e a failed job still joins the rest and reports its label ──
+_SETE_FILE=$(mktemp)
+for _fn in _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait; do
+    sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_SETE_FILE"
+done
+_SETE_OUT=$(
+    bash -c '
+        set -euo pipefail
+        C_ERR=; step() { echo "STEP $*"; }
+        _setup_frontend_reap_if_exited() { :; }; _setup_abort_frontend_job() { echo ABORTED; }
+        . "$1"
+        _setup_parallel_reset
+        _setup_parallel_run "T5 a" bash -c "exit 5"
+        _setup_parallel_run "T5 b" bash -c "sleep 0.3; echo B_DONE"
+        _setup_parallel_wait
+    ' _ "$_SETE_FILE" 2>&1
+) && _sete_rc=0 || _sete_rc=$?
+if [ "$_sete_rc" -ne 0 ] && printf '%s\n' "$_SETE_OUT" | grep -q 'T5 a failed' \
+    && printf '%s\n' "$_SETE_OUT" | grep -q B_DONE && printf '%s\n' "$_SETE_OUT" | grep -q ABORTED; then
+    echo "  PASS: set -e parent joins every job and aborts the frontend"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: set -e parallel wait (rc=$_sete_rc): $_SETE_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$_SETE_FILE"
+
 # ── gitignore hide/restore scoped to npm run build ──
 _GI_FILE=$(mktemp)
 sed -n '/^_setup_hide_star_gitignores_from()/,/^}/p' "$SETUP_SH" > "$_GI_FILE"

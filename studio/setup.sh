@@ -711,9 +711,9 @@ _setup_parallel_wait() {
     for i in "${!_SETUP_PARALLEL_PIDS[@]}"; do
         pid="${_SETUP_PARALLEL_PIDS[$i]}"
         label="${_SETUP_PARALLEL_LABELS[$i]}"
-        # Capture status before testing: `if ! wait` clobbers $? under bash.
-        wait "$pid"
-        wait_status=$?
+        # `|| ` keeps set -e from exiting here, before the other jobs are joined.
+        wait_status=0
+        wait "$pid" || wait_status=$?
         if [ "$wait_status" -ne 0 ]; then
             step "error" "$label failed (exit code $wait_status)" "$C_ERR" >&2
             fail=1
