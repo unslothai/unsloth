@@ -260,3 +260,65 @@ def test_the_trainer_entry_point_returns_false_when_the_source_is_unavailable(mo
     from core.training import trainer
 
     assert trainer._ensure_deepseek_ocr_installed() is False
+
+
+def test_an_added_shadowing_package_is_rebuilt(monkeypatch, pinned_digests):
+    """Digests on the listed files cannot see an ADDED file that wins the import.
+
+    `modeling_deepseekocr/__init__.py` is imported in preference to
+    `modeling_deepseekocr.py`, and an origin check passes it because it does sit inside
+    the pinned root, so the contents have to be exactly what was installed.
+    """
+    fetched = []
+
+    def counting_download(
+        repo_id = None,
+        *args,
+        **kwargs,
+    ):
+        fetched.append(repo_id)
+        return _fake_download(repo_id, *args, **kwargs)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", counting_download)
+    source = ensure_deepseek_ocr_source()
+
+    shadow = source / _DEEPSEEK_OCR_PACKAGE / "modeling_deepseekocr"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("VALUE = 'shadow'\n", encoding = "utf-8")
+
+    assert _deepseek_ocr_installed(source) is False
+    ensure_deepseek_ocr_source()
+    assert len(fetched) == 2
+    assert not shadow.exists()
+
+
+def test_a_bare_added_directory_is_also_rebuilt(monkeypatch, pinned_digests):
+    """A directory needs no __init__.py to be importable, so presence is enough."""
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _fake_download)
+    source = ensure_deepseek_ocr_source()
+
+    (source / _DEEPSEEK_OCR_PACKAGE / "conversation").mkdir()
+
+    assert _deepseek_ocr_installed(source) is False
+
+
+def test_the_install_leaves_only_the_pinned_files(monkeypatch, pinned_digests):
+    """The hub's own metadata directory is removed, so the exact-contents rule holds."""
+
+    def download_with_metadata(
+        repo_id = None,
+        *args,
+        **kwargs,
+    ):
+        result = _fake_download(repo_id, *args, **kwargs)
+        metadata = Path(kwargs["local_dir"]) / ".cache" / "huggingface"
+        metadata.mkdir(parents = True, exist_ok = True)
+        (metadata / "download").write_text("x", encoding = "utf-8")
+        return result
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download_with_metadata)
+
+    source = ensure_deepseek_ocr_source()
+
+    names = {entry.name for entry in (source / _DEEPSEEK_OCR_PACKAGE).iterdir()}
+    assert names == {"__init__.py", *_DEEPSEEK_OCR_MODULES}

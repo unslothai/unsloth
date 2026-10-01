@@ -119,6 +119,8 @@ _DEEPSEEK_OCR_DIGESTS = {
     "modeling_deepseekocr.py": "31e3d52972534415cb6507a40ff7cd859a3ddd3419ace6900d659fba0e09321b",
     "modeling_deepseekv2.py": "bab8c5c67236453f3311ef2c6629a3606e608e6cc818c8a5923e7877ec65db7f",
 }
+# The complete package, so an added entry is a rebuild rather than an import candidate.
+_DEEPSEEK_OCR_CONTENTS = frozenset({"__init__.py", *_DEEPSEEK_OCR_MODULES})
 
 _DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
 SNAC_REPOSITORY = "hubertsiuzdak/snac_24khz"
@@ -891,6 +893,13 @@ def _deepseek_ocr_installed(runtime: Path) -> bool:
     module is therefore checked against `_DEEPSEEK_OCR_DIGESTS` and the generated
     `__init__.py` against being empty.
 
+    Digests on the listed files are not enough either, because an ADDED file can win the
+    import without editing any of them: a `modeling_deepseekocr/` directory holding an
+    `__init__.py` is imported in preference to `modeling_deepseekocr.py`, and an origin
+    check passes it because it does sit inside the pinned root. A bare directory needs no
+    `__init__.py` to be importable at all. So the package contents must be exactly what
+    was installed, and anything else makes this a rebuild.
+
     Symlinks are rejected rather than followed, matching the rest of this module: a
     link is a way to point an "installed" package at bytes outside the verified tree.
     `local_dir` has written real files since huggingface_hub 0.23 and the floor here is
@@ -904,6 +913,8 @@ def _deepseek_ocr_installed(runtime: Path) -> bool:
         if member.is_symlink() or not member.is_file():
             return False
     try:
+        if {entry.name for entry in package.iterdir()} != _DEEPSEEK_OCR_CONTENTS:
+            return False
         if (package / "__init__.py").read_bytes() != b"":
             return False
         for name, expected in _DEEPSEEK_OCR_DIGESTS.items():
@@ -971,6 +982,11 @@ def ensure_deepseek_ocr_source(hf_token: HfTokenArg = None) -> Path:
                     cache_dir = active_hf_hub_cache(),
                     token = hf_token,
                 )
+                # snapshot_download leaves its own metadata directory inside local_dir.
+                # It is dot-prefixed and so not importable, but removing it keeps the
+                # installed package exactly the pinned files, which is what lets the
+                # predicate above treat any other entry as a reason to rebuild.
+                _remove_owned_path(package / ".cache")
                 # The repo is a model, not a package, so it ships no __init__.py. Same
                 # approach as the `generated_files` entry the git-based sources use.
                 (package / "__init__.py").write_text("", encoding = "utf-8")
@@ -990,6 +1006,12 @@ def ensure_deepseek_ocr_source(hf_token: HfTokenArg = None) -> Path:
                     raise RuntimeError(
                         "The fetched DeepSeek-OCR source does not match the pinned digests: "
                         + ", ".join(unexpected)
+                    )
+                extra = sorted({entry.name for entry in package.iterdir()} - _DEEPSEEK_OCR_CONTENTS)
+                if extra:
+                    raise RuntimeError(
+                        "The fetched DeepSeek-OCR source carries unexpected entries: "
+                        + ", ".join(extra)
                     )
                 _purge_package_bytecode(package)
                 _replace_owned_directory(staging, runtime)
