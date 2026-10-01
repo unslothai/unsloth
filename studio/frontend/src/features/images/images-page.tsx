@@ -67,6 +67,10 @@ import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import {
+  refreshLinkedMachines,
+  useLinkedMachinesStore,
+} from "@/features/model-picker/linked/linked-machines";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
@@ -223,6 +227,8 @@ import {
   generateDiffusionImage,
   getDiffusionLoadProgress,
   getDiffusionStatus,
+  getImagesMachine,
+  setImagesMachine,
   getGallery,
   getGenerateProgress,
   listDiffusionControlNets,
@@ -2375,6 +2381,16 @@ export function ImagesPage({
     [],
   );
 
+  const [imagesMachine, setImagesMachineState] = useState(getImagesMachine);
+  const imagesMachineName = useLinkedMachinesStore((state) =>
+    imagesMachine
+      ? state.instances.find((i) => i.id === imagesMachine)?.name
+      : undefined,
+  );
+  useEffect(() => {
+    if (imagesMachine) void refreshLinkedMachines();
+  }, [imagesMachine]);
+
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
@@ -3414,7 +3430,18 @@ export function ImagesPage({
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated safetensors pick.
   const handleModelSelect = useCallback(
-    (id: string, meta: ModelSelectorChangeMeta) => {
+    (id: string, pickMeta: ModelSelectorChangeMeta) => {
+      // A pick from a linked instance loads and generates there; its load fetches what is missing,
+      // so it skips this machine's download manager.
+      const machine = pickMeta.linkedInstanceId ?? null;
+      if (machine !== getImagesMachine()) {
+        setImagesMachine(machine);
+        setImagesMachineState(machine);
+        void refreshStatus();
+      }
+      const meta: ModelSelectorChangeMeta = machine
+        ? { ...pickMeta, source: "local" }
+        : pickMeta;
       // A Download only selection fetches files; it does not take over the page. Retiring the staged
       // intent and claiming the page for it stranded a load that was already downloading: that model
       // finished downloading and then never loaded, with no toast and nothing to retry from.
@@ -3602,6 +3629,7 @@ export function ImagesPage({
       loadOrStage,
       pickGuard,
       quant,
+      refreshStatus,
       revertPick,
     ],
   );
@@ -4640,6 +4668,8 @@ export function ImagesPage({
               />
             ) : (
               <ModelSelector
+                linkedPicker="image"
+                linkedMachine={imagesMachineName}
                 triggerDataTour="images-model"
                 models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}

@@ -555,7 +555,7 @@ const CAPABILITY_BADGES: {
 /** Which capability glyphs are worth drawing in the current picker; null draws them all. A
  *  media picker has already filtered to one kind, so its own kind is not information (Audio
  *  on Video is the exception). Context, not a prop, since it comes from the picker. */
-const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
+export const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
   null,
 );
 
@@ -795,7 +795,7 @@ function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
 }
 
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
-function VramBadge({
+export function VramBadge({
   status,
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
@@ -841,7 +841,7 @@ function VramBadge({
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
 
-function SizeText({ value }: { value: string }) {
+export function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
   if (!parts) {
     return <>{value}</>;
@@ -1105,7 +1105,7 @@ function ConnectedGroupHeading({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   label,
   meta,
   selected,
