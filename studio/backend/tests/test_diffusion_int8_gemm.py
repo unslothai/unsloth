@@ -121,13 +121,15 @@ def _int8_linear(k, n, bias, version):
     "m, k, n, bias, xs32",
     [(4096, 4096, 4096, False, False), (1037, 520, 1400, True, False), (17, 256, 1024, True, True), (300, 12288, 256, False, False)],
 )
-def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32):
+@pytest.mark.parametrize("ws32", [False, True])
+def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
     g = torch.Generator().manual_seed(m + k + n)
     a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
     w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
     xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
     xs = (xs.float() if xs32 else xs).cuda()
     ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).cuda()
+    ws = ws.float() if ws32 else ws
     b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).cuda() if bias else None
     out = g8._op()(a, w, xs, ws, b)
     assert out.dtype == torch.bfloat16

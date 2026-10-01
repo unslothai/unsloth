@@ -191,7 +191,7 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         a = torch.cat([a, a.new_zeros((_MIN_ROWS - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     y = (c * xs.reshape(-1, 1)).to(torch.bfloat16)
-    y = (y * ws.reshape(-1)).to(torch.bfloat16)
+    y = y * ws.reshape(-1)  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
     if bias is not None:
         y = y + bias
     return y.to(torch.bfloat16)
@@ -318,6 +318,7 @@ def _probe(index: int, cfg: tuple) -> bool:
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
             xs = (xs.float() if xs32 else xs).to(dev)
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
+            ws = ws.float() if xs32 else ws  # fp32 weight scales + bias: the prequant (v2) rounding order
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
