@@ -23,6 +23,12 @@ test("a bare file link resolves to the chat's sandbox route", () => {
   );
 });
 
+test("a one-segment link with a file type, or a path under a folder, is a file", () => {
+  for (const href of ["report.md", "data.json", "outputs/run.v2/table.parquet", "v1.2/report.pdf"]) {
+    assert.equal(sandboxFileForHref(href), href, href);
+  }
+});
+
 test("a route link keeps the session it records", () => {
   assert.equal(sandboxFileForHref("/api/inference/sandbox/other/plot.csv"), "plot.csv");
   assert.equal(
@@ -43,6 +49,8 @@ test("web links, anchors, words, app routes and escapes are not files", () => {
     "//evil.example/x.txt",
     "www.example.com",
     "docs.unsloth.ai/get-started",
+    "example.tech",
+    "docs.museum/report.pdf",
   ]) {
     assert.equal(sandboxFileForHref(href), null, href);
   }

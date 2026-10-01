@@ -191,15 +191,24 @@ export function sandboxFileForSrc(src: string): string | null {
   return SANDBOX_INLINE_IMAGE_EXTS.has(ext) ? file : null;
 }
 
-/** Sandbox file a markdown link targets (`outputs/report.csv`); needs an extension, so `#intro` stays a link. */
-// A site without a scheme (`www.example.com`, `example.org/page`), not a sandbox path.
-const BARE_HOST_RE = /^(?:www\.[^/]+|[^/]+\.(?:com|org|net|edu|gov|io|ai|dev|app|co|me|info|xyz|uk|de|fr|jp|cn|ru|ca|au|in|us|eu))(?:[:/?#]|$)/i;
+// What a one-segment link must end in to be a file, since `example.tech` is a site.
+const LINK_FILE_EXTS = new Set(
+  ("csv tsv json jsonl txt md markdown html htm pdf png jpg jpeg gif webp svg bmp py ipynb js ts sh " +
+    "yaml yml toml xml log xlsx xls docx doc pptx odt ods zip tar gz parquet wav mp3 mp4 webm mov").split(" "),
+);
+// A first segment shaped like a domain (`docs.museum/report.pdf`), not a folder.
+const HOST_SEGMENT_RE = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?$/i;
 
+/** Sandbox file a markdown link targets (`outputs/report.csv`); needs an extension, so `#intro` stays a link. */
 export function sandboxFileForHref(href: string): string | null {
   const trimmed = href.trim();
-  if (trimmed.startsWith("#") || BARE_HOST_RE.test(trimmed)) return null;
+  if (trimmed.startsWith("#") || /^www\./i.test(trimmed)) return null;
   const file = sandboxPathForSrc(href);
-  return file !== null && /[^/]\.[A-Za-z0-9]{1,8}$/.test(file) ? file : null;
+  const ext = file && /[^/]\.([A-Za-z0-9]{1,8})$/.exec(file)?.[1]?.toLowerCase();
+  if (!file || !ext) return null;
+  const [first, ...rest] = file.split("/");
+  if (rest.length === 0) return LINK_FILE_EXTS.has(ext) ? file : null;
+  return HOST_SEGMENT_RE.test(first ?? "") ? null : file;
 }
 
 function sandboxPathForSrc(src: string): string | null {
