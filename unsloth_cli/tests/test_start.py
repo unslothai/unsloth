@@ -1519,6 +1519,8 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
         if url.endswith("/api/auth/api-keys"):
+            if method == "GET":
+                return {"api_keys": [{"key_prefix": "feedface"}]}
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/settings/embedding-model"):
             return {"embedding_model": "unsloth/bge-small-en-v1.5"}
@@ -2834,10 +2836,18 @@ def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     # First run mints; second reuses the minted key cached for this server.
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface"]
+
+
+def test_connect_skips_a_minted_key_the_owner_does_not_hold(fake_studio, tmp_path):
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-a11ce000a11ce000"]}}}))
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
 
 
 def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
@@ -3920,6 +3930,25 @@ def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
     finally:
         stop_ok()
         stop_bad()
+
+
+def test_studio_token_is_issued_for_the_owner_not_a_managed_account(tmp_path, monkeypatch):
+    import secrets
+
+    import jwt
+
+    import unsloth_cli._inference as inference
+
+    inference.ensure_studio_backend_path()
+    from studio.backend.auth import storage
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    storage.create_initial_user("unsloth", "owner-password", secrets.token_urlsafe(32))
+    storage.issue_account_setup_code(username = "alice")
+
+    token = inference._studio_token()
+    assert token
+    assert jwt.decode(token, options = {"verify_signature": False})["sub"] == "unsloth"
 
 
 def _serve_redirect(target):

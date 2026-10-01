@@ -1673,12 +1673,6 @@ def _agent_api_key(
         )
 
     # Identity verified: replay a previously auto-minted key, else mint a new one.
-    for key in _cached_keys(cache, base, "minted"):
-        if _key_accepted(base, key):
-            _remember_key(cache, base, key, "minted")
-            return key
-
-    # Self-issue a JWT (signed with the local secret) and mint a key.
     token = _studio_token()
     if token is None:
         _fail(
@@ -1686,6 +1680,18 @@ def _agent_api_key(
             "an API key in Unsloth → Settings → API and pass it with --api-key, "
             "or set UNSLOTH_API_KEY."
         )
+    # Older releases could mint for a managed account, which cannot see the owner's model.
+    owned = {
+        entry.get("key_prefix")
+        for entry in _http_json(
+            "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
+        ).get("api_keys", [])
+    }
+    for key in _cached_keys(cache, base, "minted"):
+        if key[len("sk-unsloth-") :][:8] in owned and _key_accepted(base, key):
+            _remember_key(cache, base, key, "minted")
+            return key
+
     key = _http_json(
         "POST",
         f"{base}/api/auth/api-keys",
