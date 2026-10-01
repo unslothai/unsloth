@@ -15,6 +15,8 @@ export interface EngineStatus {
   restored?: boolean;
   can_rollback: boolean;
   unsupported_reason: string | null;
+  // Wheel bytes the offered install or update downloads; null when unknown or nothing is on offer.
+  download_bytes?: number | null;
   job: {
     state: string;
     phase: string | null;

@@ -33,6 +33,7 @@ export const en = {
     installTitle: "Install {engine}",
     installAndLoad: "Install and load",
     confirm: "Install {engine} {version}? This optional download can use several gigabytes. Exact additional download and disk usage are unavailable. Compatible cached packages and model files are reused.",
+    confirmSized: "Install {engine} {version}? This optional download is about {size}. Packages Studio already has, including PyTorch when the versions match, are reused rather than downloaded again.",
     background: "Installation runs in the background. Removing the engine keeps your downloaded models.",
     failed: "Engine installation failed. Retry or use the default engine.",
     details: "Technical details",
