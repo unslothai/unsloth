@@ -158,7 +158,10 @@ def _block_sites(block: Any) -> Optional[tuple[Any, ...]]:
     norms = tuple(getattr(block, n, None) for n in ("attention_norm2", "ffn_norm2"))
     if attn is None or ffn is None or any(n is None for n in norms):
         return None
-    if any(getattr(attn, n, None) is None for n in ("norm_q", "norm_k", "to_q", "to_k", "to_v", "to_out")):
+    if any(
+        getattr(attn, n, None) is None
+        for n in ("norm_q", "norm_k", "to_q", "to_k", "to_v", "to_out")
+    ):
         return None
     if any(getattr(ffn, n, None) is None for n in ("w1", "w2", "w3")):
         return None
@@ -199,7 +202,12 @@ def _install_rescale_post_norm(root: Any, attn_scale: float, ffn_scale: float) -
     return sites
 
 
-def install_fp16_guard(root: Any, recipe: Optional[str], dtype: Any, logger: Any = None) -> int:
+def install_fp16_guard(
+    root: Any,
+    recipe: Optional[str],
+    dtype: Any,
+    logger: Any = None,
+) -> int:
     """Install ``recipe`` on every matching block under ``root`` when ``dtype`` is float16. Returns the number of
     guarded blocks (0 = not engaged). Idempotent."""
     if root is None or recipe not in RECIPES or not _is_fp16(dtype) or fp16_guard_disabled():
@@ -216,7 +224,9 @@ def install_fp16_guard(root: Any, recipe: Optional[str], dtype: Any, logger: Any
     if logger is not None:
         if sites:
             logger.info(
-                "diffusion.fp16_guard: recipe=%s blocks=%d (float16 kept, no float32 promotion)", recipe, sites
+                "diffusion.fp16_guard: recipe=%s blocks=%d (float16 kept, no float32 promotion)",
+                recipe,
+                sites,
             )
         else:
             logger.warning(

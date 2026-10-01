@@ -95,7 +95,11 @@ def test_bf16_and_fp32_never_change():
 
 
 class _RMS(nn.Module):
-    def __init__(self, dim, eps = 1e-5):
+    def __init__(
+        self,
+        dim,
+        eps = 1e-5,
+    ):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
@@ -116,11 +120,20 @@ class _Attn(nn.Module):
         self.norm_q = _RMS(dim // heads)
         self.norm_k = _RMS(dim // heads)
 
-    def forward(self, hidden_states, attention_mask = None):
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+    ):
         b, s, d = hidden_states.shape
-        q, k, v = (p(hidden_states).view(b, s, self.heads, -1) for p in (self.to_q, self.to_k, self.to_v))
+        q, k, v = (
+            p(hidden_states).view(b, s, self.heads, -1) for p in (self.to_q, self.to_k, self.to_v)
+        )
         q, k = self.norm_q(q), self.norm_k(k)
-        w = torch.softmax((q.float().transpose(1, 2) @ k.float().permute(0, 2, 3, 1)) / (d // self.heads) ** 0.5, -1)
+        w = torch.softmax(
+            (q.float().transpose(1, 2) @ k.float().permute(0, 2, 3, 1)) / (d // self.heads) ** 0.5,
+            -1,
+        )
         o = (w.to(v.dtype) @ v.transpose(1, 2)).transpose(1, 2).reshape(b, s, d)
         return self.to_out[1](self.to_out[0](o))
 
@@ -137,7 +150,12 @@ class _FFN(nn.Module):
 
 
 class _Block(nn.Module):
-    def __init__(self, dim = 64, heads = 4, hidden = 128):
+    def __init__(
+        self,
+        dim = 64,
+        heads = 4,
+        hidden = 128,
+    ):
         super().__init__()
         self.attention = _Attn(dim, heads)
         self.feed_forward = _FFN(dim, hidden)
@@ -263,7 +281,10 @@ def test_real_diffusers_zimage_source_matches_recipe(monkeypatch):
     pytest.importorskip("diffusers.models.transformers.transformer_z_image")
     monkeypatch.undo()
     monkeypatch.setattr(guard, "_SUPPORTED", {})
-    assert guard._recipe_supported(detect_family("Tongyi-MAI/Z-Image-Turbo"), "rescale_post_norm") is True
+    assert (
+        guard._recipe_supported(detect_family("Tongyi-MAI/Z-Image-Turbo"), "rescale_post_norm")
+        is True
+    )
 
 
 @needs_fp16
