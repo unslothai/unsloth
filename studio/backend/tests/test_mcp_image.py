@@ -260,7 +260,7 @@ def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
 
 
-@pytest.mark.parametrize("fmt", ["JPEG", "WEBP", "PNG"])
+@pytest.mark.parametrize("fmt", ["JPEG", "WEBP", "PNG", "BMP", "TIFF", "ICO"])
 def test_bare_base64_images_in_an_image_calls_reply_are_withheld(fmt):
     image = McpImage(mime = "image/png", data = _noise_png())
     out = io.BytesIO()
@@ -271,6 +271,15 @@ def test_bare_base64_images_in_an_image_calls_reply_are_withheld(fmt):
     )
     plain = "sha256 " + "a" * 64 + " token " + base64.b64encode(b"x" * 90).decode()
     assert image.redact(plain) == plain
+
+
+@pytest.mark.parametrize("size", [2000, 2001, 2002])
+def test_long_opaque_base64_in_an_image_calls_reply_is_withheld(size):
+    image = McpImage(mime = "image/png", data = _noise_png())
+    blob = base64.encodebytes(random.Random(size).randbytes(size)).decode()
+    assert image.redact(f"converted:\n{blob}done") == "converted:\n[image withheld]"
+    words = "\n".join(["Cowboy", "Bebop", "Trigun"] * 120)
+    assert image.redact(words) == words
 
 
 @pytest.mark.parametrize(

@@ -37,21 +37,42 @@ _IMAGE_DATA_URL = re.compile(
 )
 # Bare base64 has no prefix to match, so a long run is decoded and kept only if it is not an image.
 _LONG_B64 = re.compile(_B64_RUN + r"(?:(?:\\[rn]|\r?\n)" + _B64_RUN + r")*")
-_IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8")
+_IMAGE_MAGIC = (
+    b"\x89PNG",
+    b"\xff\xd8\xff",
+    b"GIF8",
+    b"BM",
+    b"II*\x00",
+    b"MM\x00*",
+    b"\x00\x00\x01\x00",
+)
+# A blob this long that decodes cleanly is binary the model cannot use; it may be a copy in a format not listed above.
+_OPAQUE_B64_CHARS = 1024
+
+
+def _decode_b64(text: str) -> "bytes | None":
+    for alphabet in (text, text.replace("-", "+").replace("_", "/")):
+        try:
+            return base64.b64decode(alphabet + "=" * (-len(alphabet) % 4), validate = True)
+        except (binascii.Error, ValueError):
+            continue
+    return None
 
 
 def _is_image_b64(run: str) -> bool:
     if len(run) < 64:
         return False
-    head = re.sub(r"\\[rn]|\s", "", run).replace("\\/", "/")[:32]
-    for alphabet in (head, head.replace("-", "+").replace("_", "/")):
-        try:
-            data = base64.b64decode(alphabet, validate = True)
-        except (binascii.Error, ValueError):
-            continue
-        if data.startswith(_IMAGE_MAGIC) or data[8:12] == b"WEBP" or data[4:8] == b"ftyp":
-            return True
-    return False
+    compact = re.sub(r"\\[rn]|\s", "", run).replace("\\/", "/")
+    data = _decode_b64(compact[:32])
+    if data and (data.startswith(_IMAGE_MAGIC) or data[8:12] == b"WEBP" or data[4:8] == b"ftyp"):
+        return True
+    # Wrapped base64 has full-width lines; a column of short words does not.
+    lines = [line for line in re.split(r"\\[rn]|\s+", run.split("=", 1)[0]) if line]
+    return (
+        len(compact) >= _OPAQUE_B64_CHARS
+        and all(len(line) >= 60 for line in lines[:-2])
+        and _decode_b64(compact.split("=", 1)[0]) is not None
+    )
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
