@@ -35,15 +35,29 @@ test("scroll-rounded insets the track in Chromium and WebKit and clips in Firefo
         `${targets} \\{\\s*scrollbar-width: auto;\\s*scrollbar-color: auto;`,
     ),
   );
-  assert.match(
-    css,
-    new RegExp(
-      String.raw`@supports \(-moz-appearance: none\) \{\s*` +
-        `${targets} \\{\\s*clip-path: inset\\(-1px round calc\\(var\\(--scroll-radius, 0px\\) \\+ 1px\\)\\);`,
+  // Watched surfaces (dialogs, which carry a shadow the clip would cut) take it only while they
+  // overflow; everything else always does.
+  assert.ok(
+    css.includes(
+      "@supports (-moz-appearance: none) {\n\t:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {\n\t\tclip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));",
     ),
   );
   // Phone-width dialogs go square, and the clip must follow.
   assert.ok(css.includes(String.raw`.scroll-rounded.max-sm\:rounded-none { --scroll-radius: 0px; }`));
+});
+
+test("dialogs flag their overflow so Firefox clips them only while they scroll", () => {
+  for (const file of ["components/ui/dialog.tsx", "components/ui/alert-dialog.tsx"]) {
+    const source = readSrc(file);
+    assert.match(source, /const contentRef = useScrollOverflowRef\(ref\);/, file);
+    assert.match(source, /ref=\{contentRef\}/, file);
+  }
+  const lib = readSrc("lib/scroll-overflow.ts");
+  assert.match(lib, /element\.setAttribute\("data-overflow-watched", ""\);/);
+  assert.match(lib, /element\.toggleAttribute\("data-overflowing", overflowing\);/);
+  // Content growing inside a capped box leaves the box the same size, so the children are watched.
+  assert.match(lib, /for \(const child of element\.children\) sizes\.observe\(child\);/);
+  assert.match(lib, /children\.observe\(element, \{ childList: true \}\);/);
 });
 
 test("dialogs and inline rounded scrollers use it", () => {
@@ -67,6 +81,10 @@ test("shadowed menus scroll an inner viewport, not their rounded surface", () =>
   assert.doesNotMatch(contextMenu, /rounded-2xl p-1 shadow-2xl[^"]*overflow-y-auto/);
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /aui-action-bar-more-content[^"]*flex flex-col overflow-hidden rounded-\[21px\]/);
+  // The recipe preview's error panel keeps its shadow-border.
+  const preview = readSrc("features/recipe-studio/dialogs/preview-dialog.tsx");
+  assert.match(preview, /overflow-hidden rounded-2xl border border-destructive\/30 bg-destructive\/5 py-3 shadow-border">\s*<div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">/);
+  assert.doesNotMatch(preview, /scroll-rounded rounded-2xl border border-destructive/);
   const presets = readSrc("features/generation-presets/media-generation-preset-control.tsx");
   assert.match(presets, /gap-0 overflow-hidden rounded-xl border-border\/70 p-0 shadow-xl/);
   assert.match(presets, /max-h-48 min-h-0 overflow-y-auto overscroll-contain p-2/);
