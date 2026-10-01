@@ -33,7 +33,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
-    for column in ("builtin_id", "builtin_config_json"):
+    for column in ("builtin_id", "builtin_config_json", "image_input_mappings_json"):
         if column not in cols:
             conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} TEXT")
     conn.execute(
@@ -73,6 +73,7 @@ def create_server(
     use_oauth: bool = False,
     builtin_id: Optional[str] = None,
     builtin_config_json: Optional[str] = None,
+    image_input_mappings_json: Optional[str] = None,
 ) -> None:
     from core.inference.mcp_client import validate_mcp_address
 
@@ -84,8 +85,9 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                 is_enabled, use_oauth, created_at, updated_at, builtin_id, builtin_config_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_enabled, use_oauth, created_at, updated_at, builtin_id, builtin_config_json,
+                 image_input_mappings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -98,6 +100,7 @@ def create_server(
                 now,
                 builtin_id,
                 builtin_config_json,
+                image_input_mappings_json,
             ),
         )
         conn.commit()

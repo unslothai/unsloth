@@ -4920,6 +4920,40 @@ def _admit_tool_access(payload) -> None:
     )
 
 
+async def _request_mcp_image(payload, ui_events: bool):
+    """The decoded ``mcp_image``, or None. Sending it needs the user's approval, hence the UI stream."""
+    if not getattr(payload, "mcp_image", None):
+        return None
+    if not payload.mcp_enabled:
+        raise HTTPException(status_code = 400, detail = "mcp_image requires mcp_enabled=true.")
+    if not (payload.stream and ui_events):
+        raise HTTPException(
+            status_code = 400,
+            detail = "mcp_image requires stream=true and the X-Unsloth-Events: 1 header.",
+        )
+    from core.inference.mcp_image import McpImageError, parse_mcp_image
+
+    try:
+        return await asyncio.to_thread(parse_mcp_image, payload.mcp_image)
+    except McpImageError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+
+_MCP_IMAGE_UNUSED = (
+    "This model and tool selection cannot run MCP tools, so the attached image cannot be sent."
+)
+
+
+def _refuse_unused_mcp_image(mcp_image, tool_names = None) -> None:
+    """Only a tool loop whose catalog has a mapped MCP tool can use the image; anything else would drop it silently."""
+    if mcp_image is None:
+        return
+    from core.inference.tools import mcp_catalog_takes_image
+
+    if tool_names is None or not mcp_catalog_takes_image(tool_names):
+        raise HTTPException(status_code = 400, detail = _MCP_IMAGE_UNUSED)
+
+
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
@@ -24745,6 +24779,9 @@ async def _proxy_to_external_provider(
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
     _ui_events = _ui_stream_events_enabled(request)
+    _mcp_image = await _request_mcp_image(payload, _ui_events)
+    if not studio_tool_loop:
+        _refuse_unused_mcp_image(_mcp_image)
     _drop_keepalive = _DroppedFrameKeepalive()
     # One per request: carries the withheld-call state across the lines of a turn.
     _tool_call_stripper = ServerToolCallStripper()
@@ -25015,6 +25052,7 @@ async def _proxy_to_external_provider(
                 full_access_only = True,
             )
             chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
+        _refuse_unused_mcp_image(_mcp_image, _catalog_names(studio_tool_payloads))
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
@@ -25126,6 +25164,7 @@ async def _proxy_to_external_provider(
                         run = run,
                         policy = policy,
                         cancel_event = cancel_event,
+                        mcp_image = _mcp_image,
                     )
                     if policy
                     else client.stream(
@@ -25365,6 +25404,7 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    _refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))
     if run_studio_tool_loop:
         # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves this
         # empty and skips the loop, so there is no prompt to find a channel for.
@@ -25512,6 +25552,7 @@ async def _proxy_to_external_provider(
                     on_provider_turn_end = _end_provider_turn,
                 ),
                 cancel_event = cancel_event,
+                mcp_image = _mcp_image,
             )
         else:
             gen = client.stream_chat_completion(
@@ -26597,6 +26638,7 @@ async def produce_openai_chat_completions(
             )
         return await _proxy_to_external_provider(payload, request, current_subject)
 
+    _mcp_image = await _request_mcp_image(payload, _ui_events)
     # Local path only: the lift targets audio_base64, which the proxy never reads.
     _normalise_chat_content_parts(payload)
 
@@ -26858,6 +26900,7 @@ async def produce_openai_chat_completions(
 
     _npu = peek_npu_backend()
     if _npu is not None and _npu.is_loaded:
+        _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
 
     llama_backend = get_llama_cpp_backend()
@@ -26940,6 +26983,7 @@ async def produce_openai_chat_completions(
                         " Load a vision model to send one."
                     ),
                 )
+            _refuse_unused_mcp_image(_mcp_image)
             return await _monitored_generate_audio(
                 model_name,
                 context_length = llama_backend.context_length,
@@ -27022,6 +27066,7 @@ async def produce_openai_chat_completions(
                         " Load a vision model to send one."
                     ),
                 )
+            _refuse_unused_mcp_image(_mcp_image)
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
@@ -27066,6 +27111,7 @@ async def produce_openai_chat_completions(
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
+            _refuse_unused_mcp_image(_mcp_image)
             # This route re-listens to the recording and answers afresh, so there is
             # no boundary to resume from; the Unsloth UI already hides Continue here.
             if _continue_final_message(payload):
@@ -27469,6 +27515,7 @@ async def produce_openai_chat_completions(
     # generate_chat_completion, which has no response_format kwarg and would silently drop the
     # schema. No ``supports_tools`` needed -- grammars are independent of it.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
+        _refuse_unused_mcp_image(_mcp_image)
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         _reject_unresumable_thought(payload, llama_backend, _reject)
@@ -27771,6 +27818,7 @@ async def produce_openai_chat_completions(
                 ),
             )
 
+        _refuse_unused_mcp_image(_mcp_image, _catalog_names(tools_to_use) if use_tools else None)
         if use_tools:
             # permission_mode ask/auto require the confirm gate for Unsloth's own
             # tool loop. The request validator self-enables confirm only for
@@ -27935,13 +27983,19 @@ async def produce_openai_chat_completions(
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
+                    mcp_image = _mcp_image,
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
-                    # Only the streaming path parks and reclaims, so only it can use a slot.
+                    # Only the streaming path parks and reclaims, so only it can use a slot. An attached MCP
+                    # image forces the approval wait in every mode, so it parks too.
                     on_decode_slot = _gguf_record_decode_slot
-                    if payload.stream and _effective_confirm and not payload.bypass_permissions
+                    if payload.stream
+                    and (
+                        (_effective_confirm and not payload.bypass_permissions)
+                        or _mcp_image is not None
+                    )
                     else None,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
@@ -29784,6 +29838,9 @@ async def produce_openai_chat_completions(
             ),
         )
 
+    _refuse_unused_mcp_image(
+        _mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None
+    )
     if _sf_use_tools:
         # permission_mode ask/auto require the confirm gate for Unsloth's own tool
         # loop; when a CLI policy (--enable-tools) forces the loop on without a
@@ -29940,6 +29997,7 @@ async def produce_openai_chat_completions(
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
+                mcp_image = _mcp_image,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
