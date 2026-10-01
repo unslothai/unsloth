@@ -355,15 +355,18 @@ export async function countChatInputTokens(payload: {
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   if (!preparedToken.proceed)
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
+  options?.signal?.throwIfAborted();
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
@@ -624,6 +627,7 @@ export interface LocalModelInfo {
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
+  opaque?: boolean;
   // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;
@@ -661,6 +665,7 @@ export interface CachedModelRepo {
   size_bytes: number;
   /** Weights format; "adapter" is a LoRA with no base weights of its own. Optional for older-backend compatibility. */
   model_format?: string | null;
+  opaque?: boolean;
   /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo, so the chat picker can
@@ -1189,6 +1194,23 @@ export async function batchListChatMessages(
   for (const id of threadIds) {
     out.set(id, data.messagesByThreadId[id] ?? []);
   }
+  return out;
+}
+
+/** Message counts per thread, without bodies. Null on an older server without the route. */
+export async function batchCountChatMessages(
+  threadIds: string[],
+): Promise<Map<string, number> | null> {
+  const out = new Map<string, number>();
+  if (threadIds.length === 0) return out;
+  const response = await authFetch("/api/chat/messages:counts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (response.status === 404 || response.status === 405) return null;
+  const data = await parseJsonOrThrow<{ countsByThreadId: Record<string, number> }>(response);
+  for (const id of threadIds) out.set(id, data.countsByThreadId[id] ?? 0);
   return out;
 }
 

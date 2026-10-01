@@ -54,7 +54,9 @@ def _function_source(name: str) -> str:
 
 def _load(*names, **env):
     """Exec the named top-level functions against `env` and return the namespace."""
-    namespace = dict(env)
+    # save.py imports this from models.mistral_format (#12144) and calls it on every merge and
+    # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
+    namespace = {"raise_if_merging_mistral_format_view": lambda model, save_method: None, **env}
     for name in names:
         exec(compile(_function_source(name), str(_SAVE_PY), "exec"), namespace)
     return namespace

@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import inspect
+import os
 import shutil
 import subprocess
 import sys
@@ -151,6 +153,23 @@ def _successful_version_run(calls = None):
     return run
 
 
+def _unrunnable_version_run(calls):
+    """What running one of these stubs answers, without running it.
+
+    The launchers in this file are a few bytes behind an MZ, never a real PE image. Handing one to
+    CreateProcess on a Windows desktop can raise the modal "Unsupported 16-Bit Application" dialog,
+    and elsewhere it fails with an exec format error. That failure is the answer the recovery path
+    is exercised against, so it is raised here directly and the file is never started.
+    """
+
+    def run(argv, **kwargs):
+        # The bytes it would have started, so a caller can tell which file was asked.
+        calls.append((argv, Path(argv[0]).read_bytes()))
+        raise OSError(errno.ENOEXEC, os.strerror(errno.ENOEXEC), argv[0])
+
+    return run
+
+
 def _update(studio, *, verify = True):
     studio.update(local = False, package = "unsloth", verbose = False, verify = verify)
 
@@ -225,9 +244,13 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
         raise RuntimeError("setup failed")
 
     monkeypatch.setattr(studio, "_run_setup_script", setup)
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _unrunnable_version_run(calls))
 
     with pytest.raises(RuntimeError, match = "setup failed"):
         _update(studio)
+
+    assert calls, "the restore never asked a launcher for --version"
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
     assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
@@ -246,8 +269,15 @@ def test_invalid_launcher_is_restored_and_update_fails(monkeypatch, studio, tmp_
     monkeypatch.setattr(
         studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(invalid)
     )
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _unrunnable_version_run(calls))
 
     _shared_setup_3(launcher, studio)
+    # The invalid file is refused before anything runs; only the restored original is asked.
+    assert calls and all(
+        argv == [str(launcher), "--version"] and started == ORIGINAL_LAUNCHER
+        for argv, started in calls
+    )
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 

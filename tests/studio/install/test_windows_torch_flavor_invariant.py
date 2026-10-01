@@ -297,7 +297,7 @@ class TestStepThirteenWiring:
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
-            + ["_evict_xformers_requiring_another_torch"]
+            + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
 
@@ -341,8 +341,13 @@ class TestStepTotals:
         [
             ({}, 18),  # Linux, torch
             ({"NO_TORCH": True}, 16),  # Linux, GGUF-only (incl. the no-torch runtime step)
-            # Two MLX slots: the install step and the post-core-phase re-resolve.
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 16),  # Apple Silicon
+            # Two MLX slots: the install step and the post-core-phase re-resolve. Plus the MLX
+            # grammar engine (11d), which every Apple Silicon run spends, with torch or without.
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 17),  # Apple Silicon
+            (
+                {"IS_MACOS": True, "IS_MAC_ARM": True, "NO_TORCH": True},
+                16,
+            ),  # Apple Silicon, GGUF-only
             ({"IS_MACOS": True}, 14),  # Intel Mac
         ],
     )

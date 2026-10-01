@@ -494,7 +494,7 @@ function ListLabel({
   );
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, unitSeparator = ""): string {
   // Guard non-positive / non-finite sizes so we never render "NaN undefined".
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   // Decimal (base-1000) units to match Hugging Face's reported sizes; the GPU-fit math stays
@@ -508,7 +508,7 @@ function formatBytes(bytes: number): string {
     i += 1;
   }
   // No space: "145MB" reads as one value beside the quant chip.
-  return `${value.toFixed(value < 10 ? 1 : 0)}${units[i]}`;
+  return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
 }
 
 // Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn: what a
@@ -516,11 +516,15 @@ function formatBytes(bytes: number): string {
 const CAPABILITY_BADGES: {
   key: keyof ModelCapabilities;
   title: string;
+  /** Glyph colour, one per capability like the vision badge's indigo, so the kinds tell apart at a glance. */
+  tone: string;
   Glyph: (props: { className: string }) => ReactNode;
 }[] = [
   {
     key: "videoGen",
     title: "Generates video",
+    // Warm, at the vision indigo's lightness and chroma: amber-300 outshone every other tag.
+    tone: "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.8} {...props} />
     ),
@@ -528,6 +532,8 @@ const CAPABILITY_BADGES: {
   {
     key: "imageGen",
     title: "Generates images",
+    // Pink, as the Hub tags diffusion models.
+    tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
       <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
     ),
@@ -537,6 +543,9 @@ const CAPABILITY_BADGES: {
     // Direction-neutral, unlike the two above: `audio` covers ASR and classification as well as
     // synthesis, so a Whisper row would claim to generate what it consumes.
     title: "Audio",
+    // Teal, not the Hub's rose, which is too close to the image pink at this size; held to the
+    // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
+    tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
     ),
@@ -567,12 +576,16 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   const scope = useContext(CapabilityScope);
   return (
     <>
-      {visibleCapabilityBadges(caps, scope).map(({ key, title, Glyph }) => (
+      {visibleCapabilityBadges(caps, scope).map(({ key, title, tone, Glyph }) => (
+        // The vision badge's pill (same height and px-1.5), so every glyph tag in the row is one width.
         <span
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
+          className={cn(
+            "flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5",
+            tone,
+          )}
         >
           <Glyph className="size-3" />
         </span>
@@ -850,6 +863,15 @@ function SizeText({ value }: { value: string }) {
   );
 }
 
+/** One decimal through GB/TB, so a total and its model + assets breakdown visibly add up. */
+export function formatFootprintBytes(bytes: number): string {
+  return bytes >= 1_000_000_000 && bytes < 1_000_000_000_000
+    ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
+    : bytes >= 1_000_000_000_000
+      ? `${(bytes / 1_000_000_000_000).toFixed(1)} TB`
+      : formatBytes(bytes, " ");
+}
+
 /** Keep the row's size treatment consistent with every other model; diffusion GGUFs get one
  *  small explanation affordance, since their checkpoint is only part of what is kept on disk. */
 export function GgufDownloadFootprint({
@@ -859,25 +881,21 @@ export function GgufDownloadFootprint({
   checkpointBytes: number;
   companionBytes: number;
 }) {
-  const totalBytes = checkpointBytes + companionBytes;
-  // Whole-GB rounding is too lossy for a sum ("2.6 GB + 8.2 GB = 11 GB" looks contradictory),
-  // so keep one decimal through GB/TB.
-  const totalLabel =
-    totalBytes >= 1_000_000_000 && totalBytes < 1_000_000_000_000
-      ? `${(totalBytes / 1_000_000_000).toFixed(1)} GB`
-      : totalBytes >= 1_000_000_000_000
-        ? `${(totalBytes / 1_000_000_000_000).toFixed(1)} TB`
-        : formatBytes(totalBytes);
+  const totalLabel = formatFootprintBytes(checkpointBytes + companionBytes);
   return (
     <span
       data-model-download-footprint={true}
       className="flex items-center gap-1 whitespace-nowrap text-muted-foreground"
     >
-      <SizeText value={totalLabel} />
+      {/* Keep flex gaps out of SizeText's fragments. */}
+      <span>
+        <SizeText value={totalLabel} />
+      </span>
+      {/* Align the icon with the digits. */}
       <span
         data-model-download-footprint-help={true}
         aria-hidden={true}
-        className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/80"
+        className="flex size-3.5 shrink-0 -translate-y-[0.25em] items-center justify-center text-muted-foreground/80"
       >
         <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
       </span>
@@ -897,7 +915,8 @@ export function GgufDownloadFootprintExplanation({
     <>
       <span className="font-medium">Full required size</span>
       <span className="ml-1 text-muted-foreground">
-        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)} required assets
+        {formatFootprintBytes(checkpointBytes)} model +{" "}
+        {formatFootprintBytes(companionBytes)} required assets
       </span>
     </>
   );
@@ -940,12 +959,14 @@ function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
   denseQuantSchemes?: readonly string[];
+  quantisedStreaming?: boolean;
 }): DeviceBudget {
   return {
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
     // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
     denseQuantSchemes: gpu.denseQuantSchemes,
+    quantisedStreaming: gpu.quantisedStreaming,
   };
 }
 
@@ -953,17 +974,17 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
-  // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
-  // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
-  badge: "min-w-min min-[560px]:w-[calc(24px*var(--ui-space-scale,1))]",
-  // One glyph plus the disk mark (18 + 4 + 14).
-  badgeMid: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // slot and shift every column after it. This slot holds capability glyphs and the vision badge
+  // (both 26px pills) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
+  badge: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
+  // One glyph plus the disk mark (26 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
   // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
   // both grow past the slot and carry its quant chip 18px left of every other row.
   badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
-  badgeWide: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // Hub draws the disk mark and no vision badge (26+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
   // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
@@ -2605,6 +2626,7 @@ function passesTaskGate(
   filter: HfTaskFilter,
   catalog?: CatalogGroup[],
   activeCatalogArtifactIds?: ReadonlySet<string>,
+  localModel?: { opaque?: boolean },
 ): boolean {
   if (filter) {
     const exactArtifact =
@@ -2621,7 +2643,7 @@ function passesTaskGate(
           pickerTask: filter,
         })) &&
       !isImageEditModel(repoId)
-    );
+    ) || localModel?.opaque === true;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
   // on click; only the never-loadable tag is hidden.
@@ -2825,6 +2847,7 @@ function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
   audioType?: string | null,
+  familyOverrideRequired = false,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2833,6 +2856,7 @@ function localModelMeta(
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
     audioType: audioType ?? null,
+    familyOverrideRequired,
   };
 }
 
@@ -2888,6 +2912,7 @@ export function HubModelPicker({
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
   npu,
 }: {
   models: ModelOption[];
@@ -2921,6 +2946,7 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
 }) {
   const gpu = useGpuInfo();
@@ -3191,6 +3217,7 @@ export function HubModelPicker({
   const pickerInventory = useChatPickerInventory({
     enabled: true,
     allowedHiddenModelIds: activeCatalogArtifactIds,
+    opaqueKind,
   });
   const {
     cachedGguf,
@@ -4121,6 +4148,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              c,
             ) &&
             // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated
             // ARTIFACT, not a group-key match: a base sibling matches by key but dead-ends at the trust
@@ -4153,7 +4181,9 @@ export function HubModelPicker({
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
-                : false)),
+                : false) ||
+              // A pinned snapshot admitted only by an explicit family.
+              (c.opaque === true && Boolean(c.load_id?.trim()) && c.load_id?.trim() !== c.repo_id.trim())),
         ),
         downloadedSort,
         loadTimes,
@@ -4219,6 +4249,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
@@ -4265,6 +4296,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             (!chatOnly ||
               Boolean(task) ||
@@ -4314,6 +4346,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
@@ -5622,7 +5655,7 @@ export function HubModelPicker({
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.
   const sortTriggerClassName =
-    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
@@ -6341,6 +6374,7 @@ export function HubModelPicker({
                 isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
                 audioType: c.audio_type ?? null,
+                familyOverrideRequired: c.opaque === true,
               })
             }
             vramStatus={null}
@@ -6365,6 +6399,7 @@ export function HubModelPicker({
                   isGguf: false,
                   pipelineTag: c.task ?? null,
                   audioType: c.audio_type ?? null,
+                  familyOverrideRequired: c.opaque === true,
                 })
               }
             />
@@ -7297,7 +7332,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7338,7 +7373,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7437,7 +7472,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7478,7 +7513,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7568,7 +7603,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7605,7 +7640,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
