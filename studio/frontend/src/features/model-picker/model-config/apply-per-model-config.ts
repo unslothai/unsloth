@@ -155,8 +155,8 @@ export function currentRuntimePerModelConfig(
   };
 }
 
-/** `followGlobal`: a null speculative mode means the global one, as it does at load time. Never for
- *  presets, where null means the preset carries no mode at all. */
+/** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
+ *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,

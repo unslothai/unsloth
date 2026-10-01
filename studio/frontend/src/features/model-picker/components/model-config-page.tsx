@@ -2757,7 +2757,6 @@ export function ModelConfigPage({
     perModelConfigsEqual(
       { ...config, customContextLength: null },
       DEFAULT_PER_MODEL_CONFIG,
-      { followGlobal: true },
     );
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
