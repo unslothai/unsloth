@@ -280,6 +280,49 @@ else
 fi
 rm -f "$_EXIT_FILE" "$_EXIT_PIDS"
 
+# Without procps (no pgrep) the abort still reaches npm-like grandchildren through /proc.
+if [ -r "/proc/$$/task/$$/children" ]; then
+    _NP_BIN=$(mktemp -d)
+    for _b in bash sleep cat kill ps cut; do
+        _bp=$(command -v "$_b") && ln -s "$_bp" "$_NP_BIN/$_b"
+    done
+    _NP_FILE=$(mktemp)
+    for _fn in _setup_restore_twbuild_gitignores_from _setup_pid_tree _setup_abort_frontend_job; do
+        sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_NP_FILE"
+    done
+    _NP_PIDS=$(mktemp)
+    PATH="$_NP_BIN" bash -c '
+        SCRIPT_DIR=/nonexistent
+        . "$1"
+        command -v pgrep >/dev/null && exit 9
+        ( bash -c "bash -c \"sleep 33; true\"; true"; true ) &
+        _SETUP_FRONTEND_BG_PID=$!
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            # The kernel ends each list with a space; echo trims it.
+            _c=$(echo $(cat /proc/$_SETUP_FRONTEND_BG_PID/task/*/children 2>/dev/null))
+            _c2=$( [ -n "$_c" ] && echo $(cat /proc/$_c/task/*/children 2>/dev/null) )
+            _g=$( [ -n "$_c2" ] && echo $(cat /proc/$_c2/task/*/children 2>/dev/null) )
+            [ -n "$_g" ] && break
+            sleep 0.2
+        done
+        echo $_c $_c2 $_g > "$2"
+        _setup_abort_frontend_job
+    ' _ "$_NP_FILE" "$_NP_PIDS" && _np_rc=0 || _np_rc=$?
+    _np_left=""
+    for _p in $(cat "$_NP_PIDS"); do _alive "$_p" && _np_left="$_np_left $_p"; done
+    if [ "$_np_rc" -eq 0 ] && [ "$(wc -w < "$_NP_PIDS")" -eq 3 ] && [ -z "$_np_left" ]; then
+        echo "  PASS: abort without pgrep stops the job's grandchildren"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: abort without pgrep (rc=$_np_rc pids=$(cat "$_NP_PIDS") left=$_np_left)"
+        FAIL=$((FAIL + 1))
+        for _p in $_np_left; do kill -KILL "$_p" 2>/dev/null || true; done
+    fi
+    rm -rf "$_NP_BIN" "$_NP_FILE" "$_NP_PIDS"
+else
+    echo "  SKIP: no /proc children lists on this platform"
+fi
+
 # A failing sidecar worker leaves the frontend sibling running and its own exit code stands.
 _SIB_FILE=$(mktemp)
 for _fn in setup_fail _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait \

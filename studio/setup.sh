@@ -894,12 +894,16 @@ _setup_frontend_join() {
 
 # Descendants of $1, deepest first; listed before any kill since orphans reparent away.
 _setup_pid_tree() {
-    local child
+    local child children=""
     if command -v pgrep >/dev/null 2>&1; then
-        for child in $(pgrep -P "$1" 2>/dev/null); do
-            _setup_pid_tree "$child"
-        done
+        children=$(pgrep -P "$1" 2>/dev/null) || true
+    else
+        # No procps (slim images): the kernel lists each thread's children.
+        children=$(cat /proc/"$1"/task/*/children 2>/dev/null) || true
     fi
+    for child in $children; do
+        _setup_pid_tree "$child"
+    done
     echo "$1"
 }
 
