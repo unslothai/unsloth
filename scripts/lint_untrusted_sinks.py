@@ -890,6 +890,9 @@ class _TaintPass(ast.NodeVisitor):
             # the moment they became a str, and everything chained after it inherited that.
             "decode",
             "encode",
+            # A defensive copy is not a sanitiser. `cfg.copy()` read clean, so an ordinary
+            # container copy laundered a parsed config on its way to a sink.
+            "copy",
         ):
             reason = self.tainted(node.func.value)
             if reason:
@@ -903,7 +906,18 @@ class _TaintPass(ast.NodeVisitor):
         # tainted iterable in one of these is not a sanitiser.
         if _matches_any(
             names,
-            {"list", "tuple", "set", "dict", "sorted", "reversed", "iter", "enumerate"},
+            {
+                "list",
+                "tuple",
+                "set",
+                "dict",
+                "sorted",
+                "reversed",
+                "iter",
+                "enumerate",
+                "copy.copy",
+                "copy.deepcopy",
+            },
         ):
             for argument in node.args:
                 reason = self.tainted(argument)
@@ -914,7 +928,9 @@ class _TaintPass(ast.NodeVisitor):
         # is `with open(downloaded, "rb") as handle: pickle.load(handle)`. Without this
         # the handle read clean and the declared pickle sink never fired.
         if _matches_any(names, {"open", "io.open", "Path.open"}):
-            for argument in node.args:
+            # Keywords too: open takes its path as `file=`, and checking only positions
+            # left `open(file = downloaded, mode = "rb")` handing back a clean handle.
+            for argument in list(node.args) + [k.value for k in node.keywords]:
                 reason = self.tainted(argument)
                 if reason:
                     return reason
@@ -1141,11 +1157,26 @@ class _TaintPass(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Return(self, node: ast.Return) -> None:
-        if node.value is not None:
-            reason = self.tainted(node.value)
-            if reason and (not self.returns_tainted or self.returns_tainted == NAMED_PARAM_REASON):
-                self.returns_tainted = reason
+        self._note_output(node.value)
         self.generic_visit(node)
+
+    def visit_Yield(self, node: ast.Yield) -> None:
+        # A generator's output is what it yields. Only Return was handled, so a helper
+        # that iterates a parsed config and yields each name had no tainted summary and
+        # every caller looping over it read clean.
+        self._note_output(node.value)
+        self.generic_visit(node)
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+        self._note_output(node.value)
+        self.generic_visit(node)
+
+    def _note_output(self, value) -> None:
+        if value is None:
+            return
+        reason = self.tainted(value)
+        if reason and (not self.returns_tainted or self.returns_tainted == NAMED_PARAM_REASON):
+            self.returns_tainted = reason
 
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str):

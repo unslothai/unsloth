@@ -1503,3 +1503,81 @@ def test_trust_remote_code_through_the_dict_constructor_is_reported(tmp_path):
         "    return AutoModel.from_pretrained(name, **kwargs)\n",
     )
     assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_taint_flows_out_of_a_generator(tmp_path):
+    """A generator's output is what it yields, and only Return was handled.
+
+    So a helper that iterates a parsed config and yields each name had no tainted summary
+    and every caller looping over it read clean.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def parse(blob):\n"
+        "    for name in json.loads(blob)['modules']:\n"
+        "        yield name\n"
+        "def load(blob):\n"
+        "    for name in parse(blob):\n"
+        "        importlib.import_module('x.' + name)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_taint_flows_out_of_a_yield_from(tmp_path):
+    """The delegating form has the same output."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def inner(blob):\n"
+        "    yield json.loads(blob)['model_type']\n"
+        "def parse(blob):\n"
+        "    yield from inner(blob)\n"
+        "def load(blob):\n"
+        "    for name in parse(blob):\n"
+        "        importlib.import_module('x.' + name)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_container_copy_is_not_a_sanitiser(tmp_path):
+    """`cfg.copy()` read clean, so an ordinary defensive copy laundered a parsed config."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    cfg = json.loads(blob)\n"
+        "    copied = cfg.copy()\n"
+        "    return importlib.import_module(copied['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_deepcopy_is_not_a_sanitiser(tmp_path):
+    """The module-level function form of the same operation."""
+    findings = _scan(
+        tmp_path,
+        "import copy, importlib, json\n"
+        "def load(blob):\n"
+        "    cfg = copy.deepcopy(json.loads(blob))\n"
+        "    return importlib.import_module(cfg['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_path_passed_to_open_by_keyword_still_taints_the_handle(tmp_path):
+    """open takes its path as `file=`, and only positions were checked.
+
+    So `open(file = downloaded, mode = "rb")` handed back a clean handle and the declared
+    pickle sink below it never fired.
+    """
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    path = snapshot_download(repo)\n"
+        "    with open(file = path, mode = 'rb') as handle:\n"
+        "        return pickle.load(handle)\n",
+    )
+    assert "pickle.load" in _sinks(findings)
