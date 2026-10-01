@@ -65,3 +65,21 @@ def test_finished_run_without_parquet_is_an_error(tmp_path, status):
     m = _manager(status)
     m._job.artifact_path = str(tmp_path / "recipe_x")
     assert "error" in m.get_dataset("job-live", limit = 10)
+
+
+def test_active_run_never_uses_the_fallback_reader(tmp_path, monkeypatch):
+    m = _manager("active")
+    parquet_dir = tmp_path / "recipe_x" / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    m._job.artifact_path = str(parquet_dir.parent)
+    monkeypatch.setattr(
+        JobManager, "_load_dataset_page_with_duckdb", staticmethod(lambda **_: None)
+    )
+
+    def _fallback(**_):
+        raise AssertionError("fallback reader used during an active run")
+
+    monkeypatch.setattr(
+        JobManager, "_load_dataset_page_with_data_designer", staticmethod(_fallback)
+    )
+    assert m.get_dataset("job-live", limit = 10) is None

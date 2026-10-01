@@ -362,6 +362,12 @@ class JobManager:
                 if job_status in {"completed", "error", "cancelled"}:
                     return {"error": f"dataset path missing: {parquet_dir}"}
                 return None
+            if job_status not in {"completed", "error", "cancelled"}:
+                # DuckDB opens with FILE_SHARE_DELETE; the pyarrow fallback would block the
+                # worker's merge rmtree on Windows.
+                return self._load_dataset_page_with_duckdb(
+                    parquet_dir = parquet_dir, limit = limit, offset = offset
+                )
 
             return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
         except Exception as exc:
