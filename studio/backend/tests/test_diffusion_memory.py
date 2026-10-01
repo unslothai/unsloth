@@ -956,7 +956,13 @@ def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monke
     assert all(call[3:] == (True, True, True, True) for call in calls)
 
 
-def _streaming_apply_kwargs(monkeypatch, budget, *, env = None, request_background = False):
+def _streaming_apply_kwargs(
+    monkeypatch,
+    budget,
+    *,
+    env = None,
+    request_background = False,
+):
     """{component: apply kwargs} and the modules handed to a deferred pinner, for one streaming apply."""
     import sys
 
@@ -978,8 +984,12 @@ def _streaming_apply_kwargs(monkeypatch, budget, *, env = None, request_backgrou
         record_stream = False,
         low_cpu_mem_usage = False,
     ):
-        seen[module.name] = {"use_stream": use_stream, "record_stream": record_stream,
-                             "low_cpu_mem_usage": low_cpu_mem_usage, "offload_type": offload_type}
+        seen[module.name] = {
+            "use_stream": use_stream,
+            "record_stream": record_stream,
+            "low_cpu_mem_usage": low_cpu_mem_usage,
+            "offload_type": offload_type,
+        }
 
     if "diffusers" not in sys.modules:
         monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
@@ -996,7 +1006,9 @@ def _streaming_apply_kwargs(monkeypatch, budget, *, env = None, request_backgrou
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
     monkeypatch.setattr(mem, "install_group_pin_wait", lambda: True)
     monkeypatch.setattr(
-        mem, "_defer_pinning", lambda pipe, module, device, logger: deferred.append(module.name) or True
+        mem,
+        "_defer_pinning",
+        lambda pipe, module, device, logger: deferred.append(module.name) or True,
     )
     parts = {"transformer": Module(4000), "text_encoder": Module(7500), "vae": Module(200)}
     for name, module in parts.items():
@@ -1035,7 +1047,9 @@ def test_streaming_pins_off_the_load_path_when_asked(monkeypatch):
 
 def test_streaming_prefetch_kill_switch_restores_the_old_kwargs(monkeypatch):
     seen, deferred = _streaming_apply_kwargs(monkeypatch, 40_000, env = "0", request_background = True)
-    assert all(kw["low_cpu_mem_usage"] is True and kw["record_stream"] is False for kw in seen.values()), seen
+    assert all(
+        kw["low_cpu_mem_usage"] is True and kw["record_stream"] is False for kw in seen.values()
+    ), seen
     assert deferred == []
 
 
@@ -2875,7 +2889,12 @@ def test_streamed_transformer_runs_pinned_and_overlapped_on_a_real_gpu(monkeypat
     assert torch.allclose(got.cpu(), want, atol = 1e-5)
 
 
-def _top_group_module(monkeypatch, *, stream = None, torchao = False):
+def _top_group_module(
+    monkeypatch,
+    *,
+    stream = None,
+    torchao = False,
+):
     """A module whose diffusers registry holds a top-level group, on a fake diffusers.hooks.group_offloading."""
     import sys
 
@@ -2902,12 +2921,16 @@ def _top_group_module(monkeypatch, *, stream = None, torchao = False):
     )
     hook = types.SimpleNamespace(group = group)
     module = types.SimpleNamespace(
-        _diffusers_hook = types.SimpleNamespace(get_hook = lambda name: hook if name == "group_offloading" else None)
+        _diffusers_hook = types.SimpleNamespace(
+            get_hook = lambda name: hook if name == "group_offloading" else None
+        )
     )
     return module, group
 
 
-@pytest.mark.parametrize("env", ["UNSLOTH_DIFFUSION_PIN_TOP_GROUP", "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN"])
+@pytest.mark.parametrize(
+    "env", ["UNSLOTH_DIFFUSION_PIN_TOP_GROUP", "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN"]
+)
 def test_top_level_group_kill_switch(monkeypatch, env):
     import core.inference.diffusion_memory as mem
 
@@ -2927,7 +2950,11 @@ def test_top_level_group_respects_the_pinned_allocator_rounding(monkeypatch):
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
     # a 3 MiB weight pins as a 4 MiB block: a 3 MiB budget must refuse it
-    group.modules = [types.SimpleNamespace(parameters = lambda: [__import__("torch").empty(3 << 18)], buffers = lambda: [])]
+    group.modules = [
+        types.SimpleNamespace(
+            parameters = lambda: [__import__("torch").empty(3 << 18)], buffers = lambda: []
+        )
+    ]
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 3)
     assert mem._pin_top_level_group(module) is False
     assert group.onload_ == "diffusers"
@@ -2938,7 +2965,9 @@ def test_top_level_group_left_alone_when_not_the_streamless_top_group(monkeypatc
     import core.inference.diffusion_memory as mem
 
     module, group = _top_group_module(
-        monkeypatch, stream = object() if kind == "streamed_group" else None, torchao = kind == "torchao"
+        monkeypatch,
+        stream = object() if kind == "streamed_group" else None,
+        torchao = kind == "torchao",
     )
     monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)

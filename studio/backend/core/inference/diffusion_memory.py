@@ -2269,7 +2269,11 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
 
         registry = getattr(module, "_diffusers_hook", None)
         get_hook = getattr(registry, "get_hook", None)
-        hook = get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading")) if callable(get_hook) else None
+        hook = (
+            get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading"))
+            if callable(get_hook)
+            else None
+        )
         group = getattr(hook, "group", None)
         if (
             group is None
@@ -2296,7 +2300,12 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
         if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
             return False
         # the user's "pin nothing" override wins, as on every other streamed path
-        if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
             return False
         # per tensor rounded to a power of two, like torch's pinned allocator (and _module_host_mib)
         need_mib = sum(
@@ -2307,7 +2316,10 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
         budget = None if _pinned_memory_capped() else _pin_budget_mib()
         if budget is None or need_mib > budget:
             return False
-        host = {t: (t.data if t.data.device.type == "cpu" else t.data.cpu()).pin_memory() for t in tensors}
+        host = {
+            t: (t.data if t.data.device.type == "cpu" else t.data.cpu()).pin_memory()
+            for t in tensors
+        }
         device = group.onload_device
 
         def onload_() -> None:
