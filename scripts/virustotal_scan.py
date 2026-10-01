@@ -39,8 +39,7 @@ API_KEY_ENV = "VT_API_KEY"
 # Signature sidecars are a few hundred bytes of base64 produced by the Tauri updater signer.
 SKIPPED_SUFFIXES = (".sig",)
 
-# The public API allows 4 requests/minute.
-# 20s between requests keeps us just inside that even if the runner clock and VirusTotal's window disagree slightly.
+# The public API allows 4 requests/minute. 20s between requests keeps us just inside that even if the runner clock and VirusTotal's window disagree slightly.
 DEFAULT_REQUEST_INTERVAL = 20.0
 DEFAULT_TIMEOUT_SECONDS = 1500.0
 
@@ -48,8 +47,7 @@ DEFAULT_TIMEOUT_SECONDS = 1500.0
 DEFAULT_FAIL_THRESHOLD = 0
 
 _MAX_ATTEMPTS = 4
-# A failed upload means fetching a fresh signed URL, so this is deliberately small: each retry re-sends 40+ MB and
-# spends two more requests of quota.
+# A failed upload means fetching a fresh signed URL, so this is deliberately small: each retry re-sends 40+ MB and spends two more requests of quota.
 _UPLOAD_ATTEMPTS = 2
 _SOCKET_TIMEOUT = 300.0
 
@@ -91,12 +89,7 @@ class FileReport:
 
 
 def parse_stats(raw: object) -> ScanStats:
-    """Coerce a VirusTotal stats dict into ScanStats.
-
-    VirusTotal omits keys that are zero and has added categories over time
-    (`confirmed-timeout`, `type-unsupported`, `failure`), so every field is read
-    defensively rather than indexed.
-    """
+    """Coerce a VirusTotal stats dict into ScanStats. VirusTotal omits keys that are zero and has added categories over time (`confirmed-timeout`, `type-unsupported`, `failure`), so every field is read defensively rather than indexed."""
     if not isinstance(raw, dict):
         return ScanStats()
 
@@ -117,11 +110,7 @@ def parse_stats(raw: object) -> ScanStats:
 
 
 def parse_detections(raw: object) -> list[str]:
-    """Return the sorted engine names whose verdict was malicious or suspicious.
-
-    The engine list is what makes a warning actionable: `3 malicious` is noise until
-    you can see whether it is three no-name heuristics or Microsoft plus Kaspersky.
-    """
+    """Return the sorted engine names whose verdict was malicious or suspicious. The engine list is what makes a warning actionable: `3 malicious` is noise until you can see whether it is three no-name heuristics or Microsoft plus Kaspersky."""
     if not isinstance(raw, dict):
         return []
     names: list[str] = []
@@ -161,22 +150,12 @@ def exceeds_threshold(reports: Sequence[FileReport], threshold: int) -> bool:
 
 
 def _md_code(text: str) -> str:
-    """Flatten a value that gets wrapped in a Markdown code span.
-
-    A backslash is literal inside a code span, so a backtick cannot be escaped
-    there; swap it for an apostrophe rather than let it close the span.
-    """
+    """Flatten a value that gets wrapped in a Markdown code span. A backslash is literal inside a code span, so a backtick cannot be escaped there; swap it for an apostrophe rather than let it close the span."""
     return " ".join(text.split()).replace("`", "'")
 
 
 def _md_text(text: str) -> str:
-    """Neutralise third-party text rendered as Markdown in the job summary.
-
-    Engine names and detection labels are third-party data, and the summary is
-    appended to `$GITHUB_STEP_SUMMARY`. A newline ends the table row or bullet,
-    `|` opens a new cell, and `<` starts raw HTML, which GitHub renders, so an
-    engine list could otherwise break out and obscure the report.
-    """
+    """Neutralise third-party text rendered as Markdown in the job summary. Engine names and detection labels are third-party data, and the summary is appended to `$GITHUB_STEP_SUMMARY`: a newline ends the table row or bullet, `|` opens a new cell, and `<` starts raw HTML, which GitHub renders, so an engine list could otherwise break out and obscure the report."""
     flattened = " ".join(text.split())
     escaped = flattened.replace("\\", "\\\\")
     for char in ("`", "|", "*", "_", "[", "]", "#"):
@@ -184,11 +163,7 @@ def _md_text(text: str) -> str:
     return escaped.replace("<", "&lt;").replace(">", "&gt;")
 
 
-# Also written by the workflow's placeholder step, so a reader sees one heading whether or not the scan produced a
-# summary.
-# Says neither "pre-flight" nor "post-publish": the scan runs after `publish-release`, but `inputs.draft` defaults to
-# true, so the ordinary run has uploaded the assets to a draft rather than published them. Naming the assets is the
-# only wording true of both dispatches.
+# Also written by the workflow's placeholder step, so a reader sees one heading whether or not the scan produced a summary. Says neither "pre-flight" nor "post-publish": the scan runs after `publish-release`, but `inputs.draft` defaults to true, so the ordinary run has uploaded the assets to a draft rather than published them, and naming the assets is the only wording true of both dispatches.
 SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 
@@ -255,7 +230,6 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
         for report in notes:
             lines.append(f"- `{_md_code(report.name)}`: {_md_text(report.note)}")
 
-    # Use the flagged count because the results map may be absent.
     flagged = [report for report in reports if report.stats is not None and report.stats.flagged]
     if flagged:
         lines += submission_packet_lines(flagged)
@@ -311,13 +285,7 @@ class VirusTotalClient:
         self._last_request_at: float | None = None
 
     def _throttle(self, deadline: float | None = None) -> None:
-        """Pace requests, without ever sleeping past the caller's budget.
-
-        Capping matters because the sleep sits between the caller's deadline check
-        and the network call: an uncapped sleep can carry execution past the
-        deadline and start a request that then blocks for the full socket timeout.
-        The caller re-checks the deadline once this returns.
-        """
+        """Pace requests, without ever sleeping past the caller's budget. Capping matters because the sleep sits between the caller's deadline check and the network call: an uncapped sleep can carry execution past the deadline and start a request that then blocks for the full socket timeout. The caller re-checks the deadline once this returns."""
         if self._last_request_at is None:
             return
         elapsed = self._clock() - self._last_request_at
@@ -334,12 +302,7 @@ class VirusTotalClient:
         seconds: float,
         deadline: float | None = None,
     ) -> None:
-        """Sleep between retry attempts, clamped to the remaining budget.
-
-        The retry sleep grows exponentially, so a 429 arriving shortly before the
-        deadline could otherwise sleep well past `--timeout-seconds` before the
-        next iteration notices, delaying the summary the release step depends on.
-        """
+        """Sleep between retry attempts, clamped to the remaining budget. The retry sleep grows exponentially, so a 429 arriving shortly before the deadline could otherwise sleep well past `--timeout-seconds` before the next iteration notices, delaying the summary the release step depends on."""
         if deadline is None:
             self._sleep(seconds)
             return
@@ -357,19 +320,7 @@ class VirusTotalClient:
         max_attempts: int = _MAX_ATTEMPTS,
         deadline: float | None = None,
     ) -> tuple[int, object]:
-        """Issue one API call, retrying 429s and transient network errors.
-
-        Returns (status, decoded_json_or_None). Raises RuntimeError once the retry
-        budget is spent so the caller can degrade to a warning row.
-
-        `max_attempts = 1` disables retrying, which is mandatory for a POST to a
-        single-use signed upload URL: replaying it can only ever be rejected.
-
-        `deadline` is checked BEFORE each attempt. One attempt can block for the
-        full socket timeout, so a loop that only checks afterwards can overrun the
-        caller's budget by minutes and get the whole step killed before it writes
-        a summary.
-        """
+        """Issue one API call, retrying 429s and transient network errors. Returns (status, decoded_json_or_None). Raises RuntimeError once the retry budget is spent so the caller can degrade to a warning row. `max_attempts = 1` disables retrying, which is mandatory for a POST to a single-use signed upload URL: replaying it can only ever be rejected. `deadline` is checked BEFORE each attempt, since one attempt can block for the full socket timeout and a loop that only checks afterwards can overrun the caller's budget by minutes and get the whole step killed before it writes a summary."""
         headers = {"x-apikey": self._api_key, "accept": "application/json"}
         if extra_headers:
             headers.update(extra_headers)
@@ -380,8 +331,7 @@ class VirusTotalClient:
             if deadline is not None and self._clock() >= deadline:
                 raise TimeoutError(f"deadline reached before {method} {_redact_url(url)}")
             self._throttle(deadline)
-            # Re-check: pacing sleeps between the check above and the call below, so without this a request could start
-            # after the deadline and then block for the full socket timeout, overrunning the step's own budget.
+            # Re-check: pacing sleeps between the check above and the call below, so without this a request could start after the deadline and then block for the full socket timeout, overrunning the step's own budget.
             if deadline is not None and self._clock() >= deadline:
                 raise TimeoutError(
                     f"deadline reached while pacing before {method} {_redact_url(url)}"
@@ -428,11 +378,7 @@ class VirusTotalClient:
         sha256: str,
         deadline: float | None = None,
     ) -> object | None:
-        """Return the existing file report, or None when VirusTotal has never seen it.
-
-        Doing this first is both a quota saving and a disclosure saving: a bundle that
-        VirusTotal already holds gains nothing from being uploaded again.
-        """
+        """Return the existing file report, or None when VirusTotal has never seen it. Doing this first is both a quota saving and a disclosure saving: a bundle that VirusTotal already holds gains nothing from being uploaded again."""
         status, payload = self.request(
             "GET",
             f"{API_ROOT}/files/{sha256}",
@@ -442,9 +388,7 @@ class VirusTotalClient:
         if status == 404:
             return None
         if not isinstance(payload, dict):
-            # A 200 whose body did not parse (a proxy error page, a truncated read) proves nothing about whether
-            # VirusTotal holds this file. Returning None would be indistinguishable from a 404 and would upload the
-            # bundle, disclosing an unreleased build. Fail closed instead.
+            # A 200 whose body did not parse (a proxy error page, a truncated read) proves nothing about whether VirusTotal holds this file. Returning None would be indistinguishable from a 404 and would upload the bundle, disclosing an unreleased build. Fail closed instead.
             raise RuntimeError("VirusTotal hash lookup returned a malformed body")
         return payload
 
@@ -453,17 +397,7 @@ class VirusTotalClient:
         path: Path,
         deadline: float | None = None,
     ) -> str:
-        """Upload via the large-file flow and return the analysis id.
-
-        Every desktop bundle is 41-46 MB, which is over the 32 MB cap on
-        `POST /files`, so the signed upload URL is the only path that works here.
-
-        Each signed URL is SINGLE USE, so the POST is issued with retries disabled.
-        Replaying one after, say, the response body failed to read would be rejected
-        no matter how many times we tried, and would report the asset as unavailable
-        while an analysis was in fact already running. Retrying instead means going
-        back for a fresh URL, which is what the loop below does.
-        """
+        """Upload via the large-file flow and return the analysis id. Every desktop bundle is 41-46 MB, which is over the 32 MB cap on `POST /files`, so the signed upload URL is the only path that works here. Each signed URL is SINGLE USE, so the POST is issued with retries disabled: replaying one after, say, the response body failed to read would be rejected no matter how many times we tried, and would report the asset as unavailable while an analysis was in fact already running. Retrying instead means going back for a fresh URL, which is what the loop below does."""
         attempts = max(1, _UPLOAD_ATTEMPTS)
         last_error: Exception | None = None
         body, content_type = _build_multipart(path)
@@ -473,8 +407,7 @@ class VirusTotalClient:
             upload_url = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(upload_url, str) or not upload_url:
                 raise RuntimeError("VirusTotal did not return an upload URL")
-            # Mask before the URL is ever used, so anything that later echoes it -- a traceback, a future debug
-            # print, a library error string -- is scrubbed.
+            # Mask before the URL is ever used, so anything that later echoes it (a traceback, a future debug print, a library error string) is scrubbed.
             _mask_in_actions(upload_url)
 
             try:
@@ -498,10 +431,7 @@ class VirusTotalClient:
             if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
                 analysis_id = payload["data"].get("id")
             if not isinstance(analysis_id, str) or not analysis_id:
-                # An accepted upload whose acknowledgement did not parse is a failed attempt, not a dead end:
-                # VirusTotal may well be analysing the file already. Raising straight out would report the asset
-                # unavailable after we had paid the disclosure cost of sending it, so spend the remaining attempt
-                # on a fresh signed URL instead.
+                # An accepted upload whose acknowledgement did not parse is a failed attempt, not a dead end: VirusTotal may well be analysing the file already. Raising straight out would report the asset unavailable after we had paid the disclosure cost of sending it, so spend the remaining attempt on a fresh signed URL instead.
                 last_error = RuntimeError("VirusTotal upload did not return an analysis id")
                 if attempt < attempts:
                     continue
@@ -513,8 +443,7 @@ class VirusTotalClient:
     def wait_for_analysis(self, analysis_id: str, deadline: float) -> object:
         """Poll until the analysis completes or the caller's deadline passes."""
         while True:
-            # Checked inside request() too, but raising the analysis-specific message here keeps the summary row
-            # readable.
+            # Checked inside request() too, but raising the analysis-specific message here keeps the summary row readable.
             if self._clock() >= deadline:
                 raise TimeoutError(f"analysis {analysis_id} did not complete before the deadline")
             _, payload = self.request(
@@ -546,18 +475,7 @@ def _redact_url(url: str) -> str:
 
 
 def _mask_in_actions(value: str) -> None:
-    """Register `value` with the runner's log scrubber.
-
-    `VT_API_KEY` comes from a repository secret, so Actions masks it everywhere
-    automatically. The signed upload URL does not: VirusTotal mints it per call and
-    its query string is a credential, which makes it exactly the "sensitive
-    information that is not a GitHub secret" the Actions docs say to pass through
-    `::add-mask::`. Without this, the only thing keeping it out of the log is us
-    remembering to call `_redact_url` at every print site, which is a rule that
-    holds right up until someone adds a print or a traceback escapes.
-
-    No-ops off the runner so local runs are not littered with workflow commands.
-    """
+    """Register `value` with the runner's log scrubber. `VT_API_KEY` comes from a repository secret, so Actions masks it everywhere automatically; the signed upload URL does not, since VirusTotal mints it per call and its query string is a credential, which makes it exactly the "sensitive information that is not a GitHub secret" the Actions docs say to pass through `::add-mask::`. Without this, the only thing keeping it out of the log is us remembering to call `_redact_url` at every print site, which is a rule that holds right up until someone adds a print or a traceback escapes. No-ops off the runner so local runs are not littered with workflow commands."""
     if value and os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::add-mask::{value}", flush = True)
 
@@ -573,19 +491,7 @@ def _attributes(payload: object) -> dict:
 def _record(
     report: FileReport, source: str, raw_stats: object, raw_results: object, *, completed: bool
 ) -> None:
-    """Attach a verdict, but only when an analysis has actually completed.
-
-    A hash can be known to VirusTotal with no finished analysis, in which case
-    `last_analysis_stats` is missing and `parse_stats` yields an all-zero
-    ScanStats. Reporting that as a clean row is the worst failure mode this
-    script has: it looks like 70 engines cleared the bundle when none ran. Leave
-    `stats` as None instead, which renders as dashes and never trips the gate.
-
-    `completed` says whether the caller already has an authoritative completion
-    signal. The upload path polls until `status == "completed"`, so a stats dict
-    is enough there. The hash lookup carries no such field, so it additionally
-    has to see at least one engine verdict before believing the result.
-    """
+    """Attach a verdict, but only when an analysis has actually completed. A hash can be known to VirusTotal with no finished analysis, in which case `last_analysis_stats` is missing and `parse_stats` yields an all-zero ScanStats, and reporting that as a clean row is the worst failure mode this script has: it looks like 70 engines cleared the bundle when none ran. Leave `stats` as None instead, which renders as dashes and never trips the gate. `completed` says whether the caller already has an authoritative completion signal: the upload path polls until `status == "completed"`, so a stats dict is enough there, while the hash lookup carries no such field and additionally has to see at least one engine verdict before believing the result."""
     stats = parse_stats(raw_stats)
     if not isinstance(raw_stats, dict) or (not completed and stats.total == 0):
         report.source = "no completed analysis"
@@ -637,14 +543,8 @@ def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileRepo
 
 
 def _gha_escape(text: str) -> str:
-    """Escape a string for a GH Actions `::warning::` message.
-
-    Engine names, detection labels and error strings are third-party data, so
-    they can contain anything. GH Actions truncates an annotation at the first
-    newline unless `\\n`/`\\r` are escaped as `%0A`/`%0D`. `%` must be replaced
-    first to avoid double-encoding the subsequent escapes.
-
-    Mirrors `_gha_escape` in scripts/lockfile_supply_chain_audit.py.
+    """Escape a string for a GH Actions `::warning::` message. Engine names, detection labels and error strings are third-party data, so they can contain anything: GH Actions truncates an annotation at the first newline unless `
+    `/`\\r` are escaped as `%0A`/`%0D`, and `%` must be replaced first to avoid double-encoding the subsequent escapes. Mirrors `_gha_escape` in scripts/lockfile_supply_chain_audit.py.
     """
     return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
@@ -732,10 +632,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output_markdown.write_text(text, encoding = "utf-8")
 
     if not api_key:
-        # A missing secret must never break a release: forks and re-runs by contributors without the org secret still
-        # have to be able to publish.
-        # The env var NAME is written out literally rather than interpolated from API_KEY_ENV.
-        # test_missing_key_skips_without_failing asserts the two stay in step.
+        # A missing secret must never break a release: forks and re-runs by contributors without the org secret still have to be able to publish. The env var NAME is written out literally rather than interpolated from API_KEY_ENV; test_missing_key_skips_without_failing asserts the two stay in step.
         print(
             "virustotal_scan: VT_API_KEY is unset or empty; skipping the scan.",
             flush = True,

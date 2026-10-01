@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness for the find bar: a vite entry with no backend, driving the real bar, the real index and
-// the real CSS Custom Highlight API against a real browser.
-//
-// The node suite reaches everything pure. What a highlight looks like painted, whether the walk
-// scrolls only when a match is off screen, whether an `inert` panel stays out of the count, and
-// what a streaming reply costs an open bar are only answerable here.
+// the real CSS Custom Highlight API against a real browser. The node suite reaches everything pure.
+// What a highlight looks like painted, whether the walk scrolls only when a match is off screen,
+// whether an `inert` panel stays out of the count, and what a streaming reply costs an open bar are
+// only answerable here.
 
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
 import {

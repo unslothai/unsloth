@@ -22,6 +22,8 @@ import numpy as np
 import torch
 
 from utils.third_party_source import (
+    SNAC_REPOSITORY,
+    SPARK_TTS_REPOSITORY,
     deactivate_pinned_package,
     ensure_dac_speech_weights,
     ensure_outetts_source,
@@ -31,7 +33,7 @@ from utils.third_party_source import (
 )
 
 logger = get_logger(__name__)
-_SPARK_TTS_REPO = "unsloth/Spark-TTS-0.5B"
+_SPARK_TTS_REPO = SPARK_TTS_REPOSITORY
 _MAX_SPARK_EXPORT_METADATA_BYTES = 1_000_000
 
 
@@ -151,7 +153,6 @@ class AudioCodecManager:
         device: str = "cuda",
         model_repo_path: Optional[str] = None,
     ) -> None:
-        """Load the appropriate codec for the given audio type."""
         if audio_type == "snac":
             self._load_snac(device, model_repo_path)
         elif audio_type == "bicodec":
@@ -162,8 +163,6 @@ class AudioCodecManager:
             pass  # CSM decoding is built into the model (output_audio=True)
         else:
             raise ValueError(f"Unknown audio_type: {audio_type}")
-
-    # ── Lazy loaders ─────────────────────────────────────────────
 
     def _load_snac(
         self,
@@ -178,7 +177,7 @@ class AudioCodecManager:
         # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
             SNAC.from_pretrained(
-                model_repo_path or "hubertsiuzdak/snac_24khz",
+                model_repo_path or SNAC_REPOSITORY,
                 cache_dir = active_hf_hub_cache(),
             )
             .to(device)
@@ -236,8 +235,6 @@ class AudioCodecManager:
         self._dac_audio_codec = processor.audio_codec
         self._codec_devices["dac"] = device
         logger.info("Loaded DAC audio codec")
-
-    # ── Decoders ─────────────────────────────────────────────────
 
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
         """Decode SNAC tokens (Orpheus) into WAV bytes.
@@ -381,8 +378,6 @@ class AudioCodecManager:
                 raise ValueError("DAC decoding requires text")
             return self.decode_dac(text, device)
         raise ValueError(f"Cannot decode audio_type: {audio_type}")
-
-    # ── Cleanup ──────────────────────────────────────────────────
 
     def unload(self) -> None:
         """Release all codec models from memory."""

@@ -3,17 +3,25 @@
 """
 Each Chat UI shard must install exactly the browser engines its own steps drive.
 
-The four shards used to install all three engines each. Two of them -- `extra` and
-`picker` -- never open anything but chromium, and installing webkit's system
-libraries for them is an apt transaction of 181 packages and 102 MB:
+The shards used to install all three engines each. The chromium-only ones (`extra`,
+which now also carries the former `picker` suites) never open anything but chromium,
+and installing webkit's system libraries for them is an apt transaction of 181
+packages and 102 MB:
 
     0 upgraded, 181 newly installed, 0 to remove
     Need to get 102 MB/114 MB of archives
     Get:2 .../noble/universe amd64 fonts-wqy-zenhei all 0.9.45-8 [7472 kB]
     -> 4m51s later: attempt 2/2 did not finish within 300s
 
-Fonts, X fonts and a soundfont, fetched so that two shards which never launch webkit
+Fonts, X fonts and a soundfont, fetched so that a shard which never launches webkit
 could time out fetching them. That is what this file exists to stop coming back.
+
+Two shards rather than four since the fold of `banner` into `chat` and `picker` into
+`extra`: the four cells ran 5.3, 8.9, 6.5 and 2.8 minutes and each waited about two
+hours for an ubuntu-latest runner, so two cells of about 12 minutes take half the
+slots for the same wall-clock. The engine sets did not change, which is why the fold
+was possible at all: `banner` already installed the three engines `chat` installs, and
+`picker` was chromium-only like `extra`.
 
 It is enforced in BOTH directions, and the second one is the dangerous one:
 
@@ -24,7 +32,7 @@ It is enforced in BOTH directions, and the second one is the dangerous one:
     green, which reads as a flaky test rather than a missing package.
 
 Derived from the workflow, never from a hardcoded list: the whole point is that
-adding a webkit step to `picker` fails HERE, at the edit, rather than in CI.
+adding a webkit step to `extra` fails HERE, at the edit, rather than in CI.
 """
 
 from __future__ import annotations
@@ -135,8 +143,8 @@ def test_the_detector_sees_the_cross_browser_steps() -> None:
         f"the chat shard drives {sorted(chat)}; it runs Cross-browser permission "
         f"controls, so the step scan is not seeing engine names any more"
     )
-    picker = _engines_driven_by("picker")
-    assert "webkit" not in picker, (
-        f"the picker shard now appears to drive {sorted(picker)}; if that is real the "
+    extra = _engines_driven_by("extra")
+    assert "webkit" not in extra, (
+        f"the extra shard now appears to drive {sorted(extra)}; if that is real the "
         f"matrix needs updating, and if it is not the scan is over-matching"
     )

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildResearchInferenceRequest } from "../src/features/chat/research-inference-request.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const clamp = (effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") =>
   effort === "xhigh" ? "high" as const : effort;
@@ -60,6 +61,34 @@ test("invalid optional settings do not leak into a local research request", () =
     }),
     { model: "local/model.gguf", enableThinking: false },
   );
+});
+
+test("top_p at Off is left out of a connection's research request but kept locally", () => {
+  const base = {
+    temperature: 0.2,
+    topP: 1,
+    maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low" as const,
+    reasoningEffortLevels: ["low", "medium", "high"] as const,
+    clampReasoningEffort: clamp,
+  };
+  const external = buildResearchInferenceRequest({
+    ...base,
+    checkpoint: "external::p1::claude-sonnet-4-6",
+    external: {
+      providerId: "p1",
+      providerType: "custom",
+      modelId: "claude-sonnet-4-6",
+      maxOutputTokens: null,
+      maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
+    },
+  });
+  assert.equal("topP" in external, false);
+  assert.equal(external.temperature, 0.2);
+  assert.equal(buildResearchInferenceRequest({ ...base, checkpoint: "local/model.gguf" }).topP, 1);
 });
 
 test("the report ceiling the connection resolved reaches the run config", () => {
@@ -187,4 +216,34 @@ test("the published ceiling rides along, unfolded, when the model has one", () =
   // The backend needs the pair to tell a capped connection from a 8192-token model.
   assert.equal(request.maxOutputTokens, 8192);
   assert.equal(request.maxOutputTokensPublished, 65536);
+});
+
+test("an external run records whether the model reasons and can turn it off", () => {
+  const request = buildResearchInferenceRequest({
+    checkpoint: "external::p1::openai/gpt-oss-120b",
+    external: {
+      providerId: "p1",
+      providerType: "huggingface",
+      modelId: "openai/gpt-oss-120b",
+      maxOutputTokens: null,
+      maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+    },
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 4096,
+    reasoningRequested: true,
+    reasoningStyle: "reasoning_effort",
+    reasoningEffort: "high",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
+  });
+  assert.equal(request.supportsReasoning, true);
+  assert.equal(request.supportsReasoningOff, false);
+  assert.match(
+    readSrc("features/chat/api/chat-adapter.ts"),
+    /supportsReasoning: runtime\.supportsReasoning,\s*supportsReasoningOff: runtime\.supportsReasoningOff,/,
+  );
 });

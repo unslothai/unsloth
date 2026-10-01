@@ -12,6 +12,32 @@ from core.rag import store, tool
 from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
 
+
+def _shared_setup_1(fake_search, monkeypatch):
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    injected = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(),
+            {
+                "thread_id": "t1",
+                "project_id": "p1",
+                "autoinject": False,
+                "context_length": 8192,
+                "response_headroom": 1024,
+            },
+        )
+    )
+    return injected
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        tool,
+        "search_for_autoinject",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
+    )
+
+
 # A vector per chunk just to satisfy add_chunks (the whole-doc path never reads
 # vectors); dimension is arbitrary but must be consistent within a connection.
 _VEC = [0.1, 0.2, 0.3, 0.4]
@@ -225,11 +251,7 @@ def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, mon
     # Large-model Auto sets autoinject=False, but whole-doc is a separate thread-doc
     # context mode and should still inject a fitting attachment.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["entire file body"])
-    monkeypatch.setattr(
-        tool,
-        "search_for_autoinject",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
-    )
+    _shared_setup_2(monkeypatch)
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
     assert result is not None
     assert "entire file body" in _injected_text(result)
@@ -238,11 +260,7 @@ def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, mon
 def test_build_rag_autoinject_explicit_off_disables_whole_doc(rag_conn, monkeypatch):
     # The UI Off switch sends both autoinject=False and whole_doc=False.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["small body"])
-    monkeypatch.setattr(
-        tool,
-        "search_for_autoinject",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
-    )
+    _shared_setup_2(monkeypatch)
     assert (
         inf_tools.build_rag_autoinject(
             _convo(), {"thread_id": "t1", "autoinject": False, "whole_doc": False}
@@ -480,19 +498,7 @@ def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypa
             sources = [{"citationId": 0, "filename": "thread.txt", "text": "T" * 8000}]
         return tool.render_sources(sources), sources
 
-    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
-    injected = _injected_text(
-        inf_tools.build_rag_autoinject(
-            _convo(),
-            {
-                "thread_id": "t1",
-                "project_id": "p1",
-                "autoinject": False,
-                "context_length": 8192,
-                "response_headroom": 1024,
-            },
-        )
-    )
+    injected = _shared_setup_1(fake_search, monkeypatch)
     assert "T" * 8000 in injected
     # Some project passages survive beside the thread result, but not all four.
     assert 1 <= injected.count("P" * 2000) < 4
@@ -509,19 +515,7 @@ def test_build_rag_autoinject_whole_doc_merge_is_priced_in_tokens(rag_conn, monk
         ]
         return tool.render_sources(sources), sources
 
-    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
-    injected = _injected_text(
-        inf_tools.build_rag_autoinject(
-            _convo(),
-            {
-                "thread_id": "t1",
-                "project_id": "p1",
-                "autoinject": False,
-                "context_length": 8192,
-                "response_headroom": 1024,
-            },
-        )
-    )
+    injected = _shared_setup_1(fake_search, monkeypatch)
 
     assert "THREAD_DOC" in injected
     # Trimmed to what fits beside the document, not admitted or discarded whole.
@@ -546,19 +540,7 @@ def test_build_rag_autoinject_whole_doc_merge_never_truncates_the_document(rag_c
         sources = [{"citationId": 0, "filename": "notes.txt", "text": "PROJECT_HIT " + "x" * 500}]
         return tool.render_sources(sources), sources
 
-    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
-    injected = _injected_text(
-        inf_tools.build_rag_autoinject(
-            _convo(),
-            {
-                "thread_id": "t1",
-                "project_id": "p1",
-                "autoinject": False,
-                "context_length": 8192,
-                "response_headroom": 1024,
-            },
-        )
-    )
+    injected = _shared_setup_1(fake_search, monkeypatch)
 
     assert [i for i in range(len(body)) if "SECTION%02d" % i in injected] == list(range(len(body)))
     # The companion is what does not fit, so the companion is what goes.
@@ -644,11 +626,7 @@ def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monk
 
     monkeypatch.setattr(config, "THREAD_WHOLE_DOC", False)
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["small body"])
-    monkeypatch.setattr(
-        tool,
-        "search_for_autoinject",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
-    )
+    _shared_setup_2(monkeypatch)
     assert (
         inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False}) is None
     )

@@ -16,6 +16,16 @@ STORAGE_ROOTS = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_
 LLAMA_CPP = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
+# storage_roots.py imports `loggers`, which is studio/backend/loggers. Nothing in this file put
+# studio/backend on sys.path, so these tests only passed when a tests/studio module happened to
+# have been imported into the same process first -- true while the whole tree ran as one pytest
+# session, and false the moment tests/studio runs on its own runner. Two tests then failed with
+# ModuleNotFoundError: No module named 'loggers', which names neither this file nor the cause.
+_BACKEND = REPO_ROOT / "studio" / "backend"
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
@@ -35,6 +45,31 @@ def test_infer_studio_home_swallows_permission_error(tmp_path, monkeypatch):
     with mock.patch.object(Path, "is_file", side_effect = PermissionError("denied")):
         # Must NOT raise.
         assert mod._infer_studio_home_from_venv() is None
+
+
+def test_infer_studio_home_refuses_the_docker_app_dir(tmp_path, monkeypatch):
+    """The Docker image keeps the venv under UNSLOTH_STUDIO_APP and links it into the
+    Studio home, so sys.prefix resolves to the app dir, which carries the sentinels.
+    Adopting it would send studio.db and auth/ into the container layer instead of the
+    volume; inference must decline so the later defaults apply."""
+    app = tmp_path / "unsloth-studio-app"
+    venv = app / "unsloth_studio"
+    venv.mkdir(parents = True)
+    (app / "share").mkdir()
+    (app / "share" / "studio.conf").write_text("")
+    home = tmp_path / "unsloth-studio"
+    home.mkdir()
+    (home / "unsloth_studio").symlink_to(venv)
+    monkeypatch.setattr(sys, "prefix", str(home / "unsloth_studio"))
+    sys.modules.pop("sr_app_dir", None)
+    mod = _load("sr_app_dir", STORAGE_ROOTS)
+    monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+    assert mod._infer_studio_home_from_venv() == app, "sentinel-gated inference broke"
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(app))
+    assert mod._infer_studio_home_from_venv() is None
+    # Any other app dir is not a match, so a bare-metal install keeps its inference.
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(tmp_path / "elsewhere"))
+    assert mod._infer_studio_home_from_venv() == app
 
 
 def test_studio_root_does_not_crash_on_permission_error(tmp_path, monkeypatch):
@@ -80,7 +115,10 @@ def test_kill_orphan_catches_oserror_from_studio_root():
 
 
 def _exec_search_roots_block(
-    home: Path, studio_root_value: Path, resolve_raises: bool
+    home: Path,
+    studio_root_value: Path,
+    resolve_raises: bool,
+    master: Path | None = None,
 ) -> list[Path]:
     """Run _find_llama_server_binary's search_roots derivation -- plus the shared
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
@@ -103,6 +141,7 @@ def _exec_search_roots_block(
     block = textwrap.dedent(" " * 8 + src[block_start:block_end])
     fake_module = type(sys)("fake_storage_roots")
     fake_module.studio_root = lambda: studio_root_value
+    fake_module.unsloth_home = lambda: master
     sys.modules["utils.paths.storage_roots"] = fake_module
     try:
         original_resolve = Path.resolve
@@ -146,6 +185,20 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
     assert (
         home / ".unsloth" / "llama.cpp"
     ) not in roots, f"legacy llama path must not appear in custom-mode search_roots: {roots}"
+
+
+def test_search_roots_follow_the_master_root(tmp_path):
+    # llama.cpp is a sibling of studio/ there; a failing resolve() must not drop the master root.
+    home = tmp_path / "home"
+    home.mkdir()
+    master = tmp_path / "portable"
+    roots = _exec_search_roots_block(
+        home = home,
+        studio_root_value = master / "studio",
+        resolve_raises = True,
+        master = master,
+    )
+    assert roots == [master / "llama.cpp"]
 
 
 def test_search_roots_default_mode_uses_legacy_only(tmp_path):

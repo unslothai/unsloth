@@ -2,12 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { normalizeNonEmptyName } from "@/utils";
 import { removeUnstructuredBlock } from "../api";
 import {
   buildSignature,
-  copyTextToClipboard,
   formatSavedLabel,
 } from "../executions/execution-helpers";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
@@ -315,12 +315,11 @@ export function useRecipePersistence({
     return () => window.clearTimeout(timeoutId);
   }, [isDirty, persistRecipe, saveLoading]);
 
-  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add
-  // then remove an unstructured seed before the 800ms debounce) keeps isDirty
-  // false, so the autosave effect never drains and the queued uid leaks its
-  // upload dir. Not-dirty means currentPayload equals the saved recipe, and
-  // drain skips the uid it still references, so only dirs no saved recipe
-  // points at are deleted (keeps the save-first invariant).
+  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add then remove an
+  // unstructured seed before the 800ms debounce) keeps isDirty false, so the autosave effect never
+  // drains and the queued uid leaks its upload dir. Not-dirty means currentPayload equals the saved
+  // recipe, and drain skips the uid it still references, so only dirs no saved recipe points at are
+  // deleted (keeps the save-first invariant).
   useEffect(() => {
     if (!initialRecipeReady || isDirty || saveLoading) {
       return;
@@ -334,9 +333,7 @@ export function useRecipePersistence({
       const safePayload = sanitizeSeedForShare(
         stripApiKeys(payloadResult.payload),
       );
-      const ok = await copyTextToClipboard(
-        JSON.stringify(safePayload, null, 2),
-      );
+      const ok = await copyToClipboard(JSON.stringify(safePayload, null, 2));
       if (!ok) {
         throw new Error("Clipboard not available.");
       }

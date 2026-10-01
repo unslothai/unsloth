@@ -49,8 +49,8 @@ import { toast } from "@/lib/toast";
 import {
   AudioWave01Icon,
   Search01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
@@ -211,7 +211,7 @@ function SttModelPicker({
           type="button"
           data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
-          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
           <HugeiconsIcon
@@ -560,11 +560,10 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without
-        // whisper-server the backend serves it through Transformers instead of
-        // failing. Fall back to the Transformers status here too, or the model
-        // shows as unavailable and download is blocked even though it works.
-        // mtmd models run nowhere else, so they never fall back.
+        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
+        // backend serves it through Transformers instead of failing. Fall back to the Transformers
+        // status here too, or the model shows as unavailable and download is blocked even though it
+        // works. mtmd models run nowhere else, so they never fall back.
         const engineStatus = isMtmdModel
           ? status.mtmd
           : isGgufModel && status.gguf?.available
@@ -715,10 +714,9 @@ export function VoiceTab() {
     try {
       await startSttDownload(sttModel, hfApiToken(hfToken));
       trackSttDownload(sttModel);
-      // The status effect only re-polls while it can see a download. Its last
-      // read was before this one existed, and the on-demand branch schedules
-      // nothing, so without a nudge the tab shows Download for the whole
-      // transfer.
+      // The status effect only re-polls while it can see a download. Its last read was before this
+      // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
+      // Download for the whole transfer.
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
@@ -893,7 +891,7 @@ export function VoiceTab() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.voice.title")}
@@ -1017,22 +1015,10 @@ export function VoiceTab() {
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
-            >
-              <div className="flex w-56 flex-col items-stretch gap-2">
-                <SttModelPicker
-                  value={sttModel}
-                  language={dictationLanguage}
-                  onChange={(next) => {
-                    if (next !== sttModel) {
-                      void unloadSttModel().catch(() => {});
-                      void autoLoadSttModel(next);
-                    }
-                    setSttModel(next);
-                  }}
-                />
-                {/* Progress lives in the shared downloads panel; a second bar
-                    here said the same thing twice. */}
-                <div className="flex min-h-7 items-center justify-between gap-3">
+              // Progress lives in the shared downloads panel; a second bar here
+              // said the same thing twice.
+              below={
+                <div className="flex min-h-7 w-56 items-center justify-between gap-3">
                   <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                     {effectiveSttDownloadAvailability === "checking" ||
                     sttPhase === "loading" ||
@@ -1124,6 +1110,20 @@ export function VoiceTab() {
                     )
                   ) : null}
                 </div>
+              }
+            >
+              <div className="w-56">
+                <SttModelPicker
+                  value={sttModel}
+                  language={dictationLanguage}
+                  onChange={(next) => {
+                    if (next !== sttModel) {
+                      void unloadSttModel().catch(() => {});
+                      void autoLoadSttModel(next);
+                    }
+                    setSttModel(next);
+                  }}
+                />
               </div>
             </SettingsRow>
           ) : (
@@ -1436,7 +1436,7 @@ export function VoiceTab() {
                   >
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="max-h-72">
+                  <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
                     <SelectItem value="default">
                       {t("settings.voice.dictation.systemDefault")}
                     </SelectItem>
@@ -1522,7 +1522,7 @@ export function VoiceTab() {
                 ) : (
                   <>
                     <HugeiconsIcon
-                      icon={VolumeHighIcon}
+                      icon={Volume02Icon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.previewAction")}

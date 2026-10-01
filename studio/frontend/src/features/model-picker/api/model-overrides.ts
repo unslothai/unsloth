@@ -15,6 +15,7 @@ import {
 } from "../model-config/model-identity";
 import {
   DEFAULT_PER_MODEL_CONFIG,
+  normalizeMlxKvQuant,
   type PerModelConfig,
   deletePerModelConfigsForOverrideKeys,
   normalizePerModelConfig,
@@ -33,6 +34,7 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   kv_cache_dtype?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_kv_quant?: string;
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
@@ -40,6 +42,10 @@ export interface ApiModelOverride {
   spec_draft_n_max?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget_message?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_batch?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -115,9 +121,8 @@ export function foldOverrideKey(key: string): string {
     return path;
   }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
-  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it
-  // onto the real, different file "/models/foo:bar.gguf". Mirrors the backend's
-  // split_quant_suffix.
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it onto the
+  // real, different file "/models/foo:bar.gguf". Mirrors the backend's split_quant_suffix.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
@@ -266,6 +271,22 @@ export async function fetchLoadExtraArgs(
   return resolvedFrom(resolved ?? {});
 }
 
+/** The row as a settings panel applies it. llama-server arguments reach a GGUF load alone, and
+ *  hydrating them into another model's config would count a list it cannot show as a change. */
+export function panelOverrideRow(
+  override: ApiModelOverride | null,
+  isGguf: boolean,
+): ApiModelOverride | null {
+  if (!override || isGguf) {
+    return override;
+  }
+  return presentOverride(
+    Object.fromEntries(
+      Object.entries(override).filter(([key]) => key !== "llama_extra_args"),
+    ),
+  );
+}
+
 /** Translate one server-resolved override into the picker's config shape. The row is
  *  authoritative for the fields it CARRIES and only those: an absent field is not evidence
  *  the user chose the default, since a failed PUT, a refused value and an old row all leave
@@ -290,6 +311,8 @@ export function fromApiOverride(
   // auto-switch max_seq_length first. So a row stating either field owns both.
   const serverStatesPin =
     override.custom_context_length != null || override.max_seq_length != null;
+  const serverStatesKvQuant =
+    "mlx_kv_quant" in override || "mlx_kv_bits" in override;
   const normalized = normalizePerModelConfig({
     ...DEFAULT_PER_MODEL_CONFIG,
     customContextLength: serverStatesPin
@@ -299,12 +322,17 @@ export function fromApiOverride(
       ? (override.max_seq_length ?? null)
       : local.maxSeqLength,
     kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
-    mlxKvBits: override.mlx_kv_bits ?? local.mlxKvBits,
+    mlxKvQuant: serverStatesKvQuant
+      ? normalizeMlxKvQuant(override.mlx_kv_quant, override.mlx_kv_bits)
+      : (local.mlxKvQuant ?? null),
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
+    reasoningBudget: override.reasoning_budget ?? local.reasoningBudget,
+    reasoningBudgetMessage:
+      override.reasoning_budget_message ?? local.reasoningBudgetMessage,
     nBatch: override.n_batch ?? local.nBatch,
     nUbatch: override.n_ubatch ?? local.nUbatch,
     loadMode: override.load_mode ?? local.loadMode,
@@ -351,8 +379,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
   // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX model at full precision.
-  if (config.mlxKvBits != null) {
-    payload.mlx_kv_bits = config.mlxKvBits;
+  if (config.mlxKvQuant) {
+    payload.mlx_kv_quant = config.mlxKvQuant;
   }
   if (config.speculativeType) {
     payload.speculative_type = config.speculativeType;
@@ -363,6 +391,12 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
+  }
+  if (config.reasoningBudget !== -1) {
+    payload.reasoning_budget = config.reasoningBudget;
+  }
+  if (config.reasoningBudgetMessage) {
+    payload.reasoning_budget_message = config.reasoningBudgetMessage;
   }
   // blank follows the llama.cpp defaults (2048 / 512)
   if (config.nBatch && config.nBatch > 0) {
@@ -444,6 +478,9 @@ export interface PutModelOverrideOptions {
    *  local entry for the storage budget is not a forget, so it must not take
    *  `llama_extra_args` the page can neither show nor restore. */
   keepLaunchFlags?: boolean;
+  /** Remove a legacy passthrough value only after this control was explicitly reset. */
+  resetReasoningBudget?: boolean;
+  resetReasoningBudgetMessage?: boolean;
 }
 
 export async function putModelOverride(
@@ -486,13 +523,16 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
-      // This build mirrors the llama-server tuning group, so an omission here is the
-      // user clearing it rather than a client that predates the fields. Without this
-      // the backend preserves the stored values, which is what stops a cached older
-      // bundle from deleting settings it never knew to send. An older backend ignores
-      // the key.
+      // This build mirrors the llama-server tuning group, so an omission here is the user clearing
+      // it rather than a client that predates the fields. Without this the backend preserves the
+      // stored values, which is what stops a cached older bundle from deleting settings it never
+      // knew to send. An older backend ignores the key.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_server_tuning: true,
+      // Same contract for the reasoning pair, which a build mirroring the tuning group
+      // can still predate.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_reasoning_budget: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
@@ -508,6 +548,20 @@ async function sendModelOverride(
           { llama_extra_args: [] }
         : {}),
       ...toApiOverride(config),
+      // Write-only reset markers let the backend remove legacy passthrough flags
+      // shadowing these controls. Fill-only migration must never delete stored flags.
+      ...(options?.resetReasoningBudget && config?.reasoningBudget === -1
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget: -1,
+          }
+        : {}),
+      ...(options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget_message: "",
+          }
+        : {}),
     }),
   });
   if (!res.ok) {

@@ -3,29 +3,11 @@
 
 """Image quality-vs-quant harness for the Unsloth diffusion backend.
 
-The accuracy analogue of the KLD workflow: hold the prompt + seed fixed, render a
-grid with a high-fidelity reference quant (default BF16), then render the same grid
-with each candidate quant and measure how far the output drifts from the reference.
-For every quant it records mean PSNR / SSIM (pixel + structural fidelity vs the
-reference image), optional CLIP scores (perceptual: prompt alignment + similarity to
-the reference), plus file size, generation latency, and peak VRAM. It then prints a
-quality-vs-cost table and recommends the smallest quant that stays within a quality
-budget, so "retain accuracy" becomes a number you can set defaults from.
+The accuracy analogue of the KLD workflow: hold the prompt and seed fixed, render a grid with a high-fidelity reference quant (default BF16), then render the same grid with each candidate quant and measure how far the output drifts from the reference. Per quant it records mean PSNR / SSIM (pixel and structural fidelity against the reference image), optional CLIP scores (prompt alignment plus similarity to the reference), file size, generation latency and peak VRAM, then prints a quality-vs-cost table and recommends the smallest quant that stays within a quality budget, so "retain accuracy" becomes a number you can set defaults from.
 
-Lean by design: PSNR + SSIM are pure numpy (no skimage/scipy); CLIP is optional and
-gated on ``--clip`` (uses transformers, downloads a small CLIP once). torch /
-diffusers / the backend are imported lazily so ``--help`` and ``--selftest`` work on
-a host without them. Not part of CPU CI for the GPU path; ``--selftest`` is CPU-only.
+Lean by design: PSNR and SSIM are pure numpy (no skimage/scipy); CLIP is optional and gated on ``--clip`` (uses transformers, downloads a small CLIP once). torch / diffusers / the backend are imported lazily so ``--help`` and ``--selftest`` work on a host without them. Not part of CPU CI for the GPU path; ``--selftest`` is CPU-only.
 
-Examples:
-    # CPU metric sanity check (no GPU, no model):
-    python scripts/diffusion_quality.py --selftest
-
-    # GPU sweep of a few quants against the BF16 reference:
-    python scripts/diffusion_quality.py --model unsloth/Z-Image-Turbo-GGUF \\
-        --reference-quant z-image-turbo-BF16.gguf \\
-        --quants z-image-turbo-Q8_0.gguf z-image-turbo-Q4_K_M.gguf z-image-turbo-Q2_K.gguf \\
-        --clip --out-dir outputs/diffusion_quality/zimage
+Examples: `python scripts/diffusion_quality.py --selftest` for a CPU metric sanity check, or `--model unsloth/Z-Image-Turbo-GGUF --reference-quant z-image-turbo-BF16.gguf --quants z-image-turbo-Q8_0.gguf z-image-turbo-Q4_K_M.gguf z-image-turbo-Q2_K.gguf --clip` for a GPU sweep against the BF16 reference.
 """
 
 from __future__ import annotations
@@ -83,8 +65,7 @@ def psnr(a_img: Any, b_img: Any) -> float:
 
 
 def _box_mean(x: Any, w: int) -> Any:
-    """Uniform (w x w) box mean over a 2D array via an integral image; edge-padded
-    so the output keeps the input shape. Vectorised, no python loop."""
+    """Uniform (w x w) box mean over a 2D array via an integral image; edge-padded so the output keeps the input shape. Vectorised, no python loop."""
     import numpy as np
 
     r = w // 2
@@ -101,8 +82,7 @@ def ssim(
     b_img: Any,
     window: int = 7,
 ) -> float:
-    """Mean structural similarity (luminance) over a uniform window; 1.0 when
-    identical. Pure numpy box-window SSIM (Wang et al. constants), no skimage."""
+    """Mean structural similarity (luminance) over a uniform window; 1.0 when identical. Pure numpy box-window SSIM (Wang et al. constants), no skimage."""
     a, b = _to_gray(a_img), _to_gray(b_img)
     if a.shape != b.shape:
         return 0.0
@@ -218,8 +198,7 @@ def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
 def _render_grid(
     backend: Any, args: argparse.Namespace, gguf: str, out_dir: Path
 ) -> dict[str, Any]:
-    """Load ``gguf`` and render one image per (prompt, seed); return images keyed by
-    (prompt_index, seed) plus latency / VRAM metrics."""
+    """Load ``gguf`` and render one image per (prompt, seed); return images keyed by (prompt_index, seed) plus latency / VRAM metrics."""
     _cuda_reset_peak()
     backend.begin_load(
         args.model,
