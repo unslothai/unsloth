@@ -216,6 +216,7 @@ import {
   GPU_LAYERS_AUTO,
   managedGpuMemoryFields,
   reconcilePersistedGpuIds,
+  loadedLlamaCppConfigFields,
   managedKvCacheFields,
   managedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -3676,11 +3677,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
           // What this launch is running, for a later rollback: the status applier cannot seed it while
           // the model-loading lease is held, and a failed switch would restore the wrong args.
-          loadedLlamaCppConfig:
-            loadResp.requested_llama_cpp_config ?? config.llamaCppConfig ?? null,
-          llamaCppConfig:
-            loadResp.requested_llama_cpp_config ?? config.llamaCppConfig,
-          llamaCppConfigSummary: loadResp.llama_cpp_config_summary ?? null,
+          ...loadedLlamaCppConfigFields(loadResp, config.llamaCppConfig),
           loadedLlamaExtraArgs:
             loadResp.requested_llama_extra_args !== undefined
               ? (loadResp.requested_llama_extra_args ?? [])

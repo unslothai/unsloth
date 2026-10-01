@@ -7,6 +7,7 @@ import {
   SAMPLING_WIRE_FIELDS,
   explicitSamplingFields,
   iniSamplingDefaults,
+  markSamplingFields,
   type LlamaCppConfigSummary,
 } from "@/features/model-picker/model-config/llama-cpp-config";
 import { Button } from "@/components/ui/button";
@@ -878,19 +879,8 @@ export function ChatSettingsPanel({
     return (v: InferenceParams[K]) => {
       const wire = SAMPLING_WIRE_FIELDS[key as keyof typeof SAMPLING_WIRE_FIELDS];
       const nextParams = {
-        ...params,
+        ...(wire ? markSamplingFields(params, wire) : params),
         [key]: v,
-        ...(wire
-          ? {
-              samplingFieldsExplicit: [
-                ...new Set([
-                  ...(params.samplingFieldsExplicit ??
-                    Object.values(SAMPLING_WIRE_FIELDS)),
-                  wire,
-                ]),
-              ],
-            }
-          : {}),
         ...(key === "minP" ? { minPMode: "custom" as const } : {}),
       };
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
@@ -941,9 +931,7 @@ export function ChatSettingsPanel({
     preset: Preset,
   ): InferenceParams {
     const nextParams = applyPresetForProvider(params, preset, isVllm ? "vllm" : null);
-    // Presets are saved with an empty mask, so the mask comes from the preset kind: Default hands the
-    // sampling it owns back to a custom config, any other preset pins it. Fields no preset owns
-    // (reasoning) keep their current provenance.
+    // Default hands preset-owned sampling back to a custom config; any other preset pins it.
     nextParams.samplingFieldsExplicit = [
       ...explicitSamplingFields(
         params as unknown as Record<string, unknown>,

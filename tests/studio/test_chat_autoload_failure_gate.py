@@ -563,6 +563,7 @@ function loadedGpuMemoryFields(_x: any) { return {}; }
 function resolveLoadedSpeculativeSettings(_x: any) { return {}; }
 function managedGpuMemoryFields(_x: any) { return {}; }
 function managedKvCacheFields(_x: any) { return {}; }
+function loadedLlamaCppConfigFields(r: any, sent: any) { const c = r.requested_llama_cpp_config ?? sent; return { llamaCppConfig: c, loadedLlamaCppConfig: c ?? null, llamaCppConfigSummary: r.llama_cpp_config_summary ?? null }; }
 function managedSpeculativeSettings(_x: any) { return {}; }
 function isMultimodalResponse(_x: any) { return false; }
 

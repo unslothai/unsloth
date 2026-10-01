@@ -468,7 +468,7 @@ export function applyActiveModelStatusToStore(
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
-    // A custom load's echo is its INI's tuning, so it moves neither.
+    // Never from a custom load: its echo is the INI's tuning.
     ...(seedLoadParams &&
       status.requested_llama_cpp_config?.mode !== "custom" &&
       (status.speculative_type !== undefined ||
@@ -680,8 +680,7 @@ export function applyActiveModelStatusToStore(
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. placementAndContextFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines. Never from a custom load: its status echoes
-    // the INI's placement and ctx-size, which would then ride into the next managed load.
+    // case while advancing their loaded baselines. Never from a custom load (see above).
     ...(seedLoadParams &&
       status.requested_llama_cpp_config?.mode !== "custom" &&
       (prevState.loadedGpuMemoryMode === null ||

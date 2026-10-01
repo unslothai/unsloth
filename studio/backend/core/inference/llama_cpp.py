@@ -10042,21 +10042,16 @@ class LlamaCppBackend:
         self._memory_state = (mlock, reserves_ram)
         self._memory_direct_io = direct_io
 
-    def _record_custom_memory_state(self, argv, env) -> None:
-        """Publish custom placement before spawn and discard managed-policy residue."""
-        self._record_memory_state(argv, env)
-        self._memory_policy_active = False
-        self._memory_policy_extras_touched = False
-        self._memory_mlock_applicable = True
-        self._memory_dio_applicable = False
-        self._memory_dio_flags = []
-        self._memory_dio_user_tokens = []
-        self._memory_pending_launch = None
-
-    def _clear_custom_memory_state(self) -> None:
-        """Clear placement published for a custom launch that did not survive."""
-        self._memory_state = None
-        self._memory_direct_io = None
+    def _set_custom_memory_state(
+        self,
+        argv = None,
+        env = None,
+    ) -> None:
+        """Publish a custom launch's placement (None clears it) and drop managed-policy residue."""
+        if argv is None:
+            self._memory_state = self._memory_direct_io = None
+        else:
+            self._record_memory_state(argv, env)
         self._memory_policy_active = False
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
@@ -23382,7 +23377,10 @@ class LlamaCppBackend:
         *,
         validate_resources: bool = True,
     ) -> CompiledCustomConfig:
-        """Validate strict tuning without unloading, downloading, or changing runtime state."""
+        """Validate without unloading, downloading, or changing runtime state.
+
+        ``validate_resources=False`` skips the GGUF file checks for a model not downloaded
+        yet; INI m/mm entries are still matched against the intent's paths."""
         binary, caps = self._custom_binary_and_caps()
         projector = intent.mmproj_path
         if projector and intent.disable_vision and not _mmproj_env_is_audio_only(projector):
@@ -23392,20 +23390,7 @@ class LlamaCppBackend:
             caps["option_catalog"],
             model_path = intent.gguf_path,
             mmproj_path = projector,
-            validate_resources = validate_resources,
         )
-        if not validate_resources and any(
-            "identity must be checked" in note for note in compiled.diagnostics
-        ):
-            # The route calls this before evicting another backend. A source
-            # carrying m/mm cannot defer identity until after that eviction.
-            compiled = compile_custom_config(
-                intent.llama_cpp_config,
-                caps["option_catalog"],
-                model_path = intent.gguf_path,
-                mmproj_path = projector,
-                validate_resources = True,
-            )
         flags = {name for item in caps["option_catalog"] for name in item["names"]}
         required = {"--host", "--port", "--alias", "--jinja"}
         if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
@@ -23428,15 +23413,10 @@ class LlamaCppBackend:
                 raise CustomConfigError(
                     "Virtualized Metal requires mmproj-offload=false for the selected projector"
                 )
-        gpu_layers = tuning.get("gpu_layers")
-        if gpu_layers != 0 and tuning.get("device") != "none":
+        if tuning.get("gpu_layers") != 0 and tuning.get("device") != "none":
             error = self._cuda_sm_gate_error(binary)
             if error:
                 raise CustomConfigError(error)
-            if self._arch_gate_survivors(binary):
-                raise CustomConfigError(
-                    "The selected runtime requires a GPU compatibility mask; set an administrative device visibility mask before using custom mode"
-                )
         from utils.model_memory_settings import get_model_memory_settings
 
         memory = resolve_effective_memory_state(compiled.argv, {})
@@ -23529,7 +23509,7 @@ class LlamaCppBackend:
         *,
         load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
-        """One strict attempt inside the ordinary serial load/lifecycle boundary."""
+        """One strict attempt: no tuning fallback, no optimizer rewrites."""
         self._cancel_event.clear()
         epoch = self._unload_epoch
 
@@ -23542,7 +23522,7 @@ class LlamaCppBackend:
 
         if cancelled():
             return False
-        # Validate syntax, ownership, and selected binary before any model download.
+        # Fail before any download.
         self.prepare_custom_config(intent, validate_resources = False)
         binary, caps = self._custom_binary_and_caps()
         revision = self._binary_revision(binary)
@@ -23611,7 +23591,7 @@ class LlamaCppBackend:
             and self._model_identifier == intent.model_identifier
             and self._launch_binary_revision == revision
         ):
-            # A comment-only edit updates source without replacing the process.
+            # Same digest (e.g. comment-only edit): keep the process.
             self._compiled_custom_config = compiled
             self._last_load_intent = resolved
             return True
@@ -23626,6 +23606,17 @@ class LlamaCppBackend:
             ):
                 env.pop(name, None)
         self._reject_implicit_custom_config(env)
+        # Same ROCm arch-gate mask as managed loads: HSA enumeration dies on an uncovered agent
+        # before --device is read. INI device names then index the surviving cards.
+        survivors = (
+            self._arch_gate_survivors(binary)
+            if tuning.get("gpu_layers") != 0 and tuning.get("device") != "none"
+            else []
+        )
+        if survivors:
+            self._emit_child_gpu_visibility(
+                env, ",".join(str(i) for i in survivors), prefer_rocr = True
+            )
         from utils.llama_cpp_path_settings import llama_cpp_path_selection_guard
 
         cmd, port, api_key, slot_path, slot_binary = self._prepare_custom_launch_command(
@@ -23658,9 +23649,8 @@ class LlamaCppBackend:
                 self._begin_load_warnings()
                 self._kill_process()
                 self._cleanup_cpu_fallback_runtime()
-            # The settings route reads these fields while health is pending. Publish
-            # the exact command's placement before marking the launch visible.
-            self._record_custom_memory_state(cmd, env)
+            # The settings route reads placement while health is pending.
+            self._set_custom_memory_state(cmd, env)
             self._custom_launch_pending = True
             try:
                 self._model_identifier = intent.model_identifier
@@ -23694,7 +23684,7 @@ class LlamaCppBackend:
                     )
                     self._mmproj_projector_type = read_mmproj_projector_type(projector)
                 if cancelled() or not self._start_llama_process(
-                    cmd, env, child_gpu_physical_ids = None
+                    cmd, env, child_gpu_physical_ids = tuple(survivors) or None
                 ):
                     self._kill_process()
                     return False
@@ -23750,12 +23740,9 @@ class LlamaCppBackend:
                     1 if self._kv_cache_unified else compiled.n_parallel
                 )
                 self._n_ubatch = tuning.get("n_ubatch", 0)
-                self._requested_n_batch = None
-                self._requested_n_ubatch = None
-                self._requested_load_mode = None
-                self._requested_spec_draft_cache_type = None
-                self._requested_ctx_checkpoints = None
-                self._requested_cache_ram = None
+                self._requested_n_batch = self._requested_n_ubatch = None
+                self._requested_load_mode = self._requested_spec_draft_cache_type = None
+                self._requested_ctx_checkpoints = self._requested_cache_ram = None
                 self._swa_full = bool(tuning.get("swa_full", False))
                 flash_observed = None
                 for line in self._stdout_lines:
@@ -23795,25 +23782,20 @@ class LlamaCppBackend:
                 self._speculative_type = tuning.get("spec_type")
                 self._requested_spec_mode = self._speculative_type
                 self._spec_draft_n_max = None
-                self._extra_args = []
-                self._requested_extra_args = []
+                self._extra_args, self._requested_extra_args = [], []
                 self._extra_args_source = (intent.model_identifier, intent.hf_variant)
                 self._launch_binary_revision = revision
                 self._capability_probe_inconclusive = False
-                self._prompt_cache_disabled = bool(tuning.get("no_cache_prompt", False))
+                self._prompt_cache_disabled = tuning.get("cache_prompt") is False
                 self._has_video_input = bool((props.get("modalities") or {}).get("video"))
                 self._gpu_offload_active = classify_gpu_offload_lines(self._stdout_lines)
                 if compiled.explicit_cpu_only and not projector:
                     self._gpu_offload_active = False
                 elif tuning.get("gpu_layers") == 0 and not projector:
                     self._gpu_offload_active = self._zero_offload_gpu_flag(cmd, [], env)
-                self._is_audio = False
+                self._is_audio = self._audio_probed = self._has_audio_input = False
                 self._audio_type = None
-                self._audio_probed = False
-                self._has_audio_input = False
-                # is_loaded is lock-free. Publish the complete custom snapshot before
-                # health so status and request paths cannot hydrate the new process
-                # with the previous model's configuration or runtime accounting.
+                # is_loaded is lock-free: publish the snapshot before health flips.
                 self._compiled_custom_config = compiled
                 self._last_load_intent = resolved
                 if cancelled() or not self._publish_healthy():
@@ -23827,8 +23809,7 @@ class LlamaCppBackend:
                 if not self._healthy:
                     self._compiled_custom_config = previous_compiled
                     self._last_load_intent = previous_intent
-                    self._clear_custom_memory_state()
-        # Reuse codec handling outside the lock, matching the managed path.
+                    self._set_custom_memory_state()
         try:
             detected = self._detect_audio_type_strict()
             self._audio_probed = True
@@ -23840,7 +23821,7 @@ class LlamaCppBackend:
                 self._kill_process()
                 self._compiled_custom_config = previous_compiled
                 self._last_load_intent = previous_intent
-                self._clear_custom_memory_state()
+                self._set_custom_memory_state()
                 return False
             if self._slot_save_dir:
                 self._slot_loaded_identity = (
@@ -36513,7 +36494,6 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
-        request_template_kwargs: Optional[dict] = None,
         # Appended, never inserted: no bare `*` here, so every parameter is
         # positional-or-keyword and inserting one rebinds later positional arguments.
         #
@@ -36524,6 +36504,7 @@ class LlamaCppBackend:
         on_conversation_grew: Optional[Callable[[list], None]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
+        request_template_kwargs: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.

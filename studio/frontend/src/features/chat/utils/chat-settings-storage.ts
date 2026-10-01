@@ -143,8 +143,7 @@ function sanitizeInferenceParams(
 
   const params: PersistedInferenceParams = {};
   if (Array.isArray(value.samplingFieldsExplicit)) {
-    // Presence is meaningful: [] says these are automatic defaults, while an absent
-    // mask identifies a legacy snapshot whose explicit fields must be inferred.
+    // [] = automatic defaults; absent = legacy snapshot, inferred on read.
     params.samplingFieldsExplicit = [
       ...new Set(explicitSamplingFields(value)),
     ];

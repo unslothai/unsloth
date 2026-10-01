@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile one native INI preset into an immutable Studio launch configuration.
-
-The grammar follows common/preset.cpp: comments terminate even quoted values,
-strings are not unquoted, duplicate keys replace, and repeated sections reset.
-The caller must obtain a complete successful help probe from the selected binary.
-"""
+"""Compile one llama.cpp INI preset (common/preset.cpp grammar) into a Studio launch config."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 import hashlib
 import json
@@ -56,15 +51,7 @@ def parse_config_source(value: Mapping | CustomConfigSource | None) -> CustomCon
     if value is None:
         return None
     if isinstance(value, CustomConfigSource):
-        # Validate constructed instances too; the dataclass is not a trust boundary.
-        value = {
-            "version": value.version,
-            "mode": value.mode,
-            "ini": value.ini,
-            "section": value.section,
-        }
-        if value["mode"] == "managed" and value["ini"] is None and value["section"] is None:
-            value = {"version": value["version"], "mode": value["mode"]}
+        value = {k: v for k, v in asdict(value).items() if v is not None}
     if not isinstance(value, Mapping):
         raise CustomConfigError("llama_cpp_config must be an object")
     if type(value.get("version")) is not int or value["version"] != 1:
@@ -99,11 +86,7 @@ def parse_config_source(value: Mapping | CustomConfigSource | None) -> CustomCon
 
 
 def parse_option_catalog(help_text: str) -> tuple[dict, ...]:
-    """Read native help declaration groups, never flags mentioned in prose.
-
-    Unsupported/removed declarations remain unavailable. Unknown arity is marked
-    -1 so a named option cannot accidentally become a valueless switch.
-    """
+    """Option declarations from native --help; unknown arity is -1, never a switch."""
     groups: list[tuple[str, list[str]]] = []
     for line in help_text.splitlines():
         if _DECL.match(line):
@@ -124,10 +107,7 @@ def parse_option_catalog(help_text: str) -> tuple[dict, ...]:
         description = " ".join([description, *continuation]).strip()
         if re.search(r"\b(?:removed|no longer supported|no longer available)\b", description, re.I):
             continue
-        # llama.cpp documents override-tensor as one shell argument even though
-        # its metavar contains two angle-bracket groups and a comma suffix.
-        # Keep that composite metavar intact so it cannot be mistaken for an
-        # unsupported multi-value option.
+        # override-tensor's `<a>=<b>,...` metavar is one argument.
         if re.fullmatch(r"<[^>]+>=<[^>]+>(?:,\.\.\.)?", hint):
             hints = [hint]
         else:
@@ -160,7 +140,6 @@ def parse_option_catalog(help_text: str) -> tuple[dict, ...]:
             "default": default_value,
             "negative_names": negatives,
         }
-        # Bounded enum hints are stronger evidence than a universal enum registry.
         if len(hints) == 1 and hints[0][:1] in "[{<" and hints[0][-1:] in "]}>":
             choices = re.split(r"[|,]", hints[0][1:-1])
             if (
@@ -171,7 +150,6 @@ def parse_option_catalog(help_text: str) -> tuple[dict, ...]:
                 )
             ):
                 descriptor["choices"] = choices
-        # These native convenience presets explicitly change model/port identity.
         if re.search(r"(?:download weights|model.*from the internet)", description, re.I):
             descriptor["resource_preset"] = True
         result.append(descriptor)
@@ -192,7 +170,6 @@ class CompiledCustomConfig:
     source: CustomConfigSource
     argv: tuple[str, ...]
     digest: str
-    source_digest: str
     n_parallel: int
     tuning: tuple[tuple[str, object], ...]
     request_defaults: tuple[tuple[str, object], ...]
@@ -200,7 +177,6 @@ class CompiledCustomConfig:
 
     @property
     def explicit_cpu_only(self) -> bool:
-        """Main-model placement is explicitly CPU-only; callers still check companions."""
         tuning = dict(self.tuning)
         return (
             tuning.get("device") == "none"
@@ -220,20 +196,17 @@ class CompiledCustomConfig:
 
 
 def _error(section: str, key: str, message: str) -> CustomConfigError:
-    # Keys follow the ASCII grammar; bounded section labels cannot expose values.
     return CustomConfigError(f"INI section [{section[:80]}], key '{key[:80]}': {message}")
 
 
 def _sections(ini: str) -> dict[str, dict[str, tuple[str, int]]]:
     sections: dict[str, dict[str, tuple[str, int]]] = {}
-    # Top-level entries are preset metadata. An explicit [default] remains a
-    # normal named preset that must be selected like any other named section.
+    # "" holds top-level metadata; [default] is an ordinary named section.
     section = ""
     headers = entries = 0
     for number, raw in enumerate(re.split(r"\r\n|\r|\n", ini), 1):
         header = re.fullmatch(r"\[[ \t]*([^]]+)\][ \t]*(?:[;#].*)?", raw)
         if header:
-            # The native section-name capture greedily includes trailing spaces.
             section = header[1]
             if len(section) > 512:
                 raise CustomConfigError(f"INI section name is too long at line {number}")
@@ -255,8 +228,7 @@ def _sections(ini: str) -> dict[str, dict[str, tuple[str, int]]]:
     return sections
 
 
-# Canonical names here carry Studio accounting/request semantics, not support.
-# Availability and aliases always come from the selected executable's catalog.
+# Studio accounting/request semantics only; availability and aliases come from the binary's catalog.
 _INT_FIELDS = {
     "ctx-size": ("n_ctx", 0),
     "batch-size": ("n_batch", 1),
@@ -305,7 +277,6 @@ _REQUEST = frozenset(
 )
 _RESOURCE_NAMES = frozenset({"--model", "-m", "--mmproj", "-mm"})
 _PARALLEL_NAMES = frozenset({"--parallel", "--n-parallel", "-np"})
-# Alternate model selectors and opaque configuration would introduce a second source.
 _OPAQUE = frozenset(
     {
         "--config",
@@ -345,8 +316,7 @@ def _typed(name: str, value: str, descriptor: Mapping, section: str, key: str):
             raise _error(section, key, "requires a finite numeric value") from None
         if not math.isfinite(number):
             raise _error(section, key, "requires a finite numeric value")
-        # Native sampling callbacks parse float32, not Python's float64. Check
-        # both overflow and nonzero values that would silently round to zero.
+        # Native parses float32: reject overflow and nonzero values that round to 0.
         try:
             native_number = struct.unpack("f", struct.pack("f", number))[0]
         except OverflowError:
@@ -374,8 +344,6 @@ def _typed(name: str, value: str, descriptor: Mapping, section: str, key: str):
 
 def _path_identity(path: str, platform: str) -> str:
     if platform == "win32":
-        # realpath handles junctions when running on Windows; ntpath also supports
-        # platform-specific comparison in host-independent tests.
         path = os.path.realpath(path) if os.name == "nt" else ntpath.abspath(path)
         return ntpath.normcase(ntpath.normpath(path))
     return os.path.realpath(path)
@@ -388,7 +356,6 @@ def compile_custom_config(
     model_path: str | None = None,
     mmproj_path: str | None = None,
     platform: str | None = None,
-    validate_resources: bool = True,
 ) -> CompiledCustomConfig:
     source = parse_config_source(source)
     if source is None or source.mode != "custom":
@@ -473,23 +440,12 @@ def compile_custom_config(
         names = set(descriptor["names"])
         if names & _RESOURCE_NAMES:
             resource = "mmproj" if names & {"-mm", "--mmproj"} else "model"
-            if validate_resources:
-                if (
-                    not resources[resource]
-                    or _path_identity(value, platform) != resources[resource]
-                ):
-                    raise _error(
-                        section, key, "must match the model/projector already selected in Studio"
-                    )
-                actual = mmproj_path if resource == "mmproj" else model_path
-                if not os.path.isfile(actual):
-                    raise _error(
-                        section, key, "the selected Studio resource must be an existing file"
-                    )
-            else:
-                diagnostics.append(
-                    f"{resource} identity must be checked against the resolved Studio resource before launch."
+            if not resources[resource] or _path_identity(value, platform) != resources[resource]:
+                raise _error(
+                    section, key, "must match the model/projector already selected in Studio"
                 )
+            if not os.path.isfile(mmproj_path if resource == "mmproj" else model_path):
+                raise _error(section, key, "the selected Studio resource must be an existing file")
             continue
         if names & _PARALLEL_NAMES:
             _, number = _typed("parallel", value, descriptor, section, key)
@@ -522,9 +478,9 @@ def compile_custom_config(
                 )
             enabled = value in _TRUE
             negative_names = descriptor.get("negative_names", [])
+            # Native parse_bool_arg does not negate LLAMA_ARG_NO_* env aliases.
             if key in {n.lstrip("-") for n in negative_names}:
                 enabled = not enabled
-            # Native INI negative environment aliases are not negated by parse_bool_arg.
             if enabled:
                 argv.append(canonical)
             elif negative_names:
@@ -558,8 +514,7 @@ def compile_custom_config(
             )
         n_parallel = int(value)
     tuning["n_parallel"] = n_parallel
-    # Resolve concrete native accounting defaults without putting competing flags
-    # on argv. Model-dependent defaults such as context 0 retain their meaning.
+    # Native defaults feed accounting only; they never reach argv.
     for canonical, descriptor in descriptors.items():
         name = canonical.lstrip("-")
         field = _INT_FIELDS.get(name, (None,))[0] or _TUNING_FIELDS.get(name)
@@ -573,8 +528,6 @@ def compile_custom_config(
                 tuning[resolved_field] = typed
     if "split_mode" in tuning:
         tuning["tensor_parallel"] = tuning["split_mode"] == "tensor"
-    # The shared policy's shape/Windows limits apply after alias reconciliation.
-    # Avoid its legacy GPU parser for the native 'auto'/'all' spellings.
     total = sum(len(token.encode("utf-8")) for token in argv)
     limit = (
         policy.MAX_EXTRA_ARGS_BYTES_WINDOWS if platform == "win32" else policy.MAX_EXTRA_ARGS_BYTES
@@ -609,7 +562,6 @@ def compile_custom_config(
         source,
         tuple(argv),
         digest,
-        hashlib.sha256(source.ini.encode("utf-8")).hexdigest(),
         n_parallel,
         tuple(sorted(tuning.items())),
         tuple(sorted(defaults.items())),
