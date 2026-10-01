@@ -336,8 +336,7 @@ def test_dpo_trains_on_cpu(tmp_path):
 
 
 def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
-    """GRPO scores whole groups, so the eval batch must stay a multiple of num_generations.
-    Shrinking an explicit 8 to the train batch of 2 broke every eval with num_generations = 4."""
+    """Shrinking an explicit eval batch of 8 to the train batch of 2 split num_generations = 4 groups."""
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
