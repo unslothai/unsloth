@@ -2780,19 +2780,15 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     Creates an Ollama Modelfile.
     Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
     """
-    ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
-    if not ollama_template_name:
-        print(
-            f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile"
-        )
-        return None
-    ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name)
+    ollama_modelfile = getattr(tokenizer, "_ollama_modelfile", None)
+    if not ollama_modelfile or ollama_modelfile in OLLAMA_TEMPLATES.values():
+        ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
+        ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name) or ollama_modelfile
     if not ollama_modelfile:
         print(
             f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile"
         )
         return None
-    tokenizer._ollama_modelfile = ollama_modelfile
     modelfile = ollama_modelfile
 
     FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"

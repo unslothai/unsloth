@@ -21,6 +21,7 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -47,6 +48,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   getToastOffsets,
@@ -624,12 +626,19 @@ function DesktopChromeVarsEffect({
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
     );
+    refreshWindowChromeTop();
+    // The macOS titlebar inset is divided by the zoom.
+    const stopZoom = usesNativeMacTitlebar
+      ? subscribeAppliedInterfaceZoom(refreshWindowChromeTop)
+      : null;
     return () => {
+      stopZoom?.();
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
       set("--studio-content-top-inset", null);
       set("--studio-window-chrome-top", null);
+      refreshWindowChromeTop();
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);
   return null;
@@ -1080,7 +1089,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
-        <DeepLinkHandler />
+        <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
         <Toaster

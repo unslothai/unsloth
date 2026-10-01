@@ -704,7 +704,7 @@ export const ModelInspector = memo(function ModelInspector({
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
-              mediaRuntime={runsOnMediaRuntime}
+              mediaPage={mediaPage}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
