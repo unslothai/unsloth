@@ -26,6 +26,7 @@ import re
 import sys
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
@@ -1575,7 +1576,35 @@ def _managed_tree_in_use() -> bool:
     Reads the singleton without a lock on purpose: a stale answer either defers an upgrade to the
     next load (harmless) or lets one through in a window the load path guards anyway.
     """
-    return _tree_in_use(_sd_cpp_backend)
+    return _tree_in_use(_sd_cpp_backend) or _external_tree_holder_alive()
+
+
+# Resident native processes that run out of the managed tree but are owned by ANOTHER backend (the MiniMax-H3 video
+# runtime's sd-server). The image backend's own server is covered by _tree_in_use; these register here so an install
+# stands down for them too. Each holder only needs is_alive(); weak, so a dropped runtime cannot pin the tree.
+_external_tree_holders: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def register_tree_holder(holder: Any) -> None:
+    """Count ``holder`` (anything with ``is_alive()``) as running out of the managed tree."""
+    with _tree_state:
+        _external_tree_holders.add(holder)
+
+
+def unregister_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.discard(holder)
+        _tree_state.notify_all()
+
+
+def _external_tree_holder_alive() -> bool:
+    for holder in list(_external_tree_holders):
+        try:
+            if holder.is_alive():
+                return True
+        except Exception:  # noqa: BLE001 -- a broken holder must not wedge installs either way
+            continue
+    return False
 
 
 def _accelerator_changed(binary: str, accelerator: str) -> bool:

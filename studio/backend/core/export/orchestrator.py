@@ -207,6 +207,14 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
+        # Export runs beside the loaded models without evicting them, so at least give back what an IDLE resident
+        # MiniMax-H3 sd-server holds (VRAM and pinned host RAM); the next video render reloads it.
+        try:
+            from core.inference.video_minimax_h3 import release_h3_native_servers
+
+            release_h3_native_servers("export subprocess starting")
+        except Exception as exc:  # noqa: BLE001 - never block an export on this
+            logger.warning("Could not release the idle video sd-server for export: %s", exc)
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
         # would kill the export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress

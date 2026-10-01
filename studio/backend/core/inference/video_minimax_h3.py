@@ -8,9 +8,10 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Must stay equal to the minimax-h3 family's `gguf_repo`. They are the same one-click pick, and main's
 # test_curated_gguf_repos_are_unsloth_mirrors only checks the family field, so a divergence here would let that test
@@ -1178,6 +1179,342 @@ class MiniMaxH3NativeRuntime:
     selected_card: Optional[str] = None
     # Extra environment for every sd-cli launch of this runtime, as (name, value) pairs.
     env: tuple[tuple[str, str], ...] = ()
+    # Resident sd-server for this runtime (H3NativeServerSlot), or None to always run one-shot sd-cli. Set at load only
+    # when the vetted sd-cli ships a sibling sd-server; see H3NativeServerSlot.
+    server_slot: Any = None
+
+
+# Kill switch for the resident H3 sd-server: 0 / false / off sends every render through a fresh one-shot sd-cli again.
+H3_NATIVE_SERVER_ENV = "UNSLOTH_H3_NATIVE_SERVER"
+# Seconds an idle resident sd-server may live after its last render before it is stopped and its VRAM and pinned host
+# RAM go back to the system. 0 stops it right after every render.
+H3_NATIVE_SERVER_IDLE_ENV = "UNSLOTH_H3_NATIVE_SERVER_IDLE_S"
+# Default idle window. What the server saves is the reload: ~40 s per render on a B200 (UD-Q3_K_XL, 960x544x124, 4
+# steps: 102 s warm vs 143 s one-shot). One render is itself ~100 s, so 180 s covers watching the clip and editing the
+# prompt for the next one, while a user who walked away gets the memory back within three minutes.
+H3_NATIVE_SERVER_IDLE_DEFAULT_S = 180.0
+# Memory floor a server may NOT eat into while idle: the free VRAM on its card and the available host RAM must each stay
+# at or above max(4 GiB, 15% of the total), the same reserve diffusion_memory keeps before pinning host memory
+# (_PIN_RESERVE_MIN_BYTES / _PIN_RESERVE_FRACTION). Below it the server is stopped after the render instead of kept.
+H3_NATIVE_SERVER_RESERVE_MIN_BYTES = 4 << 30
+H3_NATIVE_SERVER_RESERVE_FRACTION = 0.15
+
+
+def h3_native_server_enabled() -> bool:
+    value = os.environ.get(H3_NATIVE_SERVER_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def h3_native_server_idle_s(env: Optional[dict] = None) -> float:
+    """The idle window in seconds; an unreadable or negative value falls back to the default."""
+    environ = env if env is not None else os.environ
+    raw = str(environ.get(H3_NATIVE_SERVER_IDLE_ENV, "") or "").strip()
+    if not raw:
+        return H3_NATIVE_SERVER_IDLE_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return H3_NATIVE_SERVER_IDLE_DEFAULT_S
+    if value != value or value < 0:  # NaN or negative
+        return H3_NATIVE_SERVER_IDLE_DEFAULT_S
+    return value
+
+
+def h3_native_server_reserve_bytes(total_bytes: Optional[int]) -> int:
+    total = int(total_bytes or 0)
+    return max(H3_NATIVE_SERVER_RESERVE_MIN_BYTES, int(total * H3_NATIVE_SERVER_RESERVE_FRACTION))
+
+
+def h3_native_server_pressure(
+    *,
+    vram_free: Optional[int],
+    vram_total: Optional[int],
+    host_available: Optional[int],
+    host_total: Optional[int],
+) -> Optional[str]:
+    """Why an idle server must not be kept (a short reason), or None when both reserves hold.
+
+    A reading that is unknown decides nothing for that side, so a host without nvidia-smi still has the host RAM check
+    and the idle timeout."""
+    if vram_free is not None and vram_total:
+        floor = h3_native_server_reserve_bytes(vram_total)
+        if int(vram_free) < floor:
+            return f"free VRAM {int(vram_free) >> 20} MiB below the {floor >> 20} MiB reserve"
+    if host_available is not None and host_total:
+        floor = h3_native_server_reserve_bytes(host_total)
+        if int(host_available) < floor:
+            return f"available host RAM {int(host_available) >> 20} MiB below the {floor >> 20} MiB reserve"
+    return None
+
+
+def h3_sibling_server_binary(cli_binary: Optional[str]) -> Optional[str]:
+    """The ``sd-server`` shipped in the SAME directory as the vetted ``sd-cli``, or None.
+
+    Only the sibling: it comes out of the same bundle the load just checked for H3 support and
+    accelerator, whereas ``find_sd_server_binary`` may resolve an unrelated build (``SD_SERVER_PATH``,
+    ``PATH``) that nobody vetted."""
+    if not cli_binary:
+        return None
+    cli = Path(cli_binary)
+    suffix = ".exe" if cli.suffix.lower() == ".exe" else ""
+    candidate = cli.with_name("sd-server" + suffix)
+    return str(candidate) if candidate.is_file() else None
+
+
+# Every slot that may hold a live server, so another Studio component that needs the memory can stop them without
+# knowing about the video backend. Weak: a dropped runtime cannot be kept alive by this.
+_LIVE_SLOTS: "weakref.WeakSet[H3NativeServerSlot]" = weakref.WeakSet()
+
+
+def release_h3_native_servers(reason: str) -> int:
+    """Stop every idle resident H3 sd-server (a render in flight finishes first, then its server stops). Called when
+    Studio starts other GPU work. Returns how many servers were stopped or marked; never raises."""
+    count = 0
+    for slot in list(_LIVE_SLOTS):
+        try:
+            if slot.release(reason):
+                count += 1
+        except Exception:  # noqa: BLE001 -- a release must never break the caller that needs the memory
+            continue
+    return count
+
+
+class H3NativeServerSlot:
+    """At most one resident ``sd-server`` for a loaded MiniMax-H3 native runtime.
+
+    The one-shot path spawns sd-cli per render, so every render re-reads ~32 GB of GGUF / safetensors
+    into freshly pinned host memory, re-runs the 32B text encoder load, and pays the pinned-memory
+    release on exit. A resident server keeps the parameters loaded between renders (measured on
+    B200, UD-Q3_K_XL, 960x544x124: text-encoder condition 7.4 s -> 0.4 s, sampler start 12 s -> 0.7 s,
+    pixels and audio identical to sd-cli for the same seed).
+
+    It is spawned with exactly the flags and environment the one-shot sd-cli would get for the render
+    (``get(flags, env)``); a render needing a different signature (memory decision, speed mode, binary,
+    files) stops it and spawns a fresh one. It never outlives its usefulness:
+
+    * an idle timer (``UNSLOTH_H3_NATIVE_SERVER_IDLE_S``, default 180 s) stops it after the last render;
+    * after every render ``pressure_probe`` is asked; a reason stops it right away;
+    * ``release`` (Studio starting other GPU work, see ``release_h3_native_servers``) stops an idle server,
+      or a busy one as soon as its render ends;
+    * ``stop`` on unload / model switch.
+
+    While alive it is registered as a managed-tree holder so an install stands down.
+    """
+
+    def __init__(
+        self,
+        server_binary: str,
+        files: Any,
+        offload_flags: "tuple[str, ...] | list[str]" = (),
+        *,
+        pressure_probe: Optional[Callable[[], Optional[str]]] = None,
+    ) -> None:
+        import threading
+
+        self.server_binary = server_binary
+        self.files = files
+        # The load's committed flags; only a default for get() without explicit flags.
+        self.offload_flags = tuple(offload_flags)
+        self.pressure_probe = pressure_probe
+        self.disabled_reason: Optional[str] = None
+        self.last_release_reason: Optional[str] = None
+        self._server: Any = None
+        self._signature: Optional[tuple] = None
+        self._lock = threading.RLock()
+        self._busy = 0
+        self._release_pending: Optional[str] = None
+        self._timer: Any = None
+        # Bumped on every arm / cancel, so a timer that fired just before being cancelled sees it is stale.
+        self._timer_token = 0
+        _LIVE_SLOTS.add(self)
+
+    # -- state ------------------------------------------------------------------------------------
+
+    def is_alive(self) -> bool:
+        server = self._server
+        return server is not None and server.is_alive()
+
+    @property
+    def signature(self) -> Optional[tuple]:
+        return self._signature
+
+    def _signature_for(self, flags: "tuple[str, ...]", env: "tuple[tuple[str, str], ...]") -> tuple:
+        files = self.files
+        file_key = tuple(
+            getattr(files, name, None)
+            for name in ("diffusion_model", "llm", "vae", "audio_vae", "llm_vision")
+        )
+        return (self.server_binary, file_key, tuple(flags), tuple(sorted(env)))
+
+    def alive_signature(self) -> Optional[tuple]:
+        """The live server's signature, or None when no server is running."""
+        with self._lock:
+            return self._signature if self.is_alive() else None
+
+    # -- lifecycle --------------------------------------------------------------------------------
+
+    def get(
+        self,
+        flags: "Optional[tuple[str, ...] | list[str]]" = None,
+        env: "Optional[dict[str, str] | tuple[tuple[str, str], ...]]" = None,
+    ) -> Any:
+        """The live server for this exact (flags, env), starting or respawning one if needed. Raises what
+        ``SdCppServer.start`` raises."""
+        from .sd_cpp_backend import register_tree_holder, unregister_tree_holder
+        from .sd_cpp_engine import is_managed_binary
+        from .sd_cpp_server import SdCppServer
+
+        flag_tuple = tuple(self.offload_flags if flags is None else flags)
+        env_pairs = tuple((env or {}).items()) if isinstance(env, dict) else tuple(env or ())
+        wanted = self._signature_for(flag_tuple, env_pairs)
+        with self._lock:
+            self._cancel_timer_locked()
+            if self._server is not None and self._server.is_alive() and self._signature == wanted:
+                return self._server
+            if self._server is not None:
+                # Dead, or alive with another memory / speed / model signature: the next render must not inherit it.
+                self._stop_locked("signature changed" if self._server.is_alive() else "server exited")
+            server = SdCppServer(self.server_binary)
+            # Before start: the spawn itself is a process running out of the tree.
+            managed = is_managed_binary(self.server_binary)
+            self._server = server
+            self._signature = wanted
+            if managed:
+                register_tree_holder(self)
+            try:
+                server.start(
+                    self.files,
+                    offload = list(flag_tuple),
+                    env = dict(env_pairs) or None,
+                    # A context flag on sd-server, a per-run flag on sd-cli: Studio's H3 renders use the
+                    # ComfyUI-compatible CPU RNG either way, so a seed reproduces across both paths.
+                    extra_args = ["--rng", "cpu"],
+                )
+            except BaseException:
+                self._server = None
+                self._signature = None
+                try:
+                    server.stop()
+                finally:
+                    unregister_tree_holder(self)
+                raise
+            return server
+
+    def begin_render(self) -> None:
+        with self._lock:
+            self._busy += 1
+            self._cancel_timer_locked()
+
+    def end_render(self) -> Optional[str]:
+        """Called after every render on this slot (success or not). Stops the server when a release was asked for
+        during the render, when ``pressure_probe`` reports pressure, or when the idle window is 0; otherwise arms the
+        idle timer. Returns the stop reason, or None when the server stays."""
+        with self._lock:
+            self._busy = max(0, self._busy - 1)
+            if self._busy or self._server is None:
+                return None
+            reason = self._release_pending
+        if reason is None and self.pressure_probe is not None:
+            try:
+                reason = self.pressure_probe()
+            except Exception:  # noqa: BLE001 -- an unreadable probe keeps the idle timeout as the bound
+                reason = None
+            if reason:
+                reason = f"memory pressure: {reason}"
+        idle_s = h3_native_server_idle_s()
+        if reason is None and idle_s <= 0:
+            reason = "idle timeout 0"
+        with self._lock:
+            if self._busy or self._server is None:
+                return None
+            if reason is not None:
+                self._stop_locked(reason)
+                return reason
+            self._arm_timer_locked(idle_s)
+        return None
+
+    def release(self, reason: str) -> bool:
+        """Stop the server for another consumer of the memory. A render in flight finishes first: its server stops at
+        ``end_render``. Returns True when there was a server to stop.
+
+        Never waits on a server start: the lock is held while a render spawns its server (minutes), and the caller may
+        be holding the GPU arbiter. A start in progress belongs to a render, so the release is left pending for it."""
+        if not self._lock.acquire(timeout = 0.5):
+            self._release_pending = reason
+            return True
+        try:
+            if self._server is None:
+                return False
+            if self._busy:
+                self._release_pending = reason
+                return True
+            self._stop_locked(reason)
+            return True
+        finally:
+            self._lock.release()
+
+    def stop(self, reason: str = "stopped") -> None:
+        with self._lock:
+            self._stop_locked(reason)
+
+    def disable(self, reason: str) -> None:
+        """Stop the server and keep this runtime on the one-shot CLI from now on."""
+        self.disabled_reason = reason
+        self.stop(reason)
+
+    # -- internals (hold self._lock) --------------------------------------------------------------
+
+    def _stop_locked(self, reason: str) -> None:
+        from .sd_cpp_backend import unregister_tree_holder
+
+        self._cancel_timer_locked()
+        server, self._server = self._server, None
+        self._signature = None
+        self._release_pending = None
+        if server is None:
+            return
+        self.last_release_reason = reason
+        try:
+            import logging
+
+            logging.getLogger(__name__).info("h3 native sd-server stopped: %s", reason)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            server.stop()
+        finally:
+            unregister_tree_holder(self)
+
+    def _cancel_timer_locked(self) -> None:
+        self._timer_token += 1
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_timer_locked(self, idle_s: float) -> None:
+        import threading
+
+        self._cancel_timer_locked()
+        token = self._timer_token
+        ref = weakref.ref(self)
+
+        def fire() -> None:
+            slot = ref()
+            if slot is not None:
+                slot._on_idle(token)
+
+        timer = threading.Timer(idle_s, fire)
+        timer.daemon = True
+        timer.name = "h3-sd-server-idle"
+        self._timer = timer
+        timer.start()
+
+    def _on_idle(self, token: int) -> None:
+        with self._lock:
+            if token != self._timer_token or self._busy:
+                return
+            self._timer = None
+            self._stop_locked("idle timeout")
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

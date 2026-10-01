@@ -552,6 +552,8 @@ def build_sd_cpp_server_command(
     cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
     for flag, value in (
         ("--vae", files.vae),
+        # MiniMax-H3's audio VAE: without it a resident vid_gen server renders a silent clip.
+        ("--audio-vae", files.audio_vae),
         ("--clip_l", files.clip_l),
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
@@ -650,6 +652,68 @@ def build_img_gen_request(
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
+    return req
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
+    """True when a MiniMax-H3 ``vid_gen`` can go through a resident ``sd-server``.
+
+    The server's JSON schema carries keyframes (``init_image`` / ``end_image``) and still-image
+    references, but reference VIDEOS and AUDIO are path-only sd-cli flags with no JSON field, so a
+    request carrying any of those has to stay on the one-shot CLI."""
+    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+
+
+def build_vid_gen_request(
+    params: "SdCppVideoGenParams",
+    *,
+    images_b64: Optional[dict[str, str]] = None,
+    ref_images_b64: Optional[list[str]] = None,
+    output_compression: int = 90,
+) -> dict:
+    """Build the ``POST /sdcpp/v1/vid_gen`` JSON body equivalent to ``build_sd_cpp_video_command``.
+
+    Same sampling inputs as the CLI argv (steps, flow shift, txt cfg, seed, size, frames, fps), so a
+    resident server and a one-shot sd-cli render the same pixels for the same seed (measured on
+    MiniMax-H3 UD-Q3_K_XL: decoded frames and PCM audio identical). Output is MJPG AVI: it needs no
+    WebM build and is what the CUDA prebuilt's sd-cli writes anyway; ``output_compression`` matches
+    the CLI's ``--compression-quality`` default. Keyframes travel base64 in ``images_b64``
+    (``init_image`` / ``end_image``), still references in ``ref_images_b64``. ``--rng cpu`` is a
+    server CONTEXT flag, so the caller passes it at spawn, not here."""
+    if not (params.prompt or "").strip():
+        raise ValueError("prompt is required")
+    if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
+        raise ValueError("width, height, and num_frames must be positive")
+    if not h3_server_eligible(params):
+        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    images = dict(images_b64 or {})
+    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+        raise ValueError(
+            "MiniMax-H3 keyframes and references cannot be combined: they run against "
+            "different denoiser partitions."
+        )
+    sample_params: dict = {"guidance": {"txt_cfg": float(params.cfg_scale)}}
+    if params.steps is not None:
+        sample_params["sample_steps"] = int(params.steps)
+    if params.flow_shift is not None:
+        sample_params["flow_shift"] = float(params.flow_shift)
+    req: dict = {
+        "prompt": params.prompt,
+        "width": int(params.width),
+        "height": int(params.height),
+        "video_frames": int(params.num_frames),
+        "fps": int(params.fps),
+        "sample_params": sample_params,
+        "output_format": "avi",
+        "output_compression": int(output_compression),
+    }
+    if params.seed is not None:
+        req["seed"] = int(params.seed)
+    for key in ("init_image", "end_image"):
+        if images.get(key):
+            req[key] = images[key]
+    if ref_images_b64:
+        req["ref_images"] = list(ref_images_b64)
     return req
 
 
