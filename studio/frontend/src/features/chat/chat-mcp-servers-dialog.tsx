@@ -885,7 +885,9 @@ export function ChatMcpServersDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="max-w-2xl max-h-[85dvh] overflow-y-auto"
+        // The body scrolls, not the rounded surface: a scrollbar on the surface squares its
+        // right corners in WebKit and Firefox, and the surface's clip keeps the inner one round.
+        className="max-w-2xl max-h-[85dvh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden"
         showCloseButton={!blenderBusy && !(saving && !codecPending) && busyIds.size === 0}
         aria-busy={decodingCommand}
       >
@@ -895,300 +897,303 @@ export function ChatMcpServersDialog({
             Register remote (HTTP) or local (stdio command) MCP servers.
           </DialogDescription>
         </DialogHeader>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={onImportFile}
-          disabled={importing || formPending}
-        />
+        {/* Out to the surface's edges so the scrollbar sits on the dialog's edge. */}
+        <div className="-mx-7 min-h-0 overflow-y-auto px-7">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={onImportFile}
+            disabled={importing || formPending}
+          />
 
-        {showForm ? (
-          <div className="flex flex-col gap-4">
-            {view.kind === "create" && (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+          {showForm ? (
+            <div className="flex flex-col gap-4">
+              {view.kind === "create" && (
+                <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+                  <span className="text-xs text-muted-foreground">
+                    Import servers from a config file.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={importing || formPending}
+                    title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
+                  >
+                    {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                    Import config
+                  </Button>
+                </div>
+              )}
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-display-name">Display name</Label>
+                <Input
+                  id="mcp-display-name"
+                  value={form.displayName}
+                  disabled={formPending}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, displayName: e.target.value }))
+                  }
+                  placeholder="e.g. GitHub MCP"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-url">
+                  {addressIsCommand
+                    ? "Executable"
+                    : form.transport === "http"
+                      ? "URL"
+                      : "URL or executable"}
+                </Label>
+                <Input
+                  id="mcp-url"
+                  value={form.url}
+                  disabled={formPending}
+                  onChange={(e) => {
+                    const url = e.target.value;
+                    setCodecError(null);
+                    setForm((prev) => formWithAddress(prev, url, true));
+                  }}
+                  onBlur={() => {
+                    setForm((prev) =>
+                      prev.transport === "unknown" && prev.url.trim()
+                        ? formWithAddress(prev, prev.url, false)
+                        : prev,
+                    );
+                  }}
+                  placeholder={
+                    addressIsCommand
+                      ? "e.g. npx"
+                      : form.transport === "http"
+                        ? "https://example.com/mcp"
+                        : "https://example.com/mcp or npx"
+                  }
+                />
                 <span className="text-xs text-muted-foreground">
-                  Import servers from a config file.
+                  {addressIsCommand
+                    ? "The executable for a local stdio server. Add each local argument in an Arguments row below."
+                    : form.transport === "http"
+                      ? "An http(s) URL for a remote server."
+                      : "An http(s) URL for a remote server, or an executable for local stdio. Add local arguments in the Arguments rows."}
                 </span>
+                {decodingCommand && (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="flex items-center gap-2 text-xs text-muted-foreground"
+                  >
+                    <Spinner />
+                    Reading local command…
+                  </span>
+                )}
+              </div>
+
+              {addressIsCommand && (
+                <ArgumentsEditor
+                  rows={form.arguments}
+                  disabled={formPending}
+                  onChange={(arguments_) =>
+                    setForm((prev) => ({ ...prev, arguments: arguments_ }))
+                  }
+                />
+              )}
+
+              {codecError && (
+                <div className="flex items-center justify-between gap-3">
+                  <div
+                    role="alert"
+                    aria-live="assertive"
+                    className="text-sm text-destructive"
+                  >
+                    {codecError}
+                  </div>
+                  {view.kind === "edit" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={formPending}
+                      onClick={() => {
+                        const server = servers.find(
+                          (candidate) => candidate.id === view.id,
+                        );
+                        if (server) void startEdit(server);
+                      }}
+                    >
+                      Retry
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {form.transport === "http" && (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-col gap-0.5">
+                    <Label className="text-sm" htmlFor="mcp-oauth">
+                      Use OAuth sign-in
+                    </Label>
+                    <span className="text-xs text-muted-foreground">
+                      For servers that require browser-based authentication
+                      (GitHub, Linear, etc.). A browser window will open on first
+                      connect.
+                    </span>
+                  </div>
+                  <Switch
+                    id="mcp-oauth"
+                    checked={form.useOauth}
+                    disabled={formPending}
+                    onCheckedChange={(useOauth) =>
+                      setForm((prev) => ({ ...prev, useOauth }))
+                    }
+                  />
+                </div>
+              )}
+
+              {form.transport !== "unknown" && (
+                <HeadersEditor
+                  rows={form.headers}
+                  onChange={(headers) =>
+                    setForm((prev) => ({ ...prev, headers }))
+                  }
+                  stdio={addressIsCommand}
+                  disabled={formPending}
+                />
+              )}
+
+              <div className="flex items-center justify-between gap-2 pt-2">
                 <Button
                   type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={testConnection}
+                  disabled={
+                    formPending ||
+                    codecError !== null ||
+                    form.transport === "unknown" ||
+                    !form.url.trim()
+                  }
+                >
+                  {testing ? <Spinner /> : null}
+                  Test connection
+                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="ghost"
+                    onClick={cancelForm}
+                    disabled={saving && !codecPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={submitForm}
+                    disabled={
+                      formPending ||
+                      codecError !== null ||
+                      form.transport === "unknown"
+                    }
+                  >
+                    {saving ? <Spinner /> : null}
+                    {view.kind === "edit" ? "Save changes" : "Add server"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-col gap-3">
+              {open && <BlenderMcpSetup servers={servers} disabled={importing} onBusyChange={setBlenderBusy} />}
+              <div className="flex justify-end gap-2">
+                <Button
                   size="sm"
                   variant="outline"
-                  className="shrink-0"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={importing || formPending}
+                  disabled={importing || blenderBusy}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
                   {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                   Import config
                 </Button>
+                <Button size="sm" onClick={startCreate} disabled={importing || blenderBusy}>
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
+                  Add server
+                </Button>
               </div>
-            )}
-            <div className="grid gap-2">
-              <Label htmlFor="mcp-display-name">Display name</Label>
-              <Input
-                id="mcp-display-name"
-                value={form.displayName}
-                disabled={formPending}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, displayName: e.target.value }))
-                }
-                placeholder="e.g. GitHub MCP"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="mcp-url">
-                {addressIsCommand
-                  ? "Executable"
-                  : form.transport === "http"
-                    ? "URL"
-                    : "URL or executable"}
-              </Label>
-              <Input
-                id="mcp-url"
-                value={form.url}
-                disabled={formPending}
-                onChange={(e) => {
-                  const url = e.target.value;
-                  setCodecError(null);
-                  setForm((prev) => formWithAddress(prev, url, true));
-                }}
-                onBlur={() => {
-                  setForm((prev) =>
-                    prev.transport === "unknown" && prev.url.trim()
-                      ? formWithAddress(prev, prev.url, false)
-                      : prev,
-                  );
-                }}
-                placeholder={
-                  addressIsCommand
-                    ? "e.g. npx"
-                    : form.transport === "http"
-                      ? "https://example.com/mcp"
-                      : "https://example.com/mcp or npx"
-                }
-              />
-              <span className="text-xs text-muted-foreground">
-                {addressIsCommand
-                  ? "The executable for a local stdio server. Add each local argument in an Arguments row below."
-                  : form.transport === "http"
-                    ? "An http(s) URL for a remote server."
-                    : "An http(s) URL for a remote server, or an executable for local stdio. Add local arguments in the Arguments rows."}
-              </span>
-              {decodingCommand && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="flex items-center gap-2 text-xs text-muted-foreground"
-                >
+              {loading ? (
+                <div className="flex justify-center py-6">
                   <Spinner />
-                  Reading local command…
-                </span>
+                </div>
+              ) : servers.filter((server) => !server.builtin_id).length === 0 ? (
+                <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+                  No custom MCP servers configured yet.
+                </div>
+              ) : (
+                <ul className="flex flex-col divide-y rounded-md border">
+                  {servers.filter((server) => !server.builtin_id).map((server) => (
+                    <li
+                      key={server.id}
+                      className="flex items-center justify-between gap-3 px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">
+                          {server.display_name}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {server.url}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Switch
+                          checked={server.is_enabled}
+                          onCheckedChange={(next) => toggleEnabled(server, next)}
+                          aria-label="Enable server"
+                          disabled={importing || busyIds.has(server.id)}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => refreshTools(server)}
+                          aria-label="Refresh tools"
+                          title="Refresh tools from this server"
+                          disabled={importing || busyIds.has(server.id)}
+                        >
+                          {refreshingIds.has(server.id) ? (
+                            <Spinner />
+                          ) : (
+                            <RefreshGlyph className="size-3.5" />
+                          )}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => void startEdit(server)}
+                          aria-label="Edit server"
+                          disabled={importing || blenderBusy || busyIds.has(server.id)}
+                        >
+                          <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setConfirmingDelete(server)}
+                          aria-label="Delete server"
+                          disabled={importing || busyIds.has(server.id)}
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
-
-            {addressIsCommand && (
-              <ArgumentsEditor
-                rows={form.arguments}
-                disabled={formPending}
-                onChange={(arguments_) =>
-                  setForm((prev) => ({ ...prev, arguments: arguments_ }))
-                }
-              />
-            )}
-
-            {codecError && (
-              <div className="flex items-center justify-between gap-3">
-                <div
-                  role="alert"
-                  aria-live="assertive"
-                  className="text-sm text-destructive"
-                >
-                  {codecError}
-                </div>
-                {view.kind === "edit" && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={formPending}
-                    onClick={() => {
-                      const server = servers.find(
-                        (candidate) => candidate.id === view.id,
-                      );
-                      if (server) void startEdit(server);
-                    }}
-                  >
-                    Retry
-                  </Button>
-                )}
-              </div>
-            )}
-
-            {form.transport === "http" && (
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex flex-col gap-0.5">
-                  <Label className="text-sm" htmlFor="mcp-oauth">
-                    Use OAuth sign-in
-                  </Label>
-                  <span className="text-xs text-muted-foreground">
-                    For servers that require browser-based authentication
-                    (GitHub, Linear, etc.). A browser window will open on first
-                    connect.
-                  </span>
-                </div>
-                <Switch
-                  id="mcp-oauth"
-                  checked={form.useOauth}
-                  disabled={formPending}
-                  onCheckedChange={(useOauth) =>
-                    setForm((prev) => ({ ...prev, useOauth }))
-                  }
-                />
-              </div>
-            )}
-
-            {form.transport !== "unknown" && (
-              <HeadersEditor
-                rows={form.headers}
-                onChange={(headers) =>
-                  setForm((prev) => ({ ...prev, headers }))
-                }
-                stdio={addressIsCommand}
-                disabled={formPending}
-              />
-            )}
-
-            <div className="flex items-center justify-between gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={testConnection}
-                disabled={
-                  formPending ||
-                  codecError !== null ||
-                  form.transport === "unknown" ||
-                  !form.url.trim()
-                }
-              >
-                {testing ? <Spinner /> : null}
-                Test connection
-              </Button>
-              <div className="flex gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={cancelForm}
-                  disabled={saving && !codecPending}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  onClick={submitForm}
-                  disabled={
-                    formPending ||
-                    codecError !== null ||
-                    form.transport === "unknown"
-                  }
-                >
-                  {saving ? <Spinner /> : null}
-                  {view.kind === "edit" ? "Save changes" : "Add server"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex min-w-0 flex-col gap-3">
-            {open && <BlenderMcpSetup servers={servers} disabled={importing} onBusyChange={setBlenderBusy} />}
-            <div className="flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importing || blenderBusy}
-                title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
-              >
-                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
-                Import config
-              </Button>
-              <Button size="sm" onClick={startCreate} disabled={importing || blenderBusy}>
-                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                Add server
-              </Button>
-            </div>
-            {loading ? (
-              <div className="flex justify-center py-6">
-                <Spinner />
-              </div>
-            ) : servers.filter((server) => !server.builtin_id).length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
-                No custom MCP servers configured yet.
-              </div>
-            ) : (
-              <ul className="flex flex-col divide-y rounded-md border">
-                {servers.filter((server) => !server.builtin_id).map((server) => (
-                  <li
-                    key={server.id}
-                    className="flex items-center justify-between gap-3 px-3 py-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium">
-                        {server.display_name}
-                      </div>
-                      <div className="truncate text-xs text-muted-foreground">
-                        {server.url}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Switch
-                        checked={server.is_enabled}
-                        onCheckedChange={(next) => toggleEnabled(server, next)}
-                        aria-label="Enable server"
-                        disabled={importing || busyIds.has(server.id)}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => refreshTools(server)}
-                        aria-label="Refresh tools"
-                        title="Refresh tools from this server"
-                        disabled={importing || busyIds.has(server.id)}
-                      >
-                        {refreshingIds.has(server.id) ? (
-                          <Spinner />
-                        ) : (
-                          <RefreshGlyph className="size-3.5" />
-                        )}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => void startEdit(server)}
-                        aria-label="Edit server"
-                        disabled={importing || blenderBusy || busyIds.has(server.id)}
-                      >
-                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setConfirmingDelete(server)}
-                        aria-label="Delete server"
-                        disabled={importing || busyIds.has(server.id)}
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </DialogContent>
       <AlertDialog
         open={open && confirmingDelete !== null}

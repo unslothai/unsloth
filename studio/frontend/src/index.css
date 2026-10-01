@@ -4872,6 +4872,21 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background-clip: padding-box;
 }
 
+/* Dialogs scroll their own rounded surface, and WebKit's native scrollbar squares its right
+   corners. Draw it with ::-webkit-scrollbar instead (reset as above), the track inset past
+   the corner radius. */
+@supports selector(::-webkit-scrollbar) {
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]),
+	.dark :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])::-webkit-scrollbar-track {
+	margin-block: var(--radius-4xl);
+}
+
 /* Attachment card page previews: drop the viewer's gray backdrop, padding and
    scrollbars so the first page fills the card. */
 .attachment-card-preview-page > * {
