@@ -690,6 +690,30 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
+def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
+    """The className tokens of the JSX element that carries aria-label="New chat"."""
+    label = chat_page.index('aria-label="New chat"')
+    start = chat_page.rindex("<Button", 0, label)
+    # The opening tag ends at the first `>` outside braces and quotes, so attribute order
+    # and arrow functions in props do not matter.
+    depth, quote, end = 0, "", start
+    for end in range(start, len(chat_page)):
+        ch = chat_page[end]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == ">" and depth == 0:
+            break
+    match = re.search(r'className="([^"]*)"', chat_page[start:end])
+    assert match, "the New chat button has no static className"
+    return match.group(1).split()
+
+
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = _ui_source(TITLEBAR)
     chat_page = _ui_source(CHAT_PAGE)
@@ -732,8 +756,16 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     }
     assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
     assert set(insets.values()) == {188}, insets
-    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
+    # The button's look, read token by token from its own className. The exact string is not
+    # the contract: #12355 scaled the 30px box with the UI font size
+    # (`!size-[calc(30px*var(--ui-space-scale,1))]`) and added `shrink-0`, the same 30px
+    # square, rounded box and muted icon it always was.
+    new_chat_tokens = _new_chat_button_class_tokens(chat_page)
+    size_tokens = [t for t in new_chat_tokens if t.startswith("!size-[")]
+    assert len(size_tokens) == 1 and re.search(r"(?<![\d.])30px", size_tokens[0]), new_chat_tokens
+    assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
+    assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
 
