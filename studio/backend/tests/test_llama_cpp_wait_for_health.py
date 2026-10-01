@@ -1667,6 +1667,9 @@ class TestHealthWaitMeasuresStalls:
         monkeypatch.setattr(httpx, "get", probe)
         try:
             ok = b._wait_for_health(timeout = timeout, interval = 0.02)
+            # Taken before the teardown, which is not part of the wait: killing and reaping the
+            # worker on a loaded runner is what pushed a correct wait past a tight bound.
+            elapsed = time.monotonic() - started
         finally:
             import psutil
 
@@ -1674,10 +1677,19 @@ class TestHealthWaitMeasuresStalls:
                 descendant.kill()
             b._process.kill()
             b._process.wait()
-        return b, ok, time.monotonic() - started
+        return b, ok, elapsed
+
+    # These two measure work against the stall window, and at the 0.6s default a loaded runner
+    # can spend the whole first window starting the worker's interpreter: CI gave up at 1.0s with
+    # "no startup progress for 0.6s" before the worker had done anything. 1.5s leaves that room
+    # (as test_work_done_by_a_descendant_counts does) and still sits under healthy_after, so a wait
+    # that ignored the worker's progress would still fail both.
+    _WORKING_TIMEOUT = 1.5
 
     def test_a_load_that_keeps_working_outlives_the_timeout(self, monkeypatch):
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5)
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5, timeout = self._WORKING_TIMEOUT
+        )
         assert ok is True
         assert elapsed >= 2.5
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
@@ -1689,9 +1701,11 @@ class TestHealthWaitMeasuresStalls:
         assert any("no startup progress for 0.6s" in ln for ln in b._stdout_lines)
 
     def test_a_load_that_stalls_times_out_one_timeout_after_its_last_work(self, monkeypatch):
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "1.5"])
+        timeout = self._WORKING_TIMEOUT
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "1.5"], timeout = timeout)
         assert ok is False
-        assert 1.5 + 0.6 - 0.2 <= elapsed < 1.5 + 3.0
+        # One window after the last work, not one window after the start (which would be ~1.5s).
+        assert 1.5 + timeout - 0.2 <= elapsed < 1.5 + timeout + 3.0
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
     def test_work_done_by_a_descendant_counts(self, monkeypatch):
@@ -1700,7 +1714,12 @@ class TestHealthWaitMeasuresStalls:
             "subprocess.Popen([sys.executable, '-c', sys.argv[1], '3.0'])\n"
             "time.sleep(60)\n"
         )
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [shim, self._WORKER], healthy_after = 2.5)
+        # A second interpreter has to start before the descendant does any work, and on a loaded runner that
+        # alone outlasted the 0.6s default: the wait gave up on a load that was about to make progress. 1.5s
+        # still sits well under healthy_after, so only descendant work can carry the wait to 2.5s.
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [shim, self._WORKER], healthy_after = 2.5, timeout = 1.5
+        )
         assert ok is True
         assert elapsed >= 2.5
 
@@ -1754,7 +1773,12 @@ class TestHealthWaitMeasuresStalls:
         )
         b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"], timeout = 1.5)
         assert ok is False
-        assert elapsed < 1.95
+        # Measured correctly, the wait ends one timeout after it began, about 1.5s. Measured
+        # from the unreadable samples instead, the 20 ms reads as progress when the tenth
+        # sample lands, and samples are at least 0.1s apart, so the deadline moves to no
+        # earlier than 0.9 + 1.5 = 2.4s. The bound sits below that floor rather than halfway,
+        # which left a correct wait 0.45s of headroom and a loaded runner used it up.
+        assert elapsed < 2.3
 
     def test_resident_memory_regained_after_eviction_is_not_progress(self):
         peak = (10.0, 500 << 20, 0, 0)

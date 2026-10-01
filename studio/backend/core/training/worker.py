@@ -60,6 +60,7 @@ from core.training.dataset_bounds import (
     row_bound_for_resume,
     world_size_from_env,
 )
+from core.training.resume import _checkpoint_state, session_eta_seconds
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -716,6 +717,21 @@ def _load_embedding_hf_dataset(
     return dataset
 
 
+def _pre_detect_load_in_4bit(config: dict, model_load_target: str, hf_token: str | None) -> bool:
+    """The mode the real load will use, so pre-detect reads the repo the loader fetches.
+
+    The load calls _effective_training_load_in_4bit, which also REFUSES an exact-resource
+    4-bit resume once the sidecar is active. That refusal belongs to the load, not to a
+    metadata read, so the flip is read directly here and the refusal is left to raise where
+    it already does.
+    """
+    if not bool(config.get("load_in_4bit", True)):
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    return not latest_tier_active_for(model_load_target, hf_token)
+
+
 def _pre_detect_training_model(
     trainer,
     config: dict,
@@ -735,6 +751,7 @@ def _pre_detect_training_model(
         model_load_name = model_load_name,
         local_files_only = local_files_only,
         model_revision = model_revision,
+        load_in_4bit = _pre_detect_load_in_4bit(config, model_load_name, hf_token),
     )
     _check_finetune_targets_after_detect(trainer, config)
 
@@ -884,6 +901,16 @@ def _reload_dataset_with_remote_model_tokenizer(
     return reload_dataset()
 
 
+def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
+    """unsloth.models.loader._strip_unsloth_bnb_4bit_suffix, copied rather than imported: that
+    module pulls in torch, and this runs before the worker is allowed to."""
+    stripped = model_name
+    for suffix in ("-unsloth-bnb-4bit", "-bnb-4bit"):
+        if len(stripped) >= len(suffix) and stripped.lower().endswith(suffix):
+            stripped = stripped[: -len(suffix)]
+    return stripped
+
+
 def _model_load_security_error(config: dict, load_target: str, hf_token: str | None) -> dict | None:
     from utils.models.model_config import get_base_model_from_lora_identifier
     from utils.security import (
@@ -900,6 +927,66 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
             requested_targets.append(base_model)
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
+
+    # Scan the repo the loader SUBSTITUTES too. The mapper can send the download somewhere
+    # other than the name the user picked, and scanning only the picked name would let the
+    # bytes that are actually fetched, and any custom code they carry, past both the malware
+    # scan and the trust_remote_code consent fingerprint.
+    #
+    # BOTH modes, and nothing heavier than utils.models.unsloth_mirror. This runs early in
+    # run_training_process, after the MLX fast path's "before any torch import" guarantee and
+    # before the Windows ROCm torchao stub, so it must not reach anything that imports torch
+    # or unsloth: not core.training.trainer, and not ALLOW_BITSANDBYTES. The 4-bit and 16-bit
+    # candidates together are a superset of whichever the run picks, which is the safe
+    # direction for a scan and needs no load mode at all.
+    #
+    # And only where the TORCH loader runs. _run_mlx_training hands the name straight to
+    # FastMLXModel.from_pretrained and _run_embedding_training to SentenceTransformer, and
+    # neither consults this mapper, so on those paths a mirror is a repo that will never be
+    # fetched: scanning it can block a valid run on an unrelated repo's files and fingerprints
+    # remote-code consent against something that is never loaded. core.training.training is
+    # safe to import here - the MLX fast path above already imports it for its own guard.
+    try:
+        from core.training.training import should_use_mlx_training_backend
+        from utils.models.unsloth_mirror import unsloth_public_mirror
+
+        torch_loader_path = not config.get("is_embedding", False) and (
+            not should_use_mlx_training_backend()
+        )
+        if (
+            torch_loader_path
+            and not _model_local_files_only(config)
+            and not config.get("model_revision")
+        ):
+            # The fallbacks only ever run DOWNWARDS: an unusable bitsandbytes or an active
+            # latest-transformers sidecar turns a 4-bit request into a 16-bit load, and
+            # effective_training_load_in_4bit returns False outright for a config that is
+            # already False (full finetunes among them). So a configured 16-bit load can never
+            # become 4-bit, and scanning the 4-bit mirror there would let an unused repo's
+            # findings block a run whose real repo is clean.
+            _modes = (True, False) if config.get("load_in_4bit", True) else (False,)
+            # Every resolved seed, not just the picked name. For a remote LoRA adapter the
+            # loader takes peft_config.base_model_name_or_path and runs get_model_name over it
+            # (loader.py:756-765), so the base has a mirror of its own and that mirror is what
+            # gets downloaded. Expanding only the adapter id left it unscanned.
+            for _seed in list(dict.fromkeys(requested_targets)):
+                for _mode in _modes:
+                    mirrored = unsloth_public_mirror(_seed, _mode)
+                    if mirrored and mirrored != _seed:
+                        requested_targets.append(mirrored)
+                        # Where ALLOW_PREQUANTIZED_MODELS is false - ROCm Instinct on
+                        # bitsandbytes < 0.49.2, whose blocksize is 128 while our pre-quants use
+                        # 64 - loader.py:581 strips the 4-bit suffix off the name the mapper just
+                        # produced and downloads THAT repo. For a mapping that only exists in the
+                        # 4-bit direction it is the one repo that actually gets fetched, and
+                        # without it here its files bypass both the malware scan and the
+                        # remote-code consent fingerprint. Unlike a mode that cannot happen, this
+                        # repo really is loaded on a live configuration, so it belongs in the scan.
+                        stripped = _strip_unsloth_bnb_4bit_suffix(mirrored)
+                        if stripped != mirrored and stripped != _seed:
+                            requested_targets.append(stripped)
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Could not resolve the mirror for the security scan: %s", error)
 
     from utils.utils import hf_env_offline
 
@@ -1283,9 +1370,10 @@ def _attempt_package_install(
             env = env,
         )
 
+    wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
-    elif url_exists(wheel_url):
+    elif wheel_available:
         _send_status(event_queue, f"Installing {display_name} for faster training...")
         for installer, result in install_wheel(
             wheel_url,
@@ -1311,6 +1399,11 @@ def _attempt_package_install(
                 display_name,
                 result.stdout,
             )
+    elif wheel_available is None:
+        _send_status(
+            event_queue,
+            f"Could not check the {display_name} prebuilt wheel; installing from PyPI.",
+        )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
@@ -2307,6 +2400,234 @@ def _resolve_mlx_output_dir(config, model_name):
     return str(resolve_output_dir(output_dir))
 
 
+def _resolve_mlx_training_steps(
+    requested_max_steps,
+    dataset_size,
+    batch_size,
+    gradient_accumulation_steps,
+    num_epochs,
+    world_size,
+):
+    if requested_max_steps > 0:
+        return requested_max_steps
+    global_batch_size = batch_size * world_size
+    return max(
+        1,
+        math.ceil(dataset_size / global_batch_size / gradient_accumulation_steps) * num_epochs,
+    )
+
+
+def _configure_mlx_training_schedule(
+    trainer,
+    requested_max_steps,
+    dataset_size,
+    batch_size,
+    gradient_accumulation_steps,
+    num_epochs,
+    warmup_ratio = None,
+    eval_steps_ratio = None,
+):
+    max_steps = _resolve_mlx_training_steps(
+        requested_max_steps,
+        dataset_size,
+        batch_size,
+        gradient_accumulation_steps,
+        num_epochs,
+        trainer.distributed_world_size,
+    )
+    trainer.args.max_steps = max_steps
+    if warmup_ratio is not None:
+        trainer.args.warmup_steps = int(round(warmup_ratio * max_steps))
+    if eval_steps_ratio is not None:
+        trainer.args.eval_steps = max(1, int(eval_steps_ratio * max_steps))
+    return max_steps, int(trainer.args.eval_steps)
+
+
+def _run_mlx_main_process_action(trainer, action, context):
+    world_size = int(trainer.distributed_world_size)
+    if world_size <= 1:
+        return action()
+
+    raise_distributed_failure = getattr(trainer, "_raise_distributed_failure", None)
+    if not callable(raise_distributed_failure):
+        raise RuntimeError(
+            "Unsloth MLX DDP CLI requires MLXTrainer failure coordination. "
+            "Upgrade unsloth-zoo to a compatible version."
+        )
+
+    result = None
+    error = None
+    if bool(trainer.is_main_process):
+        try:
+            result = action()
+        except BaseException as exc:
+            error = exc
+    raise_distributed_failure(error is not None, context, error)
+    return result
+
+
+def _prepare_mlx_output_dir(
+    trainer,
+    output_dir,
+    ensure_dir,
+    event_queue = None,
+):
+    def _prepare():
+        result = ensure_dir(Path(output_dir))
+        if event_queue is not None:
+            _emit_output_dir(event_queue, output_dir)
+        return result
+
+    return _run_mlx_main_process_action(
+        trainer,
+        _prepare,
+        "output directory setup",
+    )
+
+
+def _setup_mlx_tracking(trainer, config, output_dir, send):
+    wandb_run = None
+    tb_writer = None
+    if config.get("enable_wandb", False):
+
+        def _setup_wandb():
+            try:
+                import wandb as _wandb
+
+                wandb_token = config.get("wandb_token")
+                if wandb_token:
+                    os.environ["WANDB_API_KEY"] = wandb_token
+                # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
+                _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
+                return _wandb.init(
+                    project = config.get("wandb_project") or "unsloth-mlx",
+                    config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
+                    reinit = True,
+                )
+            except Exception as e:
+                send("status", status_message = f"wandb init failed: {e}")
+                return None
+
+        wandb_run = _run_mlx_main_process_action(trainer, _setup_wandb, "Weights & Biases setup")
+    if config.get("enable_tensorboard", False):
+
+        def _setup_tensorboard():
+            try:
+                from tensorboardX import SummaryWriter
+            except ImportError:
+                try:
+                    from torch.utils.tensorboard import SummaryWriter
+                except ImportError:
+                    SummaryWriter = None
+            if SummaryWriter is None:
+                send(
+                    "status",
+                    status_message = "tensorboard unavailable (install tensorboardX)",
+                )
+                return None
+            try:
+                tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
+                return SummaryWriter(log_dir = tb_dir)
+            except Exception as e:
+                send("status", status_message = f"tensorboard init failed: {e}")
+                return None
+
+        tb_writer = _run_mlx_main_process_action(trainer, _setup_tensorboard, "TensorBoard setup")
+    return wandb_run, tb_writer
+
+
+def _mlx_worker_finalization_state(trainer, snapshot_stop):
+    trainer_stopped = bool(trainer.stop_requested)
+    local_stop_requested, stop_save = snapshot_stop()
+    stopped = trainer_stopped or bool(local_stop_requested)
+    cancelled = bool(local_stop_requested and not stop_save)
+    if int(trainer.distributed_world_size) > 1:
+        any_flag = getattr(trainer, "_distributed_any_flag", None)
+        if not callable(any_flag):
+            raise RuntimeError(
+                "Unsloth MLX DDP CLI requires MLXTrainer stop coordination. "
+                "Upgrade unsloth-zoo to a compatible version."
+            )
+        stopped = bool(any_flag(stopped))
+        cancelled = bool(any_flag(cancelled))
+    if stopped:
+        trainer.stop_requested = True
+    return stopped, cancelled
+
+
+def _synchronize_mlx_before_final_save(trainer, synchronize):
+    error = None
+    try:
+        synchronize()
+    except BaseException as exc:
+        error = exc
+    if int(trainer.distributed_world_size) <= 1:
+        if error is not None:
+            raise error
+        return
+    raise_distributed_failure = getattr(trainer, "_raise_distributed_failure", None)
+    if not callable(raise_distributed_failure):
+        raise RuntimeError(
+            "Unsloth MLX DDP CLI requires MLXTrainer failure coordination. "
+            "Upgrade unsloth-zoo to a compatible version."
+        )
+    raise_distributed_failure(error is not None, "final synchronization", error)
+
+
+def _finalize_mlx_training(
+    trainer, snapshot_stop, output_dir, synchronize, send, write_stop_checkpoint
+):
+    stopped, cancelled = _mlx_worker_finalization_state(trainer, snapshot_stop)
+    if cancelled:
+        send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+
+    if stopped:
+        saving_message = "Saving stopped model..."
+        completion_message = "Training stopped"
+    else:
+        saving_message = "Saving model..."
+        completion_message = "Training completed"
+    send("status", status_message = saving_message)
+    _synchronize_mlx_before_final_save(trainer, synchronize)
+    _run_mlx_main_process_action(
+        trainer,
+        lambda: trainer.save_model(output_dir),
+        "final model save",
+    )
+    stopped_after_save, cancelled_after_save = _mlx_worker_finalization_state(
+        trainer, snapshot_stop
+    )
+    if cancelled_after_save:
+        send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+    if stopped_after_save:
+        completion_message = "Training stopped"
+        checkpoint_ok = _run_mlx_main_process_action(
+            trainer,
+            write_stop_checkpoint,
+            "stop checkpoint save",
+        )
+        if int(trainer.distributed_world_size) > 1:
+            checkpoint_ok = trainer._distributed_any_flag(bool(checkpoint_ok))
+        if not checkpoint_ok:
+            send(
+                "error",
+                error = (
+                    "Failed to save a resumable checkpoint after stop. "
+                    "Model files were saved, but this run cannot be resumed."
+                ),
+                keep_error_status = True,
+                resume_blocked = True,
+            )
+            return
+    send(
+        "complete",
+        output_dir = output_dir if bool(trainer.is_main_process) else None,
+        status_message = completion_message,
+    )
+
+
 def _resolve_mlx_max_grad_norm(value):
     """Global-norm clip threshold for MLX runs; None keeps the trainer's default. The worker used to
     hardcode 0.0 and drop the requested value, so an API caller asking for a threshold got none.
@@ -2347,6 +2668,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _stop_save, _stop_requested, _trainer_ref, _is_stop_requested, _stop_thread = (
         _start_mlx_stop_poller(stop_queue)
     )
+
+    def _snapshot_stop():
+        return _stop_requested[0], _stop_save[0]
 
     _send("status", status_message = "Loading MLX libraries...")
 
@@ -2594,6 +2918,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # A bracketed split names rows the same way the numeric fields do.
     mlx_split_names_rows = "[" in (config.get("train_split") or "")
+    # The bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+    mlx_kept_row_fraction = [1.0]
+
+    def _on_bound(kept, total):
+        mlx_kept_row_fraction[0] = kept / total
+        _send("status", status_message = f"Using {kept} of {total} rows (max_steps run)")
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -2609,10 +2939,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ds,
             mlx_max_train_rows,
             mlx_max_train_rows_seed,
-            on_bound = lambda kept, total: _send(
-                "status",
-                status_message = f"Using {kept} of {total} rows (max_steps run)",
-            ),
+            on_bound = _on_bound,
         )
 
     def _load_local(file_paths):
@@ -2748,6 +3075,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            else:
+                errors = info.get("errors", [])
+                raise ValueError(f"Dataset format conversion failed: {'; '.join(errors)}")
+            if info.get("dropped_rows_warning"):
+                _send("warning", message = info["dropped_rows_warning"])
             dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
@@ -2758,9 +3090,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     format_type = format_type,
                     dataset_name = hf_dataset or "local",
                     custom_format_mapping = custom_format_mapping,
+                    split_name = "eval",
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                    if hasattr(eval_dataset, "__len__") and len(eval_dataset) == 0:
+                        _send(
+                            "warning",
+                            message = "The eval dataset is empty after preprocessing, so this run has no evaluation.",
+                        )
+                        eval_dataset = None
+                        # A user-supplied split that filters to nothing must not carve one out of train.
+                        eval_enabled = False
+                else:
+                    eval_errors = ev.get("errors", [])
+                    raise ValueError(
+                        f"Eval dataset format conversion failed: {'; '.join(eval_errors)}"
+                    )
+                if ev.get("dropped_rows_warning"):
+                    _send("warning", message = f"Eval dataset: {ev['dropped_rows_warning']}")
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
@@ -2782,27 +3130,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
         else:
             dataset, eval_dataset = split_result
 
-    max_steps = config.get("max_steps", 0) or 0
+    requested_max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)
     max_seq_length = config.get("max_seq_length", 2048)
     batch_size = config.get("batch_size", 4)
     grad_accum = config.get("gradient_accumulation_steps", 4)
-
-    if max_steps <= 0:
-        max_steps = max(
-            1,
-            math.ceil(len(dataset) / batch_size / grad_accum) * num_epochs,
-        )
 
     lr_value = float(config.get("learning_rate", "2e-4"))
 
     # Warmup: prefer warmup_steps; fall back to warmup_ratio
     warmup_steps = config.get("warmup_steps")
     warmup_ratio = config.get("warmup_ratio")
-    if warmup_steps is None and warmup_ratio is not None:
-        warmup_steps = int(round(warmup_ratio * max_steps))
+    warmup_uses_ratio = warmup_steps is None and warmup_ratio is not None
     if warmup_steps is None:
-        warmup_steps = 5
+        warmup_steps = 0 if warmup_uses_ratio else 5
 
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import ensure_dir
@@ -2814,29 +3155,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
     output_dir = _resolve_mlx_output_dir(
         {**config, "output_dir": resume_dir} if resume_dir else config, model_name
     )
-    ensure_dir(Path(output_dir))
-    _emit_output_dir(event_queue, output_dir)
-    # Pin the subset before any checkpoint lands here; a resume reads it back.
-    if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
-        mlx_max_train_rows
-    ):
-        _send(
-            "warning",
-            message = (
-                f"Could not record the max_steps row bound in {output_dir}: "
-                "resuming this run later will read it as unbounded"
-            ),
-        )
-
     raw_eval_steps = config.get("eval_steps", 0)
     if evaluation_enabled(raw_eval_steps):
         eval_steps_value = float(raw_eval_steps)
     else:
         eval_steps_value = 0.0
-    if 0 < eval_steps_value < 1:
-        eval_steps_val = max(1, int(eval_steps_value * max_steps))
-    else:
-        eval_steps_val = int(eval_steps_value)
+    eval_steps_ratio = eval_steps_value if 0 < eval_steps_value < 1 else None
+    eval_steps_val = 0 if eval_steps_ratio is not None else int(eval_steps_value)
 
     # Re-validate for direct worker callers; training.py normalizes the main path.
     max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
@@ -2859,10 +3184,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
+    # `streaming` stays off: without a pass length zoo cannot end an epoch on an optimizer step or report a real epoch.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
-        max_steps = max_steps,
+        max_steps = requested_max_steps,
         learning_rate = lr_value,
         warmup_steps = warmup_steps,
         lr_scheduler_type = lr_scheduler_type,
@@ -2876,7 +3202,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         use_cce = True,
         compile = True,
         gradient_checkpointing = use_grad_checkpoint,
-        streaming = is_vlm,
         packing = bool(config.get("packing", False)),
         output_dir = output_dir,
         save_steps = int(config.get("save_steps", 0) or 0),
@@ -2913,8 +3238,34 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_dataset = eval_dataset,
         args = MLXTrainingConfig(**mlx_config_kwargs),
     )
+    max_steps, eval_steps_val = _configure_mlx_training_schedule(
+        trainer,
+        requested_max_steps,
+        len(dataset),
+        batch_size,
+        grad_accum,
+        num_epochs,
+        warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
+        eval_steps_ratio = eval_steps_ratio,
+    )
+    _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
+
+    def _record_mlx_row_bound():
+        # Pin the subset before any checkpoint lands here; a resume reads it back.
+        if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
+            mlx_max_train_rows
+        ):
+            _send(
+                "warning",
+                message = (
+                    f"Could not record the max_steps row bound in {output_dir}: "
+                    "resuming this run later will read it as unbounded"
+                ),
+            )
+
+    _run_mlx_main_process_action(trainer, _record_mlx_row_bound, "max_steps row bound setup")
     _trainer_ref[0] = trainer
-    if _stop_requested[0]:
+    if _is_stop_requested():
         trainer.stop_requested = True
 
     # Tell the parent eval is configured so the frontend shows the eval chart
@@ -2953,45 +3304,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 ),
             )
 
-    wandb_run = None
-    tb_writer = None
-    if config.get("enable_wandb", False):
-        try:
-            import wandb as _wandb
-
-            wandb_token = config.get("wandb_token")
-            if wandb_token:
-                os.environ["WANDB_API_KEY"] = wandb_token
-            # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
-            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
-            wandb_run = _wandb.init(
-                project = config.get("wandb_project") or "unsloth-mlx",
-                config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
-                reinit = True,
-            )
-        except Exception as e:
-            _send("status", status_message = f"wandb init failed: {e}")
-    if config.get("enable_tensorboard", False):
-        try:
-            from tensorboardX import SummaryWriter
-        except ImportError:
-            try:
-                from torch.utils.tensorboard import SummaryWriter
-            except ImportError:
-                SummaryWriter = None
-        if SummaryWriter is not None:
-            try:
-                tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
-                tb_writer = SummaryWriter(log_dir = tb_dir)
-            except Exception as e:
-                _send("status", status_message = f"tensorboard init failed: {e}")
-        else:
-            _send(
-                "status",
-                status_message = "tensorboard unavailable (install tensorboardX)",
-            )
+    wandb_run, tb_writer = _setup_mlx_tracking(trainer, config, output_dir, _send)
 
     _send("status", status_message = f"Training {model_name}...")
+
+    start_step = 0
+    if resume_from_checkpoint:
+        start_step = _checkpoint_state(Path(resume_from_checkpoint)) or 0
 
     def _on_step(
         step,
@@ -3004,16 +3323,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
         num_tokens,
         grad_norm = None,
     ):
-        eta = (elapsed / step * (total - step)) if step > 0 else 0
+        eta = session_eta_seconds(elapsed, step, start_step, total) or 0
         _send(
             "progress",
             step = step,
-            epoch = round(step / total * num_epochs, 2) if total > 0 else 0,
+            epoch = (
+                round(trainer.state.epoch * mlx_kept_row_fraction[0], 2)
+                if trainer.state.epoch
+                else 0
+            ),
             loss = loss,
             learning_rate = lr,
             total_steps = total,
             elapsed_seconds = elapsed,
-            eta_seconds = max(0, eta),
+            eta_seconds = eta,
+            session_start_step = start_step,
             grad_norm = grad_norm,
             num_tokens = num_tokens,
             eval_loss = None,
@@ -3101,43 +3425,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
             except Exception:
                 pass
 
-    def _stop_checkpoint_ok() -> bool:
-        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
-            return True
-        _send(
-            "error",
-            error = (
-                "Failed to save a resumable checkpoint after stop. "
-                "Model files were saved, but this run cannot be resumed."
-            ),
-            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
-            keep_error_status = True,
-            # Older checkpoints are stale; resuming would roll back past this stop.
-            resume_blocked = True,
-        )
-        return False
-
     try:
-        if trainer.stop_requested:
-            if not _stop_save[0]:
-                # Cancel (save=False): skip saving.
-                _send("complete", output_dir = None, status_message = "Training cancelled")
-            else:
-                _send("status", status_message = "Saving stopped model...")
-                mx.synchronize()
-                trainer.save_model(output_dir)
-                # Stop-and-save promises a resumable checkpoint, not just model files.
-                if not _stop_checkpoint_ok():
-                    return
-                _send("complete", output_dir = output_dir, status_message = "Training stopped")
-        else:
-            _send("status", status_message = "Saving model...")
-            mx.synchronize()
-            trainer.save_model(output_dir)
-            # A save-stop can race the natural final save; it made the same promise.
-            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
-                return
-            _send("complete", output_dir = output_dir, status_message = "Training completed")
+        _finalize_mlx_training(
+            trainer,
+            _snapshot_stop,
+            output_dir,
+            mx.synchronize,
+            _send,
+            lambda: _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir),
+        )
     finally:
         _finish_tracking()
 
@@ -3210,11 +3506,11 @@ def run_mlx_training_process(
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})
             except (EOFError, OSError, ValueError):
                 pass
-    except Exception as exc:
+    except BaseException as exc:
         event_queue.put(
             {
                 "type": "error",
-                "error": str(exc),
+                "error": str(exc) or type(exc).__name__,
                 "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             }
@@ -4120,6 +4416,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+
+        def _report_model_repo(repo_id):
+            # Local cache loads have no active Hub download to track.
+            if os.path.isdir(os.path.expanduser(repo_id)):
+                return
+            event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
+
         # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:
             _train_load_in_4bit = _effective_training_load_in_4bit(
@@ -4134,6 +4437,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     model_load_name,
                 )
             success = trainer.load_model(
+                on_model_resolved = _report_model_repo,
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
                 load_in_4bit = _train_load_in_4bit,
@@ -4199,6 +4503,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     success = False
                 else:
                     success = trainer.load_model(
+                        on_model_resolved = _report_model_repo,
                         model_name = model_name,
                         max_seq_length = config["max_seq_length"],
                         load_in_4bit = _train_load_in_4bit,
@@ -4629,6 +4934,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "total_steps": progress.total_steps,
                     "elapsed_seconds": progress.elapsed_seconds,
                     "eta_seconds": progress.eta_seconds,
+                    "session_start_step": progress.session_start_step,
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
@@ -4658,7 +4964,13 @@ def _create_embedding_progress_callback(
     from transformers import TrainerCallback
 
     class _EmbeddingProgressCallback(TrainerCallback):
+        _start_step = 0
+        _training_start_time = training_start_time
+
         def on_train_begin(self, args, state, control, **kwargs):
+            self._start_step = state.global_step
+            if state.global_step > 0:
+                self._training_start_time = time.time()
             # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
@@ -4699,12 +5011,8 @@ def _create_embedding_progress_callback(
                 )
             current_step = state.global_step
 
-            elapsed = time.time() - training_start_time
-            eta = None
-            if current_step > 0 and total_steps > 0:
-                remaining = total_steps - current_step
-                if remaining > 0:
-                    eta = (elapsed / current_step) * remaining
+            elapsed = time.time() - self._training_start_time
+            eta = session_eta_seconds(elapsed, current_step, self._start_step, total_steps)
 
             event_queue.put(
                 {
@@ -4716,6 +5024,7 @@ def _create_embedding_progress_callback(
                     "total_steps": total_steps,
                     "elapsed_seconds": elapsed,
                     "eta_seconds": eta,
+                    "session_start_step": self._start_step,
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),

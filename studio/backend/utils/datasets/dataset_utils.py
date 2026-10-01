@@ -26,6 +26,7 @@ from .chat_templates import (
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
 )
+from .cells import cell_text
 from .raw_text import prepare_raw_text_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
@@ -205,7 +206,7 @@ def _apply_user_mapping(
                         convo.append(
                             {
                                 "role": chatml_role,
-                                "content": str(content) if content else "",
+                                "content": cell_text(content),
                             }
                         )
             conversations.append(convo)
@@ -222,20 +223,16 @@ def _apply_user_mapping(
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
     """Extract a string value from a column, handling complex types and label mapping."""
     if isinstance(val, dict):
-        if "text" in val:
-            inner = val["text"]
-            str_val = inner[0] if isinstance(inner, list) and inner else str(inner)
-        else:
-            str_val = json.dumps(val, ensure_ascii = False)
-    elif isinstance(val, list):
-        str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
-    else:
-        str_val = str(val) if val is not None else ""
+        if "text" not in val:
+            return json.dumps(val, ensure_ascii = False)
+        inner = val["text"]
+        val = inner[0] if isinstance(inner, list) and inner else inner
 
-    if col in label_mapping and isinstance(label_mapping[col], dict):
-        str_val = label_mapping[col].get(str_val, str_val)
-
-    return str_val
+    names = label_mapping.get(col)
+    if not isinstance(names, dict):
+        names = {}
+    values = val if isinstance(val, list) else [val]
+    return ", ".join(names.get(text, text) for text in map(cell_text, values))
 
 
 def _apply_template_mapping(
@@ -301,17 +298,22 @@ def _apply_user_mapping_alpaca(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """Apply user-provided column mapping to convert dataset to Alpaca format. Accepts any format's role names, normalises via _TO_CHATML, then maps user -> instruction, system -> input, assistant -> output. Returns a dataset with instruction/input/output columns."""
-    col_for: dict[str, str | None] = {
-        "instruction": None,
-        "input": None,
-        "output": None,
+    """Apply user-provided column mapping to convert dataset to Alpaca format. Accepts any format's role names, normalises via _TO_CHATML, then maps user -> instruction, system -> input, assistant -> output. Advisor ``__label_mapping`` names label values; ``__system_prompt`` is prepended to instruction, since system-role columns already fill input. Returns a dataset with instruction/input/output columns."""
+    meta = {k: v for k, v in mapping.items() if k.startswith("__")}
+    column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
+    system_prompt = meta.get("__system_prompt", "")
+    label_mapping = meta.get("__label_mapping", {})
+
+    cols_for: dict[str, list[str]] = {
+        "instruction": [],
+        "input": [],
+        "output": [],
     }
-    for col_name, role in mapping.items():
+    for col_name, role in column_roles.items():
         canonical = _TO_CHATML.get(role)
         alpaca_field = _CHATML_TO_ALPACA.get(canonical) if canonical else None
         if alpaca_field:
-            col_for[alpaca_field] = col_name
+            cols_for[alpaca_field].append(col_name)
 
     def _convert(examples):
         num = len(next(iter(examples.values())))
@@ -322,8 +324,13 @@ def _apply_user_mapping_alpaca(
                 ("input", inputs),
                 ("output", outputs),
             ):
-                col = col_for[field]
-                val = str(examples[col][i]) if col and col in examples and examples[col][i] else ""
+                val = "\n".join(
+                    _extract_column_value(examples[col][i], col, label_mapping)
+                    for col in cols_for[field]
+                    if col in examples
+                )
+                if field == "instruction" and system_prompt:
+                    val = "\n\n".join(part for part in (system_prompt, val) if part)
                 dest.append(val)
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
@@ -356,13 +363,14 @@ def format_dataset(
     num_proc = None,
     auto_detect_custom = True,
     custom_format_mapping = None,
+    split_name = None,
 ):
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
     multimodal_info = detect_multimodal_dataset(dataset)
 
     if format_type == "raw":
-        raw_result = prepare_raw_text_dataset(dataset)
+        raw_result = prepare_raw_text_dataset(dataset, split_name = split_name)
         return {
             "dataset": raw_result.dataset,
             "detected_format": "raw_text",
@@ -510,9 +518,9 @@ def format_dataset(
                             for target_role in ["system", "user", "assistant"]:
                                 for col_name, role in custom_mapping.items():
                                     if role == target_role and col_name in examples:
-                                        content = examples[col_name][i]
-                                        if content and str(content).strip():
-                                            convo.append({"role": role, "content": str(content)})
+                                        text = cell_text(examples[col_name][i])
+                                        if text.strip():
+                                            convo.append({"role": role, "content": text})
                             conversations.append(convo)
 
                         return {"conversations": conversations, **preserved_columns}
@@ -788,6 +796,7 @@ def format_and_template_dataset(
     batch_size = 1000,
     num_proc = None,
     progress_callback = None,
+    split_name = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
 
@@ -1029,6 +1038,7 @@ def format_and_template_dataset(
             aliases_for_assistant = aliases_for_assistant,
             batch_size = batch_size,
             num_proc = num_proc,
+            split_name = split_name,
         )
 
         if dataset_info["final_format"] == "raw_text":
@@ -1098,5 +1108,6 @@ def format_and_template_dataset(
             "requires_manual_mapping": requires_manual,
             "warnings": all_warnings,
             "errors": all_errors,
+            "dropped_rows_warning": template_result.get("dropped_rows_warning"),
             "summary": summary,
         }

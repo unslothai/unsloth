@@ -518,9 +518,9 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
 def _selection_applied(
     backend_request: str, installed_backend: Optional[str], options: list[dict]
 ) -> bool:
-    """Whether the recorded choice still describes the installed backend. A concrete choice is applied by definition: the installer records it only on an install that honoured it. ``auto`` is the one that drifts (a GPU or driver appearing after an automatic CPU install makes detection resolve elsewhere) and re-applying it is offered exactly then."""
+    """Whether the recorded choice still describes the installed backend. A concrete choice used to be applied by definition, since the installer recorded it only on an install that honoured it; it now PRESERVES a request the install could not honour (#11143: a Vulkan choice that landed the ROCm bundle used to be erased to "auto", which destroyed the setting and made every later update re-detect), so a concrete choice is applied only when it is the backend that actually landed. Unknown installed backend contradicts nothing and stays applied. ``auto`` is the one that drifts (a GPU or driver appearing after an automatic CPU install makes detection resolve elsewhere) and re-applying it is offered exactly then."""
     if backend_request != "auto":
-        return True
+        return installed_backend is None or installed_backend == backend_request
     auto = next((option for option in options if option["backend"] == "auto"), None)
     if not auto or not auto.get("available"):
         return True

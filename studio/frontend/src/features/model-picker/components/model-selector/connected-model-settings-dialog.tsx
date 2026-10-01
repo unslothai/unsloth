@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { ProviderApiType } from "@/features/chat/api/providers-api";
 import {
   modelCatalogVersion,
   reconcilePinnedReasoningEffort,
@@ -52,6 +53,7 @@ export function ConnectedModelSettingsDialog({
   displayName,
   modelId,
   providerType,
+  apiType,
   baseUrl,
   isReasoningProvider,
   connectionMaxOutputTokens,
@@ -64,6 +66,7 @@ export function ConnectedModelSettingsDialog({
   /** The provider's own id, for the catalogue lookup. */
   modelId: string;
   providerType: string;
+  apiType?: ProviderApiType;
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model. */
   isReasoningProvider?: boolean;
@@ -98,6 +101,7 @@ export function ConnectedModelSettingsDialog({
   const reasoning = getExternalReasoningCapabilities(providerType, modelId, {
     isReasoningProvider,
     baseUrl,
+    apiType,
   });
   // Offered only where a level is actually sent: the default low/medium/high ladder is present
   // even for a model whose style carries a bare thinking on/off, so gating on supportsReasoning
@@ -172,6 +176,7 @@ export function ConnectedModelSettingsDialog({
           checkpoint: checkpointId,
           caps: reasoning,
           providerType,
+          apiType,
         });
       }
     }
@@ -189,7 +194,7 @@ export function ConnectedModelSettingsDialog({
         </DialogHeader>
 
         {rememberParamsPerModel ? null : (
-          <p className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          <p className="rounded-md border border-border bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground">
             "Remember settings per model" is off in Settings → Chat, so the
             prompt and output cap below are stored but never restored. Reasoning
             effort is kept separately and still applies.

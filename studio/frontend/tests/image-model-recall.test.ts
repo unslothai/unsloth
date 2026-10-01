@@ -70,6 +70,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
       prompt: "a teapot",
       rememberedModel: model,
       pendingRecalledGeneration: { current: null },
+      oversizedOnce: { current: false },
       loadSeq: { current: 3 },
       workflow: "txt2img",
       handleGenerate: () => {
@@ -84,6 +85,8 @@ test("recalling a quantized model carries the selected adapters into its load", 
       ...Object.values(scope),
     );
     await callbacks.handleGenerateWithRecall();
+    const pending = scope.pendingRecalledGeneration.current as { allowOversized?: boolean } | null;
+    assert.equal(pending?.allowOversized, false);
     assert.equal(loads.length, 1);
     assert.equal(loads[0][0], model.repoId);
     assert.deepEqual(loads[0][1], {
@@ -179,8 +182,10 @@ test("a new model pick cancels recalled generation and retires the staged load",
     pendingLoadEntries: { current: ["previous"] },
     stagedLoadDeferred: { current: true },
     stagedQuantRevert: { current: { prev: "Q8_0" } },
+    pickToast: { dismissed: 0, dismissAll() { this.dismissed += 1; } },
   };
   new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+  assert.equal(scope.pickToast.dismissed, 1);
   assert.equal(scope.pendingRecalledGeneration.current, null);
   assert.equal(scope.pickSeq.current, 5);
   assert.equal(scope.pendingStagedLoad.current, null);
