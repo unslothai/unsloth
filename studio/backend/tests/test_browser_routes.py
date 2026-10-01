@@ -48,6 +48,7 @@ def test_the_shell_guards():
         "titleObserver.observe(document.head",
         'post({ type: "upload" }); return;',
         'event.effectiveDirective !== "frame-src"',
+        "if (raw.length > 1) followHash(raw);",
     ):
         assert guard in shell, guard
     # The child is locked against navigation only after it is in place.

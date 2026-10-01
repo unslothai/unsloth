@@ -134,11 +134,21 @@ _FRAME_HTML = r"""<!doctype html>
           const target = document.getElementById(id) || document.getElementsByName(id)[0];
           target?.scrollIntoView();
         };
+        // An in-page jump: scroll, and show its fragment in the address bar.
+        const followHash = (hash) => {
+          scrollToHash(hash);
+          try {
+            const next = new URL(pageUrl);
+            next.hash = hash;
+            pageUrl = next.href;
+            reportUrl();
+          } catch {}
+        };
         const navigate = (raw, newTab, background) => {
           const url = resolve(raw);
           if (!url) return;
           if (!/^https?:/i.test(url)) { post({ type: "external", url }); return; }
-          if (!newTab && samePage(url) && new URL(url).hash) { scrollToHash(new URL(url).hash); return; }
+          if (!newTab && samePage(url) && new URL(url).hash) { followHash(new URL(url).hash); return; }
           // Relative links in a local file can't be reached.
           if (!cfg.url && new URL(url).origin === shellOrigin) return;
           post({ type: "navigate", url, newTab: Boolean(newTab), background: Boolean(background) });
@@ -219,7 +229,7 @@ _FRAME_HTML = r"""<!doctype html>
           event.preventDefault();
           // Keep "#" links on the page; against <base> they would navigate.
           if (raw.startsWith("#")) {
-            if (raw.length > 1) scrollToHash(raw);
+            if (raw.length > 1) followHash(raw);
             return;
           }
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;

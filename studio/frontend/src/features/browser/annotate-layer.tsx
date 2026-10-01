@@ -455,6 +455,8 @@ export function AnnotateLayer({
       )
     : 0;
   const count = items.length;
+  // A first comment still being typed can go too: Send commits it.
+  const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
 
   return (
     <div
@@ -559,7 +561,7 @@ export function AnnotateLayer({
                 { count },
               )}
         </span>
-        {count > 0 ? (
+        {canSend ? (
           <span aria-hidden={true} className="mx-1 h-5 w-px bg-neutral-600" />
         ) : null}
         <button
@@ -569,7 +571,7 @@ export function AnnotateLayer({
         >
           {t("browser.annotate.cancel")}
         </button>
-        {count > 0 ? (
+        {canSend ? (
           <button
             type="button"
             onClick={send}
