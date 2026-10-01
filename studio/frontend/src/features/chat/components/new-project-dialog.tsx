@@ -13,6 +13,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  linkStagedFolders,
+  ProjectFolderPicker,
+  type StagedFolder,
+} from "@/features/rag";
+import {
   ProjectSourceDropzone,
   type StagedSource,
   uploadStagedSources,
@@ -51,10 +56,13 @@ export function NewProjectDialog({
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [staged, setStaged] = useState<StagedSource[]>([]);
+  const [folders, setFolders] = useState<StagedFolder[]>([]);
   const [busy, setBusy] = useState(false);
   // A desktop drop reaches `staged` only once its native registration settles. Creating before
   // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
+  // Same for a folder pick still resolving over IPC.
+  const [pickingFolder, setPickingFolder] = useState(false);
   // Uploads outlive this component, so a slow one must not yank the user to the new project after
   // they have navigated away.
   const mounted = useRef(true);
@@ -70,7 +78,9 @@ export function NewProjectDialog({
   function reset() {
     setName("");
     setStaged([]);
+    setFolders([]);
     setStagingDrop(false);
+    setPickingFolder(false);
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft left behind would
@@ -83,7 +93,7 @@ export function NewProjectDialog({
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy || stagingDrop) return;
+    if (!trimmed || busy || stagingDrop || pickingFolder) return;
     setBusy(true);
     // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
     // user has moved on during a slow upload.
@@ -91,6 +101,8 @@ export function NewProjectDialog({
     try {
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
+      // Folders first: their leases expire in minutes, and uploads can be slow.
+      await linkStagedFolders(project.id, folders);
       await uploadStagedSources(project.id, staged);
       if (!mounted.current) return;
       const stayedOnRoute = currentRoute() === origin;
@@ -162,6 +174,12 @@ export function NewProjectDialog({
           disabled={busy}
           onPendingChange={setStagingDrop}
         />
+        <ProjectFolderPicker
+          folders={folders}
+          onChange={setFolders}
+          disabled={busy}
+          onPendingChange={setPickingFolder}
+        />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button type="button" variant="ghost" disabled={busy} onClick={close}>
             Cancel
@@ -169,9 +187,13 @@ export function NewProjectDialog({
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy || stagingDrop}
+            disabled={!name.trim() || busy || stagingDrop || pickingFolder}
           >
-            {busy ? "Creating…" : stagingDrop ? "Adding sources…" : submitLabel}
+            {busy
+              ? "Creating…"
+              : stagingDrop || pickingFolder
+                ? "Adding sources…"
+                : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

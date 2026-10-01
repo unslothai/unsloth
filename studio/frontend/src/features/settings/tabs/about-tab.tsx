@@ -146,7 +146,7 @@ export function AboutTab() {
   }, [consumeScrollTarget, scrollTarget]);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.about.title")}

@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { DRAGGING_BODY_CLASS, DRAG_THRESHOLD_PX } from "@/features/chat";
+import { DRAG_THRESHOLD_PX, markDragging } from "@/features/chat";
 
 export type PinnedDropEdge = "top" | "bottom";
 
@@ -138,7 +138,7 @@ export function usePinnedRowDrag(
   const clear = useCallback(() => {
     draggingRef.current = null;
     scroller.current = null;
-    document.body.classList.remove(DRAGGING_BODY_CLASS);
+    markDragging(null, false);
     setDraggingKey(null);
     showTarget(null);
   }, [showTarget]);
@@ -280,7 +280,8 @@ export function usePinnedRowDrag(
             }
             started = true;
             scroller.current = scrollerOf(row);
-            document.body.classList.add(DRAGGING_BODY_CLASS);
+            // The picker's own list, not the body: see markDragging.
+            markDragging(scroller.current ?? row.parentElement, true);
             try {
               document.body.setPointerCapture(pointerId);
             } catch {
