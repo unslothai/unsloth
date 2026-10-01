@@ -74,7 +74,18 @@ BASELINE_PATH = Path(__file__).resolve().parent / "untrusted_sinks_baseline.json
 # Scanned by default. `studio/backend` is also an import root in its own right: its
 # modules import each other as `utils.models.model_config`, not as a subpackage of
 # anything, so it is added to the module index separately below.
-DEFAULT_TARGETS = ("unsloth", "unsloth_zoo", "studio", "scripts")
+# `unsloth_cli` and the two top-level entry points are here because they ship: the CI
+# invocation uses these defaults, so a package left out of this tuple is a production
+# execution surface the gate never looks at.
+DEFAULT_TARGETS = (
+    "unsloth",
+    "unsloth_zoo",
+    "unsloth_cli",
+    "studio",
+    "scripts",
+    "cli.py",
+    "unsloth-cli.py",
+)
 
 EXCLUDED_PARTS = frozenset(
     {
@@ -444,6 +455,23 @@ class _FileFacts:
             base = base + node.module.split(".")
         return ".".join(base)
 
+    def canonical(self, name: str) -> str:
+        """Rewrite a callee through this file's imports, so the tables see one spelling.
+
+        Suffix matching alone cannot do this, and claiming it could was wrong: after
+        `import json as js`, `js.load` has no suffix in the table, and after
+        `from yaml import safe_load` the call is the bare name `safe_load`. Both are
+        deserialisers of attacker bytes that produced no taint at all, so a dynamic
+        import or a subprocess immediately downstream was silently accepted.
+        """
+        if not name:
+            return name
+        head, separator, tail = name.partition(".")
+        dotted = self.imports.get(head)
+        if dotted is None:
+            return name
+        return f"{dotted}.{tail}" if separator else dotted
+
     def target_of(self, callee: ast.AST) -> tuple[Path, str] | None:
         """Resolve a call target to a first-party (file, qualname), or None.
 
@@ -565,7 +593,7 @@ class _TaintPass(ast.NodeVisitor):
         return None
 
     def _tainted_call(self, node: ast.Call) -> str | None:
-        name = _call_name(node.func)
+        name = self.facts.canonical(_call_name(node.func))
         source = _matches(name, UNTRUSTED_CALLS)
         if source:
             return f"{source}()"
@@ -731,7 +759,7 @@ class _TaintPass(ast.NodeVisitor):
                 bound[keyword.arg] = reason
 
     def _check_sink(self, node: ast.Call) -> None:
-        name = _call_name(node.func)
+        name = self.facts.canonical(_call_name(node.func))
         sink = _matches(name, SINKS)
         if sink is None:
             self._check_getattr(node)
@@ -758,7 +786,10 @@ class _TaintPass(ast.NodeVisitor):
         holder_name = _call_name(holder).split(".")[0] if not isinstance(holder, ast.Call) else ""
         is_module_ish = holder_name in MODULE_ISH_NAMES or (
             isinstance(holder, ast.Call)
-            and _matches(_call_name(holder.func), {"importlib.import_module", "import_module"})
+            and _matches(
+                self.facts.canonical(_call_name(holder.func)),
+                {"importlib.import_module", "import_module"},
+            )
         )
         if not is_module_ish:
             return
@@ -768,7 +799,7 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_remote_code(self, node: ast.Call) -> None:
         """`trust_remote_code = True` written at a loader, or forwarded as a constant."""
-        name = _call_name(node.func)
+        name = self.facts.canonical(_call_name(node.func))
         if not any(marker in name for marker in REMOTE_CODE_LOADERS):
             return
         for keyword in node.keywords:
@@ -937,7 +968,7 @@ def _unpinned_code_fetches(facts: _FileFacts) -> list[dict]:
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
                 continue
-            name = _call_name(child.func)
+            name = facts.canonical(_call_name(child.func))
             if _matches(name, {"snapshot_download", "hf_hub_download"}):
                 if not any(keyword.arg == "revision" for keyword in child.keywords):
                     fetches.append(child)
@@ -972,6 +1003,30 @@ def _unpinned_code_fetches(facts: _FileFacts) -> list[dict]:
                 }
             )
     return findings
+
+
+def _collect(facts: _FileFacts, qualname: str, body, state: "_State") -> list[dict]:
+    """Findings for one body, after its own local taint has settled.
+
+    One ordered traversal is not enough even for a flow-insensitive result, because
+    `local_reasons` is built as the walk proceeds: a sink visited before a later tainted
+    assignment to the same name would never be reconsidered. A loop that consumes `name`
+    and then rebinds it from `json.loads` for the next iteration is a real executable
+    flow, and it was being missed. So the body is walked until its local taint stops
+    growing, and only the last walk's findings are kept.
+    """
+    nodes = list(body)
+    reasons: dict[str, str] = {}
+    visitor = None
+    for _ in range(8):
+        visitor = _TaintPass(facts, qualname, state)
+        visitor.local_reasons.update(reasons)
+        for child in nodes:
+            visitor.visit(child)
+        if visitor.local_reasons == reasons:
+            break
+        reasons = dict(visitor.local_reasons)
+    return visitor.findings if visitor is not None else []
 
 
 def _python_files(targets: list[Path]) -> list[Path]:
@@ -1067,16 +1122,13 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     findings: list[dict] = []
     for path, facts in sorted(facts_by_path.items()):
         for qualname, node in sorted(facts.functions.items()):
-            visitor = _TaintPass(facts, qualname, state)
-            for child in ast.iter_child_nodes(node):
-                visitor.visit(child)
-            findings.extend(visitor.findings)
-        module_visitor = _TaintPass(facts, "<module>", state)
-        for child in ast.iter_child_nodes(facts.tree):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            module_visitor.visit(child)
-        findings.extend(module_visitor.findings)
+            findings.extend(_collect(facts, qualname, ast.iter_child_nodes(node), state))
+        body = [
+            child
+            for child in ast.iter_child_nodes(facts.tree)
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        ]
+        findings.extend(_collect(facts, "<module>", body, state))
         findings.extend(_remote_code_defaults(facts))
         findings.extend(_unpinned_code_fetches(facts))
 

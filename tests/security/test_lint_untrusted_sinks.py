@@ -255,3 +255,72 @@ def test_the_scan_is_deterministic(tmp_path):
     second = _scan(tmp_path, source)
     assert first == second
     assert len(first) >= 2
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # import json as js: the alias has no suffix in the source table.
+        "import importlib\nimport json as js\n"
+        "def load(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        model_type = js.load(handle)['model_type']\n"
+        "    return importlib.import_module('a.' + model_type)\n",
+        # from json import loads: the call is a bare name.
+        "import importlib\nfrom json import loads\n"
+        "def load(path):\n"
+        "    model_type = loads(open(path + '/config.json').read())['model_type']\n"
+        "    return importlib.import_module('a.' + model_type)\n",
+        # from yaml import safe_load, same shape with a different deserialiser.
+        "import importlib\nfrom yaml import safe_load\n"
+        "def load(path):\n"
+        "    model_type = safe_load(open(path + '/config.json').read())['model_type']\n"
+        "    return importlib.import_module('a.' + model_type)\n",
+    ],
+)
+def test_an_aliased_deserialiser_still_taints(tmp_path, source):
+    """Suffix matching alone cannot see through an import alias.
+
+    These produced no taint at all, so a sink immediately downstream was accepted. The
+    callee is now rewritten through the file's own imports before the tables see it.
+    """
+    assert "importlib.import_module" in _sinks(_scan(tmp_path, source))
+
+
+def test_a_sink_before_a_later_tainted_assignment_is_reported(tmp_path):
+    """Flow-insensitive has to mean flow-insensitive, including backedges.
+
+    A loop that consumes a name and then rebinds it from a deserialiser for the next
+    iteration is a real executable flow. One ordered traversal built the local taint as
+    it went, so the sink was visited before the assignment and never reconsidered.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(paths):\n"
+        "    name = 'transformers'\n"
+        "    for path in paths:\n"
+        "        importlib.import_module(name)\n"
+        "        name = json.loads(open(path + '/config.json').read())['model_type']\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_no_shipped_package_is_left_out_of_the_default_targets():
+    """A package left out of the defaults is a surface CI never looks at.
+
+    The CI invocation passes no paths, so this tuple decides the scope of the gate, and
+    `unsloth_cli` was missing from it. Derived from the tree rather than listed, so a
+    new top-level package fails here instead of being silently unscanned. The tuple is
+    shared with the unsloth-zoo copy, so it also names packages that live only there.
+    """
+    shipped = {
+        entry.name
+        for entry in REPO.iterdir()
+        if entry.is_dir()
+        and (entry / "__init__.py").is_file()
+        and entry.name not in {"tests"}
+        and not entry.name.startswith(".")
+    }
+    missing = sorted(shipped - set(L.DEFAULT_TARGETS))
+    assert not missing, f"shipped packages outside the gate's default scope: {missing}"

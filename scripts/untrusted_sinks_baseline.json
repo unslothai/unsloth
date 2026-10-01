@@ -16,6 +16,10 @@
     "studio/backend/utils/transformers_version.py::_install_to_dir::subprocess.run::1ff15d9a92408b8c": 1,
     "studio/backend/utils/transformers_version.py::_install_to_dir::subprocess.run::cf0776c7aba9e7f5": 1,
     "unsloth/save.py::_quantize_q2_k_l::subprocess.Popen::3f2e8083a35892d6": 1,
-    "unsloth/save.py::_quantize_q2_k_l::subprocess.run::60b0be277de013cd": 1
+    "unsloth/save.py::_quantize_q2_k_l::subprocess.run::60b0be277de013cd": 1,
+    "unsloth_cli/claude_subagent_mcp.py::run_local_agent::subprocess.Popen::11a73c0e3ba20623": 1,
+    "unsloth_cli/codex_subagent_mcp.py::run_local_agent::subprocess.Popen::09b49293346c6e61": 1,
+    "unsloth_cli/commands/start.py::_launch::subprocess.run::eb772eb74b7f9cc9": 1,
+    "unsloth_cli/commands/start.py::_start_studio_server::subprocess.Popen::664080759b53253e": 1
   }
 }
