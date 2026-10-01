@@ -303,6 +303,7 @@ function useImageModels(
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
+  outpaint: "the source image",
   upscale: "the source image",
   edit: "the source image",
   reference: "the source and reference images",
