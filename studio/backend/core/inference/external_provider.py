@@ -6,6 +6,7 @@
 
 import asyncio
 import base64
+import contextlib
 import io
 import json as _json
 import mimetypes
@@ -1020,6 +1021,49 @@ def restore_account_clients(account_id: str) -> None:
         _retired_accounts.discard(account_id)
 
 
+def _rejects_max_tokens(status_code: int, error_text: str) -> bool:
+    """400 from an upstream that wants `max_completion_tokens` (Azure gpt-5.x / o-series behind custom gateways, #10787)."""
+    if status_code != 400:
+        return False
+    try:
+        err = _json.loads(error_text).get("error")
+    except Exception:
+        err = None
+    if isinstance(err, dict) and err.get("param") == "max_tokens":
+        return err.get("code") == "unsupported_parameter" or "max_completion_tokens" in str(
+            err.get("message", "")
+        )
+    return "max_tokens" in error_text and "max_completion_tokens" in error_text
+
+
+def _with_max_completion_tokens(body: dict[str, Any]) -> dict[str, Any]:
+    body = dict(body)
+    body["max_completion_tokens"] = body.pop("max_tokens")
+    return body
+
+
+@contextlib.asynccontextmanager
+async def _stream_post_retrying_max_tokens(
+    http: httpx.AsyncClient, url: str, body: dict[str, Any], **kwargs
+):
+    """`http.stream("POST", ...)` that resends once with `max_completion_tokens` if the upstream rejects `max_tokens`.
+    Nothing has been yielded to the caller at the status check, so the retry is invisible."""
+    async with http.stream("POST", url, json = body, **kwargs) as response:
+        retry = (
+            response.status_code == 400
+            and "max_tokens" in body
+            and _rejects_max_tokens(400, (await response.aread()).decode("utf-8", errors = "replace"))
+        )
+        if not retry:
+            yield response
+            return
+    logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
+    async with http.stream(
+        "POST", url, json = _with_max_completion_tokens(body), **kwargs
+    ) as response:
+        yield response
+
+
 def _client() -> httpx.AsyncClient:
     """The shared client for the owner; a screening client of its own for each managed account."""
     from utils.account_context import current_account_id, is_owner_context
@@ -1762,12 +1806,10 @@ class ExternalProviderClient:
         )
 
         try:
-            async with (
-                _loopback_http_client if getattr(self, "_managed_loopback", False) else _client()
-            ).stream(
-                "POST",
+            async with _stream_post_retrying_max_tokens(
+                _loopback_http_client if getattr(self, "_managed_loopback", False) else _client(),
                 url,
-                json = body,
+                body,
                 headers = self._auth_headers(),
                 timeout = self._stream_timeout,
             ) as response:
@@ -6799,12 +6841,20 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
+        url = f"{self.base_url}/chat/completions"
         response = await _client().post(
-            f"{self.base_url}/chat/completions",
+            url,
             json = body,
             headers = self._auth_headers(),
             timeout = self._timeout,
         )
+        if "max_tokens" in body and _rejects_max_tokens(response.status_code, response.text):
+            response = await _client().post(
+                url,
+                json = _with_max_completion_tokens(body),
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            )
         response.raise_for_status()
         return response.json()
 

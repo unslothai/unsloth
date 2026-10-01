@@ -1957,7 +1957,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -2046,7 +2046,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
