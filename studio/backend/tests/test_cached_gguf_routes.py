@@ -3870,9 +3870,7 @@ def test_prefer_local_cache_without_on_disk_repo_skips_remote(monkeypatch, tmp_p
 
     monkeypatch.setattr(GV, "list_gguf_variants", _no_remote)
 
-    response = asyncio.run(
-        GV.get_gguf_variants_response("Org/NoCache", prefer_local_cache = True)
-    )
+    response = asyncio.run(GV.get_gguf_variants_response("Org/NoCache", prefer_local_cache = True))
     assert response.variants == []
 
 
