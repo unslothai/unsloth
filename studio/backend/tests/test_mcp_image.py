@@ -150,6 +150,16 @@ def test_an_edit_while_the_card_is_open_does_not_redirect_the_image(mapped_serve
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
 
 
+def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    args = {"image": ATTACHED_IMAGE}
+    approved = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["image"]
+    # A header edit drops the tool cache, so the field can no longer be resolved.
+    mcp_client._tool_cache.clear()
+    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
+    assert out.startswith("Error: the MCP server changed") and mapped_server == []
+
+
 @pytest.mark.parametrize(
     "encode",
     [
@@ -184,7 +194,7 @@ def test_durable_runs_refuse_the_image():
 
 def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
-    tools_mod.execute_tool("mcp__srv1__lookup", {"image": "https://x/y.png"}, mcp_image = image)
+    tools_mod.execute_tool("mcp__srv1__lookup", {"image": "https://x/y.png"})
     assert mapped_server[-1]["args"] == {"image": "https://x/y.png"}
     assert (
         tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": "https://x/y.png"}, image) is None

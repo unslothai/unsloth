@@ -13931,7 +13931,13 @@ def execute_tool(
             if image_input_mappings(server) and isinstance(arguments, dict)
             else None
         )
-        if mapping and arguments.get(mapping["field"]) == ATTACHED_IMAGE:
+        carries_image = bool(mapping) and arguments.get(mapping["field"]) == ATTACHED_IMAGE
+        if mcp_image is not None and not carries_image:
+            # Approved for a mapping that has since gone (edited server, dropped tool cache): never forward the call.
+            return (
+                "Error: the MCP server changed after the image was approved. Call the tool again."
+            )
+        if carries_image:
             # Only a tool loop that just got the user's approval for this call passes mcp_image.
             if mcp_image is None:
                 return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
