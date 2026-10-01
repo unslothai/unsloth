@@ -87,7 +87,7 @@ function PdfPreview({
   const [error, setError] = useState<string | null>(null);
   const [grabbing, setGrabbing] = useState(false);
   const [scrollable, setScrollable] = useState(false);
-  const pdfWorker = usePdfWorker(true);
+  const pdfWorker = usePdfWorker(error === null);
   const options = useMemo(
     () => (pdfWorker ? { worker: pdfWorker.worker } : null),
     [pdfWorker],
