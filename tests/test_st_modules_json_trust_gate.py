@@ -832,3 +832,212 @@ def test_router_still_falls_back_to_config_json(tmp_path, monkeypatch):
         FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
 
     assert requested[-1] == "1_Router/config.json"
+
+
+def test_an_empty_router_config_still_checks_the_fallback(tmp_path, monkeypatch):
+    """Router.load falls back on falsey content, not only on a missing file.
+
+    sentence-transformers 5.x Router.load reads its own file and then does
+    `if not config: config = cls.load_config(config_filename = "config.json")`, so an
+    existing but empty router_config.json sends it to config.json and it resolves the
+    `types` it finds there. Stopping at the first file that downloaded meant the gate
+    validated the empty file, never fetched the fallback, and passed on a repository whose
+    config.json names an arbitrary class.
+    """
+    import sentence_transformers
+
+    st_models = pytest.importorskip("sentence_transformers.models")
+    if getattr(st_models, "Router", None) is None:
+        pytest.skip("this sentence-transformers has no Router")
+
+    _simulate_pre_six(monkeypatch)
+
+    # Two directories on purpose. On a delegated route nothing is local, and the only
+    # files on disk are the ones this gate downloaded, so the cache has to start empty:
+    # writing both into one folder lets the reader find the fallback on disk and refuse
+    # for a reason that has nothing to do with whether it was ever fetched.
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    (remote / "router_config.json").write_text("{}", encoding = "utf8")
+    (remote / "config.json").write_text(
+        json.dumps({"types": {"query": "evil_pkg.Thing"}}),
+        encoding = "utf8",
+    )
+    cache = tmp_path / "cache" / "1_Router"
+    cache.mkdir(parents = True)
+
+    requested = []
+
+    def fake_download(repo, filename, **kwargs):
+        requested.append(os.path.basename(filename))
+        name = os.path.basename(filename)
+        source = remote / name
+        if not source.exists():
+            from huggingface_hub.errors import EntryNotFoundError
+            raise EntryNotFoundError(filename)
+        target = cache / name
+        target.write_text(source.read_text(encoding = "utf8"), encoding = "utf8")
+        return str(target)
+
+    _patch_download(monkeypatch, fake_download)
+
+    with pytest.raises(ValueError, match = "evil_pkg.Thing"):
+        FastSentenceTransformer._check_delegated_module_config(
+            "acme/embedder",
+            {
+                "idx": 0,
+                "name": "0",
+                "path": "1_Router",
+                "type": "sentence_transformers.models.Router",
+            },
+            "sentence_transformers.models.Router",
+            st_models.Router,
+        )
+    # Both files, because the first one was empty.
+    assert requested == ["router_config.json", "config.json"]
+
+
+def test_a_non_empty_config_asks_for_nothing_extra(tmp_path, monkeypatch):
+    """The fallback costs a request only where upstream would take it.
+
+    A real Router config is a non-empty dict, upstream never reaches `if not config`, and
+    the check must not start fetching a second file on every ordinary load.
+    """
+    st_models = pytest.importorskip("sentence_transformers.models")
+    if getattr(st_models, "Router", None) is None:
+        pytest.skip("this sentence-transformers has no Router")
+
+    _simulate_pre_six(monkeypatch)
+
+    folder = tmp_path / "1_Router"
+    folder.mkdir()
+    (folder / "router_config.json").write_text(
+        json.dumps({"types": {"query": "sentence_transformers.models.Transformer"}}),
+        encoding = "utf8",
+    )
+    (folder / "config.json").write_text(
+        json.dumps({"types": {"query": "evil_pkg.Thing"}}),
+        encoding = "utf8",
+    )
+
+    requested = []
+
+    def fake_download(repo, filename, **kwargs):
+        requested.append(os.path.basename(filename))
+        return str(folder / os.path.basename(filename))
+
+    _patch_download(monkeypatch, fake_download)
+
+    FastSentenceTransformer._check_delegated_module_config(
+        "acme/embedder",
+        {"idx": 0, "name": "0", "path": "1_Router", "type": "sentence_transformers.models.Router"},
+        "sentence_transformers.models.Router",
+        st_models.Router,
+    )
+    assert requested == ["router_config.json"]
+
+
+def test_the_validated_commit_is_reported(tmp_path, monkeypatch):
+    """The gate hands back the commit it read, so the load can be pinned to it.
+
+    Validation and the load resolve the branch separately, so a repository that advances
+    between the two is checked on one snapshot and loaded from another.
+    """
+    snapshot = tmp_path / "models--acme--embedder" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(monkeypatch, lambda *a, **k: str(snapshot / "modules.json"))
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == "a" * 40
+    )
+
+
+def test_the_commit_comes_from_the_resolution_that_already_happened(tmp_path, monkeypatch):
+    """_module_path resolves through hf_hub_download, so its snapshot is the live one.
+
+    That is the branch an ordinary load takes, and taking the commit from the path it
+    returns is what makes the pin cost nothing: no second request, and no separate
+    resolution to disagree with.
+    """
+    snapshot = tmp_path / "models--acme--embedder" / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_module_path",
+        staticmethod(lambda *a, **k: str(snapshot / "modules.json")),
+    )
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: pytest.fail("_module_path already resolved it; nothing else should fetch"),
+    )
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == "b" * 40
+    )
+
+
+def test_a_local_directory_has_no_commit_to_pin(tmp_path, monkeypatch):
+    """A folder on disk is not a snapshot, so the load must be left exactly as it was."""
+    local = tmp_path / "my-embedder"
+    local.mkdir()
+    (local / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    assert FastSentenceTransformer._check_modules_json_types(str(local), None, False) == ""
+
+
+def test_consent_reports_no_commit(monkeypatch):
+    """With trust_remote_code there is nothing to gate, so there is nothing to pin."""
+    assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, True) == ""
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        (f"/c/models--a--b/snapshots/{'c' * 40}/modules.json", "c" * 40),
+        (f"/c/models--a--b/snapshots/{'C' * 40}/modules.json", "c" * 40),
+        ("/c/models--a--b/snapshots/main/modules.json", ""),
+        ("/home/me/my-model/modules.json", ""),
+        (None, ""),
+    ],
+)
+def test_only_an_immutable_snapshot_is_a_commit(path, expected):
+    """A branch name in the snapshot slot is not something to pin to."""
+    assert FastSentenceTransformer._snapshot_revision(path) == expected

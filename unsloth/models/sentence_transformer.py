@@ -1329,6 +1329,14 @@ class FastSentenceTransformer(FastModel):
                     if isinstance(value, str)
                 ]
 
+            # Upstream reads its own file and only falls back when the parsed content is
+            # falsey (Router.py: `if not config:`), so once a real config has been read
+            # there is no second file the loader will look at. Reading both and taking the
+            # union refused a repository whose router_config.json is clean because an
+            # unrelated config.json sat beside it, which is a load upstream completes.
+            if config:
+                break
+
         for key, value, prefix in refs:
             if not value.startswith(prefix):
                 raise ValueError(
@@ -1341,11 +1349,33 @@ class FastSentenceTransformer(FastModel):
                 )
 
     @staticmethod
+    def _snapshot_revision(path):
+        """The commit a hub cache path belongs to, or "" when it is not one.
+
+        hf_hub_download returns <cache>/models--org--name/snapshots/<sha>/<file>, so the
+        commit the gate just read is already in hand and costs no request to recover.
+        Anything that is not a 40-hex snapshot component (a local directory, a layout this
+        does not recognise) returns "", which means "do not pin".
+        """
+        if not isinstance(path, str):
+            return ""
+        parts = path.replace("\\", "/").split("/")
+        for index in range(len(parts) - 2, -1, -1):
+            if parts[index] != "snapshots":
+                continue
+            candidate = parts[index + 1]
+            if len(candidate) == 40 and all(c in "0123456789abcdef" for c in candidate.lower()):
+                return candidate.lower()
+            return ""
+        return ""
+
+    @staticmethod
     def _modules_json_for_gating(
         model_name,
         token,
         cache_dir = None,
         revision = None,
+        resolved = None,
     ):
         """Return the modules.json path, or None when the repo confirmedly has none.
 
@@ -1357,6 +1387,13 @@ class FastSentenceTransformer(FastModel):
             model_name, token, cache_dir = cache_dir, revision = revision
         )
         if path:
+            if resolved is not None:
+                # _module_path resolves through hf_hub_download, so online this is the
+                # commit the branch points at right now and offline it is the cached
+                # snapshot, which is the only thing the load could use either. Both are
+                # the snapshot the load would reach on its own, so recording it here
+                # pins the load to what was checked without asking the hub again.
+                resolved["revision"] = FastSentenceTransformer._snapshot_revision(path)
             return path
 
         try:
@@ -1388,13 +1425,16 @@ class FastSentenceTransformer(FastModel):
             return None
 
         try:
-            return hf_hub_download(
+            downloaded = hf_hub_download(
                 model_name,
                 "modules.json",
                 token = token,
                 cache_dir = cache_dir,
                 revision = revision,
             )
+            if resolved is not None:
+                resolved["revision"] = FastSentenceTransformer._snapshot_revision(downloaded)
+            return downloaded
         except LocalEntryNotFoundError as exception:
             # Checked before EntryNotFoundError, which it subclasses: not reachable is not the same
             # answer as not present, and catching it there read one as the other.
@@ -1430,23 +1470,37 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
     ):
-        """Validate only. for_inference and the fast encoder route return a stock
-        SentenceTransformer without reaching _load_modules, and below 6.0 it has no gate."""
+        """Validate only, and report the commit that was validated.
+
+        for_inference and the fast encoder route return a stock SentenceTransformer without
+        reaching _load_modules, and below 6.0 it has no gate.
+
+        The return value is the resolved commit, or "" when there is none to report. The
+        validation and the load that follows it resolve the repository separately, so a
+        branch that advances between the two means the gate passed on one snapshot while
+        another one loaded. Handing the caller the commit this read lets the load be pinned
+        to the snapshot that was actually checked, at no extra request: the fetch here
+        already resolved it. It is "" for a local directory, for a revision that is not an
+        immutable commit, and whenever there was no modules.json to read, and the caller
+        then loads exactly as it did before.
+        """
         # Consent means the code may run, so there is nothing to gate and nothing to import here.
         # Resolving anyway would also break a repo-local class: below 6 the delegated loader fetches
         # it with get_class_from_dynamic_module, where this helper's fallback cannot.
         if trust_remote_code:
-            return
+            return ""
 
         # The delegated loads honour SENTENCE_TRANSFORMERS_HOME, and hf_hub_download does not, so
         # resolve it here too: otherwise _module_path looks in the wrong cache, swallows the miss,
         # and the gate passes on a modules.json it never read.
         cache_dir = cache_dir or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+        resolved = {}
         modules_json_path = FastSentenceTransformer._modules_json_for_gating(
-            model_name, token, cache_dir = cache_dir, revision = revision
+            model_name, token, cache_dir = cache_dir, revision = revision, resolved = resolved
         )
+        validated = resolved.get("revision", "")
         if not modules_json_path:
-            return
+            return validated
         try:
             with open(modules_json_path, encoding = "utf8") as f:
                 modules_config = json.load(f)
@@ -1456,9 +1510,9 @@ class FastSentenceTransformer(FastModel):
                 modules_json_path,
                 exception,
             )
-            return
+            return validated
         if not isinstance(modules_config, list):
-            return
+            return validated
 
         for module_config in modules_config:
             if not isinstance(module_config, dict):
@@ -1483,6 +1537,8 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = cache_dir,
                 revision = revision,
             )
+
+        return validated
 
     # The module classes whose own loader resolves a dotted path out of their config: Dense
     # reads activation_function, WordEmbeddings reads tokenizer_class, Router and Asym read
@@ -1593,9 +1649,21 @@ class FastSentenceTransformer(FastModel):
                         f"`trust_remote_code=True` to allow custom code to be run."
                     ) from exception
                 folders.append(os.path.dirname(downloaded))
-                # The loader opens the first of these it finds, so once one is read there
-                # is no second file to check and no reason to ask for one.
-                break
+                # Router.load falls back to config.json when the parsed content is falsey,
+                # not merely when its own file is absent (Router.py: `if not config:`).
+                # Stopping at the first file that downloaded therefore validated an empty
+                # router_config.json and never fetched the fallback, so the `types` the
+                # loader does resolve went unchecked. A real config is a non-empty dict and
+                # still stops here, so a working model asks for nothing extra.
+                try:
+                    with open(downloaded, encoding = "utf8") as handle:
+                        content = json.load(handle)
+                except (OSError, ValueError):
+                    # Unreadable is not "checked": let the fallback be fetched too, and
+                    # leave the refusal to the reader below, which sees both files.
+                    content = None
+                if content:
+                    break
 
         for load_path in dict.fromkeys(folders):
             FastSentenceTransformer._check_module_config_class_refs(
@@ -1970,13 +2038,20 @@ class FastSentenceTransformer(FastModel):
             if _st_cache is not None:
                 st_kwargs["cache_folder"] = _st_cache
 
-            FastSentenceTransformer._check_modules_json_types(
+            _validated = FastSentenceTransformer._check_modules_json_types(
                 model_name,
                 token,
                 trust_remote_code,
                 cache_dir = st_kwargs.get("cache_folder"),
                 revision = revision,
             )
+            # Load the snapshot that was checked. Without this the gate reads one commit of
+            # a branch and the load resolves the branch again, so a repository that advances
+            # in between is validated on the old files and loaded from the new ones. Only
+            # when the caller named no revision: an explicit one is already the user's
+            # choice, and an empty _validated means the gate had nothing immutable to pin to.
+            if _validated and not revision:
+                st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
             if _ensure_sentence_attention_masks(
                 getattr(st_model[0], "auto_model", None)
@@ -2072,19 +2147,20 @@ class FastSentenceTransformer(FastModel):
                     FastSentenceTransformer._patch_mpnet_v5()
 
             # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm cache (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
-            FastSentenceTransformer._check_modules_json_types(
+            _validated = FastSentenceTransformer._check_modules_json_types(
                 model_name,
                 token,
                 trust_remote_code,
                 cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 revision = revision,
             )
+            # Same race as the delegated route above, same pin.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
                 trust_remote_code = trust_remote_code,
                 token = token,
-                revision = revision,
+                revision = (_validated if (_validated and not revision) else revision),
                 model_kwargs = model_kwargs,
                 cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
             )
