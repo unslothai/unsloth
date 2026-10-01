@@ -2340,6 +2340,127 @@ def test_the_resident_transformer_tier_pins_its_encoders_when_ram_allows(monkeyp
     assert seen["text_encoder_2"]["low_cpu_mem_usage"] is False
 
 
+def _background_pin_calls(monkeypatch, sizes, budget, **call_kw):
+    """(low_cpu_mem_usage per module, modules handed to a deferred pinner) for one apply."""
+    import core.inference.diffusion_memory as mem
+
+    usage: dict = {}
+    deferred: list = []
+    pipe, *_ = _stream_te_pipe(monkeypatch)
+
+    def _apply(
+        module,
+        onload_device = None,
+        offload_device = None,
+        offload_type = None,
+        num_blocks_per_group = None,
+        non_blocking = False,
+        use_stream = False,
+        record_stream = False,
+        low_cpu_mem_usage = False,
+        **_,
+    ):
+        usage[module.name] = low_cpu_mem_usage
+
+    _swap_group_offloading(monkeypatch, _apply)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: budget)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False, raising = False)
+    monkeypatch.setattr(mem, "_module_host_mib", lambda m: sizes.get(getattr(m, "name", ""), 0))
+    monkeypatch.setattr(
+        mem,
+        "_defer_pinning",
+        lambda pipe, module, device, logger: deferred.append(module.name) or True,
+    )
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, **call_kw) is True
+    return usage, deferred
+
+
+_BG_SIZES = {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500}
+
+
+def test_a_video_load_defers_every_planned_pin_off_the_load_path(monkeypatch):
+    # Pinning at load read every streamed byte from disk first: 125-139 s of LTX-2.3's DiT on Colab. The apply goes
+    # unpinned and a pinner takes the same modules, so what gets pinned is unchanged, only when.
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True, background_pin = True
+    )
+    assert all(v is True for v in usage.values()), usage
+    assert deferred == ["transformer", "text_encoder", "text_encoder_2"]
+
+
+def test_a_module_the_ram_gate_left_unpinned_gets_no_pinner(monkeypatch):
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 10_000, stream_text_encoders = True, background_pin = True
+    )
+    assert usage == {"transformer": True, "text_encoder": True, "text_encoder_2": True}, usage
+    assert deferred == ["transformer"]
+
+
+def test_a_resident_dit_tier_defers_only_its_encoders(monkeypatch):
+    usage, deferred = _background_pin_calls(
+        monkeypatch,
+        _BG_SIZES,
+        10_000,
+        stream_text_encoders = True,
+        stream_transformer = False,
+        background_pin = True,
+    )
+    assert "transformer" not in usage
+    assert deferred == ["text_encoder", "text_encoder_2"]
+
+
+def test_without_background_pin_the_apply_still_pins_eagerly(monkeypatch):
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True
+    )
+    assert all(v is False for v in usage.values()), usage
+    assert deferred == []
+
+
+def test_the_background_pin_env_restores_eager_pinning(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setenv(mem.BACKGROUND_PIN_ENV, "0")
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True, background_pin = True
+    )
+    assert all(v is False for v in usage.values()), usage
+    assert deferred == []
+
+
+def test_a_pipe_request_turns_background_pinning_on(monkeypatch):
+    # video asks through the pipe, so apply_memory_plan (and every stub of it) keeps its signature
+    import core.inference.diffusion_memory as mem
+
+    usage, deferred = _background_pin_calls(
+        monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True
+    )
+    assert deferred == []
+    import sys
+
+    pipe, *_ = _stream_te_pipe(monkeypatch)
+    seen: dict = {}
+
+    def _apply(
+        module,
+        low_cpu_mem_usage = False,
+        use_stream = False,
+        **_,
+    ):
+        seen[module.name] = low_cpu_mem_usage
+
+    _swap_group_offloading(monkeypatch, _apply)
+    monkeypatch.setattr(
+        mem,
+        "_defer_pinning",
+        lambda pipe, module, device, logger: deferred.append(module.name) or True,
+    )
+    mem.request_background_pins(pipe)
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
+    assert "transformer" in deferred, deferred
+
+
 @pytest.mark.parametrize("stream_transformer", [True, False])
 def test_windows_and_wsl_never_pin_the_streamed_tiers(monkeypatch, stream_transformer):
     import core.inference.diffusion_memory as mem
@@ -2386,6 +2507,30 @@ def test_a_first_encoder_refusal_is_unhooked_before_whole_module_offload(monkeyp
             pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
         )
         is False
+    )
+    assert unhooked == ["text_encoder"]
+
+
+def test_an_encoder_kept_resident_after_a_partial_leaf_apply_is_unhooked(monkeypatch):
+    """A refusal that raised after hooking part of the encoder must not leave those hooks on the resident encoder."""
+    import core.inference.diffusion_memory as mem
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder":
+            raise RuntimeError("leaf offload failed part way")
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    unhooked: list[str] = []
+    monkeypatch.setattr(
+        mem, "_remove_group_offload_hooks", lambda m: unhooked.append(m.name), raising = False
+    )
+
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = True
+        )
+        is True
     )
     assert unhooked == ["text_encoder"]
 
