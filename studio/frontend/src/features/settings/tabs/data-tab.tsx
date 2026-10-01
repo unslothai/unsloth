@@ -95,7 +95,6 @@ import {
   type ArchivedMediaKind,
   ArchivedMediaView,
 } from "../components/archived-media-dialog";
-import { ManageChatsView } from "../components/manage-chats-view";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -186,7 +185,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
     | "main"
-    | "manage"
     | "archived"
     | "archived-images"
     | "archived-videos"
@@ -594,38 +592,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     }
   };
 
-  if (subpage === "manage") {
-    return (
-      <div className="flex flex-col gap-6">
-        <header className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setSubpage("main")}
-            aria-label={t("settings.data.backToData")}
-            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
-          </button>
-          <h1 className="text-xl font-semibold font-heading">
-            {t("settings.data.title")}
-          </h1>
-        </header>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {t("settings.data.manageChats")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.data.manageChatsDescription")}
-          </p>
-        </div>
-        <ManageChatsView />
-      </div>
-    );
-  }
-
   if (subpage === "archived") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -641,7 +610,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         </header>
         <div className="flex items-start justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <h2 className="text-sm font-semibold">
+            <h2 className="settings-heading text-sm font-semibold">
               {t("settings.data.archivedChats")}
             </h2>
             <p className="text-xs text-muted-foreground">
@@ -698,7 +667,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       audio: t("settings.data.archivedAudioDescription"),
     }[kind];
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -713,7 +682,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">{heading}</h2>
+          <h2 className="settings-heading text-sm font-semibold">{heading}</h2>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
@@ -726,7 +695,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
 
   if (subpage === "files") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -741,7 +710,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
+          <h2 className="settings-heading text-sm font-semibold">
             {t("settings.data.uploadedFiles")}
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -754,7 +723,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.data.title")}
@@ -765,18 +734,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       </header>
 
       <SettingsSection title={t("settings.data.chatsSection")}>
-        <SettingsRow
-          label={t("settings.data.manageChats")}
-          description={t("settings.data.manageChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("manage")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
         <div
           data-settings-label={t("settings.data.archives")}
           className="py-3"

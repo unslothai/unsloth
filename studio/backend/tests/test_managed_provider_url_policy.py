@@ -69,7 +69,7 @@ def test_a_managed_account_is_refused_by_default(monkeypatch, as_alice, url):
         providers.validate_provider_base_url(url)
     assert "public-network provider base URLs" in str(refusal.value)
     # The person reading this cannot lift it themselves, so it says who can.
-    assert "Settings > General" in str(refusal.value)
+    assert "Settings > Accounts" in str(refusal.value)
 
 
 @pytest.mark.parametrize("url", PRIVATE_URLS)
@@ -161,7 +161,7 @@ def test_the_recipe_endpoint_check_stands_down_with_the_setting_on(monkeypatch, 
     _allow(monkeypatch, False)
     with pytest.raises(Exception) as refusal:
         service._require_public_provider_endpoint("http://192.168.1.50:8000/v1")
-    assert "Settings > General" in str(getattr(refusal.value, "detail", refusal.value))
+    assert "Settings > Accounts" in str(getattr(refusal.value, "detail", refusal.value))
 
     _allow(monkeypatch, True)
     service._require_public_provider_endpoint("http://192.168.1.50:8000/v1")
@@ -244,13 +244,13 @@ def test_the_refusal_stops_naming_the_switch_when_the_environment_holds_it(
     monkeypatch.setenv(setting.BLOCK_PRIVATE_ENV, "1")
     with pytest.raises(ValueError) as refusal:
         providers.validate_provider_base_url(url)
-    assert "Settings > General" not in str(refusal.value)
+    assert "Settings > Accounts" not in str(refusal.value)
 
     monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV)
     _allow(monkeypatch, False)
     with pytest.raises(ValueError) as refusal:
         providers.validate_provider_base_url(url)
-    assert "Settings > General" in str(refusal.value)
+    assert "Settings > Accounts" in str(refusal.value)
 
 
 @pytest.mark.parametrize("url", ["ftp://192.168.1.50/model", "file:///etc/passwd"])

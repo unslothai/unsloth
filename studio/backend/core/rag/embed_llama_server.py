@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from core.training.account_jobs import account_path, managed_account
 from utils.account_context import account_thread
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import atexit
 import logging
 import os
@@ -903,6 +904,7 @@ class LlamaServerBackend:
         except Exception:  # noqa: BLE001 - drain thread must never raise
             pass
 
+    @_invalidates_gpu_memory("embedding server start")
     def _spawn(self, model_name: str | None = None) -> None:
         """Start the embed server (caller holds the lock). A failed GPU start falls
         back to CPU once, unless ``RAG_EMBED_DEVICE`` is the literal ``gpu``."""
@@ -1061,6 +1063,7 @@ class LlamaServerBackend:
             self._kill_process()
             self._spawn(model_name)
 
+    @_invalidates_gpu_memory("embedding server stop")
     def _kill_process(self) -> None:
         proc = self._process
         if proc is None:

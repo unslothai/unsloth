@@ -7,8 +7,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import ntpath
 import os
 from pathlib import Path
+import re
 import shutil
 import site
 import subprocess
@@ -17,6 +19,7 @@ import unicodedata
 import uuid
 
 from . import os_sandbox
+from . import mxc_read_grants
 from . import mxc_runtime
 from .mxc_runtime import MXC_SCHEMA_VERSION
 
@@ -25,6 +28,11 @@ logger = logging.getLogger(__name__)
 MAX_ENVIRONMENT_ENTRIES = 512
 DACL_FALLBACK_ENV = "UNSLOTH_MXC_ALLOW_DACL_FALLBACK"
 _WSL_TERMINAL_MARKERS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
+# CreateProcessW's lpCommandLine bound, in UTF-16 units; cmd itself stops at 8191 characters of payload.
+MAX_COMMAND_LINE = 32767
+_CMD_NAMES = {"cmd", "cmd.exe"}
+_CMD_SWITCHES = {"/d", "/s"}
+_DRIVE_ROOT = re.compile(r"[A-Za-z]:\\\Z")
 
 
 def _studio_ui_policy() -> dict:
@@ -261,9 +269,81 @@ def _model_read_roots(workdir: str, granted: list[str]) -> list[str]:
     return result
 
 
+def is_cmd_argv(argv) -> bool:
+    """``cmd [/d] [/s] /c <payload>``: the Terminal shape whose payload must reach cmd unescaped."""
+    if len(argv) < 3 or not all(isinstance(part, str) for part in argv):
+        return False
+    if ntpath.basename(argv[0]).casefold() not in _CMD_NAMES or argv[-2].casefold() != "/c":
+        return False
+    switches = [part.casefold() for part in argv[1:-2]]
+    return len(set(switches)) == len(switches) and set(switches) <= _CMD_SWITCHES
+
+
+def cmd_command_line(cmd_path: str, payload: str) -> str:
+    """cmd's own quoting: /s strips exactly the outer pair, so embedded quotes arrive as written.
+
+    list2cmdline escapes them as \\", which cmd does not understand: a quoted path then names a file
+    that cannot exist, and a denied read looks the same as a command that never ran.
+    """
+    if "\0" in payload:
+        raise MxcPolicyError("the Terminal command contains a NUL character")
+    if "\n" in payload or "\r" in payload:
+        raise MxcPolicyError(
+            "cmd runs only the first line of a multi-line command; send one command per call"
+        )
+    command_line = f'"{cmd_path}" /d /s /c "{payload}"'
+    if len(command_line) > MAX_COMMAND_LINE:
+        raise MxcPolicyError("the Terminal command exceeds the Windows command-line limit")
+    return command_line
+
+
+def host_spawn_args(argv):
+    """What Popen gets for an unisolated launch: a cmd Terminal keeps cmd's own quoting there too."""
+    if not is_cmd_argv(argv):
+        return argv
+    try:
+        return cmd_command_line(_system_cmd(), argv[-1])
+    except MxcPolicyError:
+        return argv  # a multi-line or oversized command keeps today's argv behaviour on the host
+
+
+def _system_cmd() -> str:
+    """System32's cmd.exe. COMSPEC is caller-controlled, so it is never consulted."""
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(260)
+        size = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+        if 0 < size < len(buffer):
+            return os.path.join(buffer.value, "cmd.exe")
+    except (AttributeError, OSError):
+        pass
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "C:\\Windows"
+    return ntpath.join(system_root, "System32", "cmd.exe")
+
+
+def _checked_cwd_alias(cwd_alias: str, workdir_identity: dict[str, int]) -> str:
+    """A drive letter defined to name the workdir: stock git cannot resolve a nested cwd inside the container."""
+    if not isinstance(cwd_alias, str) or not _DRIVE_ROOT.match(cwd_alias):
+        raise MxcPolicyError(
+            f"the MXC workdir alias must be a drive root such as Z:\\: {cwd_alias!r}"
+        )
+    try:
+        identity = _object_identity(cwd_alias, directory = True)
+    except OSError as exc:
+        raise MxcPolicyError(f"the MXC workdir alias cannot be opened: {cwd_alias}") from exc
+    if identity != workdir_identity:
+        raise MxcPolicyError(
+            f"the MXC workdir alias does not name the session workdir: {cwd_alias}"
+        )
+    return cwd_alias
+
+
 def _selected_runtime(plan) -> str:
     executable = plan.argv[0]
-    if os.path.isabs(executable):
+    if plan.execution_kind == "terminal" and is_cmd_argv(plan.argv):
+        selected = _system_cmd()
+    elif os.path.isabs(executable):
         selected = executable
     elif plan.execution_kind == "terminal":
         selected = shutil.which(executable, path = plan.env.get("PATH"))
@@ -306,6 +386,8 @@ def verify_launch_identities(request: dict) -> None:
         raise MxcPolicyError("the selected workload executable changed before WXC dispatch")
     if _object_identity(request["cwd"], directory = True) != request["workdirIdentity"]:
         raise MxcPolicyError("the MXC workdir changed before WXC dispatch")
+    if request.get("cwdAlias") is not None:
+        _checked_cwd_alias(request["cwdAlias"], request["workdirIdentity"])
     _safe_canonical_path(request["cwd"], directory = True)
     _scan_workdir(request["cwd"], required = request["requireCompleteScan"])
 
@@ -331,7 +413,12 @@ def _with_session_packages(env: dict[str, str], workdir: str) -> dict[str, str]:
     return env
 
 
-def build_launch_request(plan, *, run_id: str | None = None) -> dict:
+def build_launch_request(
+    plan,
+    *,
+    run_id: str | None = None,
+    cwd_alias: str | None = None,
+) -> dict:
     if sys.platform != "win32":
         raise MxcPolicyError("MXC policy construction is Windows-only")
     if plan.execution_kind not in {"python", "terminal"}:
@@ -347,11 +434,23 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     workdir = _safe_canonical_path(plan.workdir, directory = True)
     limitations = _scan_workdir(workdir, required = required)
     selected_runtime = _selected_runtime(plan)
-    readonly = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
-    readonly = _without_nested(readonly + _model_read_roots(workdir, readonly))
+    runtime_roots = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
+    readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
+    # Tier 3 walks every readonly tree per launch; a one-time grant on the runtime folders skips it.
+    if dacl_fallback_enabled():
+        mxc_read_grants.ensure(runtime_roots)
+    else:
+        mxc_read_grants.revoke_recorded()
     execution_argv = list(plan.argv)
     execution_argv[0] = selected_runtime
+    if plan.execution_kind == "terminal" and is_cmd_argv(plan.argv):
+        command_line = cmd_command_line(selected_runtime, plan.argv[-1])
+    else:
+        command_line = subprocess.list2cmdline(execution_argv)
+    workdir_identity = _object_identity(workdir, directory = True)
+    if cwd_alias is not None:
+        cwd_alias = _checked_cwd_alias(cwd_alias, workdir_identity)
     run_id = run_id or uuid.uuid4().hex
     workload_env = _with_session_packages(dict(plan.env), workdir)
     # MXC's Windows ProcessContainer validator requires LOCALAPPDATA to be
@@ -364,8 +463,9 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
         "containment": "processcontainer",
         "lifecycle": {"destroyOnExit": True, "preservePolicy": False},
         "process": {
-            "commandLine": subprocess.list2cmdline(execution_argv),
-            "cwd": workdir,
+            "commandLine": command_line,
+            # Grants, scans and identities stay on the canonical workdir; only the workload starts in the alias.
+            "cwd": cwd_alias or workdir,
             "env": [f"{key}={value}" for key, value in sorted(workload_env.items())],
             "timeout": 0
             if plan.timeout_seconds is None
@@ -395,7 +495,8 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
         "runtimePath": os.path.realpath(selected_runtime),
         "runtimeIdentity": _object_identity(selected_runtime, directory = False),
         "cwd": workdir,
-        "workdirIdentity": _object_identity(workdir, directory = True),
+        "workdirIdentity": workdir_identity,
+        "cwdAlias": cwd_alias,
         "config": config,
         "configBytes": canonical_config_bytes(config),
         "policyHash": compute_policy_hash(config),

@@ -18,8 +18,10 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -156,6 +158,7 @@ function ComboboxContent({
     container?: HTMLElement | null;
   }): React.ReactElement {
   const dialogContainer = useDialogPortalContainer();
+  const snappedRef = useSnappedPaddingRef<HTMLDivElement>(undefined);
   return (
     <ComboboxPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
       <ComboboxPrimitive.Positioner
@@ -164,9 +167,12 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
+        // Base UI's default padding is 5.
+        collisionPadding={useWindowChromeCollisionPadding(5)}
         className="isolate z-[120] pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
+          ref={snappedRef}
           data-slot="combobox-content"
           data-chips={!!anchor}
           onWheel={(event) => {
@@ -225,7 +231,7 @@ function ComboboxItem({
     <ComboboxPrimitive.Item
       data-slot="combobox-item"
       className={cn(
-        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-[10px] py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-7 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-[10px] py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-9 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -233,11 +239,11 @@ function ComboboxItem({
       {children}
       <ComboboxPrimitive.ItemIndicator
         render={
-          <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center" />
+          <span className="pointer-events-none absolute right-3 flex size-4 items-center justify-center" />
         }
       >
         <HugeiconsIcon
-          icon={Tick02Icon}
+          icon={MenuTickIcon}
           strokeWidth={2}
           className="pointer-events-none"
         />

@@ -191,18 +191,19 @@ assert_not_contains "the shortcut launch does not relax the policy" "$LAUNCH" "-
 POLICY_HITS=$(grep -c -- '-ExecutionPolicy Bypass' "$INSTALL_SH" || true)
 assert_eq "install.sh relaxes the execution policy nowhere" "0" "$POLICY_HITS"
 
-# The generated script declares SHChangeNotify by emitting it. Add-Type -MemberDefinition writes C#
-# to %TEMP% and runs csc.exe on PowerShell 5.1, and behavioural antivirus blocks the DLL that comes
-# out; #10540 removed that from install.ps1 and this copy was missed for a release.
+# The generated script declares no native type at all: Add-Type runs csc.exe on PowerShell 5.1,
+# and emitting the stub instead is its own scored shape. SHChangeNotify goes through a Windows
+# Python's ctypes, as in install.ps1.
 ADDTYPE_HITS=$(grep -c '^[[:space:]]*Add-Type' "$INSTALL_SH" || true)
 assert_eq "install.sh compiles no C#" "0" "$ADDTYPE_HITS"
-assert_contains "SHChangeNotify is emitted instead" "$(cat "$INSTALL_SH")" "DefinePInvokeMethod"
+assert_not_contains "install.sh emits no P/Invoke stub" "$(cat "$INSTALL_SH")" "DefinePInvoke""Method"
+assert_not_contains "install.sh defines no dynamic assembly" "$(cat "$INSTALL_SH")" "DefineDynamic""Assembly"
 
 # Both notifications survive. The per-item one is the only thing that recovers a rewritten
 # same-name .lnk; the global broadcast alone does not, so losing it would show as a stale icon.
 BODY=$(cat "$INSTALL_SH")
-assert_contains "per-item SHCNE_UPDATEITEM refresh kept" "$BODY" "SHChangeNotify(0x00002000, 0x0005"
-assert_contains "global SHCNE_ASSOCCHANGED refresh kept" "$BODY" "SHChangeNotify(0x08000000, 0"
+assert_contains "per-item SHCNE_UPDATEITEM refresh kept" "$BODY" "f(0x2000,0x1005,p,None)"
+assert_contains "global SHCNE_ASSOCCHANGED refresh kept" "$BODY" "f(0x8000000,0x1000,None,None)"
 
 # A cmd.exe stub that reproduces the ORDER cmd works in: %VAR% is expanded first, and the result is
 # then parsed for metacharacters. That is what makes an & inside the value dangerous, and the

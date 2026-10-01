@@ -954,6 +954,22 @@ pub fn install_system_packages(
     Err("Elevated package install is only supported on Linux".to_string())
 }
 
+fn backend_update_confirmed(training_active: bool, confirm: impl FnOnce() -> bool) -> bool {
+    !training_active || confirm()
+}
+
+#[tauri::command]
+pub async fn confirm_backend_update(app: AppHandle) -> bool {
+    // blocking_show parks its thread until the user answers: keep it off the async workers.
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_update_confirmed(crate::training_is_active(&app), || {
+            crate::confirm_update_during_training(&app)
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// Run backend update: stop server, run `unsloth studio update`, emit progress.
 /// Does NOT restart the backend — the frontend handles shell update + relaunch after.
 #[tauri::command]
@@ -1335,6 +1351,26 @@ mod tests {
         assert!(super::should_emit_repair_failed(
             "Installer exited with code 1"
         ));
+    }
+
+    #[test]
+    fn keeping_training_at_the_update_prompt_declines_the_update() {
+        assert!(!super::backend_update_confirmed(true, || false));
+    }
+
+    #[test]
+    fn updating_anyway_during_training_confirms_the_update() {
+        assert!(super::backend_update_confirmed(true, || true));
+    }
+
+    #[test]
+    fn updating_without_training_does_not_ask() {
+        let mut asked = false;
+        assert!(super::backend_update_confirmed(false, || {
+            asked = true;
+            false
+        }));
+        assert!(!asked);
     }
 
     #[tokio::test]
