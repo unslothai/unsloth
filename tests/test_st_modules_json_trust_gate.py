@@ -27,7 +27,11 @@ import sys
 
 import pytest
 
-from unsloth import FastSentenceTransformer
+# The gate runs inside sentence-transformers' module loading. The CPU repo-test shards do not
+# install it; version-compat-ci's zoo-imports-under-spoof job does, and runs this file.
+pytest.importorskip("sentence_transformers")
+
+from unsloth import FastSentenceTransformer  # noqa: E402
 
 
 MARKER = "unsloth_st_gate_marker"
