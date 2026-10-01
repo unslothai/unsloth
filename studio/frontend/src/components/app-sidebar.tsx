@@ -1072,7 +1072,25 @@ export function AppSidebar() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
-  const [canScrollDown, setCanScrollDown] = useState(false);
+  // Written to the DOM like the rail: the observer below drives it, and state there loops (#185).
+  const fadeRef = useRef<HTMLDivElement | null>(null);
+  const syncFade = useCallback((el: HTMLDivElement) => {
+    const fade = fadeRef.current;
+    if (!fade) return;
+    // Only rows count: what is left below the bottom padding. Scrolling also grows the pinned
+    // group above by a few px, which leaves that much padding out of view at the very bottom.
+    const hidden = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const visible = String(hidden > parseFloat(getComputedStyle(el).paddingBottom) + 1);
+    if (fade.dataset.visible !== visible) fade.dataset.visible = visible;
+  }, []);
+  // The footer mounts after the scroller, so the first measure lands here.
+  const attachFade = useCallback(
+    (node: HTMLDivElement | null) => {
+      fadeRef.current = node;
+      if (node && scrollRef.current) syncFade(scrollRef.current);
+    },
+    [syncFade],
+  );
   // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
   // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
   // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
@@ -1088,38 +1106,50 @@ export function AppSidebar() {
   // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
   // stable callback never re-runs. Still runs before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
+  const sectionObserverRef = useRef<MutationObserver | null>(null);
   const attachScroller = useCallback(
     (el: HTMLDivElement | null) => {
       railObserverRef.current?.disconnect();
       railObserverRef.current = null;
+      sectionObserverRef.current?.disconnect();
+      sectionObserverRef.current = null;
       scrollRef.current = el;
       // Per node: a new parent has no variable yet even at the same rail, and
       // the cache would otherwise skip the write.
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
+      syncFade(el);
       // Watch the box, not renders: the Images disclosure and the project toggles change the row count
       // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
-      // the earlier observer was not: it writes a variable, never state, so nothing feeds back.
-      const observer = new ResizeObserver(() => measureScrollRail(el));
+      // the earlier observer was not: it writes the DOM, never state, so nothing feeds back.
+      const observer = new ResizeObserver(() => {
+        measureScrollRail(el);
+        syncFade(el);
+      });
       observer.observe(el);
+      // The sections too, so the fade follows the content height, not just the box.
+      const observeSections = () => {
+        for (const section of el.children) observer.observe(section);
+      };
+      observeSections();
+      const sections = new MutationObserver(observeSections);
+      sections.observe(el, { childList: true });
       railObserverRef.current = observer;
+      sectionObserverRef.current = sections;
     },
-    [measureScrollRail],
+    [measureScrollRail, syncFade],
   );
 
-  // Driven only from onScroll + a content-change effect below. No
-  // ResizeObserver: its callback-driven setState caused a render loop (React
-  // #185). Both setters bail out when unchanged, so neither path can loop.
-  const syncScrollState = useCallback((el: HTMLDivElement) => {
-    const nextScrolled = el.scrollTop > 0;
-    setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
-    const nextCanScrollDown =
-      el.scrollHeight - el.scrollTop - el.clientHeight > 1;
-    setCanScrollDown((prev) =>
-      prev === nextCanScrollDown ? prev : nextCanScrollDown,
-    );
-  }, []);
+  // The setter bails out when unchanged, so this cannot loop.
+  const syncScrollState = useCallback(
+    (el: HTMLDivElement) => {
+      const nextScrolled = el.scrollTop > 0;
+      setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
+      syncFade(el);
+    },
+    [syncFade],
+  );
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -1688,19 +1718,6 @@ export function AppSidebar() {
       return next;
     });
   }, []);
-  // Rows the open custom sections draw. Creating, filling, hiding or folding one changes the list's
-  // height with no scroll to re-measure the bottom fade off.
-  const customSectionRowCount = useMemo(
-    () =>
-      visibleCustomSections.reduce(
-        (count, section) =>
-          collapsedSectionIds.has(section.id)
-            ? count
-            : count + (customSectionRows.get(section.id)?.length ?? 0),
-        0,
-      ),
-    [visibleCustomSections, collapsedSectionIds, customSectionRows],
-  );
   // The folders the custom sections draw, open or not: the bottom fade counts their chats.
   const customSectionProjectRecords = useMemo(
     () =>
@@ -1909,35 +1926,6 @@ export function AppSidebar() {
     }
     return map;
   }, [sortedChatsByProjectId]);
-  // Nested rows across both sections, so the bottom fade re-measures when the list height changes.
-  const projectChatRowCount = useMemo(() => {
-    // Only folders list chats, and only this organization has folders that do.
-    if (organizeBy !== "project") return 0;
-    let rows = 0;
-    for (const project of [
-      ...pinnedProjectRecords,
-      ...customSectionProjectRecords,
-      ...visibleProjectRecords,
-    ]) {
-      if (collapsedProjectIds.has(project.id)) continue;
-      const chats = sortedChatsByProjectId.get(project.id) ?? [];
-      rows += expandedChatProjectIds.has(project.id)
-        ? chats.length
-        : Math.min(chats.length, PROJECT_CHAT_LIMIT);
-      // "Show more" and an empty folder's "No chats" are rows too.
-      if (chats.length > PROJECT_CHAT_LIMIT) rows += 1;
-      if (chats.length === 0) rows += 1;
-    }
-    return rows;
-  }, [
-    organizeBy,
-    pinnedProjectRecords,
-    customSectionProjectRecords,
-    visibleProjectRecords,
-    collapsedProjectIds,
-    expandedChatProjectIds,
-    sortedChatsByProjectId,
-  ]);
 
   // Multi-select. Ids only: a row that gets deleted elsewhere drops out of
   // selectedChatItems on its own rather than leaving a ghost to act on.
@@ -2521,54 +2509,6 @@ export function AppSidebar() {
     (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
-
-  // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
-  // for short, non-scrolling lists. Guarded setState below can't loop.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const next = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
-    setCanScrollDown((prev) => (prev === next ? prev : next));
-  }, [
-    recentChatItems.length,
-    runItems.length,
-    projects.length,
-    chatOpen,
-    runsOpen,
-    pinnedOpen,
-    isStudioRoute,
-    // The update card grows the footer, so the scroll area shrinks under it.
-    showUpdateCard,
-    // Regrouping, collapsing a folder or revealing more adds and removes rows
-    // with no scroll and no collapsible animation to re-measure off.
-    projectsOpen,
-    projectChatRowCount,
-    visibleProjectRecords.length,
-    // Pinning a folder moves rows between sections, leaving both counts above unchanged.
-    pinnedProjectRecords.length,
-    // Pinning a project chat adds a Pinned row while Recents and the folder
-    // counts both stay put, so nothing else here moves.
-    pinnedChatItems.length,
-    // And with no chats in them, folders appear and disappear on their own.
-    organizeBy,
-    // Custom sections: an empty one still draws its header and hint, and folding it hides both.
-    visibleCustomSections.length,
-    collapsedSectionIds,
-    customSectionRowCount,
-    projectsSectionHidden,
-  ]);
-
-  // Resizing changes clientHeight without firing onScroll, so the fade would
-  // stay hidden while rows are still clipped. Window events only: no element
-  // observer, so this can't feed back into the loop that caused React #185.
-  useEffect(() => {
-    const onResize = () => {
-      const el = scrollRef.current;
-      if (el) syncScrollState(el);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [syncScrollState]);
 
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
@@ -5649,6 +5589,7 @@ export function AppSidebar() {
             shows fully (Gemini-style). Stops at the rail: the thumb ends its
             travel in this band and a full-width gradient washed it out. */}
         <div
+          ref={attachFade}
           aria-hidden="true"
           className={cn(
             // The scroll area hard-clips at the fade's bottom edge, so a plain ramp is still part-transparent
@@ -5658,7 +5599,8 @@ export function AppSidebar() {
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",
-            canScrollDown ? "opacity-100" : "opacity-0",
+            // data-visible is written by syncFade, not React.
+            "opacity-0 data-[visible=true]:opacity-100",
           )}
         />
         {/* Collapsed: cog sits one nav-row step above the avatar. */}
