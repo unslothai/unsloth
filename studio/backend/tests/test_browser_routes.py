@@ -245,7 +245,10 @@ def test_a_bot_check_is_reported_as_one(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         _call(browser_mod.BrowserFetchRequest(url = "https://protected.example/"))
     assert caught.value.status_code == 502
-    assert caught.value.detail == {"message": "Failed to fetch URL: HTTP 403 Forbidden", "botCheck": True}
+    assert caught.value.detail == {
+        "message": "Failed to fetch URL: HTTP 403 Forbidden",
+        "botCheck": True,
+    }
 
 
 def test_bot_checks_are_told_apart_from_plain_refusals():
