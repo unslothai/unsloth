@@ -94,6 +94,17 @@ def _cli_is_inside(prefix: str) -> bool:
         return False
 
 
+def _reset_password_command_on_path() -> str:
+    """The reset command in its PATH form, naming nothing about this host.
+
+    The absolute forms below are for the person sitting at the machine. This one is the only
+    shape safe to put in a response body, since an unauthenticated 401 is readable by any origin.
+    """
+    if os.name == "nt":
+        return "unsloth.cmd studio reset-password"
+    return "unsloth studio reset-password"
+
+
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
@@ -132,9 +143,7 @@ def _reset_password_command() -> str:
                 return f"{shlex.quote(exe)} studio reset-password"
     except Exception:
         pass
-    if os.name == "nt":
-        return "unsloth.cmd studio reset-password"
-    return "unsloth studio reset-password"
+    return _reset_password_command_on_path()
 
 
 # Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's typos from blocking others; the
@@ -209,6 +218,10 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
+# /desktop-login's own slot, NOT _UNKNOWN_LOGIN_USER: /login 429s on that bucket, so sharing it lets an
+# unauthenticated caller lock out every account with five attempts a minute, and behind a tunnel every
+# visitor is the same cloudflared peer.
+_DESKTOP_LOGIN_USER = "\x00desktop-login"
 
 
 def _trust_forwarded_for() -> bool:
@@ -278,6 +291,14 @@ def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
     return (_client_ip(request), _UNKNOWN_LOGIN_USER)
+
+
+def _desktop_login_key(request: Request | None) -> tuple[str, str]:
+    # The address is suffixed as well as the username, so the per-IP aggregate and its overflow shard are
+    # this route's own too. Sharing those with /login couples them in the direction that matters most:
+    # cloudflared and the desktop shell both reach the backend over loopback, so they are ONE address, and
+    # thirty password guesses through the tunnel would 429 the shell's valid secret exchange.
+    return (_client_ip(request) + _DESKTOP_LOGIN_USER, _DESKTOP_LOGIN_USER)
 
 
 def _prune_bucket(bucket: deque, now: float) -> None:
@@ -433,16 +454,24 @@ def auth_status() -> AuthStatusResponse:
 
 
 def _login_failure_detail() -> str:
-    """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted."""
+    """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted.
+
+    PATH form only: this body is produced before any credential is verified and the browser-served
+    default resolves CORS to ["*"], so an absolute path built from ``sys.executable`` would hand the
+    local account name and the install layout to any page the user happens to have open. The 429
+    beside this one withholds the client IP for the same reason. A bare ``unsloth`` does not resolve
+    from every shell, so the hint says which environment to run it in; the exact absolute command is
+    printed on the host's own console by run.py, where naming the install is the point.
+    """
+    command = _reset_password_command_on_path()
+    where = "in the environment Unsloth is installed in"
     if policy.installation_is_multi_user():
         return (
             "Incorrect username, password or setup code. Ask the installation owner to reset "
-            f"the account, by running this on the Unsloth Studio host: {_reset_password_command()} "
+            f"the account, by running this on the Unsloth Studio host {where}: {command} "
             "--username <name>"
         )
-    return (
-        f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}"
-    )
+    return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
 
 
 @router.post("/login", response_model = Token)
@@ -520,16 +549,46 @@ async def logout(
     return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
+# Sync def (not async), as /identity is: validating the secret spends a 100k-iteration PBKDF2 and a
+# SQLite transaction, and on the event loop that is the thread serving every other request.
 @router.post("/desktop-login", response_model = Token)
-async def desktop_login(payload: DesktopLoginRequest) -> Token | Response:
-    """Exchange a local desktop secret for normal admin-subject tokens."""
+def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
+    """Exchange a local desktop secret for normal admin-subject tokens. Per-IP rate-limited.
+
+    Throttled because the route takes no credential and the KDF runs before an attacker-chosen
+    secret can be rejected, so without it one unauthenticated request buys unbounded work. On its
+    own account bucket, contributing to the shared per-IP aggregate exactly as /login does.
+    """
+    # Before the bucket is READ, not just before it is written: the shipped shell probes this route with a
+    # deliberately invalid secret on every preflight, every 15s watchdog tick and once per live candidate
+    # port, and reads anything but 401 as a backend it cannot manage (src-tauri/src/preflight/backend.rs,
+    # src-tauri/src/desktop_backend_owner.rs).
+    if not storage.desktop_secret_is_well_formed(payload.secret):
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Desktop authentication failed",
+        )
+
+    key = _desktop_login_key(request)
+    blocked_for = _login_blocked(key)
+    if blocked_for > 0:
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            headers = {"Retry-After": str(blocked_for)},
+        )
+
     verified = storage.validate_desktop_secret_with_credential(payload.secret)
     if verified is None:
+        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
+    # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
+    # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
+    _clear_login_bucket(key)
 
     from auth.policy import installation_is_multi_user
 

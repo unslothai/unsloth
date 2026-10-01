@@ -32,12 +32,12 @@ const hydrate = new Function(
 
 const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 const rollbackStart = runtime.indexOf(
-  "n_parallel: stateBeforeUnload.loadedNParallel,",
+  "n_parallel: rollbackState.loadedNParallel,",
 );
 const rollbackEnd = runtime.indexOf("// omit unset fields:", rollbackStart);
 assert.ok(rollbackStart >= 0 && rollbackEnd > rollbackStart);
 const rollback = new Function(
-  "stateBeforeUnload",
+  "rollbackState",
   `return { ${runtime.slice(rollbackStart, rollbackEnd)} };`,
 ) as (state: State) => {
   reasoning_budget: number;

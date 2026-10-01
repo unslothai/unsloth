@@ -464,6 +464,10 @@ def repo_remote_code_files(
             return files
 
         from huggingface_hub import hf_hub_download, list_repo_files
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
+        list_repo_files = anonymous_retrying(list_repo_files)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_probe import hf_file_definitely_absent
 
@@ -600,6 +604,9 @@ def external_auto_map_repos(
             return repos
 
         from huggingface_hub import hf_hub_download
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_probe import hf_file_definitely_absent
 
@@ -633,6 +640,10 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
     from pathlib import Path
 
     from huggingface_hub import hf_hub_download, list_repo_files
+    from hub.utils.hf_tokens import anonymous_retrying
+
+    hf_hub_download = anonymous_retrying(hf_hub_download)
+    list_repo_files = anonymous_retrying(list_repo_files)
 
     entries: dict = {}
     for repo, fn in refs:

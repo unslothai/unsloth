@@ -148,7 +148,6 @@ def test_fork_inherits_the_snapshot(tmp_path, monkeypatch):
         source_thread_id = "thread-1",
         branch_message_id = "message-1",
         new_thread_id = "thread-2",
-        new_title = "Fork",
         created_at = 1_700_000_000_002,
         id_factory = lambda: "message-2",
     )

@@ -14,16 +14,23 @@ import {
   VIDEO_CATALOG,
   artifactForRepoId,
   catalogToModelOptions,
+  curatedArtifactFit,
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
   groupForRepoId,
   pickDefaultArtifact,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import {
+  curatedBudget,
+  curatedBudgetText,
+} from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
-const Z_TURBO = "Tongyi-MAI/Z-Image-Turbo";
-const QWEN_IMAGE = "Qwen/Qwen-Image";
-const QWEN_2512 = "Qwen/Qwen-Image-2512";
+// The bf16 rows are the unsloth mirrors of the vendor repos.
+const Z_TURBO = "unsloth/Z-Image-Turbo";
+const QWEN_IMAGE = "unsloth/Qwen-Image";
+const QWEN_2512 = "unsloth/Qwen-Image-2512";
+const QWEN_21 = "unsloth/Qwen-Image-2.1";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 
@@ -56,19 +63,19 @@ test("the catalog states the hosted checkpoint each official row would be fetche
 
 test("the fit verdict is the quantised resident size on a host that runs a scheme", () => {
   assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40)),
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24)),
     false,
   );
   assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40, ["fp8"])),
-    true,
-  );
-  assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40, ["int8"])),
-    true,
-  );
-  assert.equal(
     curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24, ["fp8"])),
+    true,
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24, ["int8"])),
+    true,
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(16, ["fp8"])),
     false,
   );
 });
@@ -111,7 +118,7 @@ test("the 2512 pick is judged by the checkpoint the backend seeds for it, not by
 
 test("a host with no scheme, and a row with no hosted checkpoint, are unchanged", () => {
   assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40, [])),
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24, [])),
     false,
   );
   for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
@@ -127,20 +134,20 @@ test("the router sends a card that only fits the quantised form to the official 
   const group = groupForRepoId(Z_TURBO, IMAGE_CATALOG);
   assert.ok(group);
   assert.equal(
-    pickDefaultArtifact(group, { ...onCard(40), isDownloaded: notDownloaded })
+    pickDefaultArtifact(group, { ...onCard(24), isDownloaded: notDownloaded })
       .format,
     "bnb-4bit",
   );
   assert.equal(
     pickDefaultArtifact(group, {
-      ...onCard(40, ["fp8"]),
+      ...onCard(24, ["fp8"]),
       isDownloaded: notDownloaded,
     }).repoId,
     Z_TURBO,
   );
   assert.equal(
     pickDefaultArtifact(group, {
-      ...onCard(24, ["fp8"]),
+      ...onCard(16, ["fp8"]),
       isDownloaded: notDownloaded,
     }).format,
     "bnb-4bit",
@@ -272,4 +279,75 @@ test("the scheme reaches the name and never the chip", () => {
       }
     }
   }
+});
+
+// Show the verdict's estimate, not the dense catalog size.
+test("Qwen-Image-2.1 is badged with the size its verdict used", () => {
+  const card = onCard(22.49, ["int8", "fp8"]);
+  const fit = curatedArtifactFit(QWEN_21, IMAGE_CATALOG, card);
+  assert.ok(fit?.sizeGb !== undefined);
+  assert.ok(Math.abs(fit.sizeGb - 27.01) < 0.01, String(fit.sizeGb));
+  assert.equal(fit.allowanceGb, 22.49 * 0.7);
+  assert.equal(fit.fits, false);
+  assert.equal(curatedArtifactFitsDevice(QWEN_21, IMAGE_CATALOG, card), fit.fits);
+  // No dense-quant scheme reported: the dense figure.
+  assert.equal(curatedArtifactFit(QWEN_21, IMAGE_CATALOG, onCard(22.49, []))?.sizeGb, 33);
+});
+
+test("a transcription row judged on RAM names RAM as the budget's device", () => {
+  const WHISPER = "unsloth/whisper-large-v3";
+  const onRam = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 1, systemRamGb: 5 });
+  assert.equal(onRam?.fits, false);
+  assert.equal(onRam?.device, "RAM");
+  assert.equal(onRam?.deviceGb, 5);
+  assert.equal(onRam?.allowanceGb, 5 * 0.7);
+  const onGpu = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 5, systemRamGb: 1 });
+  assert.equal(onGpu?.device, "GPU");
+  assert.equal(onGpu?.deviceGb, 5);
+});
+
+test("the over-budget text never shows the size below the budget it exceeds", () => {
+  const text = (id: string, gpuGb: number) => {
+    const fit = curatedArtifactFit(id, IMAGE_CATALOG, onCard(gpuGb, ["int8", "fp8"]));
+    assert.ok(fit?.sizeGb !== undefined && fit.fits === false);
+    const budget = curatedBudget(fit);
+    assert.ok(budget);
+    return curatedBudgetText(Math.round(fit.sizeGb), gpuGb, budget);
+  };
+  // 13.50 GB rounds to 13, under the 13.3 budget, so it is shown rounded up.
+  assert.equal(
+    text(Z_TURBO, 19),
+    "Needs ~13.5GB for weights (budget: ~13.3GB, 70% of a 19GB GPU)",
+  );
+  // A whole 4 GB against a 3.99 allowance: the budget is rounded down so 4.0 still reads as over.
+  const whisper = curatedArtifactFit("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 1,
+    systemRamGb: 5.7,
+  });
+  assert.ok(whisper?.sizeGb !== undefined && whisper.fits === false);
+  const whisperBudget = curatedBudget(whisper);
+  assert.ok(whisperBudget);
+  assert.equal(
+    curatedBudgetText(4, 1, whisperBudget),
+    "Needs ~4.0GB for weights (budget: ~3.9GB, 70% of 5.7GB available RAM)",
+  );
+  assert.equal(
+    text(QWEN_21, 22.49),
+    "Needs ~27GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
+  );
+});
+
+test("Qwen-Image-2.1 routes every card as on main", () => {
+  const group = groupForRepoId(QWEN_21, IMAGE_CATALOG);
+  assert.ok(group);
+  const pick = (gpuGb: number) =>
+    pickDefaultArtifact(group, {
+      ...onCard(gpuGb, ["int8"]),
+      isDownloaded: notDownloaded,
+    }).repoId;
+  // Include 36 GiB to catch changes just below the existing routing threshold.
+  assert.equal(pick(24), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(31.84), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(36), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(39.5), QWEN_21);
 });
