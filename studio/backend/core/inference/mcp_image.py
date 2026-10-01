@@ -15,6 +15,7 @@ import binascii
 import copy
 import io
 import json
+import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
 from urllib.parse import unquote
@@ -24,6 +25,11 @@ WITHHELD_RESULT = (
     "[The tool's reply contained the attached image, so it was withheld from the model.]"
 )
 _PROBE_BYTES = 48
+# Any inline image a call carrying the user's image returns may be a resized copy of it.
+_IMAGE_DATA_URL = re.compile(
+    r"data:image/[\w.+-]+;base64,[A-Za-z0-9+/_=-]+(?:(?:\\[rn]|\r?\n)[A-Za-z0-9+/_=-]+)*",
+    re.IGNORECASE,
+)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # Pillow reports a JPEG carrying extra pictures (phone HDR / portrait shots) as MPO.
 _FORMATS = {"image/png": ("PNG",), "image/jpeg": ("JPEG", "MPO"), "image/webp": ("WEBP",)}
@@ -53,6 +59,7 @@ class McpImage:
         for tail in tails:
             head = head.removesuffix(f"data:{self.mime};base64,") + "[attached image]"
             head += tail.removeprefix("==").removeprefix("=")
+        head = _IMAGE_DATA_URL.sub("[image withheld]", head)
         return WITHHELD_RESULT if self._reencoded_in(head) else head
 
     def _reencoded_in(self, text: str) -> bool:

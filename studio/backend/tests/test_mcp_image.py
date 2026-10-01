@@ -260,6 +260,13 @@ def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
 
 
+def test_inline_images_in_an_image_calls_reply_are_withheld():
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    resized = base64.b64encode(_png_bytes("JPEG")).decode()
+    out = image.redact(f'{{"match": "Cowboy Bebop", "thumb": "data:image/jpeg;base64,{resized}"}}')
+    assert resized not in out and out == '{"match": "Cowboy Bebop", "thumb": "[image withheld]"}'
+
+
 @pytest.mark.parametrize(
     "encode",
     [
