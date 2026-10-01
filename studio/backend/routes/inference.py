@@ -440,11 +440,12 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
-def _continue_final_message(payload) -> bool:
+def _continue_final_message(payload, *, thought: bool = False) -> bool:
     """Whether this request resumes the trailing assistant turn.
 
     Nothing resumable (no assistant turn, or one holding tool calls) degrades to an
-    ordinary new turn rather than erroring.
+    ordinary new turn rather than erroring. ``thought`` also resumes a turn holding only
+    ``reasoning_content``, which only llama-server can continue inside its reasoning block.
     """
     if not getattr(payload, "continue_final_message", None):
         return False
@@ -462,8 +463,8 @@ def _continue_final_message(payload) -> bool:
         return False
     content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
     if isinstance(content, str):
-        return bool(content)
-    if isinstance(content, list):
+        has_text = bool(content)
+    elif isinstance(content, list):
         # No resume point inside an image or tool-result part.
         texts = []
         for part in content:
@@ -473,8 +474,31 @@ def _continue_final_message(payload) -> bool:
             texts.append(
                 part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
             )
-        return any(texts)
-    return False
+        has_text = any(texts)
+    else:
+        has_text = False
+    if has_text or not thought:
+        return has_text
+    reasoning = (
+        last.get("reasoning_content")
+        if isinstance(last, dict)
+        else getattr(last, "reasoning_content", None)
+    )
+    return isinstance(reasoning, str) and bool(reasoning.strip())
+
+
+def _reject_unresumable_thought(payload, llama_backend, reject) -> None:
+    """An older llama-server would treat the thought as finished and answer after it."""
+    if (
+        _continue_final_message(payload, thought = True)
+        and not _continue_final_message(payload)
+        and not getattr(llama_backend, "_resumes_thoughts", True)
+    ):
+        raise reject(
+            400,
+            "This llama.cpp build cannot resume a response that stopped mid-thought. "
+            "Update Unsloth Studio for a newer llama.cpp, or use Retry.",
+        )
 
 
 def _reject_audio_output_continuation(payload) -> None:
@@ -2520,7 +2544,7 @@ def _count_gguf_admission_prompt(
 ) -> int:
     """Exact prompt count plus media allowance; the whole pool if counting fails
     (the character estimate undercounts numeric text, #10671)."""
-    from core.inference.chat_template_helpers import trailing_assistant_text
+    from core.inference.chat_template_helpers import trailing_assistant_resume_kind
 
     budget = _openai_llama_admission_budget(llama_backend) or 0
     try:
@@ -2535,8 +2559,8 @@ def _count_gguf_admission_prompt(
             chat_template_kwargs = llama_backend._request_reasoning_kwargs(
                 payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
             ),
-            continue_final_message = _continue_final_message(payload)
-            and bool(trailing_assistant_text(messages)),
+            continue_final_message = _continue_final_message(payload, thought = True)
+            and trailing_assistant_resume_kind(messages) is not None,
             **({"should_abort": cancel_event.is_set} if cancel_event is not None else {}),
         )
         if type(count) is not int or count <= 0:
@@ -27375,6 +27399,7 @@ async def produce_openai_chat_completions(
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
+        _reject_unresumable_thought(payload, llama_backend, _reject)
         if payload.audio_base64:
             # This path forwards the request verbatim, so the transcoded audio
             # never gets injected. (The agentic tool loop below does support
@@ -27543,6 +27568,7 @@ async def produce_openai_chat_completions(
         # has to hand it these: seeded empty it counted only the current run and let a
         # replayed eight sit beside a fresh eight.
         _gguf_replayed_image_parts: list = []
+        _reject_unresumable_thought(payload, llama_backend, _reject)
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
             llama_backend.is_vision,
@@ -27783,7 +27809,9 @@ async def produce_openai_chat_completions(
             # the model's output to the partial it holds, so trimming the tail here would
             # resume from a different boundary.
             _gguf_continue_target = (
-                gguf_messages[-1] if _continue_final_message(payload) and gguf_messages else None
+                gguf_messages[-1]
+                if _continue_final_message(payload, thought = True) and gguf_messages
+                else None
             )
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
@@ -27818,7 +27846,7 @@ async def produce_openai_chat_completions(
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
-                    continue_final_message = _continue_final_message(payload),
+                    continue_final_message = _continue_final_message(payload, thought = True),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     tool_choice = payload.tool_choice,
@@ -28663,7 +28691,7 @@ async def produce_openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
-                continue_final_message = _continue_final_message(payload),
+                continue_final_message = _continue_final_message(payload, thought = True),
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
@@ -40054,7 +40082,7 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
-    if _continue_final_message(payload):
+    if _continue_final_message(payload, thought = True):
         # llama-server rejects both flags set true.
         body["continue_final_message"] = True
         body["add_generation_prompt"] = False
