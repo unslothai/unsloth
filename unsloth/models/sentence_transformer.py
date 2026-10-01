@@ -1301,10 +1301,37 @@ class FastSentenceTransformer(FastModel):
     # some versions, so an allowed in-namespace "type" reaches them. Prefixes are upstream's own
     # rules, applied unconditionally: util.import_module_class is not a version test, since 5.5
     # exports it while its WordEmbeddings.load still calls import_from_string on tokenizer_class.
-    _MODULE_CONFIG_CLASS_REFS = (
-        ("activation_function", "torch."),
-        ("tokenizer_class", "sentence_transformers."),
-    )
+    # Which config key each loader resolves as a dotted import path, keyed by the class
+    # that resolves it. By class and not by key name: SpladePooling lists
+    # activation_function in its own config_keys too, but the value there is the literal
+    # "relu" or "log1p_relu" and it is compared, never imported (SpladePooling.py:
+    # `if self.activation_function == "log1p_relu"`). Matching on the key name alone
+    # refused every SPLADE sparse model for naming a value that no loader imports.
+    #
+    # Complete for the module path as of 5.1: the only config-driven import_from_string
+    # calls in the package are Dense.load on activation_function, WordEmbeddings.load on
+    # tokenizer_class, Router.load on types, and SentenceTransformer's own modules.json
+    # type, which _resolve_module_class covers. Asym is an alias of Router from 5.0
+    # (`Asym = Router`), so it arrives here as Router; the entry is kept for versions
+    # where it is its own class.
+    _MODULE_CONFIG_CLASS_REFS = {
+        "Dense": (("activation_function", "torch."),),
+        "WordEmbeddings": (("tokenizer_class", "sentence_transformers."),),
+        "Router": (("types", "sentence_transformers."),),
+        "Asym": (("types", "sentence_transformers."),),
+    }
+
+    @staticmethod
+    def _class_ref_rules(module_class):
+        """The key rules for this class, following its bases so a subclass is covered."""
+        rules = []
+        for ancestor in getattr(module_class, "__mro__", (module_class,)):
+            for rule in FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS.get(
+                getattr(ancestor, "__name__", ""), ()
+            ):
+                if rule not in rules:
+                    rules.append(rule)
+        return tuple(rules)
 
     # config_file_name only exists from 5: on 3.x/4.x these classes open their file by name.
     _LEGACY_MODULE_CONFIG_FILES = {
@@ -1320,6 +1347,13 @@ class FastSentenceTransformer(FastModel):
         load_path, class_ref, model_name, trust_remote_code, module_class
     ):
         if trust_remote_code:
+            return
+
+        # Nothing to check unless this class is one that resolves a dotted path out of its
+        # own config. Every other module reads plain values, so looking for these keys in
+        # its config found a name nobody imports and refused a load that works.
+        rules = FastSentenceTransformer._class_ref_rules(module_class)
+        if not rules:
             return
 
         # Read what the loader will read: each module names its own file (Router
@@ -1353,18 +1387,18 @@ class FastSentenceTransformer(FastModel):
             if not isinstance(config, dict):
                 continue
 
-            refs += [
-                (key, config[key], prefix)
-                for key, prefix in FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS
-                if isinstance(config.get(key), str)
-            ]
-            types = config.get("types")
-            if isinstance(types, dict):
-                refs += [
-                    ("types", value, "sentence_transformers.")
-                    for value in types.values()
-                    if isinstance(value, str)
-                ]
+            for key, prefix in rules:
+                if key == "types":
+                    # Router keeps a mapping of route name to class, not a single ref.
+                    types = config.get("types")
+                    if isinstance(types, dict):
+                        refs += [
+                            ("types", value, prefix)
+                            for value in types.values()
+                            if isinstance(value, str)
+                        ]
+                elif isinstance(config.get(key), str):
+                    refs.append((key, config[key], prefix))
 
         for key, value, prefix in refs:
             if not value.startswith(prefix):

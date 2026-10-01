@@ -356,3 +356,105 @@ def test_every_load_route_records_the_consent_it_used():
     assert source.count("_unsloth_trust_remote_code = trust_remote_code") == source.count(
         "return st_model"
     )
+
+
+def _write_module_config(folder, name, payload):
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / name).write_text(json.dumps(payload), encoding = "utf8")
+    return folder
+
+
+def test_a_literal_activation_on_a_pooling_module_is_not_a_class_ref(tmp_path):
+    """SpladePooling's activation_function is an enum it compares, not a path it imports.
+
+    It lists activation_function in its own config_keys and saves "relu" or "log1p_relu"
+    there, then does `if self.activation_function == "log1p_relu"`. Keying the check on
+    the key name alone refused both values for not starting with "torch.", so no SPLADE
+    sparse model could load without the user turning on remote code for no reason.
+    """
+
+    class SpladePooling:
+        config_file_name = "config.json"
+
+    folder = _write_module_config(
+        tmp_path / "1_SpladePooling",
+        "config.json",
+        {"pooling_strategy": "max", "activation_function": "log1p_relu"},
+    )
+    FastSentenceTransformer._check_module_config_class_refs(
+        str(folder),
+        "sentence_transformers.sparse_encoder.models.SpladePooling",
+        "acme/sparse",
+        False,
+        SpladePooling,
+    )
+
+
+def test_dense_still_refuses_an_activation_outside_torch(tmp_path):
+    """Dense.load does `import_from_string(config["activation_function"])()`, so this one
+    is a real import and the scoping must not have let it through."""
+    st_models = pytest.importorskip("sentence_transformers.models")
+
+    folder = _write_module_config(
+        tmp_path / "2_Dense",
+        "config.json",
+        {"in_features": 8, "out_features": 8, "activation_function": "evil_pkg.Boom"},
+    )
+    with pytest.raises(ValueError, match = "evil_pkg.Boom"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(folder),
+            "sentence_transformers.models.Dense",
+            "acme/embedder",
+            False,
+            st_models.Dense,
+        )
+
+
+def test_word_embeddings_still_refuses_a_foreign_tokenizer_class(tmp_path):
+    """WordEmbeddings.load does `import_from_string(config.pop("tokenizer_class"))`."""
+    st_models = pytest.importorskip("sentence_transformers.models")
+    if getattr(st_models, "WordEmbeddings", None) is None:
+        pytest.skip("this sentence-transformers has no WordEmbeddings")
+
+    folder = _write_module_config(
+        tmp_path / "0_WordEmbeddings",
+        "config.json",
+        {"tokenizer_class": "evil_pkg.Tok", "max_seq_length": 8},
+    )
+    with pytest.raises(ValueError, match = "evil_pkg.Tok"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(folder),
+            "sentence_transformers.models.WordEmbeddings",
+            "acme/embedder",
+            False,
+            st_models.WordEmbeddings,
+        )
+
+
+def test_a_subclass_inherits_its_parents_rules(tmp_path):
+    """The rules follow the bases, so a version that subclasses Dense is still gated."""
+    st_models = pytest.importorskip("sentence_transformers.models")
+
+    class TunedDense(st_models.Dense):
+        pass
+
+    assert ("activation_function", "torch.") in FastSentenceTransformer._class_ref_rules(TunedDense)
+
+
+def test_every_config_driven_import_in_sentence_transformers_has_a_rule():
+    """The scoping is only safe if the list of loaders is complete.
+
+    Asym is an alias of Router from 5.0, so it reports Router's name and is covered by
+    that entry rather than its own. This asserts the set of classes, so a version that
+    adds another config-driven import shows up here as a missing key rather than as a
+    silently unchecked path.
+    """
+    covered = set(FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS)
+    assert covered == {"Dense", "WordEmbeddings", "Router", "Asym"}
+
+    st_models = pytest.importorskip("sentence_transformers.models")
+    for name in ("Dense", "WordEmbeddings", "Router"):
+        klass = getattr(st_models, name, None)
+        if klass is None:
+            continue
+        assert FastSentenceTransformer._class_ref_rules(klass), name
