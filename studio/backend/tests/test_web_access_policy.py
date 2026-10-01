@@ -339,7 +339,7 @@ def _raise_if_search_backend(monkeypatch):
         raise AssertionError("web_search backend must not run without query or url")
 
     monkeypatch.setattr(tools, "_fetch_page_text", boom)
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = boom))
+    monkeypatch.setattr("ddgs.DDGS", boom)
 
 
 @pytest.mark.parametrize(
@@ -385,11 +385,12 @@ def test_web_search_heals_query_aliases(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             queries.append(query)
             return [{"title": "T", "href": "https://example.com/1", "body": "B"}]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     for arguments in (
         {"q": "unsloth studio"},
         {"search_query": "unsloth studio"},
@@ -432,10 +433,11 @@ def test_web_search_query_mode_still_searches(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "Hit", "href": "https://arxiv.org/abs/1", "body": "Ok"}]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools.execute_tool("web_search", {"query": "latest paper"})
     assert "https://arxiv.org/abs/1" in result
     assert not is_tool_error(result)
