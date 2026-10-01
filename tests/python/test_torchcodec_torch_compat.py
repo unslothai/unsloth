@@ -1673,6 +1673,17 @@ def test_a_full_query_authenticated_torch_index_stays_verbatim(monkeypatch):
     assert mod._explicit_torch_index_family() == "cu130"
 
 
+def test_a_multi_segment_family_classifies_by_its_leaf(monkeypatch):
+    """install.sh accepts FAMILY=nightly/cu128; it is a CUDA pin, not an unknown one."""
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "nightly/cu128")
+    mod = _reload_install_python_stack()
+    assert mod._explicit_torch_index_family() == "cu128"
+    assert mod._explicit_unknown_family_torch_index_url() is None
+    assert mod._explicit_cuda_torch_index_url() == f"{mod._PYTORCH_WHL_BASE}/nightly/cu128"
+    assert mod._detect_cuda_torch_index_url() == f"{mod._PYTORCH_WHL_BASE}/nightly/cu128"
+    assert mod._expected_torch_flavor_tag() == "cu128"
+
+
 def test_every_pytorch_mirror_leaf_goes_through_the_guarded_helper():
     """A new direct concatenation would recreate #10516 on whichever path added it."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")

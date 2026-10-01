@@ -4069,7 +4069,7 @@ def _driver_cuda_torch_flavor_tag() -> str:
     _detect_cuda_torch_index_family mirrors setup.ps1::Get-PytorchCudaTag, ancient-driver "cpu"
     and pre-Turing cap included, so its leaf asks the same question the handover did.
     """
-    leaf = (_detect_cuda_torch_index_family() or "").strip().lower()
+    leaf = _torch_index_leaf(_detect_cuda_torch_index_family() or "")
     return leaf if _is_cuda_family_leaf(leaf) else ""
 
 
@@ -4098,8 +4098,9 @@ def _explicit_torch_index_family() -> "str | None":
     url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if url:
         return _torch_index_leaf(_trim_index_path_slashes(url))
+    # Leaf, not the whole value: install.sh accepts a multi-segment FAMILY (nightly/cu128).
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/")
-    return family.lower() or None
+    return _torch_index_leaf(family) if family else None
 
 
 def _explicit_torch_index_is_unusable() -> bool:
@@ -4414,7 +4415,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         if not _sms or _span_covers(_span, _sms):
             return  # healthy CUDA torch this host can use
         # Never trade one partial family for another, or reinstall the same one forever.
-        _target = (_detect_cuda_torch_index_family() or "").lower()
+        _target = _torch_index_leaf(_detect_cuda_torch_index_family() or "")
         _target_span = _cuda_family_sm_range(_target)
         if _target_span is None or not _span_covers(_target_span, _sms):
             return
@@ -4424,7 +4425,9 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     elif (
         _marker == "cpu"
         and not _deliberate_cpu_torch()
-        and _is_cuda_family_leaf((_detect_cuda_torch_index_family(known_only = True) or "").lower())
+        and _is_cuda_family_leaf(
+            _torch_index_leaf(_detect_cuda_torch_index_family(known_only = True) or "")
+        )
     ):
         # A CPU wheel nobody asked for on an NVIDIA host whose driver is known to run a CUDA
         # wheel (the selector's cu126 default for an unreadable driver is not evidence): a
@@ -5057,7 +5060,7 @@ def _expected_torch_flavor_tag() -> str:
     # An absent NVIDIA GPU with no pin means no CUDA expectation exists to enforce.
     if _explicit_torch_index_family() is None and not _has_usable_nvidia_gpu():
         return ""
-    return (_detect_cuda_torch_index_family() or "").lower()
+    return _torch_index_leaf(_detect_cuda_torch_index_family() or "")
 
 
 def _expected_torch_flavor_is_explicit() -> bool:
