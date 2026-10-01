@@ -60,6 +60,8 @@ _NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 # GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+# Read on its own: the only caller wants just this number, on every settings change.
+_N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 # Cache the embedded speculative-head count separately for discovery, launch, and sizing.
@@ -176,6 +178,26 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
             except StopIteration:
                 break
         _DIMS_CACHE[key] = result
+    return result
+
+
+def read_gguf_embedding_length(path: str) -> Optional[int]:
+    """Return the cached ``{arch}.embedding_length`` value, if readable."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _N_EMBD_CACHE:
+            return _N_EMBD_CACHE[key]
+    parsed = _parse_gguf_arch_uints(path, frozenset({"embedding_length"}))
+    result = (parsed or {}).get("embedding_length")
+    with _CACHE_LOCK:
+        while len(_N_EMBD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _N_EMBD_CACHE.pop(next(iter(_N_EMBD_CACHE)))
+            except StopIteration:
+                break
+        _N_EMBD_CACHE[key] = result
     return result
 
 
@@ -866,6 +888,13 @@ def read_mmproj_projector_type(path: str) -> Optional[str]:
     return _read_gguf_string(path, "clip.projector_type")
 
 
+def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
+    """Return the image tower family, falling back to the single-tower key."""
+    return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
+        path, "clip.projector_type"
+    )
+
+
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:
     """``clip.has_vision_encoder`` from an mmproj GGUF: ``True``/``False`` if
     present, ``None`` if absent/unreadable."""
@@ -978,6 +1007,26 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     if not weight_slug or not projector_slug:
         return False
     return _slug_extends_base(weight_slug, projector_slug)
+
+
+def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
+    """Gemma 4 only: pair by projector type + projection dim, not branding. None = unknown."""
+    if read_gguf_architecture(weight_path) != "gemma4":
+        return None, ""
+    projector_type = read_mmproj_vision_projector_type(mmproj_path)
+    if projector_type != "gemma4v":
+        return None, ""
+    embedding_length = read_gguf_embedding_length(weight_path)
+    dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
+    projection_dim = dims.get("vision.projection_dim")
+    if not embedding_length or not projection_dim:
+        return None, ""
+    if embedding_length != projection_dim:
+        return False, (
+            f"gemma4.embedding_length {embedding_length} != "
+            f"clip.vision.projection_dim {projection_dim}"
+        )
+    return True, ""
 
 
 def pairing_score(

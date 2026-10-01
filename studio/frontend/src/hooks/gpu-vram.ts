@@ -14,6 +14,9 @@ export interface MemoryTotalDevice {
   shared_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives
+   *  as `unified_memory: true, shared_memory: false`. */
+  unified_memory?: boolean;
 }
 
 export interface GpuMemoryTotalsGb {
@@ -27,6 +30,13 @@ export interface VramReportingGpu {
   /** Used VRAM across the visible GPUs when no single device's usage could be
    * attributed. Windows ROCm only; null everywhere else. See #7452. */
   vram_used_gb_aggregate?: number | null;
+}
+
+function sharesHostMemoryDevice(device: MemoryTotalDevice): boolean {
+  return sharesHostMemory({
+    sharedMemory: device.shared_memory === true,
+    unifiedMemory: device.unified_memory === true,
+  });
 }
 
 /** Sum dedicated VRAM while counting a shared host-memory pool only once. Devices arrive rounded to 2dp, so
@@ -45,13 +55,14 @@ export function gpuMemoryTotalsGb(
     const total = device.memory_total_gb ?? 0;
     return Number.isFinite(total) && total > 0 ? total : 0;
   };
+  // A no-op for callers that already fold on their way in (use-gpu-info, memory-fit).
   const dedicatedDevices = roundToDevicePrecision(
     devices
-      .filter((device) => !device.shared_memory)
+      .filter((device) => !sharesHostMemoryDevice(device))
       .reduce((sum, device) => sum + size(device), 0),
   );
   const sharedPool = devices
-    .filter((device) => device.shared_memory)
+    .filter(sharesHostMemoryDevice)
     .reduce(
       (totals, device) => {
         const total = size(device);
@@ -63,14 +74,26 @@ export function gpuMemoryTotalsGb(
           ? Math.min(total, hostBackedReported as number)
           : total;
         return {
-          hostBacked: Math.max(totals.hostBacked, hostBacked),
+          // `shared_memory` means "this budget IS the host pool", so several are views
+          // of one and the largest is it. `unified_memory` alone means only shared with
+          // its OWN cpu: a pool per socket, and collapsing those reports MI300A as one card.
+          hostBacked:
+            device.shared_memory === true
+              ? Math.max(totals.hostBacked, hostBacked)
+              : totals.hostBacked,
+          perDevice:
+            device.shared_memory === true
+              ? totals.perDevice
+              : totals.perDevice + hostBacked,
           reserved:
             totals.reserved + (hostBackedKnown ? total - hostBacked : 0),
         };
       },
-      { hostBacked: 0, reserved: 0 },
+      { hostBacked: 0, perDevice: 0, reserved: 0 },
     );
-  const shared = roundToDevicePrecision(sharedPool.hostBacked);
+  const shared = roundToDevicePrecision(
+    sharedPool.hostBacked + sharedPool.perDevice,
+  );
   const dedicated = roundToDevicePrecision(
     dedicatedDevices + sharedPool.reserved,
   );
@@ -136,6 +159,12 @@ function budgetedGpuMemoryGb(
   let partialSharedDemand = 0;
   let fullySharedDemand = 0;
   let sharedPool = 0;
+  // The same split `gpuMemoryTotalsGb` makes, for the same reason: `shared_memory`
+  // devices are views of ONE host pool and collapse, while `unified_memory`-only
+  // devices are a pool per socket and stay additive. Without this the capacity path
+  // answers 48 GiB for the inventory the totals path calls 96.
+  let perDevicePool = 0;
+  let perDeviceDemand = 0;
   for (const device of devices) {
     const total =
       Number.isFinite(device.memoryTotalGb) && device.memoryTotalGb > 0
@@ -155,6 +184,11 @@ function budgetedGpuMemoryGb(
     const deviceReserved = total - hostBacked;
     reserved += Math.min(deviceReserved, deviceCapacity);
     const deviceSharedDemand = Math.max(0, deviceCapacity - deviceReserved);
+    if (device.sharedMemory !== true) {
+      perDeviceDemand += deviceSharedDemand;
+      perDevicePool += hostBacked;
+      continue;
+    }
     if (deviceReserved > 0) {
       partialSharedDemand += deviceSharedDemand;
     } else {
@@ -167,7 +201,8 @@ function budgetedGpuMemoryGb(
     total: roundToDevicePrecision(
       dedicated +
         reserved +
-        Math.min(sharedPool, partialSharedDemand + fullySharedDemand),
+        Math.min(sharedPool, partialSharedDemand + fullySharedDemand) +
+        Math.min(perDevicePool, perDeviceDemand),
     ),
     independent: roundToDevicePrecision(dedicated + reserved),
   };
@@ -232,10 +267,12 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const pinnedTotals = gpuMemoryTotalsGb(
     input.pinnedDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      // Folded, not passed through: a Linux ROCm APU reports shared_memory false
-      // and unified_memory true, and counting its carved window as dedicated VRAM
-      // added 46.56 GiB of capacity that is already inside system RAM.
-      shared_memory: sharesHostMemory(device),
+      // Both flags raw. Folding here first loses the distinction gpuMemoryTotalsGb
+      // needs: one host pool collapses, a pool per socket does not, and pre-folding
+      // made this path answer 48 GiB where the totals path answered 96 for the very
+      // same inventory (reported by ItsRoy69 on #11366).
+      shared_memory: device.sharedMemory === true,
+      unified_memory: device.unifiedMemory === true,
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );
@@ -275,10 +312,12 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const capacityDeviceTotals = gpuMemoryTotalsGb(
     capacityDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      // Folded, not passed through: a Linux ROCm APU reports shared_memory false
-      // and unified_memory true, and counting its carved window as dedicated VRAM
-      // added 46.56 GiB of capacity that is already inside system RAM.
-      shared_memory: sharesHostMemory(device),
+      // Both flags raw. Folding here first loses the distinction gpuMemoryTotalsGb
+      // needs: one host pool collapses, a pool per socket does not, and pre-folding
+      // made this path answer 48 GiB where the totals path answered 96 for the very
+      // same inventory (reported by ItsRoy69 on #11366).
+      shared_memory: device.sharedMemory === true,
+      unified_memory: device.unifiedMemory === true,
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { formatMcpToolName, mcpServerFromProvenance } from "./mcp-tool-name.ts";
+import {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+  mcpToolFromProvenance,
+} from "./mcp-tool-name.ts";
 
 export type ConversationMarkdownMessage = {
   readonly role: string;
@@ -560,8 +564,11 @@ export function contentBlocksToMarkdownBlocks(
       blocks.push({
         kind: "tool-call",
         name:
-          formatMcpToolName(toolName, mcpServerFromProvenance(p.provenance)) ??
-          toolName,
+          formatMcpToolName(
+            toolName,
+            mcpServerFromProvenance(p.provenance),
+            mcpToolFromProvenance(p.provenance),
+          ) ?? toolName,
         args: withoutNativePartBytes(p.args),
         result: withoutGeneratedImageBytes(
           normalizeToolResult(p.result, toolName),

@@ -55,11 +55,38 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+
+
+def _append_mcp_images_owned(
+    conversation,
+    results,
+    owned,
+    lead = None,
+):
+    """append_image_turn with the loop's own part list, for asyncio.to_thread.
+
+    Reserving here and not on the GGUF loop: this one talks to a remote provider that
+    applies its own per-request image cap in document order, so an attachment beside a
+    full allowance of tool results silently loses the newest result -- the one the
+    model just asked for. llama-server is local and answers to the context window.
+    """
+    append_mcp_image_turn(
+        conversation,
+        results,
+        per_result = True,
+        owned = owned,
+        reserve_caller_images = True,
+        **({"lead": lead} if lead else {}),
+    )
+
+
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
+    provisional_tool_provenance,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -69,11 +96,19 @@ from core.inference.tool_stream_exec import (
     search_images_kwargs,
     stream_tool_execution,
 )
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from core.inference.tools import (
+    build_rag_autoinject,
+    execute_tool,
+    is_high_risk_tool_call,
+    never_needs_approval,
+)
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
+    decision_reason,
     new_approval_id,
     wait_tool_decision,
 )
@@ -339,6 +374,11 @@ class ToolLoopRun:
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    supports_vision: bool = False
+    # Image parts an earlier promotion already put in `messages`. The loop's cap
+    # counts these too: starting from zero lets a resumed image-heavy chat carry a
+    # full history through and then add a whole batch on top.
+    promoted_image_parts: tuple = ()
 
 
 @dataclass(frozen = True)
@@ -514,6 +554,7 @@ class _Turn:
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
+    reasoning: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
@@ -1007,12 +1048,13 @@ def _split_turn_end(
 
 
 def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
-    """Provenance for a hand-built unrun card; carries the MCP display name so a budget-exhausted or
-    truncated MCP call never shows the internal server id."""
+    """Provenance for a hand-built unrun card; carries the MCP display names so a budget-exhausted
+    or truncated MCP call never shows the internal server id or an alias."""
     provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
     mcp = mcp_display_parts(tool_name)
     if mcp:
         provenance["mcp_server"] = mcp[0]
+        provenance["mcp_tool"] = mcp[1]
     return provenance
 
 
@@ -1048,6 +1090,36 @@ def _unrun_call_card(
             }
         ),
     ]
+
+
+def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
+    return any(other != name and other.startswith(name) for other in declared_names)
+
+
+def _mcp_provenance_by_id(
+    turn: "_Turn", declared_names: set[str], stamped: set[str]
+) -> dict[str, Any]:
+    """MCP provenance per call id once its whole name has streamed, once per id.
+
+    Declared catalog decides completeness (``mcp__srv__cre`` is well formed too); strict-prefix names wait for tool_start.
+    """
+    stamps: dict[str, Any] = {}
+    for call in turn.by_index.values():
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id or call_id in stamped:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or name not in declared_names:
+            continue
+        if _is_strict_prefix_of_declared(name, declared_names):
+            continue
+        # Mark before the lookup: mcp_display_parts hits SQLite and is falsy without a display_name.
+        stamped.add(call_id)
+        if not mcp_display_parts(name):
+            continue
+        stamps[call_id] = provisional_tool_provenance(name)
+    return stamps
 
 
 def _status_sse(text: str) -> str:
@@ -1179,6 +1251,10 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # The image parts this run appends, so its cap never counts a caller's own
+    # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
+    # and seeded with what promotion already put in the conversation.
+    loop_mcp_image_parts: list = list(run.promoted_image_parts)
     # Kept before the loop appends anything: this is the branch the request is on.
     request_branch = list(run.messages)
     remaining = policy.max_calls
@@ -1253,6 +1329,8 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Per turn: ids restart each turn, so a later call_0 is a new card.
+        mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
         # tell this turn ends in a call the loop is about to run rather than in an answer. Hold the turn-ending chunk
@@ -1324,6 +1402,9 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                reasoning = delta.get("reasoning_content")
+                if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
+                    turn.reasoning.append(reasoning)
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
@@ -1349,6 +1430,10 @@ async def stream_with_studio_tools(
                                 turn.text.append(value)
                                 yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
                     turn.merge_structured(raw_calls)
+                    stamps = _mcp_provenance_by_id(turn, allowed_tool_names, mcp_stamped_ids)
+                    if stamps:
+                        payload["_mcp_provenance"] = stamps
+                        line = "data: " + json.dumps(payload, separators = (",", ":"))
 
                 if healer is None or healer.dormant or not isinstance(content, str) or not content:
                     plain = _delta_text(content)
@@ -1544,6 +1629,9 @@ async def stream_with_studio_tools(
         assistant_tool_calls: list[dict[str, Any]] = []
         tool_messages: list[dict[str, Any]] = []
         noop_messages: list[dict[str, Any]] = []
+        # One entry per tool result, not flattened: the per-result image quota
+        # would otherwise be spent entirely on the first call of a parallel batch.
+        turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
         for call in calls:
@@ -1622,7 +1710,10 @@ async def stream_with_studio_tools(
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
             needs_confirmation = (
-                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+                confirm_tool_calls
+                and not bypass_permissions
+                and permission_mode != "off"
+                and not never_needs_approval(name)
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
@@ -1642,6 +1733,7 @@ async def stream_with_studio_tools(
                 )
                 yield _sse(start_event)
                 verdict = None
+                denied_reason = None
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
@@ -1664,6 +1756,9 @@ async def stream_with_studio_tools(
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
                 if verdict == "deny":
+                    # Read before decision_slot is dropped below: the slot is where the waiter says
+                    # whether this was the user's refusal or an approval nobody answered.
+                    denied_reason = decision_reason(decision_slot)
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
@@ -1675,19 +1770,27 @@ async def stream_with_studio_tools(
                     abort_tool_decision(decision_slot, approval_id)
 
             if denied:
+                # An approval nobody answered is not the user's decision, and this string is the only
+                # account of the call both the model and the reopened card get: the buttons are gone
+                # by the time it lands. Saying "the user declined" there is simply false.
+                denied_text = (
+                    TOOL_APPROVAL_EXPIRED_MESSAGE
+                    if denied_reason == DECISION_EXPIRED
+                    else TOOL_REJECTED_MESSAGE
+                )
                 yield _sse(
                     {
                         "type": "tool_end",
                         "tool_name": name,
                         "tool_call_id": card_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": denied_text,
                         "provenance": decision.provenance,
                     }
                 )
                 denied_message: dict[str, Any] = {
                     "role": "tool",
                     "name": name,
-                    "content": TOOL_REJECTED_MESSAGE,
+                    "content": denied_text,
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id
@@ -1696,7 +1799,14 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            # Only a call the user answered: the executor lets it reach the host paths it names.
+            host_access_approved = verdict not in (None, "deny")
+
+            def _invoke(
+                output_callback: Any,
+                call = decision,
+                approved = host_access_approved,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1710,6 +1820,8 @@ async def stream_with_studio_tools(
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
+                if approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                    kwargs["host_access_approved"] = True
                 # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure an external model's window,
                 # and a custom OpenAI-compatible endpoint can be a small local server, so a model-chosen 8 chunks is
                 # roughly 4K tokens replayed on every later call. Unmeasurable means one recall's worth. Explicitly
@@ -1789,6 +1901,13 @@ async def stream_with_studio_tools(
             last_reprompt_text = ""
             yield _sse(completion.tool_end_event())
             tool_messages.append(completion.tool_message())
+            # Only for a target that reads them, and off the loop: the envelope is
+            # a 12 MB json-load, and a text-only run discards the result anyway.
+            _completion_images = (
+                await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []
+            )
+            if _completion_images:
+                turn_mcp_images.append(_completion_images)
 
         yield _status_sse("")
 
@@ -1810,6 +1929,8 @@ async def stream_with_studio_tools(
                 if assistant_message["content"]
                 else hosted_text
             )
+        if turn.reasoning:
+            assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:
@@ -1827,6 +1948,20 @@ async def stream_with_studio_tools(
             conversation,
             "\n\n".join(dict.fromkeys(message["content"] for message in noop_messages)),
         )
+        if turn_mcp_images and run.supports_vision:
+            # One block after the whole batch. With a single result "the tool call
+            # above" is exact; with several it names whichever ran last, which may
+            # have returned no picture at all, so the block says so instead.
+            from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
+            _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
+            # Off the event loop: each image is decoded and re-encoded.
+            await asyncio.to_thread(
+                _append_mcp_images_owned,
+                conversation,
+                turn_mcp_images,
+                loop_mcp_image_parts,
+                _lead,
+            )
 
         if turn_executed_real_tool:
             max_reprompts = _MAX_POST_TOOL_REPROMPTS

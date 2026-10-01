@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file drafter contracts: MTP (Gemma 4), DSpark and DFlash.
+"""Separate-file drafter contracts: MTP (Gemma 4), DSpark, DFlash and EAGLE3.
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -86,6 +86,11 @@ DRAFTER_CASES = [
     ("laguna-xs21-dflash-q4.gguf", False),
     ("xdspark/model.gguf", False),
     ("dspark/README.md", False),
+    ("eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("EAGLE3-gpt-oss-20b-BF16.gguf", True),
+    ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
 ]
 
 
@@ -156,6 +161,25 @@ def test_variant_plans_carry_drafter_as_companion():
     assert q4.download_size_bytes == 4_600
 
 
+GPT_OSS_FILES = [
+    "eagle3-gpt-oss-20b-BF16.gguf",
+    "eagle3-gpt-oss-20b-Q8_0.gguf",
+    "gpt-oss-20b-MXFP4.gguf",
+]
+
+
+def test_eagle3_draft_head_is_not_a_variant_or_the_default():
+    from hub.utils.gguf import pick_best_gguf
+
+    assert pick_best_gguf(GPT_OSS_FILES) == "gpt-oss-20b-MXFP4.gguf"
+
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(GPT_OSS_FILES)]
+    )
+    assert set(plans) == {"mxfp4"}
+    assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+
 def test_baked_in_repo_plans_unchanged():
     plans = build_gguf_variant_plans([_sib("Qwen3.6-27B-MTP-Q4_K_M.gguf", 4_000, "q4")])
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
@@ -174,6 +198,34 @@ def test_variant_plan_keeps_root_mtp_sidecar_until_metadata_is_available():
     assert plan.companion_hashes == frozenset({"drafter", "mmproj"})
     assert plan.required_hashes == frozenset({"drafter", "main", "mmproj"})
     assert plan.download_size_bytes == 4_600
+
+
+def test_variant_plan_keeps_every_nested_mtp_shard_or_none():
+    main = _sib("Qwen3.8-Flash-Next-Q4_K_M.gguf", 100, "main")
+    first = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        20,
+        "mtp-1",
+    )
+    second = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+        20,
+        "mtp-2",
+    )
+
+    complete = build_gguf_variant_plans([main, first, second])["q4_k_m"]
+    assert complete.target_filenames == (
+        "Qwen3.8-Flash-Next-Q4_K_M.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+    )
+    assert complete.companion_hashes == frozenset({"mtp-1", "mtp-2"})
+    assert complete.download_size_bytes == 140
+
+    incomplete = build_gguf_variant_plans([main, first])["q4_k_m"]
+    assert incomplete.target_filenames == ("Qwen3.8-Flash-Next-Q4_K_M.gguf",)
+    assert incomplete.companion_hashes == frozenset()
+    assert incomplete.download_size_bytes == 100
 
 
 def test_old_manifest_resume_reclassifies_drafter():
