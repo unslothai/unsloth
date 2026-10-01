@@ -45,3 +45,11 @@ test("the spoken text is rendered whole, and an older backend's status label is 
   assert.equal(spokenReplyText(null), "");
   assert.equal(spokenReplyText('[Generated audio from: "Hello there. How can I"]'), "");
 });
+
+test("copying an audio reply copies its spoken text, not the base64 clip", () => {
+  const src = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(
+    src,
+    /splitAudioReply\(\s*stripSearchImageTokens\(aui\.message\(\)\.getCopyText\(\)\),?\s*\)\.text/,
+  );
+});

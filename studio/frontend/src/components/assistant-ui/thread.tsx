@@ -82,6 +82,7 @@ import {
   refreshSkillsCatalog,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { splitAudioReply } from "@/components/assistant-ui/audio-reply-text";
 import {
   IntentAwareScrollProvider,
   useIntentAwareAutoScroll,
@@ -8069,7 +8070,11 @@ const CopyButton: FC = () => {
     const pasted = attachmentsPastedText(aui.message().getState().attachments);
     // The image tokens are renderer markup, not prose: strip them or the clipboard
     // gets `[[img:0123456789ab]]` where the picture was.
-    const text = [stripSearchImageTokens(aui.message().getCopyText()), pasted]
+    // An audio reply's player tag holds the whole clip as base64: copy the spoken text.
+    const copyText = splitAudioReply(
+      stripSearchImageTokens(aui.message().getCopyText()),
+    ).text;
+    const text = [copyText, pasted]
       .filter((part) => part.length > 0)
       .join("\n\n");
     if (await copyToClipboard(text)) {
