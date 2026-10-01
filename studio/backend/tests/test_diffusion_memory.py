@@ -937,8 +937,7 @@ def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monke
     )
     import core.inference.diffusion_memory as mem
 
-    # no pinnable host RAM: every streamed module stays unpinned (bounded CPU memory), and record_stream keeps the
-    # offload from draining the compute stream
+    # no pinnable host RAM: everything stays unpinned, record_stream still on
     monkeypatch.delenv(mem.STREAMING_PREFETCH_ENV, raising = False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 0)
@@ -1021,8 +1020,6 @@ def _streaming_apply_kwargs(
 
 
 def test_streaming_pins_the_transformer_within_the_host_budget(monkeypatch):
-    # An unpinned host copy is re-pinned on the CPU at every onload, and record_stream=False synchronises the compute
-    # stream after every group, so that pinning ran with the GPU idle (Wan2.2-5B streamed on an L4: see the PR).
     seen, deferred = _streaming_apply_kwargs(monkeypatch, 6000)
     assert seen["transformer"]["low_cpu_mem_usage"] is False
     assert seen["transformer"]["record_stream"] is True
@@ -1039,7 +1036,7 @@ def test_streaming_pins_everything_on_a_ram_rich_host(monkeypatch):
 
 def test_streaming_pins_off_the_load_path_when_asked(monkeypatch):
     seen, deferred = _streaming_apply_kwargs(monkeypatch, 6000, request_background = True)
-    # applied unpinned, then handed to the background pinner; the encoder is outside the budget so never pinned
+    # deferred to the background pinner; the encoder is over budget
     assert seen["transformer"]["low_cpu_mem_usage"] is True
     assert seen["transformer"]["record_stream"] is True
     assert deferred == ["transformer"]
@@ -3015,7 +3012,6 @@ def test_top_level_weights_onload_from_one_pinned_copy_on_a_real_gpu(monkeypatch
     with torch.no_grad():
         got = [net(x.cuda()).cpu() for _ in range(3)]
     torch.cuda.synchronize()
-    # offloaded between forwards onto the same pinned host copy: no device-to-host copy into a fresh host buffer
     ptr = net.proj_out.weight.data_ptr()
     assert net.proj_out.weight.device.type == "cpu" and net.proj_out.weight.is_pinned()
     with torch.no_grad():
@@ -3059,7 +3055,6 @@ def test_top_level_weights_replaced_while_offloaded_are_picked_up(monkeypatch):
         for _ in range(2):
             net(x.cuda())
         torch.cuda.synchronize()
-        # e.g. a .to() conversion or an adapter fused on the host while the weights sit offloaded
         net.proj_out.weight.data = net.proj_out.weight.data * 2
         ref.proj_out.weight.data = ref.proj_out.weight.data * 2
         got = net(x.cuda()).cpu()

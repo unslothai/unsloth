@@ -2252,15 +2252,9 @@ PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
 
 
 def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
-    """Keep a pinned host copy of a block-streamed DiT's top-level weights instead of copying them back every forward.
+    """Onload a block-streamed DiT's top-level group (stream-less in diffusers) from one pinned copy, no copy back.
 
-    diffusers' block-level offload puts the weights outside the block lists (embedders, norm_out, proj_out, ...) into
-    one top-level group WITHOUT a stream: every forward uploads them synchronously from pageable host memory, and every
-    offload copies them back into a freshly allocated host buffer, a device-to-host copy inference never needs since
-    the weights do not change. With one pinned copy the onload is an async H2D on the compute stream (ordered before
-    the forward's kernels, so no wait and no race) and the offload only re-points the tensors. VRAM is unchanged: the
-    group is resident for exactly the same span. Skipped for torchao weights (their tensors cannot be re-pointed through
-    .data) and when the copy does not fit the pinnable host RAM. UNSLOTH_DIFFUSION_PIN_TOP_GROUP=0 turns it off."""
+    Skipped for torchao weights (not re-pointable via .data) and when the copy exceeds the pin budget."""
     if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     try:
@@ -2299,7 +2293,6 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
             return False
         if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
             return False
-        # the user's "pin nothing" override wins, as on every other streamed path
         if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in (
             "0",
             "off",
@@ -2307,7 +2300,7 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
             "no",
         ):
             return False
-        # per tensor rounded to a power of two, like torch's pinned allocator (and _module_host_mib)
+        # power-of-two per tensor, like torch's pinned allocator
         need_mib = sum(
             1 << (int(t.numel()) * int(t.element_size()) - 1).bit_length()
             for t in tensors
@@ -2326,7 +2319,7 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
             for tensor, pinned in list(host.items()):
                 current = tensor.data
                 if current.device.type == "cpu" and current.data_ptr() != pinned.data_ptr():
-                    # replaced while offloaded (a .to() conversion, an adapter fused on the host): re-pin what is there now
+                    # replaced while offloaded: re-pin the new host tensor
                     pinned = current if current.is_pinned() else current.pin_memory()
                     host[tensor] = pinned
                 tensor.data = pinned.to(device, non_blocking = True)
@@ -3049,10 +3042,7 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 component.to(onload)
 
         pinned_mib = [0]
-        # The copy of block i+1 only overlaps block i's compute when (a) its host copy is already pinned: an unpinned
-        # copy is re-pinned on the CPU at every onload, and (b) the offload does not drain the compute stream:
-        # record_stream=False makes every group's offload synchronize it, so that pinning runs with the GPU idle. Pin
-        # within the same host budget the group tier uses (DiTs first), off the load path when the caller asked.
+        # Overlap needs pinned host copies and record_stream: record_stream=False drains the compute stream per group.
         prefetch = use_stream and _streaming_prefetch_enabled()
         pin_dits, pin_encoders = False, False
         if prefetch:
