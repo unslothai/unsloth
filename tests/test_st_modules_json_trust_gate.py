@@ -285,3 +285,56 @@ def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path
     FastSentenceTransformer._check_module_config_class_refs(
         str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
     )
+
+
+def test_the_delegating_routes_gate_the_module_types_too(model_dir):
+    """for_inference and the fast encoder route return a stock SentenceTransformer directly and
+    never reach _load_modules, and sentence-transformers only gates module classes from 6.0, so
+    those routes imported the type on an older install. They validate first now."""
+    model, witness = model_dir
+
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+    assert not witness.exists()
+
+
+def test_that_validation_passes_a_stock_module_list_untouched(tmp_path):
+    """The validator must be a no-op for a normal repo, since it runs on every delegated load."""
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                },
+                {
+                    "idx": 1,
+                    "name": "1",
+                    "path": "1_Pooling",
+                    "type": "sentence_transformers.models.Pooling",
+                },
+                {
+                    "idx": 2,
+                    "name": "2",
+                    "path": "2_Normalize",
+                    "type": "sentence_transformers.models.Normalize",
+                },
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_that_validation_is_silent_when_there_is_no_modules_json(tmp_path):
+    """A transformers-native encoder has no modules.json, and must still load."""
+    model = tmp_path / "model"
+    model.mkdir()
+
+    FastSentenceTransformer._check_modules_json_types(str(model), None, False)

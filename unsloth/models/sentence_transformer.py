@@ -1341,6 +1341,55 @@ class FastSentenceTransformer(FastModel):
                 )
 
     @staticmethod
+    def _check_modules_json_types(
+        model_name,
+        token,
+        trust_remote_code,
+        cache_dir = None,
+        revision = None,
+    ):
+        """Gate the modules.json "type" values before the load is handed to sentence-transformers.
+
+        The inference and fast encoder routes return a stock SentenceTransformer directly, so they
+        never reach _load_modules and its gate. sentence-transformers only started refusing a
+        module class outside its own namespace in 6.0, so on an older install those routes import
+        the dotted path a repo named, which is the whole defect for the encoder models that take
+        the fast route by default. Validation only: nothing is loaded here.
+        """
+        modules_json_path = FastSentenceTransformer._module_path(
+            model_name, token, cache_dir = cache_dir, revision = revision
+        )
+        if not modules_json_path:
+            return
+        try:
+            with open(modules_json_path, encoding = "utf8") as f:
+                modules_config = json.load(f)
+        except (OSError, ValueError) as exception:
+            logging.debug(
+                "Unsloth: Could not read %s to gate its module types: %s",
+                modules_json_path,
+                exception,
+            )
+            return
+        if not isinstance(modules_config, list):
+            return
+
+        for module_config in modules_config:
+            if not isinstance(module_config, dict):
+                continue
+            class_ref = module_config.get("type")
+            if FastSentenceTransformer._is_transformer_module_ref(class_ref):
+                continue
+            FastSentenceTransformer._resolve_module_class(
+                class_ref,
+                model_name,
+                trust_remote_code,
+                token = token,
+                cache_dir = cache_dir,
+                revision = revision,
+            )
+
+    @staticmethod
     def _load_modules(
         model_name,
         token,
@@ -1708,6 +1757,13 @@ class FastSentenceTransformer(FastModel):
             if _st_cache is not None:
                 st_kwargs["cache_folder"] = _st_cache
 
+            FastSentenceTransformer._check_modules_json_types(
+                model_name,
+                token,
+                trust_remote_code,
+                cache_dir = st_kwargs.get("cache_folder"),
+                revision = revision,
+            )
             st_model = SentenceTransformer(model_name, **st_kwargs)
             if _ensure_sentence_attention_masks(
                 getattr(st_model[0], "auto_model", None)
@@ -1803,6 +1859,13 @@ class FastSentenceTransformer(FastModel):
                     FastSentenceTransformer._patch_mpnet_v5()
 
             # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm cache (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
+            FastSentenceTransformer._check_modules_json_types(
+                model_name,
+                token,
+                trust_remote_code,
+                cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
+                revision = revision,
+            )
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
