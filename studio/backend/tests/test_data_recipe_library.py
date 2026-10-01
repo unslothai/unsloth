@@ -123,3 +123,17 @@ def test_out_of_range_timestamp_is_a_validation_error_not_a_server_error():
     huge = {**_recipe(), "createdAt": 10**20}
     assert client.put("/recipes/r1", json = huge).status_code == 422
     assert client.post("/recipes/import", json = {"recipes": [huge]}).status_code == 422
+
+
+def test_stale_save_is_a_conflict_and_a_current_one_wins():
+    client = _client()
+    client.put("/recipes/r1", json = _recipe(updated_at = 2000))
+    other_tab = {**_recipe(name = "Other tab", updated_at = 3000), "baseUpdatedAt": 2000}
+    assert client.put("/recipes/r1", json = other_tab).status_code == 200
+
+    stale = {**_recipe(name = "Stale tab", updated_at = 4000), "baseUpdatedAt": 2000}
+    assert client.put("/recipes/r1", json = stale).status_code == 409
+    assert client.get("/recipes/r1").json()["name"] == "Other tab"
+
+    current = {**_recipe(name = "Reloaded", updated_at = 5000), "baseUpdatedAt": 3000}
+    assert client.put("/recipes/r1", json = current).json()["name"] == "Reloaded"

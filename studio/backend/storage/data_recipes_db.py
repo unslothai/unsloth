@@ -67,8 +67,16 @@ def get_recipe(recipe_id: str) -> dict | None:
         conn.close()
 
 
-def upsert_recipe(recipe: dict) -> dict | None:
-    """Returns the stored record, or None when the id was deleted."""
+class RecipeDeleted(Exception):
+    pass
+
+
+class RecipeConflict(Exception):
+    pass
+
+
+def upsert_recipe(recipe: dict, base_updated_at: int | None = None) -> dict:
+    """``base_updated_at`` is the version the caller edited; a newer stored row is a conflict."""
     conn = get_connection()
     try:
         cur = conn.execute(
@@ -84,16 +92,17 @@ def upsert_recipe(recipe: dict) -> dict | None:
                 learning_recipe_id = excluded.learning_recipe_id,
                 learning_recipe_title = excluded.learning_recipe_title,
                 updated_at = excluded.updated_at
+            WHERE ?8 IS NULL OR data_recipes.updated_at = ?8
             """,
-            _recipe_params(recipe),
+            (*_recipe_params(recipe), base_updated_at),
         )
-        row = None
-        if cur.rowcount:
-            row = conn.execute(
-                "SELECT * FROM data_recipes WHERE id = ?", (recipe["id"],)
-            ).fetchone()
+        row = conn.execute("SELECT * FROM data_recipes WHERE id = ?", (recipe["id"],)).fetchone()
         conn.commit()
-        return _recipe_from_row(row) if row else None
+        if cur.rowcount:
+            return _recipe_from_row(row)
+        if row is None:
+            raise RecipeDeleted(recipe["id"])
+        raise RecipeConflict(recipe["id"])
     finally:
         conn.close()
 

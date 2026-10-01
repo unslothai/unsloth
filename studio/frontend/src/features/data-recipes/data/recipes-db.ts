@@ -80,9 +80,9 @@ export async function saveRecipe(
   const existing = input.id
     ? (recentRecipeCache.get(input.id) ?? (await getRecipe(input.id)))
     : undefined;
-  const record = await recipeRequest<RecipeRecord>(
-    `/${encodeURIComponent(id)}`,
-    {
+  let record: RecipeRecord;
+  try {
+    record = await recipeRequest<RecipeRecord>(`/${encodeURIComponent(id)}`, {
       method: "PUT",
       body: JSON.stringify({
         id,
@@ -93,9 +93,16 @@ export async function saveRecipe(
         learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
         learningRecipeTitle:
           input.learningRecipeTitle ?? existing?.learningRecipeTitle,
+        // Another window may have saved since this copy was read: the server refuses with 409.
+        baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
       }),
-    },
-  );
+    });
+  } catch (error) {
+    if (error instanceof RecipeApiError && error.status === 409) {
+      recentRecipeCache.delete(id);
+    }
+    throw error;
+  }
   mutationVersion += 1;
   recentRecipeCache.set(id, record);
   if (recipeListReady) {

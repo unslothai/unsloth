@@ -17,6 +17,7 @@ router = APIRouter(prefix = "/recipes")
 _ID = Field(min_length = 1, max_length = 128)
 # JS millisecond timestamps; also keeps values inside SQLite INTEGER.
 _TIME = Field(ge = 0, le = 2**53)
+_TIME_OPTIONAL = Field(default = None, ge = 0, le = 2**53)
 
 
 class RecipeRecord(BaseModel):
@@ -27,6 +28,11 @@ class RecipeRecord(BaseModel):
     updatedAt: int = _TIME
     learningRecipeId: str | None = Field(default = None, max_length = 128)
     learningRecipeTitle: str | None = Field(default = None, max_length = 10_000)
+
+
+class SaveRecipeRequest(RecipeRecord):
+    # The updatedAt the client last read; omitted for a brand-new recipe.
+    baseUpdatedAt: int | None = _TIME_OPTIONAL
 
 
 class ExecutionRecord(BaseModel):
@@ -64,13 +70,21 @@ def get_recipe(recipe_id: str):
 
 
 @router.put("/{recipe_id}")
-def put_recipe(recipe_id: str, recipe: RecipeRecord):
+def put_recipe(recipe_id: str, recipe: SaveRecipeRequest):
     if recipe.id != recipe_id:
         raise HTTPException(status_code = 400, detail = "ID mismatch")
-    record = db.upsert_recipe(recipe.model_dump(exclude_none = True))
-    if record is None:
+    try:
+        return db.upsert_recipe(
+            recipe.model_dump(exclude_none = True, exclude = {"baseUpdatedAt"}),
+            recipe.baseUpdatedAt,
+        )
+    except db.RecipeDeleted:
         raise HTTPException(status_code = 410, detail = "Recipe was deleted")
-    return record
+    except db.RecipeConflict:
+        raise HTTPException(
+            status_code = 409,
+            detail = "This recipe was changed in another window. Reload it to keep editing.",
+        )
 
 
 @router.delete("/{recipe_id}", status_code = 204)

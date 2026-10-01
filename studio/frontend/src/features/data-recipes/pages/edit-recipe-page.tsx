@@ -95,13 +95,22 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     signalReady();
   }, [loadState.status, signalReady]);
 
+  // The version this editor is built on, so a save over another window's newer copy is refused.
+  const editedVersion = useRef<number | undefined>(undefined);
+  const loadedRecord = loadState.status === "ready" ? loadState.record : null;
+  useEffect(() => {
+    editedVersion.current = loadedRecord?.updatedAt;
+  }, [loadedRecord]);
+
   const handlePersist = useCallback(
     async (input: { id: string | null; name: string; payload: RecipePayload }) => {
       const record = await saveRecipe({
         id: input.id ?? recipeId,
         name: input.name,
         payload: input.payload,
+        baseUpdatedAt: editedVersion.current,
       });
+      editedVersion.current = record.updatedAt;
       primeRecipeCache(record);
       return { id: record.id, updatedAt: record.updatedAt };
     },

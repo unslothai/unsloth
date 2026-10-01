@@ -299,7 +299,10 @@ export function useRecipePersistence({
       drainQueuedUploadCleanups(currentPayload);
     } catch (error) {
       console.error("Save recipe failed:", error);
-      toastError("Save failed", "Could not save recipe.");
+      toastError(
+        "Save failed",
+        error instanceof Error ? error.message : "Could not save recipe.",
+      );
     } finally {
       setSaveLoading(false);
     }
