@@ -228,6 +228,14 @@ _SELF_SIGNED_DER = base64.b64decode(
 )
 
 
+class _DerCert(bytes):
+    def __new__(cls):
+        return super().__new__(cls, _SELF_SIGNED_DER)
+
+    def public_bytes(self, _encoding):
+        return bytes(self)
+
+
 @pytest.mark.skipif(
     sys.platform not in ("darwin", "win32"), reason = "the OS verifier only exists on macOS / Windows"
 )
@@ -241,7 +249,8 @@ def test_the_real_os_verifier_sees_the_policy_while_a_window_is_open(monkeypatch
             context = ctx._ctx
 
             def get_unverified_chain(self):
-                return [_SELF_SIGNED_DER]
+                # Python < 3.13 hands back certificate objects rather than DER bytes.
+                return [_DerCert()]
 
         with ctx._verification_window():
             # The shared context is CERT_NONE now; the caller's policy is still CERT_REQUIRED.
