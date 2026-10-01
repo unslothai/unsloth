@@ -615,8 +615,7 @@ def archive_turns(
     return written
 
 
-# An embedder picked in Settings whose download has not finished is a setting, not a fault: every fit that drops turns
-# would otherwise log the same traceback, including on chats that never touched RAG.
+# A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
 _EMBEDDER_PENDING_LOGGED: set = set()
 
 

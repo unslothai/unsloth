@@ -1396,8 +1396,7 @@ def test_an_edit_past_the_probe_cutoff_still_retires_the_turn(conn):
 def test_an_embedder_download_still_pending_is_logged_once_without_a_traceback(
     conn, monkeypatch, caplog
 ):
-    """Settings picked an embedder whose download never finished: each fit that drops turns
-    must not log the same traceback again, and recall still answers lexically."""
+    """Each fit must not log the same traceback again, and recall still answers lexically."""
     import logging
 
     from core.rag import embeddings
