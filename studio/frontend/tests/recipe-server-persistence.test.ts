@@ -42,7 +42,12 @@ test("a run saved many times sends one write in flight and then only the newest"
       "../src/features/recipe-studio/data/executions-db.ts",
       import.meta.url,
     ),
-    { "@/features/auth": { authFetch: server.authFetch } },
+    {
+      "@/features/auth": {
+        authFetch: server.authFetch,
+        getAuthSessionEpoch: () => 1,
+      },
+    },
   );
 
   const save = (done: number) =>
@@ -78,7 +83,12 @@ test("every coalesced caller hears about the failed write that carried its recor
       "../src/features/recipe-studio/data/executions-db.ts",
       import.meta.url,
     ),
-    { "@/features/auth": { authFetch: server.authFetch } },
+    {
+      "@/features/auth": {
+        authFetch: server.authFetch,
+        getAuthSessionEpoch: () => 1,
+      },
+    },
   );
   const first = saveRecipeExecution({ id: "e1", recipeId: "r1", done: 1 });
   const later = [2, 3].map((done) =>
@@ -104,7 +114,12 @@ test("a transient failure retries the newest snapshot instead of dropping it", a
       "../src/features/recipe-studio/data/executions-db.ts",
       import.meta.url,
     ),
-    { "@/features/auth": { authFetch: server.authFetch } },
+    {
+      "@/features/auth": {
+        authFetch: server.authFetch,
+        getAuthSessionEpoch: () => 1,
+      },
+    },
   );
   const saved = saveRecipeExecution({ id: "e1", recipeId: "r1", done: 9 });
   await server.flush();

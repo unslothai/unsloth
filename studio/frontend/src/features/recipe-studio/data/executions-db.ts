@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import type { RecipeExecutionRecord } from "../execution-types";
 
 function executionsUrl(recipeId: string): string {
@@ -19,7 +19,20 @@ export async function listRecipeExecutions(
   return executions;
 }
 
-async function putExecution(record: RecipeExecutionRecord): Promise<void> {
+function assertSameSession(epoch: number): void {
+  if (getAuthSessionEpoch() !== epoch) {
+    // 401 so the transient retry below never resends it.
+    throw Object.assign(new Error("Signed out before the run was saved."), {
+      status: 401,
+    });
+  }
+}
+
+async function putExecution(
+  record: RecipeExecutionRecord,
+  epoch: number,
+): Promise<void> {
+  assertSameSession(epoch);
   const res = await authFetch(
     `${executionsUrl(record.recipeId)}/${encodeURIComponent(record.id)}`,
     {
@@ -27,6 +40,7 @@ async function putExecution(record: RecipeExecutionRecord): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(record),
     },
+    { beforeRetry: () => assertSameSession(epoch) },
   );
   if (!res.ok) {
     throw Object.assign(new Error(`Save execution failed (${res.status})`), {
@@ -46,7 +60,11 @@ function isTransient(error: unknown): boolean {
 }
 
 type Waiter = { resolve: () => void; reject: (error: unknown) => void };
-type Queue = { record: RecipeExecutionRecord | null; waiters: Waiter[] };
+type Queue = {
+  record: RecipeExecutionRecord | null;
+  epoch: number;
+  waiters: Waiter[];
+};
 
 const queues = new Map<string, Queue>();
 
@@ -54,13 +72,13 @@ async function drain(id: string, queue: Queue): Promise<void> {
   let carried: Waiter[] = [];
   let attempt = 0;
   while (queue.record) {
-    const record = queue.record;
+    const { record, epoch } = queue;
     const waiters = [...carried, ...queue.waiters];
     queue.record = null;
     queue.waiters = [];
     carried = [];
     try {
-      await putExecution(record);
+      await putExecution(record, epoch);
       attempt = 0;
       for (const waiter of waiters) waiter.resolve();
     } catch (error) {
@@ -69,7 +87,10 @@ async function drain(id: string, queue: Queue): Promise<void> {
       if (isTransient(error) && attempt < RETRY_DELAYS_MS.length) {
         await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
         attempt += 1;
-        queue.record ??= record;
+        if (!queue.record) {
+          queue.record = record;
+          queue.epoch = epoch;
+        }
         carried = waiters;
         continue;
       }
@@ -88,8 +109,9 @@ export function saveRecipeExecution(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const running = queues.get(execution.id);
-    const queue = running ?? { record: null, waiters: [] };
+    const queue = running ?? { record: null, epoch: 0, waiters: [] };
     queue.record = execution;
+    queue.epoch = getAuthSessionEpoch();
     queue.waiters.push({ resolve, reject });
     if (!running) {
       queues.set(execution.id, queue);
