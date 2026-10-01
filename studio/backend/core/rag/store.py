@@ -422,14 +422,15 @@ def reusable_document_by_hash(
 ) -> dict | None:
     """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
     copied. Extension must match (parsers branch on it) and so must the embedding identity."""
-    rows = conn.execute(
+    # Iterate, not fetchall: the newest copy usually qualifies, and a folder of N copies would
+    # otherwise materialize every one of them on each of N lookups.
+    for row in conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
         "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=documents.scope) "
         "ORDER BY created_at DESC",
         (scope, sha256),
-    ).fetchall()
-    for row in rows:
+    ):
         doc = dict(row)
         if os.path.splitext(doc["filename"])[1].lower() != ext:
             continue
