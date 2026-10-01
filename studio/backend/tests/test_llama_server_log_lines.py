@@ -96,6 +96,24 @@ def test_builds_without_level_letters_fall_back_to_keywords(monkeypatch):
     assert _info_lines(log) == ["[llama-server] error: failed to load model"]
 
 
+def test_user_text_in_a_trace_dump_stays_debug(monkeypatch):
+    log = _logger(monkeypatch)
+    warning = "0.13.616.121 W srv  llama_server: security: no API key is set"
+    _backend(
+        [
+            "0.29.142.020 D srv  params_from_: request: model loaded, it failed with an error",
+            "and then model loaded",
+            "an error on a continuation line",
+            warning,
+            "the warning's own continuation",
+        ]
+    )._drain_stdout()
+    assert _info_lines(log) == [
+        f"[llama-server] {warning}",
+        "[llama-server] the warning's own continuation",
+    ]
+
+
 def test_a_failing_tee_warns_once_and_a_closed_one_stays_quiet(monkeypatch):
     class _Broken:
         def __init__(self, exc):

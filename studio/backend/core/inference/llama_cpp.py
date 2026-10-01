@@ -17784,6 +17784,7 @@ class LlamaCppBackend:
         """
         startup_len: Optional[int] = None
         log_bytes = 0
+        levelled = to_info = False
         try:
             for line in self._process.stdout:
                 line = line.rstrip()
@@ -17806,7 +17807,15 @@ class LlamaCppBackend:
                         if health_probe_event is not None:
                             health_probe_event.set()
                     # The INFO session log is what users send; load chatter stays in the tee.
-                    if ready or _llama_line_is_warning_or_error(line, line_lower):
+                    # Unprefixed lines on a levelled build continue the previous record (a
+                    # template or request dump), so they inherit its level, never their text's.
+                    level = _LOG_LEVEL_TOKEN_RE.match(line)
+                    if level is not None:
+                        levelled = True
+                        to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
+                    elif not levelled:
+                        to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
+                    if to_info:
                         logger.info(f"[llama-server] {line}")
                     else:
                         logger.debug(f"[llama-server] {line}")
