@@ -112,6 +112,7 @@ def test_the_terminal_summary_still_reports_elapsed_time():
         learning_rate = 0.0
         elapsed_seconds = 412.5
         eta_seconds = None
+        session_start_step = 0
         grad_norm = None
         num_tokens = 12345
         status_message = ""
@@ -148,6 +149,7 @@ def test_a_lossless_mid_run_record_is_still_dropped():
         learning_rate = 0.0
         elapsed_seconds = 40.0
         eta_seconds = None
+        session_start_step = 0
         grad_norm = None
         num_tokens = 1
         status_message = ""
@@ -183,6 +185,7 @@ def test_an_early_stopped_run_still_reports_its_duration():
         learning_rate = 0.0
         elapsed_seconds = 91.0
         eta_seconds = None
+        session_start_step = 0
         grad_norm = None
         num_tokens = 5
         status_message = ""

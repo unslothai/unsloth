@@ -56,10 +56,13 @@ export type ShortcutId =
   | "openProjectPicker"
   | "startDictation"
   | "sendMessage"
+  | "queueMessage"
+  | "steerMessage"
   | "toggleFastMode"
   | "copyChatAsMarkdown"
   | "copySessionId"
   | "forkChat"
+  | "openCommandPalette"
   | "searchChats"
   | "renameChat"
   | "openKeyboardShortcuts";
@@ -223,6 +226,10 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyV",
   }),
   def("sendMessage", null),
+  // Unassigned: ⌘⏎ already sends with the opposite follow-up, and these two
+  // name the behaviour instead of flipping it. Chat settings picks the default.
+  def("queueMessage", null),
+  def("steerMessage", null),
   def("toggleFastMode", null),
 
   def("copyChatAsMarkdown", null),
@@ -231,6 +238,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyC",
   }),
   def("forkChat", null),
+  // Takes the browser's Print, like find above takes its Find: printing a chat
+  // shell is of no use, and the event is cancellable in every engine.
+  def("openCommandPalette", "Mod+KeyP"),
   // No ⇧⌘P alternate: it is the command-menu chord everywhere else, but in
   // Firefox it opens a private window, and ⌘K is the one people reach for.
   def("searchChats", "Mod+KeyK"),
@@ -554,6 +564,24 @@ export function matchesBinding(
     return false;
   }
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
+}
+
+/**
+ * Whether `bound` answers to everything `pressed` holds: the same key, with no modifier
+ * missing. For searching the list by chord, where the press narrows as modifiers are
+ * added: N finds ⌘N and ⇧⌘N, ⌘N drops the ones without ⌘, and ⇧⌘N finds only itself.
+ * Not matchesBinding, which is exact because a keypress must run one action.
+ */
+export function keystrokeMatchesBinding(
+  pressed: ShortcutBinding,
+  bound: ShortcutBinding,
+): boolean {
+  if (pressed.code !== bound.code) return false;
+  if (pressed.mod && !bound.mod) return false;
+  if (pressed.ctrl && !bound.ctrl) return false;
+  if (pressed.shift && !bound.shift) return false;
+  if (pressed.alt && !bound.alt) return false;
+  return true;
 }
 
 /** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */

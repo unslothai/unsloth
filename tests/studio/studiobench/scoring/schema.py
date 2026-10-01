@@ -128,6 +128,8 @@ EXEMPT_SUBTREE_KEYS = frozenset(
         # (`instrument_level`, `stream_tail_chars`, `corpus_dollars`), every one a true statement about
         # how the run was configured and legitimately 0. Same rule as `identity` and `config` above.
         "comparability",
+        # Run order: bookkeeping, legitimately 0 or False. Same rule as `comparability`.
+        "ab_plan",
         "footer",
         "record_counts",
         "histogram",

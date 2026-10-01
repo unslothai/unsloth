@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_is_retired
 import hashlib
 import json
 import sqlite3
@@ -13,7 +14,7 @@ import time
 from typing import Any
 
 from core.inference.web_access_policy import check_url_access
-from storage.studio_db import get_connection
+from storage.studio_db import get_connection as _studio_connection
 
 ACTIVE_STATUSES = frozenset(
     {"planning", "awaiting_approval", "queued", "running", "paused", "cancelling"}
@@ -21,6 +22,12 @@ ACTIVE_STATUSES = frozenset(
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
+
+
+def get_connection():
+    if account_is_retired():
+        raise RuntimeError("Account is retired")
+    return _studio_connection()
 
 
 class ResearchConflictError(RuntimeError):
@@ -174,14 +181,27 @@ def _bind_assistant_locked(
     )
     # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
     # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
+    parts = _loads(message["content_json"], [])
+    # A preamble beside the deep_research call is not a prior answer, so only text WITHOUT the
+    # handoff refuses the bind. Source parts, which only a finished answer carries, still do.
+    has_research_handoff = any(
+        isinstance(part, dict)
+        and part.get("type") == "tool-call"
+        and part.get("toolName") == "deep_research"
+        for part in parts
+    )
     existing_answer = any(
         isinstance(part, dict)
         and (
-            (part.get("type") == "text" and (part.get("text") or "").strip())
+            (
+                part.get("type") == "text"
+                and (part.get("text") or "").strip()
+                and not has_research_handoff
+            )
             or part.get("type") == "source"
         )
         and part.get("researchRunId") is None
-        for part in _loads(message["content_json"], [])
+        for part in parts
     )
     if (
         message["thread_id"] != thread_id
@@ -978,8 +998,9 @@ def finish(
             else status
         )
         actual_error = None if actual_status == "cancelled" else error
+        # A cancelled run stores no report: a stop is the user asking for nothing back.
         report_text = None
-        if actual_status == "completed" and event_payload:
+        if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")
             if isinstance(candidate, str):
                 report_text = candidate

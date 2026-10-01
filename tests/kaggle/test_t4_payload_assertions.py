@@ -399,7 +399,8 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
     assert failures, "the leg would have passed an adapter that reloads to the base model"
     assert "ignores them silently" in " ".join(failures)
 
-    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path))
+    # Explicit: PEFT's infer_device() believes tests/_zoo_aggressive_cuda_spoof.py.
+    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path), torch_device = "cpu")
     b_matrices = [p for n, p in reloaded.named_parameters() if "lora_B" in n]
     assert b_matrices and all(float(p.abs().sum()) == 0.0 for p in b_matrices), (
         "peft loaded the renamed keys after all, so this test no longer describes "
@@ -822,6 +823,96 @@ def test_the_model_revision_travels_with_the_reference(tmp_path):
     )
     assert moved["status"] == "config_mismatch"
     assert reference_failures(moved, 0.10)
+
+
+def test_a_repo_id_that_differs_only_in_case_is_the_same_reference(tmp_path):
+    """The Hub treats repo ids case-insensitively, and #8058 changed the loader from reporting
+    the lower-case spelling to the canonical one. The committed reference still carries the
+    old spelling; that is the same checkpoint, and the revision pin is what moves with weights."""
+    check_reference, ref, reference_failures = _shared_setup_2(tmp_path)
+    payload = json.loads(ref.read_text())
+    payload["model"] = "unsloth/qwen2.5-0.5b-instruct"
+    payload["resolved_checkpoint"] = "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit"
+    payload["resolved_revision"] = "10413c288cb9629acdf60b3e0229f3ba75efe413"
+    ref.write_text(json.dumps(payload))
+    observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
+
+    recased = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        model = "unsloth/Qwen2.5-0.5B-Instruct",
+        resolved_checkpoint = "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
+        resolved_revision = "10413c288cb9629acdf60b3e0229f3ba75efe413",
+    )
+    assert recased["status"] == "ok", recased
+    assert not reference_failures(recased, 0.10)
+
+    # Case is the only thing forgiven: another checkpoint, or a revision with different
+    # capitals, is still a different experiment.
+    other = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        resolved_checkpoint = "unsloth/Qwen2.5-1.5B-Instruct-unsloth-bnb-4bit",
+        resolved_revision = "10413c288cb9629acdf60b3e0229f3ba75efe413",
+    )
+    assert other["status"] == "config_mismatch"
+    revision = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        resolved_checkpoint = "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit",
+        resolved_revision = "10413C288CB9629ACDF60B3E0229F3BA75EFE413",
+    )
+    assert revision["status"] == "config_mismatch"
+
+
+def test_a_local_checkpoint_path_keeps_its_case(tmp_path):
+    """Only Hub repo ids are case-insensitive. A local directory is a path, and on a
+    case-sensitive filesystem another capitalisation can hold other weights."""
+    check_reference, ref, reference_failures = _shared_setup_2(tmp_path)
+    upper = tmp_path / "models" / "Foo"
+    lower = tmp_path / "models" / "foo"
+    upper.mkdir(parents = True)
+    if lower.exists():
+        pytest.skip("case-insensitive filesystem: the two paths are one directory here")
+    lower.mkdir()
+    payload = json.loads(ref.read_text())
+    payload["resolved_checkpoint"] = str(upper)
+    ref.write_text(json.dumps(payload))
+    observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
+
+    verdict = check_reference(
+        observed, ref, 0.10, 0.05, max_steps = 3, resolved_checkpoint = str(lower)
+    )
+    assert verdict["status"] == "config_mismatch", verdict
+    assert reference_failures(verdict, 0.10)
+
+    # A relative "owner/name" that exists here is a directory too, not a repo id.
+    rel_upper = tmp_path / "Owner" / "Model"
+    rel_lower = tmp_path / "owner" / "model"
+    rel_upper.mkdir(parents = True)
+    rel_lower.mkdir(parents = True)
+    payload["resolved_checkpoint"] = "Owner/Model"
+    ref.write_text(json.dumps(payload))
+    import os
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        relative = check_reference(
+            observed, ref, 0.10, 0.05, max_steps = 3, resolved_checkpoint = "owner/model"
+        )
+    finally:
+        os.chdir(cwd)
+    assert relative["status"] == "config_mismatch", relative
 
 
 def test_a_reference_with_no_recorded_revision_does_not_refuse(tmp_path):

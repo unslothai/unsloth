@@ -7,7 +7,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCwIcon, UploadIcon } from "lucide-react";
+import { UploadIcon } from "lucide-react";
 import {
   type ChangeEvent,
   useCallback,
@@ -58,6 +58,7 @@ import {
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
@@ -210,7 +211,7 @@ function ArgumentsEditor({
           onClick={add}
           disabled={disabled}
         >
-          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add argument
         </Button>
       </div>
@@ -238,7 +239,7 @@ function ArgumentsEditor({
                 disabled={disabled}
                 aria-label={`Remove argument ${index + 1}`}
               >
-                <HugeiconsIcon icon={Delete02Icon} size={14} />
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -292,7 +293,7 @@ function HeadersEditor({
           onClick={add}
           disabled={disabled}
         >
-          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           {copy.add}
         </Button>
       </div>
@@ -332,7 +333,7 @@ function HeadersEditor({
                 disabled={disabled}
                 aria-label={copy.remove}
               >
-                <HugeiconsIcon icon={Delete02Icon} size={14} />
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -919,7 +920,7 @@ export function ChatMcpServersDialog({
                   disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
-                  {importing ? <Spinner /> : <UploadIcon size={14} />}
+                  {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                   Import config
                 </Button>
               </div>
@@ -1108,11 +1109,11 @@ export function ChatMcpServersDialog({
                 disabled={importing || blenderBusy}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
-                {importing ? <Spinner /> : <UploadIcon size={14} />}
+                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                 Import config
               </Button>
               <Button size="sm" onClick={startCreate} disabled={importing || blenderBusy}>
-                <HugeiconsIcon icon={PlusSignIcon} size={14} />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
             </div>
@@ -1158,7 +1159,7 @@ export function ChatMcpServersDialog({
                         {refreshingIds.has(server.id) ? (
                           <Spinner />
                         ) : (
-                          <RefreshCwIcon size={14} />
+                          <RefreshGlyph className="size-3.5" />
                         )}
                       </Button>
                       <Button
@@ -1169,7 +1170,7 @@ export function ChatMcpServersDialog({
                         aria-label="Edit server"
                         disabled={importing || blenderBusy || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Edit03Icon} size={14} />
+                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>
                       <Button
                         type="button"
@@ -1179,7 +1180,7 @@ export function ChatMcpServersDialog({
                         aria-label="Delete server"
                         disabled={importing || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} size={14} />
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>
