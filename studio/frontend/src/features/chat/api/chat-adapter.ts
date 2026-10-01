@@ -75,6 +75,12 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import {
+  type McpUiToolResult,
+  extractMcpUiEnvelope,
+  isMcpUiToolResult,
+  mcpUiReplayImages,
+} from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
   type McpImage,
@@ -301,6 +307,7 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  continuationSeed,
   createContinuationMerger,
   hasRenderableContent,
   incompleteLabel,
@@ -1047,6 +1054,7 @@ export function toolResultModelText(
   toolName?: string,
 ): unknown {
   if (
+    isMcpUiToolResult(result, toolName) ||
     isMcpImageToolResult(result) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, toolName)
@@ -1077,10 +1085,16 @@ export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
-  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  const v = val as {
+    text?: unknown;
+    images?: unknown;
+    sessionId?: unknown;
+    ui?: unknown;
+  };
   return (
     typeof v.text === "string" &&
     v.sessionId === undefined &&
+    v.ui === undefined &&
     Array.isArray(v.images) &&
     v.images.length > 0 &&
     v.images.every(
@@ -1110,6 +1124,7 @@ function serializeToolResultPart(
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
+    isMcpUiToolResult(result, tc.toolName ?? "") ||
     // The wrapper the live parser builds -- {text, images} and nothing else -- from an
     // MCP result, or from any tool whose raw output ends in a valid envelope. Those
     // are unwrapped by shape, since JSON.stringify below would replay the whole base64
@@ -1132,6 +1147,9 @@ function serializeToolResultPart(
     // envelope would hand its bytes to the model as image input.
     if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
       content += mcpImagesEnvelope(result.images);
+    } else if (isMcpToolName(tc.toolName)) {
+      const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
+      if (uiImages.length > 0) content += mcpImagesEnvelope(uiImages);
     }
   } else {
     try {
@@ -5022,11 +5040,30 @@ export function createOpenAIStreamAdapter(
         );
       }
 
+      // Carry reasoning only to llama-server, the one backend that can resume it.
+      const resumedThought =
+        continuation &&
+        isServedByLlamaCpp({
+          loadedIsGguf: runtime.loadedIsGguf,
+          activeGgufVariant: runtime.activeGgufVariant,
+          activeNativePathToken: runtime.activeNativePathToken,
+          checkpoint: params.checkpoint,
+        })
+          ? (continuation.reasoning ?? "")
+          : "";
+      if (continuation && !continuation.partial && !resumedThought) {
+        toast.error("This response cannot be resumed", {
+          description:
+            "It stopped mid-thought, and only GGUF models can resume a thought. Use Retry instead.",
+        });
+        throw new Error("A response that stopped mid-thought cannot be resumed here.");
+      }
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
           content: continuation.partial,
+          ...(resumedThought ? { reasoning_content: resumedThought } : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
         // goes back unsigned.
@@ -5434,9 +5471,12 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      // Seeded with the partial so the bubble reads as one response; the boundary lets the
-      // finalizers repair a repeat or restart.
-      let cumulativeText = continuation ? continuation.partial : "";
+      const continuationPartial = continuation
+        ? continuationSeed(continuation.partial, resumedThought)
+        : "";
+      // A seed that ends inside the thought: the next reasoning delta extends it.
+      const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
+      let cumulativeText = continuationPartial;
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
       // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
       // the delta through `appendCumulative` and the buffer is read only where the reply is
@@ -5450,7 +5490,6 @@ export function createOpenAIStreamAdapter(
       // Whether this run appended reply text of its own: a continuation is SEEDED with the previous
       // run's partial, so a run that adds nothing must not have its tail trimmed.
       let producedReplyText = false;
-      const continuationPartial = continuation?.partial ?? "";
       // Local backends resume at the exact token boundary, so trimming could only delete words the
       // model meant; the repair is for providers that repeat or restart.
       const repairContinuation =
@@ -5537,9 +5576,15 @@ export function createOpenAIStreamAdapter(
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
-      // True while wrapping a `delta.reasoning_content` stream in <think> for parseAssistantContent;
-      // outside the SSE loop because the close tag fires when content arrives.
-      let reasoningContentOpen = false;
+      if (resumedThought) {
+        reasoningDurationTracker.seedThought({
+          duration: continuation?.reasoningDuration,
+          open: resumesInsideThought,
+          textLength: resumedThought.length,
+        });
+      }
+      // Keep the <think> block open across reasoning deltas; answer content closes it.
+      let reasoningContentOpen = resumesInsideThought;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -5953,10 +5998,13 @@ export function createOpenAIStreamAdapter(
             : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
         : {};
       // Decided before the continuation yield below, which an abort during load saves as is.
+      // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
         isExternalRequest
           ? requestParsesThinkTags(externalReasoningFields)
-          : reasoningAlwaysOn || requestParsesThinkTags(localReasoningFields),
+          : reasoningAlwaysOn ||
+              Boolean(resumedThought) ||
+              requestParsesThinkTags(localReasoningFields),
       );
       // Yielded before the request starts: an abort during load skips the partial-content yield
       // below, saving an empty message.
@@ -7149,10 +7197,16 @@ export function createOpenAIStreamAdapter(
                     const rawEvent = (toolEvent.result as string) ?? "";
                     // Pulled out first, ahead of __IMAGES__, so the image slice below is unchanged. Only from the
                     // tools that emit it: elsewhere that line is content.
-                    const { text: rawResult, files: createdFiles } =
+                    const { text: withUi, files: createdFiles } =
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)
                         : { text: rawEvent, files: [] as SandboxFile[] };
+                    // Ahead of the image slice, which parses to end of string.
+                    const { text: rawResult, ui: mcpUi } =
+                      extractMcpUiEnvelope(
+                        withUi,
+                        toolCallParts[idx].toolName ?? "",
+                      );
                     // Same rule: only from the tool that emits it.
                     const { text: searchText, images: webImages } =
                       toolCallParts[idx].toolName === SEARCH_IMAGE_TOOL
@@ -7176,6 +7230,7 @@ export function createOpenAIStreamAdapter(
                           files?: SandboxFile[];
                         }
                       | McpImageToolResult
+                      | McpUiToolResult
                       | SearchImagesToolResult
                       | {
                           image_b64: string;
@@ -7244,6 +7299,17 @@ export function createOpenAIStreamAdapter(
                       parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
+                    }
+                    if (mcpUi) {
+                      parsedResult = isMcpImageToolResult(parsedResult)
+                        ? { ...parsedResult, ui: mcpUi }
+                        : {
+                            text:
+                              typeof parsedResult === "string"
+                                ? parsedResult
+                                : rawResult,
+                            ui: mcpUi,
+                          };
                     }
                     const nextArgs =
                       toolEvent.arguments &&
@@ -8181,6 +8247,11 @@ export function createOpenAIStreamAdapter(
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
+        if (continuation && !producedReplyText && !finalIncompleteReason) {
+          toast("The model had nothing to add", {
+            description: "It ended the reply where it already stopped.",
+          });
+        }
         yield {
           content: finalContent,
           metadata: {

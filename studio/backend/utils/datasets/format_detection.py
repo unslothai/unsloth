@@ -640,6 +640,9 @@ def _has_image_header(data: bytes) -> bool:
 
 def detect_vlm_dataset_structure(dataset):
     """Detect which VLM dataset shape this is: standard VLM messages (image objects in content), Llava format (image indices plus a separate images column), or a simple image + text pair needing conversion."""
+    # Imported here: this module is also loaded on its own by file path.
+    from .cells import text_cell_check
+
     try:
         sample = next(iter(dataset))
     except StopIteration:
@@ -652,6 +655,7 @@ def detect_vlm_dataset_structure(dataset):
         }
 
     column_names = set(sample.keys())
+    is_text = text_cell_check(dataset)
 
     if "messages" in column_names:
         messages = sample["messages"]
@@ -791,7 +795,7 @@ def detect_vlm_dataset_structure(dataset):
         if isinstance(sample_value, dict) and ("bytes" in sample_value or "path" in sample_value):
             return 75
 
-        if isinstance(sample_value, str):
+        if isinstance(sample_value, str) and is_text(col, sample_value):
             if sample_value.startswith(("http://", "https://")):
                 return 70 if not is_metadata_column(col) else 55
             if is_metadata_column(col):
@@ -868,7 +872,11 @@ def detect_vlm_dataset_structure(dataset):
             if any(_keyword_in_column(keyword, col) for keyword in text_keywords):
                 sample_value = sample[col]
 
-                if isinstance(sample_value, str) and len(sample_value) > 0:
+                if (
+                    isinstance(sample_value, str)
+                    and len(sample_value) > 0
+                    and is_text(col, sample_value)
+                ):
                     # Longer text = higher priority (content, not a label).
                     priority = min(len(sample_value), 1000)
                     candidates.append((col, priority))

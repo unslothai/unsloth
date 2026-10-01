@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  ConnectionApiType,
   ProviderApiType,
   ProviderAuthKind,
   ProviderAuthStatus,
@@ -17,6 +18,7 @@ export interface ExternalProviderConfig {
   /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
   apiType?: ProviderApiType;
+  decisionsOnly?: boolean;
   /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
   /** Cached available model ids from the provider's /models response. */
@@ -122,6 +124,26 @@ export function supportsProviderReasoningToggle(
   return (
     providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
   );
+}
+
+const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid"]);
+
+export function isDecisionConnection(
+  provider: Pick<ExternalProviderConfig, "providerType" | "decisionsOnly">,
+): boolean {
+  return (
+    provider.decisionsOnly === true ||
+    DECISION_PROVIDER_TYPES.has(provider.providerType)
+  );
+}
+
+export function connectionApiFields(
+  apiType: ConnectionApiType | undefined,
+): Pick<ExternalProviderConfig, "apiType" | "decisionsOnly"> {
+  return {
+    apiType: apiType === "responses" ? "responses" : "chat_completions",
+    decisionsOnly: apiType === "systemone",
+  };
 }
 
 // Known text-only providers on their main chat endpoint.

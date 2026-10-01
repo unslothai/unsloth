@@ -2157,6 +2157,7 @@ class InferenceBackend:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
@@ -2178,7 +2179,13 @@ class InferenceBackend:
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 with self._generation_lock:
-                    result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
+                    self._apply_adapter_state(use_adapter)
+                    try:
+                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
+                    finally:
+                        # Plain requests keep the adapter state, so turn the LoRA back on.
+                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
+                            model_info["model"].base_model.enable_adapter_layers()
 
                 text = result.get("text", "") if isinstance(result, dict) else str(result)
                 if text:
