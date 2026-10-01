@@ -595,7 +595,6 @@ def test_symlinked_model_directory_stays_grouped(tmp_path):
 
 
 def test_two_symlink_aliases_to_one_model_stay_distinct(tmp_path):
-    """Issue #10605: symlink aliases are separate Hub rows so each can remember settings."""
     real_model = tmp_path / "outside" / "model"
     _write_gguf(real_model / "model-Q4_K_M.gguf")
     _write_gguf(real_model / "model-Q8_0.gguf")

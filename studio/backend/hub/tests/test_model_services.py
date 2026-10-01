@@ -731,7 +731,6 @@ def _custom_gguf_row(
 
 
 def test_custom_dedupe_overlapping_symlink_scans_collapse_to_one_row(tmp_path):
-    """Two overlapping symlink scan roots can rediscover the same alias path once."""
     target = tmp_path / "weights"
     target.mkdir()
     gguf_file = target / "model.gguf"
@@ -746,7 +745,6 @@ def test_custom_dedupe_overlapping_symlink_scans_collapse_to_one_row(tmp_path):
 
 
 def test_custom_dedupe_collapses_duplicate_scanner_rows_for_one_symlink_alias(tmp_path):
-    """Multiple scanners can emit the same symlink alias path once per scan."""
     target = tmp_path / "weights"
     target.mkdir()
     (target / "model.gguf").write_bytes(b"x" * 10)
@@ -763,7 +761,6 @@ def test_custom_dedupe_collapses_duplicate_scanner_rows_for_one_symlink_alias(tm
 
 
 def test_custom_dedupe_distinct_symlink_aliases_stay_separate_rows(tmp_path):
-    """Different symlink paths to one on-disk model keep separate settings rows."""
     target = tmp_path / "weights"
     target.mkdir()
     (target / "model.gguf").write_bytes(b"x" * 10)

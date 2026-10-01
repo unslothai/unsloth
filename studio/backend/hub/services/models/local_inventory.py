@@ -641,7 +641,6 @@ def _inventory_physical_identity(raw_path: str) -> str:
 
 
 def _local_model_path_is_symlink(raw_path: str) -> bool:
-    """True when the inventory path is a symlink or lives under a symlinked directory."""
     try:
         path = Path(raw_path)
         if path.is_symlink():
@@ -657,7 +656,6 @@ def _local_model_path_is_symlink(raw_path: str) -> bool:
 
 
 def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelInfo) -> bool:
-    """True when *candidate* should replace *existing* for one physical model."""
     if candidate.partial != existing.partial:
         return not candidate.partial
     if (candidate.active_cache is True) != (existing.active_cache is True):
@@ -675,12 +673,7 @@ def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelI
 
 
 def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
-    """Collapse scanner overlap without folding distinct symlink aliases.
-
-    Multiple symlinks to the same on-disk model each appear as their own Hub row so
-    per-model settings can be remembered independently. A symlink plus the canonical
-    on-disk path still collapse to one row.
-    """
+    """Distinct symlink aliases of one model stay separate rows so each keeps its own settings (#10605)."""
     by_physical: dict[tuple[str, str], list[LocalModelInfo]] = {}
     for model in custom_models:
         physical = _inventory_physical_identity(model.path)
