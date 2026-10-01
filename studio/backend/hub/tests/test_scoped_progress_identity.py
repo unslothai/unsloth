@@ -26,32 +26,48 @@ def scoped_progress(monkeypatch, tmp_path):
         hub_cache = str(tmp_path),
     )
     monkeypatch.setattr(downloads.account_access, "managed_account", lambda: False)
-    monkeypatch.setattr(downloads, "_registry", SimpleNamespace(
-        get_job = lambda _key: SimpleNamespace(state = state.job_state),
-        get_job_metadata = lambda _key: metadata,
-    ))
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(
+            get_job = lambda _key: SimpleNamespace(state = state.job_state),
+            get_job_metadata = lambda _key: metadata,
+        ),
+    )
     for module in (downloads, snapshot_progress):
         monkeypatch.setattr(module, "preferred_repo_cache_dirs", lambda *a, **k: [entry])
     monkeypatch.setattr(download_manifest, "read_manifest", lambda *a, **k: state.manifest)
     monkeypatch.setattr(download_manifest, "has_cancel_marker", lambda *a, **k: False)
     monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_requirements", lambda *a, **k: None)
-    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_blob_hashes", lambda *a, **k: frozenset()
+    )
 
-    def manifest(size, path = "new.gguf", sha = "new"):
+    def manifest(
+        size,
+        path = "new.gguf",
+        sha = "new",
+    ):
         state.manifest = download_manifest.Manifest(
-            repo_type = "model", repo_id = "Org/Model", variant = "@diffusion",
-            started_at = "", expected_files = (
-                download_manifest.ExpectedFile(path = path, size = size, sha256 = sha),
-            ),
+            repo_type = "model",
+            repo_id = "Org/Model",
+            variant = "@diffusion",
+            started_at = "",
+            expected_files = (download_manifest.ExpectedFile(path = path, size = size, sha256 = sha),),
         )
 
     def poll(hint, variant = "@diffusion"):
-        return asyncio.run(downloads.get_gguf_download_progress_response(
-            "Org/Model", variant = variant, expected_bytes = hint,
-        ))
+        return asyncio.run(
+            downloads.get_gguf_download_progress_response(
+                "Org/Model",
+                variant = variant,
+                expected_bytes = hint,
+            )
+        )
 
-    return SimpleNamespace(blobs = blobs, snapshot = snapshot, state = state,
-                           metadata = metadata, manifest = manifest, poll = poll)
+    return SimpleNamespace(
+        blobs = blobs, snapshot = snapshot, state = state, metadata = metadata, manifest = manifest, poll = poll
+    )
 
 
 @pytest.mark.parametrize("scope", ["@diffusion", "@hub-assets"])
@@ -149,8 +165,15 @@ def test_restored_scope_without_registry_metadata_uses_manifest(scoped_progress)
 def test_regular_gguf_total_includes_companions(monkeypatch, scoped_progress):
     case = scoped_progress
     case.metadata.scoped_files = ()
-    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_requirements", lambda *a, **k:
-        SimpleNamespace(download_size_bytes = 657, required_hashes = frozenset({"new", "companion"}), expected_files = ()))
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *a, **k: SimpleNamespace(
+            download_size_bytes = 657,
+            required_hashes = frozenset({"new", "companion"}),
+            expected_files = (),
+        ),
+    )
     (case.blobs / "new.incomplete").write_bytes(b"n" * 20)
     (case.blobs / "companion").write_bytes(b"c" * 30)
     result = case.poll(700, "Q6_K")
@@ -171,8 +194,12 @@ def test_full_snapshot_retains_conservative_total(scoped_progress):
     case = scoped_progress
     case.metadata.scoped_files = ()
     result = snapshot_progress.compute_snapshot_progress(
-        repo_type = "model", repo_id = "Org/Model", job_key = "Org/Model",
-        expected_bytes = 670, hf_token = None, registry = downloads._registry,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        job_key = "Org/Model",
+        expected_bytes = 670,
+        hf_token = None,
+        registry = downloads._registry,
         metadata_resolver = lambda *a: (627, frozenset({"new"})),
     )
     assert result["expected_bytes"] == 670

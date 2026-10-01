@@ -398,15 +398,12 @@ def compute_snapshot_progress(
     # next poll would prevent the total from ever shrinking. Full snapshots
     # retain their existing conservative sizing policy.
     expected_total = (
-        meta_total
-        if variant is not None and meta_total > 0
-        else max(expected_total, meta_total)
+        meta_total if variant is not None and meta_total > 0 else max(expected_total, meta_total)
     )
 
     scoped_files = frozenset(getattr(metadata, "scoped_files", ()) or ())
     if variant is not None and scoped_files:
         variant_file_matcher = lambda path, **_kwargs: path in scoped_files
-
 
     # Without resolved hashes a variant must not count unscoped blobs, since sibling quants share one blobs/ dir; a no-variant snapshot owns the whole dir and counts unscoped.
     count_unscoped = variant is None
@@ -523,7 +520,8 @@ def compute_snapshot_progress(
                     # not permission to count its same-named snapshot files.
                     if manifest_matches_download(raw_manifest.get(), metadata)
                     and (
-                        not expected_hashes or _snapshot_resolves_to(manifest, snap, expected_hashes)
+                        not expected_hashes
+                        or _snapshot_resolves_to(manifest, snap, expected_hashes)
                     )
                 ),
                 default = 0,
