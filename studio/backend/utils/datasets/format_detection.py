@@ -490,7 +490,7 @@ def detect_multimodal_dataset(dataset):
         if col_name in already_detected:
             continue
         value = sample[col_name]
-        if _is_image_value(value):
+        if _is_image_value(value) or _holds_images(value):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
@@ -586,6 +586,21 @@ def _is_image_value(value) -> bool:
         if any(lower.endswith(ext) for ext in _IMAGE_EXTS):
             return True
 
+    return False
+
+
+def _holds_images(value) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if _is_image_value(item):
+            return True
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image" and part.get("image") is not None
+            for part in content
+        ):
+            return True
     return False
 
 
