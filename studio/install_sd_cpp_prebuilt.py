@@ -119,7 +119,10 @@ def _write_install_record(
 ) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one. The write itself stays best-effort (a metadata failure must not throw away binaries that extracted correctly) but the answer is memoised either way, so this process never re-installs what it just installed."""
     klass = accelerator_class(accelerator)
-    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    # requested_tag is the pin this install was made FOR, which is not always the tag it got (a host the mirror does not
+    # build falls back upstream or to latest). install_is_stale compares the pin against it, so a fallback install is
+    # not re-downloaded on every load just because its tag can never equal the pin.
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
     if ships_server is not None:
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
@@ -148,6 +151,29 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def install_is_stale(root: Path) -> bool:
+    """True when the managed install in ``root`` was made for a different pin than the one this Studio now ships.
+
+    Studio only (re)installs when a binary is missing, unusable or built for another accelerator, so without this a
+    host keeps the first bundle it ever installed: moving DEFAULT_TAG reaches new installs only, and every fix shipped
+    in a newer prebuilt never reaches the people who already had one. Unknown is not stale: no record, no tag, or a
+    pin that tracks latest (UNSLOTH_SD_CPP_TAG="") all answer False, so this never forces a download it cannot justify.
+    """
+    want = _pinned_tag()
+    if not want:
+        return False
+    rec = read_install_record(root)
+    requested = rec.get("requested_tag")
+    if isinstance(requested, str) and requested:
+        return requested != want
+    have = rec.get("tag")
+    if not isinstance(have, str) or not have:
+        return False
+    # Records written before requested_tag existed: the tag it got. Either the mirror's exact tag or, on a host the
+    # mirror does not build, the upstream release that tag names.
+    return have not in (want, upstream_tag_for(want))
 
 
 def is_mirror_only_tag(tag: Optional[str]) -> bool:
