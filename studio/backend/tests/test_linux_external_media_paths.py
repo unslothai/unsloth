@@ -365,3 +365,49 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     with pytest.raises(_HTTPException) as exc_root:
         ns["_resolve_browse_target"](str(ssh_root), [ssh_root])
     assert exc_root.value.status_code == 403
+
+
+def test_readable_dirs_within_does_not_restart_a_stuck_probe(monkeypatch):
+    import threading
+
+    release = threading.Event()
+    calls: list[str] = []
+
+    def _blocking_isdir(path):
+        calls.append(path)
+        release.wait(5)
+        return True
+
+    monkeypatch.setattr(external_media.os.path, "isdir", _blocking_isdir)
+    try:
+        assert external_media._readable_dirs_within(["/mnt/stale"], 0.05) == set()
+        assert external_media._readable_dirs_within(["/mnt/stale"], 0.05) == set()
+        assert calls == ["/mnt/stale"]
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(
+    "path, denied",
+    [
+        ("/mnt/c/Windows/System32", True),
+        ("/mnt/c/program files", True),
+        ("/mnt/d/Program Files (x86)/x", True),
+        ("/mnt/c", False),
+        ("/mnt/d/models", False),
+        ("/mnt/ssd/Windows", False),
+    ],
+)
+def test_wsl_drive_mount_denies_windows_system_dirs(monkeypatch, path, denied):
+    monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio_db._path_utils, "_IS_WSL", True)
+    monkeypatch.setattr(studio_db._path_utils, "_WSL_AUTOMOUNT_ROOT", "/mnt/")
+
+    assert studio_db.is_denied_system_path(path) is denied
+
+
+def test_windows_system_dirs_under_mnt_allowed_outside_wsl(monkeypatch):
+    monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio_db._path_utils, "_IS_WSL", False)
+
+    assert studio_db.is_denied_system_path("/mnt/c/Windows") is False

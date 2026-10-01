@@ -259,6 +259,8 @@ def _active_windows_drive_bitmask() -> int:
 
 # A disconnected mapped drive stays set in the GetLogicalDrives bitmask, so ``os.path.isdir`` on it can block for tens of seconds. Bound each drive probe so one stale mapping cannot stall a whole folder-browser request.
 _DRIVE_PROBE_TIMEOUT_S = 2.0
+_probes_lock = threading.Lock()
+_probes_started: dict[str, float] = {}
 
 
 def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
@@ -271,9 +273,20 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
             results[path] = os.path.isdir(path) and os.access(path, os.R_OK)
         except OSError:
             results[path] = False
+        finally:
+            with _probes_lock:
+                _probes_started.pop(path, None)
 
     threads: list[threading.Thread] = []
+    now = time.monotonic()
     for path in paths:
+        # A probe already stuck past the timeout (hard NFS mount) answers unreadable; starting
+        # another per request would pile up threads that never return.
+        with _probes_lock:
+            started = _probes_started.get(path)
+            if started is not None and now - started >= timeout:
+                continue
+            _probes_started.setdefault(path, now)
         thread = threading.Thread(target = _probe, args = (path,), daemon = True)
         thread.start()
         threads.append(thread)
