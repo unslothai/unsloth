@@ -55,11 +55,19 @@ test("dialogs flag their overflow so Firefox clips them only while they scroll",
   const lib = readSrc("lib/scroll-overflow.ts");
   assert.match(lib, /element\.setAttribute\("data-overflow-watched", ""\);/);
   assert.match(lib, /element\.toggleAttribute\("data-overflowing", overflowing\);/);
-  // Any overflow counts: one pixel over already draws a scrollbar.
+  // Any overflow counts, one pixel over already draws a scrollbar, but only on an axis that scrolls:
+  // an overflow-hidden call site draws none.
   assert.match(
     lib,
-    /element\.scrollHeight > element\.clientHeight \|\|\s*element\.scrollWidth > element\.clientWidth;/,
+    /\(SCROLLS\.test\(style\.overflowY\) && element\.scrollHeight > element\.clientHeight\) \|\|\s*\(SCROLLS\.test\(style\.overflowX\) && element\.scrollWidth > element\.clientWidth\);/,
   );
+  // The clip follows the radius drawn, which a call site's rounded-3xl! or a phone-width
+  // max-sm:rounded-none! leaves the class map reading wrong.
+  assert.match(lib, /const next = overflowing \? style\.borderTopRightRadius\.split\(" "\)\[0\] : "";/);
+  assert.match(lib, /element\.style\.setProperty\("--scroll-radius", next\);/);
+  // Firefox only: Chromium and WebKit inset the track and never read the flag.
+  assert.match(lib, /CSS\.supports\("-moz-appearance", "none"\)/);
+  assert.match(lib, /if \(!element \|\| !CLIPS_SCROLLERS \|\| typeof ResizeObserver === "undefined"\) \{/);
   // Content growing inside a capped box leaves the box the same size, so the children are watched.
   assert.match(lib, /for \(const child of element\.children\) sizes\.observe\(child\);/);
   assert.match(lib, /children\.observe\(element, \{ childList: true \}\);/);
