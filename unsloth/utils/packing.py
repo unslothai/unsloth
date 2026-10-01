@@ -590,14 +590,8 @@ def get_packed_info_from_kwargs(
 
 
 def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
-    """Cover the pad the collator appended after these lengths were collected.
-
-    TRL flattens a padding-free batch into one row and only then pads it out to
-    ``pad_to_multiple_of``, so the sequence lengths add up to fewer tokens than
-    the kernels are handed. Give that tail its own block rather than leaving it
-    out: a row outside every block is entirely -inf, which turns into NaN in the
-    softmax instead of a size mismatch.
-    """
+    # TRL pads the flattened padding-free row to pad_to_multiple_of after the lengths are
+    # taken; the tail gets its own block, since a row outside every block softmaxes to NaN.
     if total_tokens is None:
         return lengths
     padding = total_tokens - sum(lengths)

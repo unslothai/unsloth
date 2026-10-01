@@ -61,9 +61,6 @@ def test_sdpa_packed_attention_mask_sliding_window():
 
 
 def test_sdpa_packed_attention_mask_covers_a_padded_flattened_row():
-    # TRL flattens a padding-free batch into one row and only then pads it out to
-    # pad_to_multiple_of, so the sequence lengths add up to fewer tokens than the
-    # kernels are handed. The mask has to cover the padded length.
     seq_info = _make_seq_info([3, 4])
     mask = packing_utils.build_sdpa_packed_attention_mask(
         seq_info,
@@ -74,9 +71,7 @@ def test_sdpa_packed_attention_mask_covers_a_padded_flattened_row():
 
     assert mask.shape == (1, 1, 8, 8)
 
-    # the real tokens must not be able to see the pad
     assert torch.all(mask[0, 0, :7, 7] == float("-inf"))
-    # and no row may be entirely masked, which would be NaN out of the softmax
     assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
 
     query = torch.randn(1, 1, 8, 4)
