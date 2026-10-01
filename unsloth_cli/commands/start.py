@@ -4988,7 +4988,27 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
+def _pi_max_tokens(window: Optional[int], max_tokens: Optional[int]) -> Optional[int]:
+    if max_tokens is not None:
+        if max_tokens < 1:
+            _fail("--max-tokens must be a positive integer.")
+        if window and max_tokens >= window:
+            _fail(
+                f"--max-tokens ({max_tokens}) must be smaller than the loaded "
+                f"context window ({window}) to leave room for input."
+            )
+        return max_tokens
+    return min(window // 4, 8192) if window else None
+
+
+def write_pi_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    *,
+    max_tokens: Optional[int] = None,
+) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -5009,7 +5029,9 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         # far larger than a small Unsloth context, so Pi compacts too late and overflows
         # the server. Pin the real window and a sane output cap (mirrors OpenCode).
         provider_model["contextWindow"] = window
-        provider_model["maxTokens"] = min(window // 4, 8192)
+    output_limit = _pi_max_tokens(int(window) if window else None, max_tokens)
+    if output_limit is not None:
+        provider_model["maxTokens"] = output_limit
     _subdict(config, "providers")[_PI_PROVIDER] = {
         "api": "openai-completions",
         "baseUrl": f"{base}/v1",
@@ -5027,6 +5049,7 @@ def write_pi_subagent_config(
     model: dict,
     path: Path,
     approve: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
@@ -5038,7 +5061,7 @@ def write_pi_subagent_config(
             "apiKey": key,
             "model": model["id"],
             "contextWindow": window,
-            "maxTokens": min(window // 4, 8192),
+            "maxTokens": _pi_max_tokens(window, max_tokens),
             "approve": approve,
         },
     )
@@ -5696,6 +5719,17 @@ def pi(
     launch: bool = _LAUNCH_OPTION,
     gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
     max_seq_length: int = _CONTEXT_OPTION,
+    max_tokens: Optional[int] = typer.Option(
+        None,
+        "--max-tokens",
+        "--max_tokens",
+        min = 1,
+        help = (
+            "Maximum output tokens per Pi response, including local subagents. "
+            "Defaults to min(context window / 4, 8192) when the context is known. "
+            "Must leave room in the loaded context window for input."
+        ),
+    ),
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
@@ -5759,6 +5793,7 @@ def pi(
                 subagent_model,
                 config_path,
                 approve = yolo,
+                max_tokens = max_tokens,
             )
             command = [
                 "pi",
@@ -5802,7 +5837,7 @@ def pi(
         # config and skip our provider/key. HOME is relocated too so any other ~/.pi paths
         # stay in the session. The key rides in the config rather than the env.
         pi_agent_dir = home / ".pi" / "agent"
-        write_pi_config(base, key, entry, pi_agent_dir / "models.json")
+        write_pi_config(base, key, entry, pi_agent_dir / "models.json", max_tokens = max_tokens)
         env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
             # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows,

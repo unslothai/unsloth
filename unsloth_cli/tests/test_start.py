@@ -5453,6 +5453,54 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
+@pytest.mark.parametrize("flag", ["--max-tokens", "--max_tokens"])
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit(fake_studio, tmp_path, flag, as_subagent):
+    args = ["pi", "--no-launch", flag, "10000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    # Run twice to ensure each generated config honors the requested limit.
+    for _ in range(2):
+        result = CliRunner().invoke(start.start_app, args)
+        assert result.exit_code == 0, result.output
+        assert flag not in _launch_command(result.output)
+        if as_subagent:
+            config = json.loads((tmp_path / "agents" / "pi-subagent" / "subagent.json").read_text())
+        else:
+            config = json.loads(
+                (tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json").read_text()
+            )["providers"]["unsloth"]["models"][0]
+        assert config["maxTokens"] == 10000
+        assert config["contextWindow"] == MODEL["context_length"]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "131072", "131073"])
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_invalid_output_limit(fake_studio, tmp_path, value, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", value]
+    if as_subagent:
+        args.append("--as-subagent")
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code != 0
+    assert "--max-tokens" in result.output
+    if value in ("131072", "131073"):
+        assert "must be smaller than the loaded context window" in result.output
+    assert not list((tmp_path / "agents").rglob("models.json"))
+    assert not list((tmp_path / "agents").rglob("subagent.json"))
+
+
+@pytest.mark.parametrize("context", [{}, {"max_context_length": 32768}])
+def test_write_pi_output_limit_context_metadata(tmp_path, context):
+    path = tmp_path / "models.json"
+    start.write_pi_config(BASE, "test-key", {"id": "test-model", **context}, path, max_tokens = 10000)
+    model = json.loads(path.read_text())["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == 10000
+    if context:
+        assert model["contextWindow"] == 32768
+    else:
+        assert "contextWindow" not in model
+
+
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
     # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
     # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
