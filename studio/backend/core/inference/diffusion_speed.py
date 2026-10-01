@@ -421,6 +421,7 @@ def apply_speed_optims(
     offload_active: bool = False,
     cuda_graph_default: bool = True,
     cache_engaged: Optional[bool] = None,
+    denoiser_offloaded: Optional[bool] = None,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
@@ -428,6 +429,7 @@ def apply_speed_optims(
 
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
     so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
+    ``denoiser_offloaded`` (None = ``offload_active``) limits the CUDA-graph refusal to a moved denoiser.
 
     ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
     True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
@@ -445,6 +447,7 @@ def apply_speed_optims(
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "cuda_graph": False,
     }
@@ -453,6 +456,13 @@ def apply_speed_optims(
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
+
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from .diffusion_qwenimage21_rocm import install as install_rocm_query_chunks
+            applied["rocm_query_chunks"] = install_rocm_query_chunks(pipe, target, logger)
+        except Exception as exc:  # noqa: BLE001 - keep stock attention on unsupported installs
+            _warn(logger, "qwen-image-2.1 ROCm query chunks", exc)
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
@@ -552,7 +562,9 @@ def apply_speed_optims(
                 target,
                 family = family,
                 pipe = pipe,
-                offload_active = offload_active,
+                offload_active = offload_active
+                if denoiser_offloaded is None
+                else bool(denoiser_offloaded),
                 cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
                 speed_mode = mode,
                 family_default = cuda_graph_default,

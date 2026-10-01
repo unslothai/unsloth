@@ -853,12 +853,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
+        // Tests run on parallel threads, and macOS's clock resolves only microseconds, so two
+        // calls with the same name could get the same path and one test's cleanup or swap would
+        // land on the other's file. The counter keeps every name in this process distinct.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "unsloth-native-files-{name}-{}-{nanos}",
+            "unsloth-native-files-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }
