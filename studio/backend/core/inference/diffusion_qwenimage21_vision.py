@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep Qwen-Image-2.1 reference-image encoding finite on measured ROCm GPUs.
+"""Qwen-Image-2.1 vision SDPA gives NaN conditioning on gfx1151: use query-chunked eager there.
 
-Defaults to gfx1151. UNSLOTH_QWEN_IMAGE_ROCM_VISION_EAGER=0 opts out;
-=1 allows testing on other ROCm GPUs. Only the vision SDPA backend is changed.
-Query chunks bound temporary attention memory without dropping any keys or values.
+UNSLOTH_QWEN_IMAGE_ROCM_VISION_EAGER: auto (gfx1151 only), 1 (any ROCm GPU), 0 (off).
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ _QUERY_ROWS = 512
 def _eager_vision_attention(module, query, key, value, attention_mask, **kwargs):
     from transformers.models.qwen3_vl.modeling_qwen3_vl import eager_attention_forward
 
-    # Keep the stock dropout RNG sequence for training; Studio uses this in eval.
+    # Dropout: keep the stock RNG sequence.
     if query.shape[-2] <= _QUERY_ROWS or kwargs.get("dropout", 0.0):
         return eager_attention_forward(module, query, key, value, attention_mask, **kwargs)
     import torch
@@ -42,7 +40,6 @@ def _eager_vision_attention(module, query, key, value, attention_mask, **kwargs)
 
 
 def configure_vision_attention(pipe, *, family, target, logger) -> bool:
-    """Change only this encoder's vision backend, leaving text and denoising alone."""
     if family != "qwen-image-2.1":
         return False
     if getattr(target, "backend", None) != "rocm" or getattr(target, "device", None) != "cuda":
@@ -65,11 +62,10 @@ def configure_vision_attention(pipe, *, family, target, logger) -> bool:
     visual = getattr(getattr(encoder, "model", None), "visual", None)
     if visual is None or type(visual).__name__ != "Qwen3VLVisionModel":
         return False
-    # Respect explicitly selected non-SDPA backends. This fixes the native SDPA
-    # path, including Speed Off; it is a correctness fix, not a speed option.
+    # Correctness fix for native SDPA (Speed Off too); explicit non-SDPA backends are kept.
     if visual.config._attn_implementation != "sdpa":
         return False
-    # Unlike a speed optimization, silently skipping this can produce blank images.
+    # Never skip silently: that renders blank images.
     try:
         from transformers import AttentionInterface
         AttentionInterface.register(_BACKEND, _eager_vision_attention)
