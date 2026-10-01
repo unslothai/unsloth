@@ -1321,10 +1321,10 @@ export const zhCN = {
         sentAttachments: {
           label: "已发送消息中的附件",
           description:
-            "显示各文件类型的列表，或小标签。超过六个文件时，“自动”会切换为小标签。",
+            "标准会显示每个文件及其类型，紧凑会在每行显示更多文件。超过六个文件时，“自动”会切换为紧凑。",
           auto: "自动",
-          list: "列表",
-          chips: "小标签",
+          list: "标准",
+          chips: "紧凑",
         },
         reset: "重置",
         resetAll: "重置自定义",

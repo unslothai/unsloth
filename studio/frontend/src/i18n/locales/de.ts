@@ -1364,10 +1364,10 @@ export const de = {
         sentAttachments: {
           label: "Anhänge in gesendeten Nachrichten",
           description:
-            "Eine Liste mit dem Typ jeder Datei oder kleine Chips. „Automatisch“ wechselt ab sieben Dateien zu Chips.",
+            "Standard zeigt jede Datei mit ihrem Typ, Kompakt passt mehr in eine Zeile. „Automatisch“ wechselt ab sieben Dateien zu Kompakt.",
           auto: "Automatisch",
-          list: "Liste",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Kompakt",
         },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",

@@ -27,6 +27,7 @@ import {
   DEFAULT_CUSTOMIZATION,
   sanitizeCustomization,
 } from "../src/features/settings/stores/appearance-custom-store.ts";
+import { en } from "../src/i18n/locales/en.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const ATTACHMENT = await readSrcAsync("components/assistant-ui/attachment.tsx");
@@ -142,6 +143,13 @@ test("the sent attachments setting defaults to auto and rejects anything else", 
   assert.equal(DEFAULT_CUSTOMIZATION.sentAttachments, "auto");
   assert.equal(sanitizeCustomization({ sentAttachments: "chips" }).sentAttachments, "chips");
   assert.equal(sanitizeCustomization({ sentAttachments: 7 }).sentAttachments, "auto");
+});
+
+test("the sent attachments options read as Standard and Compact", () => {
+  const options = en.settings.appearance.custom.sentAttachments;
+  assert.equal(options.list, "Standard");
+  assert.equal(options.chips, "Compact");
+  assert.doesNotMatch(options.description, /\b(list|chips?)\b/i);
 });
 
 test("the composer always shows attachments as cards", () => {

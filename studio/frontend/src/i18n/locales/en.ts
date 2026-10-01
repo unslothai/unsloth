@@ -1339,10 +1339,10 @@ export const en = {
         sentAttachments: {
           label: "Attachments in sent messages",
           description:
-            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+            "Standard shows each file with its type, compact fits more on each line. Auto switches to compact past six files.",
           auto: "Auto",
-          list: "List",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Reset",
         resetAll: "Reset customization",

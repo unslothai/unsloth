@@ -1323,10 +1323,10 @@ export const it = {
         sentAttachments: {
           label: "Allegati nei messaggi inviati",
           description:
-            "Un elenco con il tipo di ogni file, oppure piccole etichette. Automatico passa alle etichette oltre i sei file.",
+            "Standard mostra ogni file con il suo tipo, Compatto ne mette di più su ogni riga. Automatico passa a compatto oltre i sei file.",
           auto: "Automatico",
-          list: "Elenco",
-          chips: "Etichette",
+          list: "Standard",
+          chips: "Compatto",
         },
         reset: "Ripristina",
         resetAll: "Ripristina la personalizzazione",

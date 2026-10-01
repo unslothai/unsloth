@@ -1359,10 +1359,10 @@ export const es = {
         sentAttachments: {
           label: "Adjuntos en los mensajes enviados",
           description:
-            "Una lista con el tipo de cada archivo o pequeñas etiquetas. Automático cambia a etiquetas con más de seis archivos.",
+            "Estándar muestra cada archivo con su tipo y Compacto cabe más en cada línea. Automático cambia a compacto con más de seis archivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Estándar",
+          chips: "Compacto",
         },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
