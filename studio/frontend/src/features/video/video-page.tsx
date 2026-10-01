@@ -2819,7 +2819,6 @@ function VideoGenerator({
         // incompatible pairing can be caught before the download it would waste. The check is the FLUX.2
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
         // the shared envelope's half of the contract rather than a live path.
-        if (plan.plan_failed) throw new Error("Required file information is incomplete. Please try again.");
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
           pendingStagedLoad.current = {
@@ -2850,11 +2849,8 @@ function VideoGenerator({
           pickToast.setPhase(pickToastId, "downloading", staged);
           return true;
         }
-      } catch (error) {
-        if (pick !== pickSeq.current || !owns()) return true;
-        pickToast.dismiss(pickToastId);
-        toast.error("Could not check required files", { description: error instanceof Error ? error.message : "Please try again." });
-        return false;
+      } catch {
+        // No plan (offline, older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (pick !== pickSeq.current || !owns()) {

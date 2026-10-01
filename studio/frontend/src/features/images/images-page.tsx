@@ -3116,7 +3116,7 @@ export function ImagesPage({
           pickToast.dismiss(pickToastId);
           return true;
         }
-        if (plan.plan_failed) {
+        if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }
         incompatible = plan.incompatible_reason ?? null;
@@ -3172,10 +3172,8 @@ export function ImagesPage({
           });
           return true;
         }
-        if (pick !== pickSeq.current || !owns()) return true;
-        pickToast.dismiss(pickToastId);
-        toast.error("Could not check required files", { description: error instanceof Error ? error.message : "Please try again." });
-        return false;
+        // No plan (offline, older backend, metadata hiccup): the backend contract is that the load
+        // pulls what it needs inline, so refusing here would block cached models offline.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (!downloadOnly && (pick !== pickSeq.current || !owns())) {

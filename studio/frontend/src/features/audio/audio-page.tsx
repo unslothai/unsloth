@@ -1332,6 +1332,18 @@ export function AudioPage({
           );
         } catch (error) {
           if (generation !== stagedTtsGeneration.current) return;
+          // The plan needs the Hub; offline, a model already on disk must still load.
+          if (meta.isDownloaded === true) {
+            void loadTtsModelRef.current(
+              repoId,
+              ggufFilename,
+              meta.loadId,
+              meta.audioType,
+              remoteCodeApproval,
+              meta.isGguf,
+            );
+            return;
+          }
           toast.error(
             error instanceof Error
               ? error.message
