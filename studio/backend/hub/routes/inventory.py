@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -387,33 +388,48 @@ async def export_model(
     destination: str = Body(...),
     variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Copy a downloaded model's snapshot into a folder as plain files (#8798)."""
+    # The answer names the folder written, normalised, so an API-key caller gets it redacted
+    # like every other inventory path; a browser session keeps it.
     try:
-        return await asyncio.to_thread(
+        payload = await asyncio.to_thread(
             portable.export_cached_model,
             repo_id,
             variant,
             resolve_host_path_reference(destination) or destination,
         )
     except portable.PortableModelError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+        raise _redacted_portable_error(400, exc, via_api_key)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code = 404, detail = str(exc))
+        raise _redacted_portable_error(404, exc, via_api_key)
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
 @router.post(
     "/import-model", response_model = PortableModelResponse, response_model_exclude_none = True
 )
 async def import_model(
-    source: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+    source: str = Body(..., embed = True),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Copy an exported model folder into the models cache (#8798)."""
     try:
-        return await asyncio.to_thread(
+        payload = await asyncio.to_thread(
             portable.import_model_folder, resolve_host_path_reference(source) or source
         )
     except portable.PortableModelError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+        raise _redacted_portable_error(400, exc, via_api_key)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code = 404, detail = str(exc))
+        raise _redacted_portable_error(404, exc, via_api_key)
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+def _redacted_portable_error(status_code: int, exc: Exception, via_api_key: bool) -> HTTPException:
+    """The error names the offending folder, so it goes through the same redaction."""
+    return HTTPException(
+        status_code = status_code,
+        detail = redact_inventory_error_detail(str(exc), via_api_key = via_api_key),
+    )

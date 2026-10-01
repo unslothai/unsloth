@@ -122,3 +122,49 @@ def test_import_refuses_manifest_entries_that_leave_the_folder(hub, tmp_path, na
     )
     with pytest.raises(portable.PortableModelError):
         portable.import_model_folder(str(folder))
+
+
+def test_an_api_key_caller_gets_the_folder_redacted_and_a_session_keeps_it(hub, tmp_path):
+    """Both routes answer the folder they touched, so they sit behind the inventory path
+    boundary like the rest of the hub routes."""
+    from auth.authentication import authenticated_via_api_key, get_current_subject
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from hub.routes import inventory as inventory_routes
+
+    _cache_with(hub, "org/model", {"config.json": b"{}"})
+
+    def client(via_api_key: bool) -> TestClient:
+        app = FastAPI()
+        app.include_router(inventory_routes.router, prefix = "/api/hub")
+        app.dependency_overrides[get_current_subject] = lambda: "alice"
+        app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+        return TestClient(app, raise_server_exceptions = False)
+
+    session = client(False).post(
+        "/api/hub/export-model",
+        json = {"repo_id": "org/model", "destination": str(tmp_path / "session")},
+    )
+    assert session.status_code == 200
+    assert session.json()["path"] == str(tmp_path / "session" / "org--model")
+
+    keyed = client(True).post(
+        "/api/hub/export-model",
+        json = {"repo_id": "org/model", "destination": str(tmp_path / "keyed")},
+    )
+    assert keyed.status_code == 200
+    assert keyed.json()["path"] == "" and keyed.json()["files"] == 1
+
+    # The refusal names the offending folder; an API-key caller does not get it back.
+    refused = client(True).post(
+        "/api/hub/export-model",
+        json = {"repo_id": "org/model", "destination": str(hub / "inside")},
+    )
+    assert refused.status_code == 400
+    assert str(hub) not in refused.json()["detail"]
+
+    imported = client(True).post(
+        "/api/hub/import-model", json = {"source": str(tmp_path / "session" / "org--model")}
+    )
+    assert imported.status_code == 200
+    assert imported.json()["path"] == ""
