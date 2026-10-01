@@ -1268,7 +1268,10 @@ def _scheme_supported(
             # Re-checked under the lock: the route answers plans concurrently, and a burst of them must not each spawn
             # a child that imports torch.
             if (scheme, card) not in _SMOKE_CACHE:
-                table = _child_probe_table(card)
+                # A previous process's clean child table for this exact stack and card skips the spawn (4-5 s).
+                table = _persisted_probe_table(card)
+                if table is None or scheme not in table:
+                    table = _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -1403,7 +1406,26 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
                 break
     finally:
         _close_probe_child(proc, queue)
-    return table if isinstance(table, dict) else _crashed_child_verdict(proc, device)
+    if isinstance(table, dict):
+        # Only a clean table is persisted: a crash verdict or a timeout says nothing durable about the stack.
+        try:
+            from . import diffusion_probe_cache
+
+            diffusion_probe_cache.store(device, table)
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            pass
+        return table
+    return _crashed_child_verdict(proc, device)
+
+
+def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
+    """The verdicts a previous process's clean child probe recorded for this card and stack, or None."""
+    try:
+        from . import diffusion_probe_cache
+
+        return diffusion_probe_cache.load(card)
+    except Exception:  # noqa: BLE001 - a miss, never an error
+        return None
 
 
 # SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
