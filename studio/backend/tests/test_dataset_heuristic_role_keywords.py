@@ -32,7 +32,7 @@ _CASES = [
     ),
     (
         {"id": "1", "title": "t", "context": _LONG, "question": _MID, "answers": _MID},
-        {"question": "user", "context": "system", "title": "system", "answers": "assistant"},
+        {"question": "user", "context": "system", "answers": "assistant"},
     ),
     (
         {"instruction": _MID, "context": _LONG, "response": _MID, "category": "qa"},
@@ -157,4 +157,50 @@ _ANSWER_LEFTOVER_CASES = [
 @pytest.mark.parametrize("heuristic", _HEURISTICS)
 @pytest.mark.parametrize("row, expected", _ANSWER_LEFTOVER_CASES)
 def test_answer_column_is_not_mapped_to_the_system_prompt(heuristic, row, expected):
+    assert heuristic([row]) == expected
+
+
+_LEFTOVER_CASES = [
+    (
+        {"type": "GSM_SV", "query": _MID, "original_question": _MID, "response": _LONG},
+        {"query": "user", "response": "assistant"},
+    ),
+    (
+        {"id": "1", "input": _MID, "output": _LONG, "source": "cf", "license": "cc-by-4.0"},
+        {"input": "user", "output": "assistant"},
+    ),
+    (
+        {"prompt": _MID, "response": _LONG, "helpfulness": 3, "correctness": 3},
+        {"prompt": "user", "response": "assistant"},
+    ),
+    (
+        {"question": _MID, "distractor3": "viruses", "correct_answer": _MID, "support": _LONG},
+        {"question": "user", "correct_answer": "assistant"},
+    ),
+    (
+        {"Question": _MID, "Complex_CoT": _LONG, "Response": _MID},
+        {"Question": "user", "Response": "assistant"},
+    ),
+    (
+        {"task_id": "HumanEval/0", "prompt": _LONG, "canonical_solution": _MID, "test": _LONG},
+        {"prompt": "user", "task_id": "system", "canonical_solution": "assistant"},
+    ),
+    (
+        {"Instruction": "Translate this.", "Input": "It is sunny.", "Output": "Il fait beau."},
+        {"Instruction": "user", "Input": "system", "Output": "assistant"},
+    ),
+    (
+        {"instruction": "Translate this.", "input": "It is sunny.", "response": "Il fait beau."},
+        {"instruction": "user", "input": "system", "response": "assistant"},
+    ),
+    (
+        {"question": _MID, "answer": "true", "passage": _LONG},
+        {"question": "user", "answer": "assistant", "passage": "system"},
+    ),
+]
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+@pytest.mark.parametrize("row, expected", _LEFTOVER_CASES)
+def test_leftover_column_is_not_mapped_to_the_system_prompt(heuristic, row, expected):
     assert heuristic([row]) == expected

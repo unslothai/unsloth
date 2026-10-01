@@ -421,22 +421,28 @@ def detect_custom_format_heuristic(dataset):
     if len(remaining_columns) >= 1:
         remaining_col = remaining_columns[0]
 
-        # No strong keyword match: decide by what is missing.
-        if not has_keyword(remaining_col, user_words + assistant_words):
-            mapping[remaining_col] = "system"
-        elif user_col is None:
+        if user_col is None and has_keyword(remaining_col, user_words + assistant_words):
             mapping[remaining_col] = "user"
-        elif not has_keyword(remaining_col, assistant_words):
-            mapping[remaining_col] = "system"
 
     has_user = any(role == "user" for role in mapping.values())
     has_assistant = any(role == "assistant" for role in mapping.values())
 
     if not has_user and len(remaining_columns) > 0:
-        for col in remaining_columns:
+        # remaining_columns[0] has no role word here.
+        for col in remaining_columns[1:]:
             if col not in mapping:
                 mapping[col] = "user"
                 has_user = True
+                break
+
+    if system_col is None:
+        for col in remaining_columns:
+            if (
+                col not in mapping
+                and has_keyword(col, ["input", "passage"])
+                and not has_keyword(col, assistant_words)
+            ):
+                mapping[col] = "system"
                 break
 
     if has_user and has_assistant:
