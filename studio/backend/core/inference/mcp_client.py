@@ -1799,11 +1799,12 @@ def _strip_payloads(value: Any, payloads: set[str]) -> Any:
     return _MIRRORED if value and not kept else kept
 
 
-# The frontend refills bytes positionally into image blocks that have no `data`.
+# The frontend refills bytes positionally: `data` on an image block, `resource.blob` on an embedded one.
 def _seeded_image_block(block: Any, mime: str) -> dict:
     out = {k: v for k, v in _content_block_json(block).items() if k != "data"}
     if isinstance(out.get("resource"), dict):
         out["resource"] = {k: v for k, v in out["resource"].items() if k != "blob"}
+        return out
     return {**out, "type": "image", "mimeType": mime}
 
 

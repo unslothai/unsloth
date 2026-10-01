@@ -130,6 +130,30 @@ test("the seed refills image blocks in order and drops one with no image", () =>
   });
 });
 
+test("an embedded image resource gets its blob back and keeps its uri", () => {
+  const png = { data: "AAAA", mimeType: "image/png" };
+  const gif = { data: "R0lG", mimeType: "image/gif" };
+  const ui = {
+    resourceUri: "ui://a/b",
+    content: [
+      {
+        type: "resource",
+        resource: { uri: "file:///c.png", mimeType: "image/png" },
+      },
+      { type: "resource", resource: { uri: "file:///t.txt", text: "hi" } },
+      { type: "image", mimeType: "image/gif" },
+    ],
+  };
+  assert.deepEqual(toolResultParams(ui, [png, gif]).content, [
+    {
+      type: "resource",
+      resource: { uri: "file:///c.png", mimeType: "image/png", blob: "AAAA" },
+    },
+    { type: "resource", resource: { uri: "file:///t.txt", text: "hi" } },
+    { type: "image", ...gif },
+  ]);
+});
+
 test("the tool name carries the server the widget is scoped to", () => {
   assert.deepEqual(splitMcpToolName("mcp__a3f9__get__thing"), {
     serverId: "a3f9",

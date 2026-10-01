@@ -79,22 +79,25 @@ def test_envelope_carries_template_seed_and_meta_and_the_model_never_sees_it():
 
 
 def test_every_block_is_seeded_in_order_and_images_carry_no_second_copy():
+    mcp_types = pytest.importorskip("mcp.types")
     audio = SimpleNamespace(type = "audio", data = "QUJD", mimeType = "audio/wav")
     link = SimpleNamespace(type = "resource_link", uri = "file:///r.pdf", name = "r.pdf")
-    embedded = SimpleNamespace(
+    embedded = mcp_types.EmbeddedResource(
         type = "resource",
-        resource = SimpleNamespace(uri = "file:///c.png", blob = "B" * 5000, mimeType = "image/png"),
+        resource = mcp_types.BlobResourceContents(
+            uri = "file:///c.png", blob = "B" * 5000, mimeType = "image/png"
+        ),
     )
     flat = _flatten_result(
         _result(_text("see"), link, audio, embedded, _image(data = "C" * 10), structured = {"a": 1}),
         UI,
     )
     blocks = _envelope(flat)["content"]
-    assert [b["type"] for b in blocks] == ["text", "resource_link", "audio", "image", "image"]
+    assert [b["type"] for b in blocks] == ["text", "resource_link", "audio", "resource", "image"]
     assert blocks[2]["data"] == "QUJD"
-    for b in blocks[3:]:
-        assert "data" not in b and b["mimeType"] == "image/png"
-    assert "blob" not in json.dumps(blocks[3])
+    # An embedded image stays a resource block; only its blob rides the image envelope.
+    assert blocks[3]["resource"] == {"uri": "file:///c.png", "mimeType": "image/png"}
+    assert "data" not in blocks[4] and blocks[4]["mimeType"] == "image/png"
     # The UI line precedes the image envelope, whose parse reads to end of string.
     assert flat.index("\n" + MCP_UI_SENTINEL) < flat.index("\n" + MCP_IMAGES_SENTINEL)
     images = json.loads(flat.split(MCP_IMAGES_SENTINEL)[1])

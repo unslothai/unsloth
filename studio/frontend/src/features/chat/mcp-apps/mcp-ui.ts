@@ -93,12 +93,27 @@ export function toolResultParams(
   let next = 0;
   const content: Record<string, unknown>[] = [];
   for (const block of ui.content ?? []) {
-    if (block?.type !== "image" || block.data !== undefined) {
+    const embedded =
+      block?.type === "resource" &&
+      typeof block.resource === "object" &&
+      block.resource !== null
+        ? (block.resource as Record<string, unknown>)
+        : null;
+    if (
+      embedded
+        ? embedded.blob !== undefined || embedded.text !== undefined
+        : block?.type !== "image" || block.data !== undefined
+    ) {
       content.push({ ...block });
       continue;
     }
     const image = images[next++];
-    if (image) content.push({ ...block, ...image });
+    if (!image) continue;
+    content.push(
+      embedded
+        ? { ...block, resource: { ...embedded, blob: image.data } }
+        : { ...block, ...image },
+    );
   }
   return {
     content,
