@@ -184,8 +184,8 @@ def _is_folded_tool_text(text: str) -> bool:
     return isinstance(parsed, dict) and "tool_response" in parsed
 
 
-def keep_date_note(messages: list[dict], fitted: list[dict]) -> list[dict]:
-    """Hand the date note the first user turn leads with to the oldest kept one once it is evicted."""
+def keep_date_note(messages: list[dict], fitted: list[dict]) -> Optional[tuple[dict, Any]]:
+    """Move the evicted first turn's date note onto the oldest kept user turn."""
     first = next(
         (
             message
@@ -197,7 +197,7 @@ def keep_date_note(messages: list[dict], fitted: list[dict]) -> list[dict]:
         None,
     )
     if first is None or any(message is first for message in fitted):
-        return fitted
+        return None
     index = _first_text_index(first["content"])
     note = CURRENT_DATE_UPDATE_NOTE_RE.match(
         first["content"] if index == -1 else first["content"][index]["text"]
@@ -207,7 +207,7 @@ def keep_date_note(messages: list[dict], fitted: list[dict]) -> list[dict]:
         for message in fitted
         for text in _texts(message)
     ):
-        return fitted
+        return None
     for message in fitted:
         index = _first_text_index(message.get("content")) if message.get("role") == "user" else None
         if index is None:
@@ -226,8 +226,8 @@ def keep_date_note(messages: list[dict], fitted: list[dict]) -> list[dict]:
                 {**content[index], "text": noted},
                 *content[index + 1 :],
             ]
-        break
-    return fitted
+        return message, content
+    return None
 
 
 def truncate_oldest_messages(
