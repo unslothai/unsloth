@@ -670,6 +670,24 @@ export function ResourcesTab() {
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
               {separateInferenceGpu.available &&
+                inferenceDisplay.usageDevices.map((device, index) => (
+                  <span
+                    key={`${device.index ?? index}-${device.name ?? "gpu"}`}
+                    className="block normal-case"
+                  >
+                    {`${
+                      device.name ??
+                      t("settings.resources.gpu.deviceWithIndex", {
+                        index: deviceOrdinal(device) ?? index,
+                      })
+                    } · ${t("settings.resources.gpu.used", {
+                      value: isFiniteNumber(device.vram_used_gb)
+                        ? formatGiB(device.vram_used_gb)
+                        : unknownLabel,
+                    })}`}
+                  </span>
+                ))}
+              {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">
                     {t("settings.resources.gpu.sharedEstimatedAvailable", {
@@ -839,8 +857,35 @@ export function ResourcesTab() {
           description={t("settings.resources.storage.modelsFolderDescription")}
           hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
+          below={
+            cacheLocationDetail || hfCache?.isCustom ? (
+              <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
+                <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                  {cacheLocationDetail ? (
+                    <span
+                      title={cacheLocationDetail}
+                      className="min-w-0 truncate"
+                    >
+                      {cacheLocationDetail}
+                    </span>
+                  ) : null}
+                  {hfCache?.isCustom ? (
+                    <Button
+                      variant="link"
+                      size="xs"
+                      className="h-auto px-0 text-xs"
+                      disabled={cacheSaving}
+                      onClick={() => void saveCacheFolder(null)}
+                    >
+                      {t("settings.resources.storage.resetAction")}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null
+          }
         >
-          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
                 readOnly
@@ -881,29 +926,6 @@ export function ResourcesTab() {
             >
               {t("settings.resources.storage.changeAction")}
             </Button>
-            {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-                {cacheLocationDetail ? (
-                  <span
-                    title={cacheLocationDetail}
-                    className="min-w-0 truncate"
-                  >
-                    {cacheLocationDetail}
-                  </span>
-                ) : null}
-                {hfCache?.isCustom ? (
-                  <Button
-                    variant="link"
-                    size="xs"
-                    className="h-auto px-0 text-xs"
-                    disabled={cacheSaving}
-                    onClick={() => void saveCacheFolder(null)}
-                  >
-                    {t("settings.resources.storage.resetAction")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </SettingsRow>
         <CacheStorageRows />

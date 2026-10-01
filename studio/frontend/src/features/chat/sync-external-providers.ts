@@ -192,6 +192,8 @@ export function mergeLocalProviderOptions(
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? existing.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof existing.openaiContainerTtlMinutes === "number" &&

@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Delete02Icon,
   Download01Icon,
   PlayIcon,
@@ -189,7 +189,7 @@ export function CardUpdateButton({
             className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-ui-12 font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
           >
             <HugeiconsIcon
-              icon={ArrowReloadHorizontalIcon}
+              icon={Refresh01Icon}
               strokeWidth={2}
               className="size-3.5"
             />
@@ -215,7 +215,7 @@ export function CardUpdateButton({
           className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-amber-500/10 hover:text-amber-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-amber-500/15 dark:hover:text-amber-400"
         >
           <HugeiconsIcon
-            icon={ArrowReloadHorizontalIcon}
+            icon={Refresh01Icon}
             strokeWidth={1.75}
             className="size-4"
           />
