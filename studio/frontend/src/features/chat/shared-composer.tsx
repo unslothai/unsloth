@@ -726,6 +726,7 @@ export function SharedComposer({
   }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
   const imeSessionOpenRef = useRef(false);
+  const compositionEndedAtRef = useRef(-Infinity);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -2224,44 +2225,25 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
-    const keyEvent = {
-      key: e.key,
-      metaKey: e.metaKey,
-      ctrlKey: e.ctrlKey,
-      shiftKey: e.shiftKey,
-      altKey: e.altKey,
-      repeat: e.repeat,
-      isComposing: e.nativeEvent.isComposing,
-      keyCode: e.keyCode,
-    };
-    const wasComposing = composingRef.current;
+    const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
+    compositionEndedAtRef.current = -Infinity;
     // IME composition (JP/CN/KR): Enter commits the candidate, so do not hijack it (#5318). Re-pin
     // composingRef in case the stuck watchdog (#5546) cleared it during a long candidate-window pause,
     // and re-arm the watchdog on the same path, or the WSL+Chrome no-compositionend case pins it forever.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) {
-      composingRef.current = true;
-      refreshStuckImeTimer();
+    const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
+    if (imeKey) {
       if (
-        !imeKeydownBlocksComposerSubmit(
-          keyEvent,
-          wasComposing,
+        imeKeydownBlocksComposerSubmit(
+          e,
           imeSessionOpenRef.current,
+          msSinceCompositionEnd,
         )
       ) {
-        const intent = composerSubmitIntent(
-          composerKeyEventForImeSubmit(keyEvent),
-          sendShortcut,
-          text,
-        );
-        if (intent) {
-          e.preventDefault();
-          setCompositionState(false);
-          if (!busy && !isDictating) {
-            send();
-          }
-        }
+        composingRef.current = true;
+        refreshStuckImeTimer();
+        return;
       }
-      return;
+      setCompositionState(false);
     }
     // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx. On macOS, switching
     // input methods without composing can leave composingRef pinned.
@@ -2276,7 +2258,13 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut, text)) {
+    if (
+      composerSubmitIntent(
+        imeKey ? composerKeyEventForImeSubmit(e) : e,
+        sendShortcut,
+        text,
+      )
+    ) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2713,6 +2701,7 @@ export function SharedComposer({
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           imeSessionOpenRef.current = false;
+          compositionEndedAtRef.current = e.timeStamp;
           setCompositionState(false);
           setCurrentText(e.currentTarget.value);
         }}

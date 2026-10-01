@@ -6,70 +6,34 @@ import {
   imeKeydownBlocksComposerSubmit,
 } from "../src/features/chat/utils/composer-preferences.ts";
 
-const enter = {
+const imeEnter = {
   key: "Enter",
   metaKey: false,
   ctrlKey: false,
   shiftKey: false,
   altKey: false,
+  isComposing: false,
+  keyCode: 229,
 };
 
-test("idle macOS Pinyin Enter is not treated as IME-owned", () => {
+test("idle macOS Pinyin Enter submits (#12137)", () => {
+  assert.equal(imeKeydownBlocksComposerSubmit(imeEnter, false, Infinity), false);
   assert.equal(
-    imeKeydownBlocksComposerSubmit(
-      { ...enter, isComposing: true, keyCode: 229 },
-      false,
-      false,
-    ),
-    false,
-  );
-  assert.equal(
-    composerSubmitIntent(
-      composerKeyEventForImeSubmit({
-        ...enter,
-        isComposing: true,
-        keyCode: 229,
-      }),
-      "enter",
-      "nihao",
-    ),
+    composerSubmitIntent(composerKeyEventForImeSubmit(imeEnter), "enter", "nihao"),
     "default",
   );
 });
 
-test("modifier Enter during IME composition is still deferred to the IME", () => {
+test("IME-owned keydowns stay blocked", () => {
+  assert.equal(imeKeydownBlocksComposerSubmit(imeEnter, true, Infinity), true);
+  // WebKit commits before the confirming keydown (compositionend, then keyCode 229).
+  assert.equal(imeKeydownBlocksComposerSubmit(imeEnter, false, 5), true);
   assert.equal(
-    imeKeydownBlocksComposerSubmit(
-      { ...enter, isComposing: true, metaKey: true, keyCode: 13 },
-      false,
-      false,
-    ),
-    true,
-  );
-});
-
-test("active composition still blocks idle-looking Enter", () => {
-  assert.equal(
-    imeKeydownBlocksComposerSubmit(
-      { ...enter, isComposing: true, keyCode: 229 },
-      true,
-      true,
-    ),
+    imeKeydownBlocksComposerSubmit({ ...imeEnter, metaKey: true }, false, Infinity),
     true,
   );
   assert.equal(
-    imeKeydownBlocksComposerSubmit({ ...enter, isComposing: false }, true, true),
-    false,
-  );
-});
-
-test("compositionstart without end still blocks watchdog-cleared Enter", () => {
-  assert.equal(
-    imeKeydownBlocksComposerSubmit(
-      { ...enter, isComposing: true, keyCode: 229 },
-      false,
-      true,
-    ),
+    imeKeydownBlocksComposerSubmit({ ...imeEnter, key: " " }, false, Infinity),
     true,
   );
 });

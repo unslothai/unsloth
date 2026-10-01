@@ -5633,6 +5633,7 @@ function useImeComposerInputHandlers({
   const aui = useAui();
   const composingRef = useRef(false);
   const imeSessionOpenRef = useRef(false);
+  const compositionEndedAtRef = useRef(-Infinity);
   const [isComposing, setIsComposing] = useState(false);
   const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -5726,6 +5727,7 @@ function useImeComposerInputHandlers({
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       imeSessionOpenRef.current = false;
+      compositionEndedAtRef.current = e.timeStamp;
       setCompositionState(false);
       if (!setComposerText(e.currentTarget.value, e.nativeEvent)) {
         e.preventDefault();
@@ -5753,45 +5755,25 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      const keyEvent = {
-        key: e.key,
-        metaKey: e.metaKey,
-        ctrlKey: e.ctrlKey,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        repeat: e.repeat,
-        isComposing: e.nativeEvent.isComposing,
-        keyCode: e.keyCode,
-      };
-      const wasComposing = composingRef.current;
-      if (e.nativeEvent.isComposing || e.keyCode === 229) {
-        // Deliberately NOT user input: picking a candidate in a composition the
-        // send left open is that composition continuing. One begun after the
-        // send is marked by compositionstart instead.
-        composingRef.current = true;
-        refreshStuckTimer();
+      const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
+      compositionEndedAtRef.current = -Infinity;
+      const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
+      if (imeKey) {
         if (
-          !imeKeydownBlocksComposerSubmit(
-            keyEvent,
-            wasComposing,
+          imeKeydownBlocksComposerSubmit(
+            e,
             imeSessionOpenRef.current,
+            msSinceCompositionEnd,
           )
         ) {
-          if (submitOnEnter && !skipEnterRef?.current) {
-            const intent = composerSubmitIntent(
-              composerKeyEventForImeSubmit(keyEvent),
-              sendShortcut,
-              e.currentTarget?.value,
-            );
-            if (intent) {
-              e.preventDefault();
-              setCompositionState(false);
-              if (onSubmitKey) onSubmitKey(e, intent);
-              else e.currentTarget.form?.requestSubmit();
-            }
-          }
+          // Deliberately NOT user input: picking a candidate in a composition the
+          // send left open is that composition continuing. One begun after the
+          // send is marked by compositionstart instead.
+          composingRef.current = true;
+          refreshStuckTimer();
+          return;
         }
-        return;
+        setCompositionState(false);
       }
       if (justSentRef && isGuardRetiringKey(e)) {
         justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
@@ -5813,7 +5795,11 @@ function useImeComposerInputHandlers({
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
-        const intent = composerSubmitIntent(e, sendShortcut, e.currentTarget?.value);
+        const intent = composerSubmitIntent(
+          imeKey ? composerKeyEventForImeSubmit(e) : e,
+          sendShortcut,
+          e.currentTarget?.value,
+        );
         if (intent) {
           e.preventDefault();
           if (onSubmitKey) onSubmitKey(e, intent);
@@ -5838,6 +5824,7 @@ function useImeComposerInputHandlers({
   // commits or cancels any in-progress composition before surrendering focus,
   // so blur is a safe unconditional reset point.
   const onBlur = useCallback(() => {
+    imeSessionOpenRef.current = false;
     setCompositionState(false);
   }, [setCompositionState]);
 

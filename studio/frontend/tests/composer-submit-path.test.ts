@@ -75,6 +75,7 @@ test("the shipped main composer key handler protects IME and mention selection",
     skipEnterRef,
     composingRef,
     imeSessionOpenRef,
+    compositionEndedAtRef: { current: -Infinity },
     justSentRef: undefined,
     refreshStuckTimer: () => undefined,
     setCompositionState: (value: boolean) => {
@@ -114,20 +115,21 @@ test("the shipped main composer key handler protects IME and mention selection",
   assert.ok(prevented > 0);
 });
 
-test("idle IME Enter sends when no composition session was active (#12137)", () => {
+test("idle IME Enter sends, the WebKit candidate-confirming Enter does not (#12137)", () => {
   let submits = 0;
   const composingRef = { current: false };
   const imeSessionOpenRef = { current: false };
-  const skipEnterRef = { current: false };
+  const compositionEndedAtRef = { current: -Infinity };
   const deps = {
     composerSubmitIntent,
     composerKeyEventForImeSubmit,
     imeKeydownBlocksComposerSubmit,
     sendShortcut: "enter",
     submitOnEnter: true,
-    skipEnterRef,
+    skipEnterRef: { current: false },
     composingRef,
     imeSessionOpenRef,
+    compositionEndedAtRef,
     justSentRef: undefined,
     refreshStuckTimer: () => undefined,
     setCompositionState: (value: boolean) => {
@@ -140,16 +142,29 @@ test("idle IME Enter sends when no composition session was active (#12137)", () 
   const onKey = createCallback(keyCallback, deps) as unknown as (
     event: Record<string, unknown>,
   ) => void;
-  onKey({
+  const imeEnter = (timeStamp: number) => ({
     key: "Enter",
     metaKey: false,
     ctrlKey: false,
     shiftKey: false,
     altKey: false,
     keyCode: 229,
-    nativeEvent: { isComposing: true },
+    timeStamp,
+    nativeEvent: { isComposing: false },
     preventDefault: () => undefined,
   });
+  // Chromium: keydown inside the session.
+  imeSessionOpenRef.current = true;
+  onKey({ ...imeEnter(1000), nativeEvent: { isComposing: true } });
+  assert.equal(submits, 0);
+  // WebKit: compositionend, then the committing keydown.
+  imeSessionOpenRef.current = false;
+  composingRef.current = false;
+  compositionEndedAtRef.current = 1995;
+  onKey(imeEnter(2000));
+  assert.equal(submits, 0);
+  assert.equal(composingRef.current, true);
+  onKey(imeEnter(2100));
   assert.equal(submits, 1);
   assert.equal(composingRef.current, false);
 });
@@ -264,7 +279,10 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(text, /scrollTarget: "chat-composer"/);
   const compare = readSrc("features/chat/shared-composer.tsx");
-  assert.match(compare, /composerSubmitIntent\(e, sendShortcut, text\)/);
+  assert.match(
+    compare,
+    /composerSubmitIntent\(\s*imeKey \? composerKeyEventForImeSubmit\(e\) : e,\s*sendShortcut,\s*text,?\s*\)/,
+  );
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);

@@ -17,38 +17,36 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
-/** Whether a keydown is owned by IME and must not reach submit handling. */
+// WebKit fires compositionend BEFORE the committing key's keydown (keyCode 229), as a separate task
+// (WebKit bug 165004); same window as ProseMirror's compositionEndedAt check.
+const IME_COMMIT_KEYDOWN_MS = 500;
+
+/** False only for a plain IME-marked Enter outside any composition, e.g. idle macOS Pinyin (#12137). */
 export function imeKeydownBlocksComposerSubmit(
   event: ComposerKeyEvent,
-  wasInCompositionSession: boolean,
-  openImeSession: boolean,
+  imeSessionOpen: boolean,
+  msSinceCompositionEnd: number,
 ): boolean {
-  const ime = event.isComposing === true || event.keyCode === 229;
-  if (!ime) return false;
-  // macOS built-in Pinyin (#12137) can mark idle Enter as composing even when
-  // no candidate session is active. Modifier chords stay IME-owned. A
-  // compositionstart without compositionend (watchdog-cleared composingRef, #5546)
-  // must still block so candidate-confirming Enter does not send.
-  if (
-    event.key === "Enter" &&
-    !wasInCompositionSession &&
-    !openImeSession &&
-    !event.metaKey &&
-    !event.ctrlKey
-  ) {
-    return false;
-  }
-  return true;
+  return (
+    event.key !== "Enter" ||
+    event.metaKey ||
+    event.ctrlKey ||
+    imeSessionOpen ||
+    msSinceCompositionEnd < IME_COMMIT_KEYDOWN_MS
+  );
 }
 
-/** Normalize an idle-IME Enter for `composerSubmitIntent`. */
+/** The IME-marked Enter `imeKeydownBlocksComposerSubmit` let through, as a plain Enter. */
 export function composerKeyEventForImeSubmit(
   event: ComposerKeyEvent,
 ): ComposerKeyEvent {
   return {
-    ...event,
-    isComposing: false,
-    keyCode: event.keyCode === 229 ? 13 : event.keyCode,
+    key: event.key,
+    metaKey: event.metaKey,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    repeat: event.repeat,
   };
 }
 
