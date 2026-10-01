@@ -7350,11 +7350,14 @@ def _install_wheelhouse_optionals() -> None:
 
 
 def _torch_build_family(label: str) -> str:
-    """cuda / rocm / xpu / cpu from a torch.__version__ local tag, "" when it names none."""
+    """cuda<major> / rocm / xpu / cpu from a torch.__version__ local tag, "" when it names none."""
     tag = label.partition("+")[2].strip().lower()
-    for prefix, family in (("cu", "cuda"), ("rocm", "rocm"), ("xpu", "xpu"), ("cpu", "cpu")):
+    if tag.startswith("cu"):
+        major = _cuda_major_from_torch_version(label)
+        return f"cuda{major}" if major else ""
+    for prefix in ("rocm", "xpu", "cpu"):
         if tag.startswith(prefix):
-            return family
+            return prefix
     return ""
 
 
@@ -7364,8 +7367,9 @@ def _evict_xformers_built_for_another_torch(
     """Remove a resident xFormers whose extension was built against another torch. True iff removed.
 
     xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
-    and a package install never uninstalls what an earlier run left behind. family_only: a cu128
-    build loads under cu130 (stable ABI since 0.0.34), never under ROCm (#11639).
+    and a package install never uninstalls what an earlier run left behind. family_only keeps a
+    build for another torch release of the same family and CUDA major (stable ABI since 0.0.34):
+    _C.so links libcudart.so.<major>, which a cu130 torch does not ship (#11639).
     """
     built_for = _resident_xformers_build_torch()
     resident = str(_probe_installed_torch_version() or "")

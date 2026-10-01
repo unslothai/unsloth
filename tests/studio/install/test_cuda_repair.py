@@ -1990,24 +1990,29 @@ class TestEvictXformersMismatch:
             assert stack_mod._evict_xformers_built_for_another_torch() is False
         uninstall.assert_not_called()
 
-    def test_a_same_family_build_is_kept_on_the_linux_path(self):
+    @pytest.mark.parametrize(
+        "resident, removed",
+        [("2.11.0+cu128", False), ("2.10.0+cu126", False), ("2.11.0+cu130", True)],
+    )
+    def test_the_cuda_major_decides_on_the_linux_path(self, resident, removed):
         with (
-            patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+cu130"),
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = resident),
             patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
-            patch.object(stack_mod, "_uninstall_distribution") as uninstall,
+            patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
         ):
             assert (
                 stack_mod._evict_xformers_built_for_another_torch(
                     scope = "linux torch repair", family_only = True
                 )
-                is False
+                is removed
             )
-        uninstall.assert_not_called()
+        assert uninstall.called is removed
 
     @pytest.mark.parametrize(
         "label, family",
         [
-            ("2.10.0+cu128", "cuda"),
+            ("2.10.0+cu128", "cuda12"),
+            ("2.11.0+cu130", "cuda13"),
             ("2.11.0+rocm7.13.0", "rocm"),
             ("2.10.0+xpu", "xpu"),
             ("2.10.0+cpu", "cpu"),
