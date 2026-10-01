@@ -21,6 +21,8 @@ import weakref
 from typing import Any, Optional
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
+# Kill switch for compacting the prefix K/V the extract step stores (see _compact_layer_cache); default on.
+COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
@@ -400,6 +402,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             cache_write_slice = slice(0, prefix_len) if kv_cache_mode == "extract" else None
             block_key_valid = joint_key_valid
 
+        compact_kv = compact_kv_enabled()
         for index_block, block in enumerate(self.transformer_blocks):
             layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
             joint_hidden_states = block(
@@ -414,6 +417,8 @@ def _make_forward(mod: Any, stock: Any) -> Any:
                 segments = block_segments,
                 key_valid = block_key_valid,
             )
+            if layer_cache is not None and cache_write_slice is not None and compact_kv:
+                _compact_layer_cache(layer_cache)
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
         output = self.proj_out(joint_hidden_states)
@@ -427,6 +432,30 @@ def _make_forward(mod: Any, stock: Any) -> Any:
     wrapped.__unsloth_q21_fast_step__ = True
     wrapped.__unsloth_stock_forward__ = stock
     return wrapped
+
+
+def compact_kv_enabled() -> bool:
+    return (os.environ.get(COMPACT_KV_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _compact_layer_cache(layer_cache: Any) -> None:
+    """Give a prefix K/V cache entry its own storage when it is a view into a larger buffer.
+
+    The block's extract step stores ``key[:, :prefix].clone()``. Under torch.compile, Inductor fuses that clone into
+    the kernel producing the full-sequence key and returns the prefix as a VIEW of the full buffer, so each cached
+    entry pins the whole (batch, text + image, heads, dim) K and V: 2 x 32 MiB per block at 1024x1024, about 2 GiB
+    across the 32 blocks for the rest of the first step (measured: step 0 peaks at 2.7 GiB above the weights, every
+    later step at 0.66 GiB). A copy here, in eager code between blocks, frees each full buffer as soon as its block
+    returns. Bit-identical: the values are the same, only the storage shrinks. Entries that already own their storage
+    (eager blocks) are left alone."""
+    for name in ("k", "v"):
+        tensor = getattr(layer_cache, name, None)
+        try:
+            if tensor is None or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size():
+                continue
+            setattr(layer_cache, name, tensor.clone())
+        except Exception:  # noqa: BLE001 - a memory saving only; keep the entry as stored
+            continue
 
 
 def install(logger: Any = None) -> bool:
