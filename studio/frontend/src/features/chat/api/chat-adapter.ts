@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
-import { spokenReplyText } from "@/components/assistant-ui/audio-reply-text";
 import { minPSamplingPayload } from "../lib/min-p-policy";
 import {
   createMinPRecoveryGuard,
@@ -5116,13 +5115,11 @@ export function createOpenAIStreamAdapter(
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
-          const replyText = spokenReplyText(result.choices?.[0]?.message?.content);
-          const player = `<audio-player src="${audioUrl}" />`;
           yield {
             content: [
               {
                 type: "text" as const,
-                text: replyText ? `${player}\n\n${replyText}` : player,
+                text: `<audio-player src="${audioUrl}" />`,
               },
             ],
           };
