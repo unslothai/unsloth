@@ -687,6 +687,17 @@ async def get_gguf_download_progress_response(
             force_active = job.state in {"running", "cancelling"},
             active_root = Path(hub_cache) if hub_cache else None,
         )
+        if getattr(job_metadata, "scoped_files", ()) and (
+            manifest is None
+            or not snapshot_progress.manifest_matches_download(manifest, job_metadata)
+        ):
+            # The new worker has not published its manifest yet. Its registry
+            # hashes already identify the current files; the previous scope's
+            # manifest must not supply either bytes or completion evidence.
+            return (
+                0,
+                frozenset(getattr(job_metadata, "progress_blob_hashes", ()) or ()),
+            )
         if manifest is not None:
             return (
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
