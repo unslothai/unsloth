@@ -6793,6 +6793,8 @@ class VideoBackend:
         offload_policy = "none"
         denoiser_pinned = False
         denoiser_streamed: Optional[str] = None
+        # The streamed denoiser's pinned copy went through the slab arena, which released the pageable source.
+        denoiser_single_host_copy = False
         # load_components just spent minutes building ~145 GB of components, and everything below this line either moves
         # weights onto the card or mutates process-wide backend flags. The conventional placement path fences on the
         # token for exactly that reason; without the same fence here a cancelled or superseded worker resumes into a GPU
@@ -6909,6 +6911,9 @@ class VideoBackend:
                     if placed in _H3_STREAM_MODES:
                         # offload_policy stays "model": the post-generation host reclaim keys on it.
                         denoiser_streamed = placed
+                        denoiser_single_host_copy = (
+                            getattr(denoiser, "_unsloth_pin_arena_bytes", None) is not None
+                        )
                         logger.info(
                             "video.h3_placement: %.1f GB free is under the %.1f GB a pinned %s "
                             "denoiser plus the larger rotating component need, so it streams "
@@ -7167,7 +7172,8 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant_engaged,
                 denoiser_pinned = denoiser_pinned,
                 denoiser_streamed = bool(denoiser_streamed),
-                denoiser_host_copy = denoiser_streamed == "stream",
+                # A slab-arena pin replaces the pageable source on the spot, so that copy is the only one.
+                denoiser_host_copy = denoiser_streamed == "stream" and not denoiser_single_host_copy,
                 resolved = resolved,
             )
             self._precommit_globals = None
@@ -7799,7 +7805,6 @@ class VideoBackend:
                 if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
                     from .video_minimax_h3 import (
                         H3_TEXT_ENCODER_BF16_GB,
-                        estimate_h3_diffusers_host_ram_gb,
                         estimate_h3_diffusers_vram_gb,
                     )
 
@@ -7839,16 +7844,12 @@ class VideoBackend:
                                 "or duration, or load the GGUF artifact."
                             )
 
-                        import psutil
+                        from .video_minimax_h3 import h3_host_ram_shortfall
 
-                        process_rss = psutil.Process().memory_info().rss
-                        host_capacity_gb = (
-                            psutil.virtual_memory().available + process_rss
-                        ) / 1_000_000_000
                         # Same engaged components as the VRAM floor above. Sizing one from what the load holds and the
                         # other from the released pair refuses exactly the configuration the quantized components exist
                         # for.
-                        required_host_gb = estimate_h3_diffusers_host_ram_gb(
+                        shortfall = h3_host_ram_shortfall(
                             available_vram_gb,
                             text_encoder_gb = h3_te_resident_gb(
                                 state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
@@ -7856,12 +7857,8 @@ class VideoBackend:
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
                             transformer_streamed = bool(getattr(state, "denoiser_host_copy", False)),
                         )
-                        if host_capacity_gb + 0.5 < required_host_gb:
-                            raise RuntimeError(
-                                f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
-                                f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
-                                "available. Load the GGUF artifact instead."
-                            )
+                        if shortfall is not None:
+                            raise RuntimeError(shortfall)
                 elif (
                     state.engine == "diffusers"
                     and not fam.modular_workflow
