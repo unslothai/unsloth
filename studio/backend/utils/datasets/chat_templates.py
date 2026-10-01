@@ -269,6 +269,19 @@ def get_dataset_info_summary(dataset_info):
     }
 
 
+def _with_system_column(examples, chat_column):
+    convos = examples[chat_column]
+    systems = examples.get("system")
+    if systems is None:
+        return convos
+    return [
+        [{"role": "system", "content": system}, *convo]
+        if isinstance(system, str) and system.strip() and convo and convo[0].get("role") != "system"
+        else convo
+        for system, convo in zip(systems, convos)
+    ]
+
+
 def apply_chat_template_to_dataset(
     dataset_info,
     tokenizer,
@@ -487,7 +500,7 @@ def apply_chat_template_to_dataset(
             error_column += "_"
 
         def _format_chatml(examples):
-            convos = examples[chat_column]
+            convos = _with_system_column(examples, chat_column)
             texts = []
             row_errors = []
 
