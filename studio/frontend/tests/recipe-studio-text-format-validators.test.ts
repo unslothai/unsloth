@@ -43,3 +43,38 @@ for (const [kind, marker] of [
     assert.deepEqual(parsed.target_columns, ["answer"]);
   });
 }
+
+const { makeLlmConfig, makeSamplerConfig } = await import(
+  "../src/features/recipe-studio/utils/config-factories.ts"
+);
+const { applyRecipeConnection } = await import(
+  "../src/features/recipe-studio/utils/graph/recipe-graph-connection.ts"
+);
+const { HANDLE_IDS } = await import(
+  "../src/features/recipe-studio/utils/handles.ts"
+);
+
+for (const [label, source] of [
+  ["an AI text", makeLlmConfig("src", "text", [])],
+  ["a sampler", makeSamplerConfig("src", "category", [])],
+] as const) {
+  test(`dragging ${label} output onto a JSON check's semantic input sets its target`, () => {
+    const validator = makeValidatorConfig("v1", "json", "json", []);
+    const configs = { [source.id]: source, [validator.id]: validator };
+    const result = applyRecipeConnection(
+      {
+        source: source.id,
+        target: validator.id,
+        sourceHandle: HANDLE_IDS.dataOut,
+        targetHandle: HANDLE_IDS.semanticIn,
+      },
+      configs,
+      [],
+    );
+    assert.equal(result.edges.length, 1);
+    assert.equal(result.edges[0].type, "semantic");
+    const next = result.configs?.[validator.id];
+    assert.ok(next && next.kind === "validator");
+    assert.deepEqual(next.target_columns, [source.name]);
+  });
+}

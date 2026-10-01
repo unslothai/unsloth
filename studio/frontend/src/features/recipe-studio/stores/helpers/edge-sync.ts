@@ -11,19 +11,8 @@ import type {
 } from "../../types";
 import { applyRecipeConnection } from "../../utils/graph";
 import { isCategoryConfig, isSubcategoryConfig } from "../../utils";
+import { isTextFormatValidatorTarget, isTextFormatValidator } from "../../utils/graph/relations";
 import { HANDLE_IDS } from "../../utils/handles";
-
-function isJsonMarkdownValidator(validator: ValidatorConfig): boolean {
-  return validator.validator_type === "json" || validator.validator_type === "markdown";
-}
-
-function isJsonMarkdownValidatorTarget(config: NodeConfig): boolean {
-  return (
-    config.kind === "llm" ||
-    config.kind === "expression" ||
-    config.kind === "sampler"
-  );
-}
 
 function findNodeIdByName(
   configs: Record<string, NodeConfig>,
@@ -251,7 +240,7 @@ export function syncEdgesForConfigPatch(
   );
   if (current.kind === "validator" && hasValidatorTargetsPatch) {
     const validator = current;
-    const isTextFormatValidator = isJsonMarkdownValidator(validator);
+    const isTextFormat = isTextFormatValidator(validator);
     const nextTargets =
       ((patch as Partial<ValidatorConfig>).target_columns ?? [])
         .map((value) => value.trim())
@@ -265,8 +254,8 @@ export function syncEdgesForConfigPatch(
       if (!other) {
         return true;
       }
-      if (isTextFormatValidator) {
-        return !isJsonMarkdownValidatorTarget(other);
+      if (isTextFormat) {
+        return !isTextFormatValidatorTarget(other);
       }
       return !(other.kind === "llm" && other.llm_type === "code");
     });
@@ -275,10 +264,10 @@ export function syncEdgesForConfigPatch(
       const targetId = findNodeIdByName(configs, nextTargetName);
       const target = targetId ? configs[targetId] : null;
       if (targetId && target) {
-        if (isTextFormatValidator && isJsonMarkdownValidatorTarget(target)) {
+        if (isTextFormat && isTextFormatValidatorTarget(target)) {
           nextEdges = addValidatorSemanticEdge(nextEdges, targetId, current.id);
         } else if (
-          !isTextFormatValidator &&
+          !isTextFormat &&
           target.kind === "llm" &&
           target.llm_type === "code"
         ) {

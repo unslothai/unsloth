@@ -20,7 +20,11 @@ import {
   VALIDATOR_OXC_CODE_LANGS,
   VALIDATOR_SQL_CODE_LANGS,
 } from "../validators/code-lang";
-import { isSemanticRelation } from "./relations";
+import {
+  isSemanticRelation,
+  isTextFormatValidator,
+  isTextFormatValidatorTarget,
+} from "./relations";
 
 function buildTemplateWithRef(template: string, ref: string): string {
   if (template.includes(ref)) {
@@ -92,21 +96,6 @@ type SingleRefRelation =
   | "subcategory_parent"
   | "validator_target_columns";
 
-function isJsonMarkdownValidator(validator: NodeConfig): boolean {
-  return (
-    validator.kind === "validator" &&
-    (validator.validator_type === "json" || validator.validator_type === "markdown")
-  );
-}
-
-function isJsonMarkdownValidatorSource(source: NodeConfig): boolean {
-  return (
-    source.kind === "llm" ||
-    source.kind === "expression" ||
-    source.kind === "sampler"
-  );
-}
-
 function isCodeValidatorSource(source: NodeConfig): boolean {
   return source.kind === "llm" && source.llm_type === "code";
 }
@@ -136,7 +125,7 @@ function getSingleRefRelation(
     return "subcategory_parent";
   }
   if (target.kind === "validator") {
-    if (isJsonMarkdownValidator(target) && isJsonMarkdownValidatorSource(source)) {
+    if (isTextFormatValidator(target) && isTextFormatValidatorTarget(source)) {
       return "validator_target_columns";
     }
     if (isCodeValidatorSource(source)) {
@@ -173,8 +162,8 @@ function isCompetingIncomingEdge(
   }
   if (relation === "validator_target_columns") {
     const target = configs[targetId];
-    if (target && isJsonMarkdownValidator(target)) {
-      return isJsonMarkdownValidatorSource(source);
+    if (target && isTextFormatValidator(target)) {
+      return isTextFormatValidatorTarget(source);
     }
     return isCodeValidatorSource(source);
   }
@@ -314,8 +303,8 @@ function normalizeValidatorSemanticConnection(
 ): Connection {
   if (
     source.kind === "validator" &&
-    isJsonMarkdownValidator(source) &&
-    isJsonMarkdownValidatorSource(target)
+    isTextFormatValidator(source) &&
+    isTextFormatValidatorTarget(target)
   ) {
     return {
       ...connection,
@@ -476,8 +465,8 @@ export function applyRecipeConnection(
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
-  if (target.kind === "validator" && isJsonMarkdownValidator(target)) {
-    if (!isJsonMarkdownValidatorSource(source)) {
+  if (target.kind === "validator" && isTextFormatValidator(target)) {
+    if (!isTextFormatValidatorTarget(source)) {
       return { edges: nextEdges };
     }
     const next = {
