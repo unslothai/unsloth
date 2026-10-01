@@ -367,8 +367,15 @@ class _ModuleIndex:
     def __init__(self, roots: list[Path], files: list[Path]):
         self.modules: dict[str, Path] = {}
         self.files: dict[Path, str] = {}
+        # Deepest root first, and no `break`: a file under `studio/backend` has to be
+        # registered BOTH as `studio.backend.utils.x` and as `utils.x`, because the
+        # backend's own modules import each other by the second form. Stopping at the
+        # first matching root registered only the first, so `from utils.models... import`
+        # resolved to nothing and taint never crossed a single backend file boundary,
+        # which is the one thing this index exists to do.
+        ordered = sorted(roots, key = lambda root: len(root.parts), reverse = True)
         for path in sorted(files):
-            for root in roots:
+            for root in ordered:
                 try:
                     relative = path.relative_to(root)
                 except ValueError:
@@ -382,8 +389,9 @@ class _ModuleIndex:
                     continue
                 dotted = ".".join(parts)
                 self.modules.setdefault(dotted, path)
+                # The deepest root comes first, so this records the name the file's own
+                # package uses, which is what relative imports resolve against.
                 self.files.setdefault(path, dotted)
-                break
 
     def resolve(self, dotted: str) -> Path | None:
         """The file defining `dotted`, walking up so `a.b.func` finds module `a.b`."""
@@ -415,6 +423,8 @@ class _FileFacts:
         # qualname -> digest of the whole function, so a baselined sink is re-opened when
         # anything around it changes, including a validator that guarded its input
         self.contexts: dict[str, str] = {}
+        # qualname -> name of its **kwargs parameter, so a forwarded keyword lands
+        self.star_kwargs: dict[str, str] = {}
         self._collect()
 
     def _collect(self) -> None:
@@ -436,6 +446,8 @@ class _FileFacts:
                     self.functions[qualname] = child
                     self.params[qualname] = _param_names(child)
                     self.contexts[qualname] = _norm_hash(child)
+                    if child.args.kwarg is not None:
+                        self.star_kwargs[qualname] = child.args.kwarg.arg
                     walk(child)
                     scope.pop()
                     continue
@@ -605,6 +617,18 @@ class _TaintPass(ast.NodeVisitor):
                     if reason:
                         return reason
             return None
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            for generator in node.generators:
+                reason = self.tainted(generator.iter)
+                if reason:
+                    return reason
+            return self.tainted(node.elt)
+        if isinstance(node, ast.DictComp):
+            for generator in node.generators:
+                reason = self.tainted(generator.iter)
+                if reason:
+                    return reason
+            return self.tainted(node.key) or self.tainted(node.value)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             for element in node.elts:
                 reason = self.tainted(element)
@@ -641,10 +665,35 @@ class _TaintPass(ast.NodeVisitor):
             "rsplit",
             "partition",
             "setdefault",
+            # Container views. Without these a dict comprehension over `cfg.items()`
+            # lost the taint at the `.items()` call.
+            "items",
+            "keys",
+            "values",
         ):
             reason = self.tainted(node.func.value)
             if reason:
                 return reason
+            for argument in node.args:
+                reason = self.tainted(argument)
+                if reason:
+                    return reason
+            return None
+        # Container constructors pass their contents straight through, so wrapping a
+        # tainted iterable in one of these is not a sanitiser.
+        if _matches(
+            name,
+            {"list", "tuple", "set", "dict", "sorted", "reversed", "iter", "enumerate"},
+        ):
+            for argument in node.args:
+                reason = self.tainted(argument)
+                if reason:
+                    return reason
+            return None
+        # `open(downloaded)` hands back a handle onto attacker bytes, and the usual shape
+        # is `with open(downloaded, "rb") as handle: pickle.load(handle)`. Without this
+        # the handle read clean and the declared pickle sink never fired.
+        if _matches(name, {"open", "io.open", "Path.open"}):
             for argument in node.args:
                 reason = self.tainted(argument)
                 if reason:
@@ -778,11 +827,19 @@ class _TaintPass(ast.NodeVisitor):
             index = position + offset
             if index < len(params):
                 bound[params[index]] = reason
+        star_kwargs = self.state.star_kwargs.get(target)
         for keyword in node.keywords:
-            if not keyword.arg:
-                continue
             reason = self.tainted(keyword.value)
-            if reason:
+            if not reason:
+                continue
+            if keyword.arg and keyword.arg in params:
+                bound[keyword.arg] = reason
+            elif star_kwargs:
+                # A keyword the callee does not name by hand still arrives, in **kwargs.
+                # Matching only on the keyword's own name dropped the taint entirely for
+                # every helper that forwards its options that way.
+                bound[star_kwargs] = reason
+            elif keyword.arg:
                 bound[keyword.arg] = reason
 
     def _check_sink(self, node: ast.Call) -> None:
@@ -810,7 +867,11 @@ class _TaintPass(ast.NodeVisitor):
         if _call_name(node.func).rpartition(".")[2] != "getattr" or len(node.args) < 2:
             return
         holder = node.args[0]
-        holder_name = _call_name(holder).split(".")[0] if not isinstance(holder, ast.Call) else ""
+        holder_name = (
+            self.facts.canonical(_call_name(holder)).split(".")[0]
+            if not isinstance(holder, ast.Call)
+            else ""
+        )
         is_module_ish = holder_name in MODULE_ISH_NAMES or (
             isinstance(holder, ast.Call)
             and _matches(
@@ -882,6 +943,8 @@ class _State:
         self.returns_tainted: dict[tuple[Path, str], str] = {}
         self.params: dict[tuple[Path, str], list[str]] = {}
         self.is_method: dict[tuple[Path, str], bool] = {}
+        # (file, qualname) -> the name of the callee's **kwargs parameter, if it has one
+        self.star_kwargs: dict[tuple[Path, str], str] = {}
 
     def snapshot(self) -> str:
         return json.dumps(
@@ -1033,6 +1096,9 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, bool]) -> list[
 
 
 _LOCAL_BOUND = 64
+# The interprocedural fixpoint's own valve. Deeper than any call chain in these trees,
+# and exceeding it fails the run rather than truncating the analysis quietly.
+_GLOBAL_BOUND = 64
 
 
 def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
@@ -1117,6 +1183,9 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 "self",
                 "cls",
             )
+            star = facts.star_kwargs.get(qualname)
+            if star:
+                state.star_kwargs[key] = star
             # Tier B seeding: a parameter whose name says it carries untrusted data.
             seeded = {name for name in facts.params[qualname] if name in UNTRUSTED_PARAM_NAMES}
             if seeded:
@@ -1127,9 +1196,14 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     # mode this whole script exists to avoid.
     unconverged: set[str] = set()
 
-    # Fixpoint. Bounded: taint only ever grows, and the bound keeps a pathological tree
-    # from running the lint job forever.
-    for _ in range(12):
+    # Interprocedural fixpoint. Bounded, because taint only grows and a pathological
+    # tree must not run the lint job forever, but the bound is a safety valve and not a
+    # cutoff to rely on: a chain of caller-before-callee helpers deeper than the bound
+    # would still be settling when it expires, and sink collection would then run with
+    # incomplete return summaries. Whether it settled is recorded, and an unsettled run
+    # fails rather than reporting a partial answer as a clean one.
+    settled = False
+    for _ in range(_GLOBAL_BOUND):
         before = state.snapshot()
         state.pending_params = {}
         state.pending_attrs = {}
@@ -1163,6 +1237,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             if state.tainted_attrs.get(attribute, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
                 state.tainted_attrs[attribute] = reason
         if state.snapshot() == before:
+            settled = True
             break
 
     # Sinks whose tainted argument came from a download, per function. This is what
@@ -1207,6 +1282,9 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             findings.extend(module_visitor.findings)
         findings.extend(_remote_code_defaults(facts))
         findings.extend(_unpinned_code_fetches(facts, reached))
+
+    if not settled:
+        unconverged.add(f"<whole scan>::interprocedural fixpoint")
 
     if unconverged:
         for where in sorted(unconverged):

@@ -559,3 +559,116 @@ def test_settled_local_taint_reaches_a_callee(tmp_path):
         "        command = json.loads(open(path + '/config.json').read())['cmd']\n",
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_nested_import_root_is_indexed_under_both_names(tmp_path):
+    """`studio/backend` modules import each other by top-level name.
+
+    The index used to stop at the first matching root, and the repo root is listed
+    first, so those files existed only as `studio.backend.utils.x` and the form they
+    actually use, `from utils.x import f`, resolved to nothing. Taint therefore never
+    crossed a single backend file boundary, which is the one thing the index is for.
+    """
+    backend = tmp_path / "studio" / "backend"
+    (backend / "utils").mkdir(parents = True)
+    (backend / "utils" / "__init__.py").write_text("", encoding = "utf-8")
+    (backend / "utils" / "reader.py").write_text(
+        "import json\n"
+        "def read(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    (backend / "worker.py").write_text(
+        "import importlib\n"
+        "from utils.reader import read\n"
+        "def load(path):\n"
+        "    return importlib.import_module('a.' + read(path))\n",
+        encoding = "utf-8",
+    )
+
+    findings = L.scan([backend], roots = [tmp_path, backend])
+
+    assert "importlib.import_module" in {f["sink"] for f in findings if f["tier"] == "A"}
+
+
+def test_a_handle_opened_on_a_downloaded_path_is_tainted(tmp_path):
+    """The ordinary pickle shape: open the download, then load it."""
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    downloaded = hf_hub_download(repo, 'weights.pkl')\n"
+        "    with open(downloaded, 'rb') as handle:\n"
+        "        return pickle.load(handle)\n",
+    )
+    assert "pickle.load" in _sinks(findings)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "[name for name in json.load(handle)['types']]",
+        "{name for name in json.load(handle)['types']}",
+        "list(name for name in json.load(handle)['types'])",
+        "{k: v for k, v in json.load(handle)['types'].items()}",
+    ],
+)
+def test_taint_survives_a_comprehension(tmp_path, expression):
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(path):\n"
+        "    handle = open(path + '/config.json')\n"
+        f"    names = {expression}\n"
+        "    return importlib.import_module('a.' + str(names))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_tainted_keyword_binds_to_a_star_kwargs_parameter(tmp_path):
+    """A helper that forwards its options as **kwargs still receives the value.
+
+    Matching only on the keyword's own name dropped the taint for every such helper.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def run(**kwargs):\n"
+        "    return importlib.import_module(kwargs['name'])\n"
+        "def load(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        model_type = json.load(handle)['model_type']\n"
+        "    return run(name = model_type)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_getattr_on_an_aliased_module_is_reported(tmp_path):
+    """`import torch as t` then `getattr(t, name)` is the same sink."""
+    findings = _scan(
+        tmp_path,
+        "import json\nimport torch as t\n"
+        "def build(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        name = json.load(handle)['dtype']\n"
+        "    return getattr(t, name)\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_an_unsettled_interprocedural_fixpoint_fails_the_gate(tmp_path, monkeypatch):
+    """The cross-function bound needs the same honesty as the local one."""
+    monkeypatch.setattr(L, "_GLOBAL_BOUND", 1)
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def a(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n"
+        "def b(path):\n    return a(path)\n"
+        "def c(path):\n    return b(path)\n"
+        "def d(path):\n    return importlib.import_module('x.' + c(path))\n",
+    )
+    assert "analysis did not converge" in _sinks(findings)
