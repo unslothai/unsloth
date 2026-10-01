@@ -31,22 +31,23 @@ function getSeverityColor(percent: number): {
   };
 }
 
-const RING_RADIUS = 5.5;
+// Outer edge matches the header's icon glyphs.
+const RING_RADIUS = 6.25;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
 const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
   percent,
   stroke,
 }) => (
-  <svg viewBox="0 0 16 16" aria-hidden={true} className="size-3.5 shrink-0 -rotate-90">
-    <circle cx={8} cy={8} r={RING_RADIUS} fill="none" strokeWidth={2.5} className="stroke-(--track)" />
+  <svg viewBox="0 0 16 16" aria-hidden={true} className="size-icon shrink-0 -rotate-90">
+    <circle cx={8} cy={8} r={RING_RADIUS} fill="none" strokeWidth={2} className="stroke-(--track)" />
     {percent ? (
       <circle
         cx={8}
         cy={8}
         r={RING_RADIUS}
         fill="none"
-        strokeWidth={2.5}
+        strokeWidth={2}
         strokeLinecap="round"
         strokeDasharray={RING_LENGTH}
         strokeDashoffset={RING_LENGTH * (1 - percent / 100)}
@@ -65,66 +66,73 @@ export const ContextUsageBar: FC<
   const { cached, cacheWrites, promptTokens, completionTokens } = input;
   const { percent, advice, face, compactFace } = state;
   const severity = getSeverityColor(percent ?? 0);
-  const ring = percent !== null || compactFace === null;
-  // Mono text, so widths are exact in ch. Full: face, gap, 4rem bar. Label: gap, text.
-  const fullWidth = `calc(${face.length}ch${percent !== null ? " + 4.5rem" : ""})`;
-  const labelWidth = `calc(${compactFace?.length ?? 0}ch${ring ? " + 0.375rem" : ""})`;
-  const ringWidth = ring ? "0.875rem" : "0px";
+  // Mono text, so widths are exact in ch. Full: padding, face, and the gap and bar. Compact: an icon button.
+  const fullWidth = `calc(${face.length}ch + ${percent !== null ? 23 : 5} * var(--spacing))`;
+  const compactWidth =
+    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${compactFace.length}ch + 5 * var(--spacing))`;
+  const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={state.label}
-          style={
-            {
-              "--full": fullWidth,
-              "--label": labelWidth,
-              "--ring": ringWidth,
-              // A fixed-size track, so the header can squeeze the button down to the ring alone.
-              gridTemplateColumns: `minmax(${ring ? "var(--ring)" : "var(--label)"}, var(--full))`,
-            } as CSSProperties
-          }
-          className={cn(
-            "grid shrink! items-center overflow-hidden rounded-[10px] px-2.5 font-mono text-chat-icon-fg text-ui-13 tabular-nums whitespace-nowrap transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
-            // ring and bar track
-            "[--track:rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]",
-            className,
-          )}
-        >
-          {/* Exactly one of these has width: compact once the button is narrower than the full face. */}
-          <span
-            className="col-start-1 row-start-1 flex items-center justify-center justify-self-center overflow-hidden"
-            style={{ width: "clamp(0px, (var(--full) - 100% - 1px) * 999, 100%)" }}
+      {/* The header squeezes this wrapper; the button inside takes only the face it shows. */}
+      <div
+        style={
+          {
+            "--full": fullWidth,
+            "--compact": compactWidth,
+            gridTemplateColumns: "minmax(var(--compact), var(--full))",
+          } as CSSProperties
+        }
+        // Mono here too, so ch in the widths resolves the same as in the button.
+        className={cn("grid shrink! items-center font-mono text-ui-13", className)}
+      >
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={state.label}
+            // The full face where it fits, else the compact one, right-aligned against the icons.
+            style={{
+              width:
+                "calc(clamp(0px, (100% - var(--full) + 1px) * 999, var(--full)) + clamp(0px, (var(--full) - 100% - 1px) * 999, var(--compact)))",
+            }}
+            className={cn(
+              "group grid h-full items-center justify-self-end overflow-hidden rounded-[10px] text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              // ring and bar track
+              "[--track:rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]",
+            )}
           >
-            {ring ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
-            {compactFace !== null ? (
-              // Same trick: the label drops when only the ring fits.
-              <span
-                className="shrink-0 overflow-hidden"
-                style={{ width: "clamp(0px, (100% - var(--ring) - var(--label) + 1px) * 999, var(--label))" }}
-              >
-                <span className={ring ? "ps-1.5" : undefined}>{compactFace}</span>
+            {/* Exactly one of these has width, matching the button's. */}
+            <span
+              className="col-start-1 row-start-1 flex h-full items-center justify-center overflow-hidden"
+              style={{ width: "clamp(0px, (var(--full) - 100% - 1px) * 999, 100%)" }}
+            >
+              {compactFace === null ? (
+                <span className={cn("flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center justify-center", hover)}>
+                  <UsageRing percent={percent} stroke={severity.stroke} />
+                </span>
+              ) : (
+                <span className={cn("flex h-full shrink-0 items-center px-2.5", hover)}>{compactFace}</span>
+              )}
+            </span>
+            <span
+              className="col-start-1 row-start-1 h-full overflow-hidden"
+              style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
+            >
+              <span className={cn("flex h-full w-(--full) items-center gap-2 px-2.5", hover)}>
+                <span>{face}</span>
+                {percent !== null ? (
+                  <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-(--track)">
+                    <span
+                      className={cn("block h-full rounded-full transition-all", severity.bar)}
+                      style={{ width: `${percent}%` }}
+                    />
+                  </span>
+                ) : null}
               </span>
-            ) : null}
-          </span>
-          <span
-            className="col-start-1 row-start-1 flex items-center gap-2 overflow-hidden"
-            style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
-          >
-            <span>{face}</span>
-            {percent !== null ? (
-              <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-(--track)">
-                <span
-                  className={cn("block h-full rounded-full transition-all", severity.bar)}
-                  style={{ width: `${percent}%` }}
-                />
-              </span>
-            ) : null}
-          </span>
-        </button>
-      </TooltipTrigger>
+            </span>
+          </button>
+        </TooltipTrigger>
+      </div>
       <TooltipContent
         side="bottom"
         sideOffset={8}

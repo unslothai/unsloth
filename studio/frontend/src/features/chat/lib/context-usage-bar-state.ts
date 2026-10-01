@@ -12,10 +12,6 @@ export const formatTokenCountFull = (n: number): string => {
   return n.toLocaleString();
 };
 
-// floored so 100% means full, and a used window never reads as 0%
-export const formatPercent = (percent: number): string =>
-  percent > 0 && percent < 1 ? "<1%" : `${Math.floor(percent)}%`;
-
 export type ContextUsageBarInput = {
   // null when nothing has been counted yet
   used?: number | null;
@@ -82,7 +78,7 @@ function contextLimitAdvice(
 
 export type ContextUsageBarState = {
   face: string;
-  // shown beside the ring when the header is too narrow for the face; null shows the ring alone
+  // shown instead of the ring when the header is too narrow for the face; null shows the ring
   compactFace: string | null;
   label: string;
   totalRowName: string;
@@ -149,7 +145,7 @@ export function deriveContextUsageBar({
   const percent = Math.min((usedTokens / limit) * 100, 100);
   return {
     face: `${formatTokenCount(usedTokens)} / ${formatTokenCount(limit)}`,
-    compactFace: formatPercent(percent),
+    compactFace: null,
     label: `Context usage: ${formatTokenCount(usedTokens)} of ${formatTokenCount(limit)} tokens`,
     totalRowName: "Total",
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
