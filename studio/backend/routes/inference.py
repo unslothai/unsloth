@@ -20404,7 +20404,6 @@ async def inference_status(
 async def join_resident(current_subject: str = Depends(get_current_subject)):
     """Attach the current account to the live resident without reloading it."""
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-
     async with inference_lifecycle_gate():
         resident = _resident_metadata()
         if resident is None:

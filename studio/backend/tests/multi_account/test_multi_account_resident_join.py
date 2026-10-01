@@ -177,9 +177,7 @@ def test_join_after_unload_reports_resident_unavailable(monkeypatch, resident, a
     assert response.json()["detail"] == "No resident model is loaded"
 
 
-def test_different_model_while_foreign_account_generates_gets_descriptive_error(
-    resident, accounts
-):
+def test_different_model_while_foreign_account_generates_gets_descriptive_error(resident, accounts):
     with run_as(accounts["alice"], active_generations.ActiveGeneration, threading.Event()):
         with pytest.raises(HTTPException) as raised:
             run_as(accounts["charlie"], inference._raise_if_foreign_resident_load)

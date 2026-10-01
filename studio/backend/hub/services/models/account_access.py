@@ -374,9 +374,7 @@ def hidden_chat_status_response(*, resident = None):
     """The chat status shape (``loaded`` is a list there), with nothing of the resident."""
     if resident is not None and hasattr(resident, "model_dump"):
         resident = resident.model_dump(mode = "json")
-    return JSONResponse(
-        content = {"loaded": [], "loading": [], "yours": False, "resident": resident}
-    )
+    return JSONResponse(content = {"loaded": [], "loading": [], "yours": False, "resident": resident})
 
 
 def hidden_generate_progress_response(response_model):
