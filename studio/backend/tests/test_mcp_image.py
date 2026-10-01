@@ -260,6 +260,19 @@ def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
 
 
+@pytest.mark.parametrize("fmt", ["JPEG", "WEBP", "PNG"])
+def test_bare_base64_images_in_an_image_calls_reply_are_withheld(fmt):
+    image = McpImage(mime = "image/png", data = _noise_png())
+    out = io.BytesIO()
+    Image.frombytes("RGB", (32, 32), random.Random(1).randbytes(32 * 32 * 3)).save(out, format = fmt)
+    other = base64.b64encode(out.getvalue()).decode()
+    assert image.redact(f'{{"thumb": "{other}", "title": "Cowboy Bebop"}}') == (
+        '{"thumb": "[image withheld]", "title": "Cowboy Bebop"}'
+    )
+    plain = "sha256 " + "a" * 64 + " token " + base64.b64encode(b"x" * 90).decode()
+    assert image.redact(plain) == plain
+
+
 @pytest.mark.parametrize(
     "prefix",
     [
@@ -293,7 +306,9 @@ def test_inline_images_in_an_image_calls_reply_are_withheld(prefix):
 )
 def test_a_reencoded_echo_withholds_the_result(encode):
     image = McpImage(mime = "image/png", data = _noise_png())
-    assert image.redact(f"result: {encode(image.data)}") == WITHHELD_RESULT
+    out = image.redact(f"result: {encode(image.data)}")
+    # Either the image is cut out where it sits or, when it cannot be located, the reply is withheld.
+    assert out in (WITHHELD_RESULT, "result: [image withheld]")
     assert image.redact("result: Cowboy Bebop ep 5") == "result: Cowboy Bebop ep 5"
 
 
@@ -456,7 +471,17 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
     ):
         assert guard in statements
     # NPU, both speech models, audio input and the GGUF passthrough return before either loop.
-    assert src.count("_refuse_unused_mcp_image(_mcp_image") == 7
+    calls = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_refuse_unused_mcp_image"
+    ]
+    assert len(calls) == 7
+    # External: before any catalog, then once the Codex and the generic catalogs are resolved.
+    external = inspect.getsource(inf._proxy_to_external_provider)
+    assert "_refuse_unused_mcp_image(_mcp_image, _catalog_names(studio_tool_payloads))" in external
+    assert "_refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))" in external
     with pytest.raises(HTTPException) as exc:
         inf._refuse_unused_mcp_image(McpImage(mime = "image/png", data = _png_bytes()))
     assert exc.value.status_code == 400

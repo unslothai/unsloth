@@ -35,6 +35,25 @@ _IMAGE_DATA_URL = re.compile(
     + r")*",
     re.IGNORECASE,
 )
+# Bare base64 has no prefix to match, so a long run is decoded and kept only if it is not an image.
+_LONG_B64 = re.compile(_B64_RUN + r"(?:(?:\\[rn]|\r?\n)" + _B64_RUN + r")*")
+_IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8")
+
+
+def _is_image_b64(run: str) -> bool:
+    if len(run) < 64:
+        return False
+    head = re.sub(r"\\[rn]|\s", "", run).replace("\\/", "/")[:32]
+    for alphabet in (head, head.replace("-", "+").replace("_", "/")):
+        try:
+            data = base64.b64decode(alphabet, validate = True)
+        except (binascii.Error, ValueError):
+            continue
+        if data.startswith(_IMAGE_MAGIC) or data[8:12] == b"WEBP" or data[4:8] == b"ftyp":
+            return True
+    return False
+
+
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # Pillow reports a JPEG carrying extra pictures (phone HDR / portrait shots) as MPO.
 _FORMATS = {"image/png": ("PNG",), "image/jpeg": ("JPEG", "MPO"), "image/webp": ("WEBP",)}
@@ -65,6 +84,9 @@ class McpImage:
             head = head.removesuffix(f"data:{self.mime};base64,") + "[attached image]"
             head += tail.removeprefix("==").removeprefix("=")
         head = _IMAGE_DATA_URL.sub("[image withheld]", head)
+        head = _LONG_B64.sub(
+            lambda m: "[image withheld]" if _is_image_b64(m.group()) else m.group(), head
+        )
         return WITHHELD_RESULT if self._reencoded_in(head) else head
 
     def _reencoded_in(self, text: str) -> bool:
