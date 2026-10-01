@@ -289,6 +289,23 @@ def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
     assert attempts == ["laya-multilingual"]
 
 
+def test_failed_load_logs_the_underlying_cause(client, monkeypatch, caplog):
+    def fail(checkpoint):
+        try:
+            raise RuntimeError("HIP error: invalid device function")
+        except RuntimeError as exc:
+            raise ModuleNotFoundError("Could not import module 'AutoTokenizer'") from exc
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", fail)
+    with caplog.at_level("WARNING", logger = laya_runtime.__name__):
+        response = _post(client)
+    assert response.status_code == 503
+    assert "HIP error" not in response.json()["detail"]["message"]
+    [record] = [r for r in caplog.records if r.getMessage().startswith("System One load failed")]
+    assert "HIP error: invalid device function" in caplog.text
+    assert record.exc_info is not None
+
+
 def test_settings_never_report_an_install(client):
     body = client.get("/api/settings/systemone").json()
     assert body["installing"] is False and body["error"] is None
