@@ -22,12 +22,11 @@ function render(markdown: string, mode: "static" | "streaming" = "static") {
   );
 }
 
-function text(html: string) {
-  return html
-    .replace(/<[^>]*>/g, "")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&");
+function escaped(text: string) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 test("placeholders and generic types in prose stay visible", () => {
@@ -43,11 +42,8 @@ test("placeholders and generic types in prose stay visible", () => {
       "Use Vec<T> and close </T> here.",
       "   <your-api-key>",
     ]) {
-      assert.equal(
-        text(render(line, mode)).trim(),
-        line.trim(),
-        `${mode}: ${line}`,
-      );
+      const html = render(line, mode);
+      assert.ok(html.includes(`>${escaped(line)}<`), `${mode}: ${html}`);
     }
   }
   assert.match(
@@ -67,7 +63,7 @@ test("placeholders and generic types in prose stay visible", () => {
     ],
   ]) {
     const html = render(block);
-    assert.ok(text(html).includes(line), html);
+    assert.ok(html.includes(escaped(line)), html);
     assert.doesNotMatch(html, /<(your-api-key|code_snippet)/);
   }
 });
