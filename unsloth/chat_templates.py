@@ -2183,8 +2183,17 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+_COLUMN_RE = re.compile(r"\{(.+?)\}")
+
+
+def _column_names_in(text):
+    return _COLUMN_RE.findall(_ESCAPED_BRACES_RE.sub("", text))
+
+
 def _parse_combined_prompt(combined_prompt, dataset):
-    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    possible_columns = _column_names_in(combined_prompt)
     dataset_columns = set(dataset.column_names)
     for column in possible_columns:
         if column not in dataset_columns:
@@ -2227,14 +2236,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            needed_columns = _column_names_in(optional_prompt)
             formatter_templates.append(("required", optional_prompt, needed_columns))
             merged_prompt_parts.append(optional_prompt)
             continue
 
         _, prompt = optional_prompt
         prompt = prompt[2:-2]
-        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        needed_columns = _column_names_in(prompt)
         if len(needed_columns) == 0:
             raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
         optional_name = f"__optional_{j}__"
@@ -2353,7 +2362,8 @@ def to_sharegpt(
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
-        all_shuffled.append(shuffled)
+        # Kept caller columns live on copy 0; repeating them makes axis=1 concat fail.
+        all_shuffled.append(shuffled.select_columns([f"conversations{j}"]))
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     n_extensions += 1
@@ -2372,7 +2382,7 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        remove_columns = dataset.column_names if remove_unused_columns else None,
+        remove_columns = dataset.column_names if remove_unused_columns else conversation_columns,
     )
     return dataset
 

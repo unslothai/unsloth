@@ -7349,19 +7349,46 @@ def _install_wheelhouse_optionals() -> None:
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
-def _evict_xformers_built_for_another_torch() -> bool:
+def _torch_build_family(label: str) -> str:
+    """cuda<major> / rocm / xpu / cpu from a torch.__version__ local tag, "" when it names none."""
+    tag = label.partition("+")[2].strip().lower()
+    if tag.startswith("cu"):
+        major = _cuda_major_from_torch_version(label)
+        return f"cuda{major}" if major else ""
+    for prefix in ("rocm", "xpu", "cpu"):
+        if tag.startswith(prefix):
+            return prefix
+    return ""
+
+
+def _evict_xformers_built_for_another_torch(
+    scope: str = "windows on arm", family_only: bool = False
+) -> bool:
     """Remove a resident xFormers whose extension was built against another torch. True iff removed.
 
     xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
-    and a package install never uninstalls what an earlier run left behind.
+    and a package install never uninstalls what an earlier run left behind. family_only keeps one
+    of the same family and CUDA major (stable ABI since 0.0.34; _C.so links libcudart.so.<major>).
     """
     built_for = _resident_xformers_build_torch()
     resident = str(_probe_installed_torch_version() or "")
     if not (built_for and resident and built_for != resident):
         return False
-    _uninstall_distribution("xformers")
+    if family_only:
+        built_family, resident_family = (
+            _torch_build_family(built_for),
+            _torch_build_family(resident),
+        )
+        if not (built_family and resident_family and built_family != resident_family):
+            return False
+    if not _uninstall_distribution("xformers"):
+        _safe_print(
+            f"   [WARN] {scope}: xFormers was built for torch {built_for}, not {resident}, "
+            "and could not be removed; its compiled operations stay unavailable."
+        )
+        return False
     _note(
-        f"windows on arm: the wheelhouse xformers was built for torch "
+        f"{scope}: xFormers was built for torch "
         f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
     )
     return True
@@ -12111,6 +12138,8 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+        # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
+        _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
