@@ -2583,7 +2583,6 @@ function VideoGenerator({
       if (requiredBytes <= 0) return null;
       return {
         requiredBytes,
-        missingAssetBytes: plan.plan_failed || plan.entries.some(e => e.checkpoint === false && e.bytes <= 0) ? undefined : plan.entries.filter(e => e.checkpoint === false).reduce((sum, e) => sum + Math.max(0, e.bytes), 0),
         checkpointBytes: plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
       };
     },
