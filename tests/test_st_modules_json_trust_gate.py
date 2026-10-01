@@ -286,8 +286,7 @@ def test_the_check_does_not_key_off_the_import_module_class_attribute(
 
 
 def test_a_legacy_module_class_without_config_file_name_is_still_read(tmp_path):
-    """sentence-transformers 3.x/4.x WordEmbeddings has no config_file_name and opens
-    wordembedding_config.json by name, so the attribute lookup alone finds nothing to check."""
+    """3.x/4.x WordEmbeddings has no config_file_name and opens its file by name."""
 
     class WordEmbeddings:  # no config_file_name, like the 3.x/4.x class
         pass
@@ -312,8 +311,7 @@ def test_a_legacy_module_class_without_config_file_name_is_still_read(tmp_path):
 def test_the_checkpoint_reload_honours_the_consent_the_model_was_loaded_with(
     trusted, expect_refusal, tmp_path
 ):
-    """Hard-coding False here would make resume impossible for a model that legitimately needed
-    consent, and the reload takes only a checkpoint path, so there is no way to pass it there."""
+    """The reload takes only a checkpoint path, so hard-coding False left no way to consent."""
     from sentence_transformers.models import Dense
 
     load_path = tmp_path / "2_Dense"
@@ -338,7 +336,7 @@ def test_the_checkpoint_reload_honours_the_consent_the_model_was_loaded_with(
 
 
 def test_every_load_route_records_the_consent_it_used():
-    """The reload reads the flag off the model, so every route that builds one must set it."""
+    """The reload reads the flag off the model, so every route must set it."""
     import inspect
 
     source = inspect.getsource(FastSentenceTransformer.from_pretrained)

@@ -1306,8 +1306,7 @@ class FastSentenceTransformer(FastModel):
         ("tokenizer_class", "sentence_transformers."),
     )
 
-    # config_file_name only exists from sentence-transformers 5: on 3.x/4.x these classes open
-    # their file by name, so the attribute lookup alone would find nothing to check.
+    # config_file_name only exists from 5: on 3.x/4.x these classes open their file by name.
     _LEGACY_MODULE_CONFIG_FILES = {
         "WordEmbeddings": "wordembedding_config.json",
         "Router": "router_config.json",
@@ -2567,8 +2566,8 @@ def _patch_st_trainer_load_from_checkpoint():
                 raise RuntimeError(f"Unsloth: Bad checkpoint module path for index {idx}.")
             if not hasattr(module_cls, "load"):
                 raise RuntimeError(f"Unsloth: Module {idx} cannot be reloaded.")
-            # module_cls comes from the live model, so the class is trusted, but load() still reads
-            # the checkpoint's own config files and some versions import dotted paths out of them.
+            # The class is trusted, coming from the live model, but load() reads the checkpoint's
+            # own configs and some versions import dotted paths out of them.
             FastSentenceTransformer._check_module_config_class_refs(
                 module_dir,
                 saved_type or module_cls.__name__,
