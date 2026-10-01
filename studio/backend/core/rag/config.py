@@ -39,7 +39,15 @@ CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chr
 # still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
-UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# Types parsers.parse handles; frontend and Rust parity tests read this literal.
+SUPPORTED_UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# RAG_UPLOAD_EXTS (e.g. ".md,.markdown") can only narrow: a type without a parser would fail every ingest.
+_requested_exts = {
+    "." + ext.strip().lstrip(".").lower()
+    for ext in os.environ.get("RAG_UPLOAD_EXTS", "").split(",")
+    if ext.strip().lstrip(".")
+}
+UPLOAD_EXTS = (SUPPORTED_UPLOAD_EXTS & _requested_exts) or set(SUPPORTED_UPLOAD_EXTS)
 # 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 

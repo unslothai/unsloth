@@ -1348,20 +1348,13 @@ export const ptBR = {
           wide: "Ampla",
           full: "Largura total",
         },
-        composerAttachments: {
-          label: "Anexos no campo de texto",
-          description:
-            "Cartões grandes que aumentam o campo de texto ou uma fileira compacta de miniaturas.",
-          cards: "Cartões grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Anexos nas mensagens enviadas",
           description:
-            "Uma lista com o tipo de cada arquivo ou pequenas etiquetas. O modo automático muda para etiquetas com mais de seis arquivos.",
+            "Padrão mostra cada arquivo com seu tipo e Compacto cabe mais em cada linha. O modo automático muda para compacto com mais de seis arquivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Padrão",
+          chips: "Compacto",
         },
         reset: "Redefinir",
         resetAll: "Redefinir personalização",
@@ -1822,9 +1815,6 @@ export const ptBR = {
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      projectsSection: "Mostrar a seção Projetos",
-      projectsSectionDescription:
-        "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
       title: "Chat",
       description: "Personalize o funcionamento do chat neste dispositivo.",
       modelSelection: {
@@ -1861,6 +1851,11 @@ export const ptBR = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "rolagem rolar automática acompanhar fim pular streaming gerar visualização travar scroll autoscroll follow",
+      scrollToBottomButton: "Botão de rolar até o final",
+      scrollToBottomButtonDescription:
+        "Mostra um botão para voltar à mensagem mais recente depois de rolar para cima.",
+      scrollToBottomButtonKeywords:
+        "rolar final baixo pular recente seta botão ocultar scroll bottom button",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
@@ -2232,11 +2227,13 @@ export const ptBR = {
       revoking: "Revogando...",
       decisionApi: {
         title: "API de decisões",
-        description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo Laya local. Funciona com o SDK da TypeSafe.",
+        description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo neste computador ou um modelo de decisões das Conexões. Funciona com o SDK da TypeSafe.",
         enable: "Atender solicitações",
         enableDescription: "Atende /v1/systemone. Ao ativar, o modelo é baixado.",
+        enableRemoteDescription: "Atende /v1/systemone.",
         lockedByEnv: "Definido por {name}.",
         model: "Modelo",
+        thisMachine: "Este computador",
         modelMultilingual: "Multilíngue",
         modelEnglish: "Inglês",
         modelTypedDecisions: "Decisões tipadas",
@@ -2261,6 +2258,10 @@ export const ptBR = {
         downloadFailed: "Não foi possível iniciar o download.",
         saveFailed: "Não foi possível salvar a configuração da API de decisões.",
         loadError: "Não foi possível carregar as configurações da API de decisões.",
+        sendsTo: "As solicitações são enviadas para {provider}.",
+        connectionMissing: "Esta conexão não existe mais ou não tem modelos de decisões. Escolha outro modelo.",
+        addConnection: "Para usar um modelo de decisões hospedado, adicione TypeSafe, Liquid AI ou OpenRouter em Conexões.",
+        openConnections: "Abrir Conexões",
       },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",

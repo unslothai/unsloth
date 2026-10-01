@@ -8,7 +8,7 @@ export function createDeepLinkIntentGate(
   let lastIntent: { key: string; handledAt: number } | null = null;
   let sequence = 0;
 
-  return (model: string, file?: string): number | null => {
+  const accept = (model: string, file?: string): number | null => {
     const handledAt = now();
     const key = `${model}\0${file ?? ""}`;
     if (
@@ -21,4 +21,10 @@ export function createDeepLinkIntentGate(
     sequence += 1;
     return sequence;
   };
+
+  return Object.assign(accept, {
+    clear: () => {
+      lastIntent = null;
+    },
+  });
 }

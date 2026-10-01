@@ -308,7 +308,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.match(
     INSPECTOR,
-    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaRuntime=\{runsOnMediaRuntime\}/,
+    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaPage=\{mediaPage\}/,
   );
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.

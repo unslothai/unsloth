@@ -89,9 +89,11 @@ def denoiser_prequant_pipe_kwargs(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> dict[str, Any]:
     """``{"transformer": module}`` for pipeline assembly, or ``{}`` when it cannot be seeded, which
-    obliges the caller to re-plan at bf16 and restore the dropped shards."""
+    obliges the caller to re-plan at bf16 and restore the dropped shards. ``placement_device``: where the
+    module is materialised (see ``load_prequantized_transformer``)."""
     try:
         if not pipeline_seed_supported(fam):
             return {}
@@ -133,6 +135,7 @@ def denoiser_prequant_pipe_kwargs(
             cache_dir = cache_dir,
             local_files_only = local_files_only,
             logger = logger,
+            placement_device = placement_device,
         )
         if module is None:
             if logger is not None:

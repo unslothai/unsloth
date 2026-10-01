@@ -36,6 +36,9 @@ on:
       - 'unsloth/**'
       - 'tests/vllm_compat/**'
       - 'tests/version_compat/**'
+      # zoo-imports-under-spoof is the only job that runs the modules.json trust gate (the CPU
+      # repo-test shards have no sentence-transformers and skip it), so an edit to it must run here.
+      - 'tests/test_st_modules_json_trust_gate.py'
       - 'pyproject.toml'
       - '.github/workflows/version-compat-ci.yml'
       # Every pytest run here loads tests/conftest.py and the tests/_shared helpers it
@@ -229,9 +232,12 @@ jobs:
           #   table population + FastModel API surface under spoof
           #   (~30 tests). Catches transformers / peft / bnb symbol pin
           #   drift at module-top BEFORE any runtime call.
+          # tests/test_st_modules_json_trust_gate.py: the modules.json trust gate, which needs
+          #   sentence-transformers installed, as this job is and the CPU repo-test shards are not.
           PYTHONPATH=. python -m pytest \
             tests/vllm_compat/test_unsloth_zoo_imports.py \
             tests/vllm_compat/test_extended_module_imports.py \
+            tests/test_st_modules_json_trust_gate.py \
             -v --tb=short
 
       - name: Save the pip cache
