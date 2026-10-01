@@ -66,10 +66,16 @@ def _quantize(model: torch.nn.Module, rotate: bool = True, version: int = 1) -> 
     # version 2 = Int8Tensor (torchao >= 0.18, and what the streamed path rebuilds v1 into).
     try:
         config = Int8DynamicActivationInt8WeightConfig(version = version)
-    except TypeError:
-        if version != 1:
-            pytest.skip("this torchao has no Int8Tensor config")
-        config = Int8DynamicActivationInt8WeightConfig()
+    except (TypeError, ValueError):
+        # torchao < 0.15 has no ``version``; torchao >= 0.18 removed version 1
+        if version != 1 or not hasattr(Int8DynamicActivationInt8WeightConfig, "__dataclass_fields__"):
+            pytest.skip(f"this torchao cannot build int8 weights version {version}")
+        try:
+            config = Int8DynamicActivationInt8WeightConfig()
+            if getattr(config, "version", 1) != 1:
+                pytest.skip("this torchao cannot build int8 weights version 1")
+        except Exception:
+            pytest.skip("this torchao cannot build int8 weights version 1")
     quantize_(model, config, filter_fn = only_blocks)
     return model
 
@@ -304,10 +310,12 @@ def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
     finally:
         ic.emulate_precision_casts = prev
     assert ours.is_contiguous() and ours.shape == x.shape
-    # Only the 128-term sum-of-squares order is free: a handful of rows may land one rounding step away.
+    # Only the 128-term sum-of-squares order is free: a handful of rows may land one rounding step away (more often
+    # in float16, whose finer mantissa resolves a last-bit rstd difference that bfloat16 rounds away).
+    budget = ours.numel() // (100000 if dtype == torch.bfloat16 else 20000)
     for ref in (eager, compiled):
         diff = (ours.float() - ref.float()).abs()
-        assert int((ours != ref).sum()) <= max(2, ours.numel() // 100000)
+        assert int((ours != ref).sum()) <= max(2, budget)
         assert float(diff.max()) <= float((ref.float().abs().max() * 2 ** -7))
     # negative control: a one-ulp-scale perturbation must be caught
     bad = (ours.float() * (1 + 2 ** -7)).to(dtype)
