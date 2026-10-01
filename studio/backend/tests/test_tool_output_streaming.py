@@ -88,12 +88,7 @@ def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
 
 
 def _os_isolated_tools() -> bool:
-    """Whether PID-namespace teardown reaps descendants when the leader exits.
-
-    This changes expected output from timeout/cancellation to the leader's output,
-    but descendants must die either way. Check the capability flag, not sandbox
-    availability: Seatbelt has no PID namespace.
-    """
+    """Whether PID-namespace teardown reaps descendants when the leader exits."""
     from core.inference import os_sandbox
 
     capability = os_sandbox.capability_snapshot()
@@ -660,9 +655,6 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     not _os_isolated_tools(), reason = "no PID namespace here, so nothing reaps the job"
 )
 def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
-    # The isolated counterpart, and the reason "detached_processes_die_with_the
-    # _call" is a LIMITATION: the background job goes down with the leader, so the
-    # call returns at once rather than blocking on a pipe nothing will write to.
     from core.inference import tools as tools_module
 
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
@@ -670,8 +662,6 @@ def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps
     result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
     elapsed = time.monotonic() - started
     assert "parent-done" in result
-    # A capability can disappear after collection, for example if an earlier
-    # launch invalidates a stale probe. Judge the launch that actually ran.
     if tools_module._last_tool_execution_record.os_isolation:
         assert elapsed < 5
     else:
@@ -740,7 +730,7 @@ def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
         stderr = _sp.STDOUT,
         text = True,
     )
-    output, timed_out = _drain_process_output(proc, 10, lambda _t: None)
+    output, timed_out, _ = _drain_process_output(proc, 10, lambda _t: None)
     assert not timed_out
     assert "ok-no-pgid" in output
 
@@ -767,7 +757,7 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     assert pgid is not None
     proc.wait()  # reap the leader before draining
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     assert "parent-done" in output
     _assert_grandchild_was_killed(gate, sentinel)
@@ -814,7 +804,7 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Large finite timeout (30s); without the cancel poll the drain keeps reading
     # the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
@@ -851,7 +841,7 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     pgid = _capture_process_group(proc)
     assert pgid is not None
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -1013,6 +1003,124 @@ def test_truncated_result_identical_and_notice_neutral_with_streaming():
     assert "truncated" in baseline
     assert "the user was shown the full output" not in baseline
     assert "persist in the working directory" in baseline
+
+
+def test_drain_retains_bounded_head_and_tail_of_runaway_output(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "for i in range(5000): print(f'{i:09d}')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    full = "".join(streamed)
+    assert not timed_out
+    assert len(full) == 50000
+    assert len(output) <= 1010 + 510
+    assert output.startswith(full[:1000]) and full.endswith(output[-500:])
+    assert len(output) + chars == len(full)
+    assert output.count("\n") + lines == 5000
+
+
+def test_drain_bounds_runaway_output_without_newlines(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 50000)"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    assert not timed_out
+    assert "".join(streamed) == "x" * 50000
+    assert len(output) <= 1500 + 500
+    assert output == "x" * len(output)
+    assert len(output) + chars == 50000
+    assert lines == 0
+
+
+def test_drain_head_memory_tracks_chars_not_line_count(monkeypatch):
+    import subprocess as _sp
+    import tracemalloc
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1_000_000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys\nfor _ in range(600000): sys.stdout.write('x\\n')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    tracemalloc.start()
+    try:
+        output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 60, None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert not timed_out
+    assert len(output) + chars == 1_200_000
+    assert output.count("\n") + lines == 600_000
+    # ~500k head lines: one str each is ~30 MB, coalesced it is a few copies of the 1 MB head.
+    assert peak < 8 * 1024 * 1024, f"drain peaked at {peak / 2**20:.1f} MiB for a 1 MB head"
+
+
+def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 2000)
+    code = "for i in range(3000): print('x' * 99)\nopen('/mnt/data/x.html')\n"
+    streamed = []
+    baseline = _python_exec(code, timeout = 60)
+    out = _python_exec(code, timeout = 60, output_callback = streamed.append)
+    assert out == baseline
+    total = len("Exit code 1:\n") + len("".join(streamed))
+    assert f"{total} chars total" in out
+    assert "'x.html', not '/mnt/data/x.html'" in out
+
+
+@pytest.mark.parametrize(
+    "run, code",
+    [
+        (_python_exec, "while True: print('x' * 99)"),
+        (_bash_exec, "while :; do printf '%099d\\n' 0; done"),
+    ],
+    ids = ["python", "bash"],
+)
+def test_timed_out_runaway_output_reports_true_size_and_line_count(
+    monkeypatch, tmp_path, run, code
+):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    monkeypatch.setattr(_tools_mod, "_get_workdir", lambda _sid = None: str(tmp_path))
+    streamed = []
+    out = run(
+        code,
+        timeout = 2,
+        session_id = "runaway",
+        output_callback = streamed.append,
+    )
+    full = "".join(streamed)
+    assert len(full) > 100_000
+    assert f"of {full.count(chr(10)) + 1}, {len(full)} chars total" in out
+    assert out.rstrip().endswith("Execution timed out after 2 seconds.")
 
 
 def test_result_cap_env_override(monkeypatch):
@@ -1352,9 +1460,6 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    # The cancellation string only when tools.py does the teardown: in a PID
-    # namespace both processes are gone before the cancel fires. Both paths owe
-    # the same two things, and both are asserted.
     if not _os_isolated_tools():
         assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)
@@ -1378,9 +1483,6 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    # The cancellation string only when tools.py does the teardown: in a PID
-    # namespace both processes are gone before the cancel fires. Both paths owe
-    # the same two things, and both are asserted.
     if not _os_isolated_tools():
         assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)

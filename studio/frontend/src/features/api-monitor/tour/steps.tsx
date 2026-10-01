@@ -10,7 +10,7 @@ export const apiMonitorTourSteps: TourStep[] = [
     title: "Your endpoint",
     body: (
       <>
-        Studio serves an OpenAI-compatible API. Point any client at this base
+        Unsloth serves an OpenAI-compatible API. Point any client at this base
         URL, keep the model name the same, and it works. Status and queue slots
         sit beside it.
       </>

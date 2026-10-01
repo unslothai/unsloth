@@ -3,22 +3,12 @@
 
 """Pre-importing diffusers off the first image load.
 
-The first diffusion load in a fresh process pays about 5.3s of pure import before it touches a
-weight (``diffusers`` 1.6s, ``diffusers.hooks`` 2.4s, the pipeline classes 1.3s). None of it
-depends on which model was picked, so it can be paid earlier on a thread nobody waits on.
-Measured end to end, the load path's own import work drops from 4.47s to 0.60s, at the same
-peak RSS: the memory is paid either way, just earlier.
+These tests pin the properties that make paying that import early safe, not the speedup:
 
-The tests below pin the properties that make that safe to ship rather than the speedup itself:
-
-  1. A chat-only or training-only install pays NOTHING. The gate must not import diffusers when
-     there is no local image or video model, which is the whole reason the gate exists.
-  2. Every failure mode degrades to "skip", never to an exception: the post-warm worker also
-     carries MLX repair and linked-folder sync.
-  3. It runs from the POST-warm worker, after the coordinated warm, so it cannot delay a warm
-     stage or the socket bind.
-  4. The tqdm quieting that diffusers forces at import is applied here too, or the prewarm would
-     write progress bars onto the structlog stream.
+  1. A chat-only or training-only install pays NOTHING.
+  2. Every failure mode degrades to "skip": the post-warm worker also carries MLX repair.
+  3. It runs from the POST-warm worker, so it cannot delay a warm stage or the socket bind.
+  4. The tqdm quieting diffusers forces at import is applied here too.
 
 None of these import the real diffusers, which is the point of stubbing it.
 """
@@ -41,10 +31,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 def restore_diffusers_modules():
     """Put back every ``diffusers*`` entry this test disturbs.
 
-    The purge tests call the real ``purge_partial_import``, which evicts whatever ``diffusers``
-    submodules the session had already imported. monkeypatch cannot undo that: it only restores
-    keys it set itself, so the eviction leaks into later tests, which then rebuild a partial
-    diffusers and fail for reasons that have nothing to do with them.
+    monkeypatch only restores keys it set itself, so the real purge leaks into later tests.
     """
     saved = {name: mod for name, mod in sys.modules.items() if name.split(".")[0] == "diffusers"}
     try:
@@ -74,9 +61,7 @@ def _stub_gate(
 ):
     """Stand in for the media index and the engine router.
 
-    ``engine`` is what a load of these models would select. It is not decoration: a CPU or MPS
-    host routes a supported GGUF to sd.cpp, which imports no diffusers, so "a model exists" and
-    "diffusers would be used" are different questions and only the second one may prewarm.
+    ``engine`` is not decoration: a CPU or MPS host routes a supported GGUF to sd.cpp.
     """
     idx = types.ModuleType("core.inference.media_model_index")
 
@@ -163,11 +148,8 @@ def test_a_video_only_install_also_prewarms(warm, monkeypatch):
 def test_a_video_only_install_of_an_h3_gguf_pays_nothing(warm, monkeypatch):
     """MiniMax H3 as a GGUF is the one video combination that never imports diffusers.
 
-    ``VideoBackend.load_pipeline`` asks ``is_h3_native(fam, kind)`` and returns through
-    ``_run_load_h3_native`` before its own ``import diffusers``. The image resolver cannot see
-    this: ``detected_image_family`` has no answer for a ``VideoFamily``, so the "unknown family"
-    branch would call it diffusers and charge an H3-only install 316 MB it never uses. Uses the
-    real family detector and the real predicate, so a rename on either side fails here.
+    ``VideoBackend.load_pipeline`` returns through ``_run_load_h3_native`` before its own
+    ``import diffusers``, and ``detected_image_family`` cannot place a ``VideoFamily``.
     """
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["unsloth/MiniMax-H3-GGUF"]})
     seen = _stub_diffusers(monkeypatch)
@@ -179,13 +161,7 @@ def test_a_video_only_install_of_an_h3_gguf_pays_nothing(warm, monkeypatch):
 
 
 def test_an_h3_gguf_named_only_by_its_filename_pays_nothing(warm, monkeypatch):
-    """The supported layout the repo id alone cannot answer for.
-
-    A local directory or a generically named repo often carries the family token only in the
-    checkpoint filename, which is why video.py's own ``_detect_load_family`` tries the repo id
-    and then ``f"{repo_id}/{gguf_filename}"``. Looking at the id alone leaves this install
-    prewarming 316 MB for a load that returns through ``_run_load_h3_native``.
-    """
+    """The family token can live only in the checkpoint filename, so video.py tries both."""
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["custom-video"]})
     sys.modules["core.inference.media_model_index"].resolve_local_media_model = (
         lambda model_id, task: types.SimpleNamespace(
@@ -202,12 +178,7 @@ def test_an_h3_gguf_named_only_by_its_filename_pays_nothing(warm, monkeypatch):
 
 
 def test_a_video_family_we_cannot_identify_still_prewarms(warm, monkeypatch):
-    """The H3 skip is an exception carved out of the default, not a new default.
-
-    Every other video load reaches video.py's ``import diffusers``, so anything the detector
-    cannot place must keep prewarming. Getting this backwards would silently drop the feature
-    for every video user whose repo id is not in the family table.
-    """
+    """The H3 skip is an exception: every other video load reaches `import diffusers`."""
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["someone/private-repack"]})
     _stub_diffusers(monkeypatch)
 
@@ -215,10 +186,7 @@ def test_a_video_family_we_cannot_identify_still_prewarms(warm, monkeypatch):
 
 
 def test_the_torch_warm_opt_out_also_disables_the_prewarm(warm, monkeypatch):
-    """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 means no unsolicited torch import, and importing
-    diffusers imports torch. start_background_warm() declines under that variable, but
-    join_background_warm() reports True when no worker ever ran, so the post-warm thread reaches
-    the prewarm anyway. Without this check the opt-out would be defeated by the new code."""
+    """join_background_warm() reports True when no worker ran, so this needs its own check."""
     monkeypatch.setenv(warm.DISABLE_ENV_VAR, "1")
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
@@ -277,16 +245,14 @@ def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
 
 
 def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatch):
-    """core/inference/diffusion.py installs these three at module scope, above its own lazy
-    `import diffusers`, because on Windows ROCm diffusers imports xformers on sight and its
-    quantizers torchao, and both land on an absent distributed backend. This prewarm can be the
-    first importer in the process, so it owes the same three installs, in front of the import."""
+    """On Windows ROCm, diffusers imports xformers and torchao onto an absent backend."""
     from core import _torchao_stub
     from core.inference import diffusion_torchao_patches
 
     order = []
     for mod, name in (
         (_torchao_stub, "install_xformers_windows_rocm_stub"),
+        (_torchao_stub, "hide_xformers_built_for_another_torch"),
         (_torchao_stub, "install_torchao_windows_rocm_stub"),
         (diffusion_torchao_patches, "install_torchao_int_mm_patch"),
     ):
@@ -308,12 +274,13 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
     warm.prewarm_diffusers_if_image_models_exist()
     monkeypatch.undo()
 
-    assert order[:3] == [
+    assert order[:4] == [
         "install_xformers_windows_rocm_stub",
+        "hide_xformers_built_for_another_torch",
         "install_torchao_windows_rocm_stub",
         "install_torchao_int_mm_patch",
     ], f"stubs did not run first, in the loader's order: {order}"
-    assert "import" in order and order.index("import") > 2
+    assert "import" in order and order.index("import") > 3
 
 
 def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
@@ -322,10 +289,7 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
     """The failure this prewarm adds that the loader did not have.
 
     When ``diffusers/__init__.py`` raises, CPython evicts only the parent and keeps every
-    submodule it already executed. The prewarm swallows that failure, so the next importer is a
-    user's image load, and it would re-run ``__init__`` with each ``from .x import y`` served
-    from that cache and attributes never rebound: diffusers imports "successfully" while missing
-    pieces. Hand the load path a clean slate instead.
+    submodule it executed, so the next importer rebuilds an incomplete package from them.
     """
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
@@ -359,12 +323,8 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
 ):
     """Releasing between the failed import and the purge is the whole bug.
 
-    CPython drops the ``diffusers`` module lock the moment ``__init__`` raises. A request already
-    blocked on that lock would wake up in the gap, re-import against the submodules the failed
-    import left behind, and republish the malformed parent, at which point
-    ``purge_partial_import`` deliberately declines because those leftovers now belong to a live
-    importer. The bare warm stages already hold the lock across import and cleanup
-    (``_held_import_lock``); this asserts the prewarm does the same.
+    CPython drops the module lock the moment ``__init__`` raises, and a request waiting in
+    that gap republishes the malformed parent, which the purge then declines.
     """
     from importlib._bootstrap import _get_module_lock
 
@@ -409,14 +369,7 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
 def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """The half of the failure the parent purge cannot reach.
-
-    ``import diffusers`` and ``import diffusers.hooks`` are two imports and either can fail. When
-    the parent succeeded and the subpackage did not, purging "diffusers" is a no-op by design (it
-    is in sys.modules and belongs to nobody), so the hook submodules that already executed stay
-    cached and the load path's own ``from diffusers.hooks import ...`` rebuilds an incomplete
-    package from them. That is the #7580 shape, one level down.
-    """
+    """The #7580 shape one level down: with the parent good, purging it is a no-op."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     parent = types.ModuleType("diffusers")
     monkeypatch.setitem(sys.modules, "diffusers", parent)
@@ -472,12 +425,8 @@ def test_the_parent_and_child_import_locks_are_never_held_together(
 ):
     """Holding both would invert CPython's own lock order and deadlock a concurrent import.
 
-    ``import diffusers.hooks`` makes CPython take the CHILD lock first and import the parent from
-    inside it (``_find_and_load`` -> ``_ModuleLockManager(name)`` -> ``_find_and_load_unlocked``
-    -> import parent). A prewarm holding parent-then-child inverts that against any concurrent
-    ``from diffusers.hooks import ...``, and the resulting cycle surfaces as the ``_DeadlockError``
-    that ``_lock_unlock_module`` swallows, which is the partially initialised module this whole
-    change exists to prevent.
+    ``import diffusers.hooks`` makes CPython take the CHILD lock first, so parent-then-child
+    inverts that and cycles, as the ``_DeadlockError`` importlib swallows.
     """
     from importlib._bootstrap import _get_module_lock
 
@@ -512,12 +461,7 @@ def test_the_parent_and_child_import_locks_are_never_held_together(
 def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """The failure mode from the other side, with two real threads and the real locks.
-
-    One thread takes the hooks lock and then reaches for the parent, which is the order CPython
-    uses for ``from diffusers.hooks import ...``. The prewarm runs concurrently. With sequential
-    scopes both finish; with the locks nested this is the cycle.
-    """
+    """The same inversion from the other side, with two real threads and the real locks."""
     from importlib._bootstrap import _ModuleLockManager as LM
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
@@ -566,12 +510,8 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
 ):
     """Held CONTINUOUSLY, not merely held again by the time the purge runs.
 
-    Writing the try around the ``with`` instead of inside it releases the lock when the scope
-    exits on the exception and reacquires it in the handler. A request already waiting wakes up
-    in that gap, re-imports against the submodules the failed import left behind, and republishes
-    the malformed package, at which point ``purge_partial_import`` declines because the leftovers
-    now belong to a live importer. Asserting the purge ran under the lock does not catch this,
-    because the handler has reacquired by then; only the timeline does.
+    The try around the ``with`` releases the lock on the exception and reacquires it in the
+    handler, which asserting that the purge ran under the lock would not catch.
     """
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
@@ -637,10 +577,8 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
 
 
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
-    """The case presence alone gets wrong. A CPU or MPS host with a runnable native binary, or
-    UNSLOTH_DIFFUSION_ENGINE=sd_cpp, serves a supported GGUF through sd.cpp and imports no
-    diffusers, so prewarming would add ~316 MB to a low-memory install that never reclaims it
-    with a load."""
+    """What presence alone gets wrong: a native binary or UNSLOTH_DIFFUSION_ENGINE=sd_cpp
+    serves a supported GGUF through sd.cpp, importing no diffusers."""
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]}, engine = "sd_cpp")
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
 
@@ -670,10 +608,7 @@ def test_a_non_gguf_model_still_prewarms_on_a_native_host(warm, monkeypatch):
 
 
 def test_a_gguf_whose_family_is_only_in_its_filename_is_still_recognised():
-    """The layout `detect_family` cannot see: an opaque directory whose family keyword lives
-    only in the .gguf filename. Treating it as unknown would prewarm on exactly the sd.cpp host
-    this gate exists to spare, so the gate must use the same pick-aware resolver the listing and
-    the loader use. Driven through the REAL resolver, since a stub of it could not show this."""
+    """The layout `detect_family` cannot see: the family keyword is only in the filename."""
     from core.inference.media_locality import detected_image_family
 
     opaque = types.SimpleNamespace(
@@ -711,9 +646,7 @@ def test_the_gate_uses_the_routers_own_prediction():
 
 def test_the_gate_asks_for_the_catalogs_real_task_identifiers():
     """``_build_index`` matches ``_local_model_task(info) == task`` exactly, so a friendly
-    ``"image"``/``"video"`` builds a permanently EMPTY index and the gate refuses forever: the
-    prewarm would be dead code that every stubbed test still passes. Pinned against the
-    catalog's own set so a rename there fails here instead of silently disabling the prewarm."""
+    ``"image"``/``"video"`` builds an EMPTY index while every stubbed test still passes."""
     from hub.services.models.catalog_classification import _LOADABLE_MEDIA_GGUF_TASKS
     from utils import torch_warmup
 
@@ -721,12 +654,7 @@ def test_the_gate_asks_for_the_catalogs_real_task_identifiers():
 
 
 def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monkeypatch):
-    """The same check driven through the REAL index rather than a stub of it.
-
-    This is the one a stub cannot make: feed the catalog one text-to-image model and confirm
-    ``available_media_model_ids`` finds it under the identifier the gate passes, and finds
-    nothing under ``"image"``. Without it, keying the stub on the gate's own strings makes a
-    wrong identifier look correct, which is exactly how this shipped the first time."""
+    """Through the REAL index: a stub keyed on the gate's own strings cannot catch this."""
     from core.inference import media_model_index as idx
     from utils import torch_warmup
 
@@ -775,9 +703,7 @@ def _post_warm_source() -> str:
 
 
 def test_it_runs_from_the_post_warm_worker_and_last():
-    """POST-warm, so it cannot delay a coordinated warm stage or the socket bind. And last
-    within that worker, because it is the only item there that is latency work rather than
-    correctness: MLX repair and linked-folder sync keep their place in the queue."""
+    """POST-warm, so it cannot delay a stage or the bind, and last: it is latency work."""
     src = _post_warm_source()
     assert (
         "prewarm_diffusers_if_image_models_exist" in src
@@ -790,9 +716,7 @@ def test_it_runs_from_the_post_warm_worker_and_last():
 
 
 def test_the_coordinated_warm_stages_do_not_import_diffusers():
-    """The four warm stages are on the path to a usable backend. Pulling diffusers into one of
-    them would delay every boot, including chat-only ones, which is what the post-warm worker
-    exists to avoid."""
+    """The warm stages gate a usable backend, so diffusers there delays every boot."""
     from utils import torch_warmup
     import inspect
 

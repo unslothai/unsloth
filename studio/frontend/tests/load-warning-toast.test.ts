@@ -59,6 +59,9 @@ function chatApi(body: Record<string, unknown>) {
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },
       "@/features/native-intents/api": { consumeNativePathToken: () => undefined },
+      // loadModel reads the disk on the way in and out: a model the backend has to download
+      // writes to the cache inside that request, passing no download-manager funnel.
+      "@/features/settings/low-disk-check": { checkDiskSpace: () => Promise.resolve() },
       "@/lib/model-lifecycle-events": {
         withModelLoadNotice: async (
           _runtime: string,

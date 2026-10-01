@@ -247,17 +247,46 @@ class TestGaLoreProjector:
         proj = GaLoreProjector(
             rank = 4,
             update_proj_gap = 10,
-            cos_threshold = 0.0,  # Very low threshold → always triggers
+            cos_threshold = 0.9,
             gamma_proj = 2.0,
             queue_size = 2,
         )
-        # Near-identical gradients keep cosine similarity high.
+        # Near-identical gradients keep the subspace, so |cos| stays near 1.
         base_grad = torch.randn(16, 8)
         for i in range(5):
             grad = base_grad + torch.randn_like(base_grad) * 0.001
             proj.project(grad, step = i * 10)
 
-        assert proj.update_proj_gap > 10
+        assert proj.update_proj_gap > 10, list(proj.queue)
+
+    @staticmethod
+    def _scheduled_gap(monkeypatch, bases, cos_threshold):
+        """Drive the schedule with a fixed sequence of orthogonal bases, one per SVD."""
+        sequence = iter(bases)
+        monkeypatch.setattr(
+            GaLoreProjector,
+            "_compute_orthogonal",
+            staticmethod(lambda *args, **kwargs: next(sequence)),
+        )
+        proj = GaLoreProjector(
+            rank = 2, update_proj_gap = 1, cos_threshold = cos_threshold, gamma_proj = 2.0, queue_size = 2
+        )
+        grad = torch.zeros(8, 8)  # square -> right-side basis (rank, 8)
+        for step in range(len(bases)):
+            if step % proj.update_proj_gap == 0:
+                proj.project(grad, step = step)
+        return proj.update_proj_gap
+
+    def test_adaptive_scheduling_ignores_a_sign_flipped_basis(self, monkeypatch):
+        # A negated basis is the same subspace; a raw dot product reads it as cos = -1.
+        basis = torch.eye(8)[:2]
+        assert self._scheduled_gap(monkeypatch, [basis, -basis, basis], cos_threshold = 0.9) == 2
+
+    def test_adaptive_scheduling_still_rejects_a_rotated_basis(self, monkeypatch):
+        eye = torch.eye(8)
+        assert (
+            self._scheduled_gap(monkeypatch, [eye[:2], eye[2:4], eye[4:6]], cos_threshold = 0.4) == 1
+        )
 
     def test_scale_applied(self):
         """project_back applies the scale factor."""

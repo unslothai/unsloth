@@ -48,6 +48,7 @@ export {
 export {
   useStagedDownload,
   type StagedDownloadEntry,
+  type StagedDownloadProgress,
 } from "./use-staged-download";
 export {
   downloadInventoryHintKind,

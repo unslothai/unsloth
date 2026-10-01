@@ -38,6 +38,7 @@ TABS = [
     "chat",
     "voice",
     "connections",
+    "library",
     "data",
     "api-keys",
     "remote-lan",
@@ -457,6 +458,89 @@ def assert_persisted_monitor_restores(page) -> None:
     report["steps"].append("persisted-monitor-reload")
 
 
+def run_keystroke_search(page) -> None:
+    """Searching the shortcut list by pressing a chord instead of typing its name.
+
+    Ordering is the whole risk here: the press has to reach the box ahead of the
+    shortcut it names and ahead of the dialog's own Escape, which only a real
+    browser can settle.
+    """
+    open_dialog(page, "keyboard-shortcuts")
+    settle_panel(page)
+    rows_js = """() => [...document.querySelectorAll('[data-settings-label]')]
+        .map(r => r.dataset.settingsLabel)"""
+    box = page.locator(f"{PANEL} input")
+    toggle = page.locator(f"{PANEL} button[aria-pressed]")
+    click_forced(toggle, timeout = 15000)
+    page.wait_for_timeout(SETTLE_MS)
+    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
+    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
+    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    mac = page.evaluate(
+        "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
+    )
+    mod = "Meta" if mac else "Control"
+    state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
+
+    # A chord narrows to what answers to it: ⇧⌘O is New chat's, and New standalone
+    # chat sits on ⌥⌘O, which does not carry the Shift.
+    page.keyboard.press(f"{mod}+Shift+KeyO")
+    page.wait_for_timeout(SETTLE_MS)
+    state["chord"] = box.input_value()
+    state["chord_rows"] = page.evaluate(rows_js)
+
+    # The bare key widens to every chord built on it, ⌥⌘O included.
+    page.keyboard.press("KeyO")
+    page.wait_for_timeout(SETTLE_MS)
+    state["bare_rows"] = page.evaluate(rows_js)
+
+    # Escape backs out a step at a time, and the dialog stays open for both. A dialog
+    # gone here is the bug this covers: the press reaching Radix before the box.
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(SETTLE_MS)
+    open_after_first = page.locator('div[role="dialog"]').count()
+    state["after_first_escape"] = {
+        "dialog": open_after_first,
+        "value": box.input_value() if open_after_first else None,
+        "rows": len(page.evaluate(rows_js)) if open_after_first else 0,
+    }
+    if open_after_first:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(SETTLE_MS)
+        open_after_second = page.locator('div[role="dialog"]').count()
+        state["after_second_escape"] = {
+            "dialog": open_after_second,
+            "armed": toggle.get_attribute("aria-pressed") if open_after_second else None,
+        }
+    else:
+        state["after_second_escape"] = {"dialog": 0, "armed": None}
+    report["keystroke_search"] = state
+
+    if state["armed"] != "true":
+        fail(f"keystroke search: the toggle did not arm ({state['armed']})")
+    if not state["chord"]:
+        fail("keystroke search: the pressed chord did not reach the box")
+    if "New chat" not in state["chord_rows"]:
+        fail(f"keystroke search: chord matched {state['chord_rows']}")
+    if "New standalone chat" in state["chord_rows"]:
+        fail(f"keystroke search: chord matched a lesser chord {state['chord_rows']}")
+    if "New standalone chat" not in state["bare_rows"]:
+        fail(
+            f"keystroke search: the bare key did not widen "
+            f"({state['bare_rows']} vs {state['chord_rows']})"
+        )
+    if state["after_first_escape"]["value"]:
+        fail("keystroke search: the first Escape left the chord in the box")
+    if state["after_first_escape"]["dialog"] != 1:
+        fail("keystroke search: the first Escape closed the dialog")
+    if state["after_second_escape"]["armed"] != "false":
+        fail("keystroke search: the second Escape left the mode armed")
+    if state["after_second_escape"]["dialog"] != 1:
+        fail("keystroke search: the second Escape closed the dialog")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    report["steps"].append("keystroke-search")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -564,6 +648,8 @@ def run(page) -> None:
         else:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
+
+    run_keystroke_search(page)
 
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
 

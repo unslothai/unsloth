@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file drafter contracts: MTP (Gemma 4), DSpark and DFlash.
+"""Separate-file drafter contracts: MTP (Gemma 4), DSpark, DFlash and EAGLE3.
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -86,6 +86,11 @@ DRAFTER_CASES = [
     ("laguna-xs21-dflash-q4.gguf", False),
     ("xdspark/model.gguf", False),
     ("dspark/README.md", False),
+    ("eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("EAGLE3-gpt-oss-20b-BF16.gguf", True),
+    ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
 ]
 
 
@@ -154,6 +159,25 @@ def test_variant_plans_carry_drafter_as_companion():
     assert q4.main_size_bytes == 4_000
     # Download size = main + mmproj + drafter.
     assert q4.download_size_bytes == 4_600
+
+
+GPT_OSS_FILES = [
+    "eagle3-gpt-oss-20b-BF16.gguf",
+    "eagle3-gpt-oss-20b-Q8_0.gguf",
+    "gpt-oss-20b-MXFP4.gguf",
+]
+
+
+def test_eagle3_draft_head_is_not_a_variant_or_the_default():
+    from hub.utils.gguf import pick_best_gguf
+
+    assert pick_best_gguf(GPT_OSS_FILES) == "gpt-oss-20b-MXFP4.gguf"
+
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(GPT_OSS_FILES)]
+    )
+    assert set(plans) == {"mxfp4"}
+    assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
 
 
 def test_baked_in_repo_plans_unchanged():

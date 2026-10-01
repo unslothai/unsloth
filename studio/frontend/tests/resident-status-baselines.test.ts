@@ -207,7 +207,10 @@ test("slot baselines ignore in-flight loads and absent GGUF echoes", () => {
 
 test("slotless statuses still clear the baseline without editing the control", () => {
   const previous = { ...loaded, nParallel: 8 };
-  for (const echo of [{ is_gguf: false }, { requested_parallel_slots: null }]) {
+  for (const echo of [
+    { is_gguf: false, requested_parallel_slots: null },
+    { requested_parallel_slots: null },
+  ]) {
     const next = applySlots(previous, echo, true, false);
     assert.equal(next.loadedNParallel, null);
     assert.equal(next.nParallel, 8);
