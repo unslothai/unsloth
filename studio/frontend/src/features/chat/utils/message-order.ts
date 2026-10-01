@@ -29,22 +29,27 @@ export function createParentResolver(): (
   };
 }
 
+export function compareStoredMessages(
+  a: ParentLinkedMessage,
+  b: ParentLinkedMessage,
+): number {
+  const createdAtDelta = (a.createdAt ?? 0) - (b.createdAt ?? 0);
+  if (createdAtDelta !== 0) {
+    return createdAtDelta;
+  }
+  const roleDelta =
+    (ROLE_ORDER[a.role ?? ""] ?? 99) - (ROLE_ORDER[b.role ?? ""] ?? 99);
+  if (roleDelta !== 0) {
+    return roleDelta;
+  }
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
 export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   messages: T[],
   headId?: string | null,
 ): T[] {
-  const sorted = messages.slice().sort((a, b) => {
-    const createdAtDelta = (a.createdAt ?? 0) - (b.createdAt ?? 0);
-    if (createdAtDelta !== 0) {
-      return createdAtDelta;
-    }
-    const roleDelta =
-      (ROLE_ORDER[a.role ?? ""] ?? 99) - (ROLE_ORDER[b.role ?? ""] ?? 99);
-    if (roleDelta !== 0) {
-      return roleDelta;
-    }
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  const sorted = messages.slice().sort(compareStoredMessages);
 
   const byId = new Map<string, T>();
   const parentOf = new Map<string, string | null>();

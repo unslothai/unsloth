@@ -1119,6 +1119,7 @@ def test_dataset_download_status_preserves_idle_shape():
 
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
 
 
 def test_dataset_download_registry_key_is_case_insensitive():

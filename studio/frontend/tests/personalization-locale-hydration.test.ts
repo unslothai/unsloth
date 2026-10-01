@@ -189,6 +189,8 @@ function setup(
     localCustomization?: Record<string, unknown>;
     remote?: ReturnType<typeof remotePersonalization> & {
       chatWidthSaved?: boolean;
+      composerAttachmentsSaved?: boolean;
+      sentAttachmentsSaved?: boolean;
     };
   } = {},
 ) {
@@ -365,7 +367,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 4,
+    version: 5,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
@@ -429,5 +431,69 @@ test("an older server without chat width metadata preserves local width", async 
   await settle();
   assert.equal(app.saves.length, 1);
   assert.equal(app.saves[0]?.appearance.customization.chatWidth, "wide");
+  app.host.unmount();
+});
+
+function attachmentsRemote(saved: boolean | undefined, customization: Record<string, string>) {
+  const remote = remotePersonalization("auto");
+  return {
+    ...remote,
+    version: 5,
+    chatWidthSaved: true,
+    composerAttachmentsSaved: saved,
+    sentAttachmentsSaved: saved,
+    appearance: {
+      ...remote.appearance,
+      customization: { chatWidth: "standard", uiFont: "Georgia", ...customization },
+    },
+  };
+}
+
+test("legacy attachment display preserves and uploads the local choice", async () => {
+  const app = setup("stalled", {
+    localCustomization: { composerAttachments: "compact", sentAttachments: "chips" },
+    remote: attachmentsRemote(false, { composerAttachments: "cards", sentAttachments: "auto" }),
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().composerAttachments, "compact");
+  assert.equal(app.customization().sentAttachments, "chips");
+  assert.equal(app.customization().uiFont, "Georgia");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.appearance.customization.composerAttachments, "compact");
+  assert.equal(app.saves[0]?.appearance.customization.sentAttachments, "chips");
+  app.host.unmount();
+});
+
+test("saved attachment display overrides local without another save", async () => {
+  const app = setup("stalled", {
+    localCustomization: { composerAttachments: "compact", sentAttachments: "chips" },
+    remote: attachmentsRemote(true, { composerAttachments: "cards", sentAttachments: "list" }),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().composerAttachments, "cards");
+  assert.equal(app.customization().sentAttachments, "list");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 0);
+  app.host.unmount();
+});
+
+test("an older server without attachment display keys preserves the local choice", async () => {
+  const app = setup("stalled", {
+    localCustomization: { composerAttachments: "compact", sentAttachments: "list" },
+    remote: attachmentsRemote(undefined, {}),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().composerAttachments, "compact");
+  assert.equal(app.customization().sentAttachments, "list");
   app.host.unmount();
 });

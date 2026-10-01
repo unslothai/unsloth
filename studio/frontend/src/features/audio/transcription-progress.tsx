@@ -36,7 +36,7 @@ export function TranscriptionProgress({
       <div className="flex items-center gap-3 text-ui-13 text-muted-foreground">
         {running && (
           <span
-            className="transcription-wave flex h-5 items-center gap-[3px]"
+            className="transcription-wave flex h-5 items-center gap-[calc(3px*var(--ui-space-scale,1))]"
             aria-hidden="true"
             data-stopping={stopping}
           >

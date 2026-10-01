@@ -26,11 +26,24 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
+# Same bootstrap as prebuilt_core.py: today only sd_cpp_backend.py prepares the path.
+if __package__:
+    from .backend.utils.auth_safe import auth_safe_open
+else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
+    from backend.utils.auth_safe import auth_safe_open
+
 # Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
-DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
+# The Qwen-Image-2.1 line: the tag STRING still resolves to the master-813 base, because that is the
+# newest upstream release our ancestry names, but this build is the mirror's current tree and carries
+# the architecture (upstream 137f7409bb, 2026-09-20). The u13b9d92 build this replaces is from
+# 2026-08-09 and cannot load it at all, so the native route for that family is only real from here.
+DEFAULT_TAG = "master-813-bfbef5b-u1d02858"
 
 REPO = DEFAULT_REPO
 
@@ -237,7 +250,7 @@ def _fetch_release(
         req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310 (fixed https host)
+        with auth_safe_open(req, timeout = timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     base = f"https://api.github.com/repos/{repo}/releases"
@@ -257,6 +270,39 @@ def _fetch_release(
 
 def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0) -> dict:
     return _fetch_release(None, token = token, timeout = timeout)
+
+
+class GitHubRateLimited(RuntimeError):
+    pass
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    """Same rule as freshness_flow.rate_limit_wait, which this stdlib-only installer cannot import."""
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    if code != 403:
+        return False
+    headers = getattr(exc, "headers", None) or {}
+    if (
+        str(headers.get("Retry-After") or "").strip()
+        or str(headers.get("X-RateLimit-Remaining") or "").strip() == "0"
+    ):
+        return True
+    try:
+        body = exc.read(2048).decode("utf-8", errors = "replace").lower()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - an unreadable body names nothing
+        return False
+    return "rate limit" in body or "abuse detection" in body
+
+
+def _rate_limit_message() -> str:
+    hint = (
+        ""
+        if (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+        else "; set GH_TOKEN or GITHUB_TOKEN to lift the 60 requests/hour unauthenticated limit"
+    )
+    return f"GitHub API is rate limiting release lookups{hint}"
 
 
 def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
@@ -614,10 +660,12 @@ def _resolve_repo_asset(
     *,
     allow_latest: bool = True,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back."""
+    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
-    except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
+    except Exception as exc:  # noqa: BLE001 - network -> fall back
+        if _is_rate_limited(exc):
+            raise GitHubRateLimited(_rate_limit_message()) from exc
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
         return None, None
     if release is None:
@@ -820,7 +868,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.print_asset:
         # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a false miss.
-        _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        try:
+            _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        except GitHubRateLimited as exc:
+            print(f"error: {exc}", file = sys.stderr)
+            return 2
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2
 

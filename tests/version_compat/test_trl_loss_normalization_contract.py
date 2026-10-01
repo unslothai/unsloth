@@ -78,7 +78,11 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     import unsloth  # noqa: F401
     import trl
 
-    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": "bnpo"}
+    from packaging.version import Version
+
+    # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo".
+    grpo = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
+    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": grpo}
     for name, want in expected.items():
         cfg_cls = getattr(trl, name, None)
         if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):
@@ -99,6 +103,20 @@ def test_explicit_loss_type_still_wins():
         pytest.skip("this TRL has no SFTConfig.loss_type")
     cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
+
+
+def test_dr_grpo_turns_off_reward_scaling_by_default():
+    """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
+    import unsloth  # noqa: F401
+    import trl
+
+    def scale(**kwargs):
+        return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
+
+    for kwargs in ({}, {"scale_rewards": True}, {"scale_rewards": "group"}):
+        assert scale(**kwargs) in (False, "none"), f"dr_grpo with {kwargs} still scales rewards"
+    assert scale(scale_rewards = None) in (True, "group"), "None should keep group scaling"
+    assert scale(scale_rewards = "batch") == "batch", "an explicit batch scaling was clobbered"
 
 
 def _pristine_sft_config_cls():
