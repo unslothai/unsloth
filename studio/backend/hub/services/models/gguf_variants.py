@@ -1426,8 +1426,12 @@ async def get_gguf_variants_answer(
         # has to consult one of the cache accessors below, which are the reads this gate
         # exists to withhold, and the lister has a cache path of its own that no predicate
         # can see before it runs. The cost is one memoized probe per repo and token.
+        cache_probe_offline = bool(offline or prefer_local_cache)
         cache_reads_authorized = not hub_cached_read_refused(
-            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
+            hf_token,
+            repo_id = repo_id,
+            is_cached = lambda: True,
+            offline = cache_probe_offline,
         )
 
         def _locally_resolved(
@@ -1546,6 +1550,17 @@ async def get_gguf_variants_answer(
                 raise HTTPException(
                     status_code = 404,
                     detail = "No cached GGUF variants available while offline.",
+                )
+            if prefer_local_cache:
+                return _mark_empty_dir_cleanables(
+                    repo_id,
+                    GgufVariantsResponse(
+                        repo_id = repo_id,
+                        variants = [],
+                        has_vision = False,
+                        default_variant = None,
+                    ),
+                    repo_cache_dir,
                 )
 
         def _cache_fallback_response():
@@ -2005,7 +2020,10 @@ async def get_gguf_variants_answer(
         # else the except branch returns 200 labelled with an empty quant folder, which is
         # the existence of a cached private repo. Remote valid ids only, and memoized.
         if not skip and hub_cached_read_refused(
-            hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
+            hf_token,
+            repo_id = repo_id,
+            is_cached = lambda: True,
+            offline = bool(offline or prefer_local_cache),
         ):
             skip = True
             # Carried out: the route's context-length fallback walks these same caches.

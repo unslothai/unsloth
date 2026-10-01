@@ -16,6 +16,7 @@ const {
   getHubPhase,
   getBrowserOfflineRetryDelayMs,
   getLastHubFailure,
+  isGgufVariantsListingOffline,
   isHuggingFaceOffline,
   isHubFetchError,
   isRemoteNetworkOffline,
@@ -151,6 +152,22 @@ test("a browser reporting itself offline is named as such", () => {
       classifyFetchFailure(new TypeError("Failed to fetch"), HF).kind,
       "browser-offline",
     );
+  } finally {
+    if (original) Object.defineProperty(globalThis, "navigator", original);
+    else delete (globalThis as Record<string, unknown>).navigator;
+  }
+});
+
+test("GGUF variant listings treat navigator offline like Hub backoff", () => {
+  reset();
+  assert.equal(isGgufVariantsListingOffline(), false);
+  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { onLine: false },
+    configurable: true,
+  });
+  try {
+    assert.equal(isGgufVariantsListingOffline(), true);
   } finally {
     if (original) Object.defineProperty(globalThis, "navigator", original);
     else delete (globalThis as Record<string, unknown>).navigator;

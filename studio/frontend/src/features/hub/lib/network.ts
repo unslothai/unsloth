@@ -142,6 +142,11 @@ export function isHuggingFaceOffline(): boolean {
   return isRemoteNetworkOffline(defaultHubOrigin());
 }
 
+/** Whether GGUF variant listings should use the disk answer and skip Hub discovery. */
+export function isGgufVariantsListingOffline(): boolean {
+  return isHuggingFaceOffline() || isNavigatorOffline();
+}
+
 /**
  * Availability of a Hub origin. A lapsed backoff means "probing", not
  * "available": only a success promotes an origin, which stops the flapping.

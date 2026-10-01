@@ -61,6 +61,7 @@ import {
   type HfModelResult,
   useHubModelSearch,
 } from "@/features/hub";
+import { isGgufVariantsListingOffline } from "@/features/hub/lib/network";
 import {
   classifyUnslothSupport,
   downloadManager,
@@ -1875,6 +1876,9 @@ function GgufVariantExpander({
   // which a downloaded hub model also carries.
   const [resolvedLocally, setResolvedLocally] = useState(false);
   const localSource = loadId || cachePath || null;
+  const showAllQuantizations = useChatRuntimeStore(
+    (s) => s.showAllQuantizations,
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -1890,9 +1894,13 @@ function GgufVariantExpander({
       setResolvedLocally(false);
     });
 
-    // Chat rows name the repository; media and explicit local rows retain their folder scope.
+    // On Device with "Show all quantizations" off (or while offline) lists from disk only;
+    // remote discovery is for undownloaded quants while online and that setting is on.
+    const preferLocalCache =
+      onDevice && (!showAllQuantizations || isGgufVariantsListingOffline());
     listGgufVariants(repoId, hfToken, {
       ...(localSource ? { localPath: localSource } : {}),
+      ...(preferLocalCache ? { preferLocalCache: true } : {}),
       includeCacheLocations: !mediaPageForTask(pipelineTag),
       signal: controller.signal,
     })
@@ -1920,7 +1928,15 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken, pipelineTag]);
+  }, [
+    repoId,
+    localSource,
+    refreshKey,
+    hfToken,
+    pipelineTag,
+    onDevice,
+    showAllQuantizations,
+  ]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -2092,9 +2108,6 @@ function GgufVariantExpander({
   }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
   // On Device only: with All quantizations off, list quants already on disk, torn ones included.
-  const showAllQuantizations = useChatRuntimeStore(
-    (s) => s.showAllQuantizations,
-  );
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
     return visibleGgufVariants(sortedVariants, {

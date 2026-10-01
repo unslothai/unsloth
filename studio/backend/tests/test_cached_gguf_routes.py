@@ -3859,6 +3859,23 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     assert {v.quant for v in response.variants if v.partial} == {"Q8_0"}
 
 
+def test_prefer_local_cache_without_on_disk_repo_skips_remote(monkeypatch, tmp_path):
+    """Cache-only discovery must not fall through to a Hub listing when nothing is on disk."""
+    active = tmp_path / "active"
+    active.mkdir(parents = True)
+    _pin_cache_roots(monkeypatch, active, tmp_path)
+
+    def _no_remote(*args, **kwargs):
+        raise AssertionError("remote listing attempted")
+
+    monkeypatch.setattr(GV, "list_gguf_variants", _no_remote)
+
+    response = asyncio.run(
+        GV.get_gguf_variants_response("Org/NoCache", prefer_local_cache = True)
+    )
+    assert response.variants == []
+
+
 def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_path):
     """The expander asks the remote-first route. When the Hub cannot answer, offline or a private
     repo, the fallback reads the cache, which cannot see a sibling cancelled before any file
