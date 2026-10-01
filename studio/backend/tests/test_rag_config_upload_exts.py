@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""RAG_UPLOAD_EXTS env override for linked-folder and upload extension gating."""
-
 import importlib
 import io
 
@@ -14,13 +12,13 @@ from routes.rag import _save_upload
 
 
 @pytest.fixture(autouse = True)
-def _restore_rag_upload_exts_env(monkeypatch):
+def _restore_config(monkeypatch):
     yield
     monkeypatch.delenv("RAG_UPLOAD_EXTS", raising = False)
     importlib.reload(config)
 
 
-def _reload_rag_config(monkeypatch, value: str | None):
+def _reload(monkeypatch, value):
     if value is None:
         monkeypatch.delenv("RAG_UPLOAD_EXTS", raising = False)
     else:
@@ -28,14 +26,21 @@ def _reload_rag_config(monkeypatch, value: str | None):
     importlib.reload(config)
 
 
-def test_upload_exts_default_when_env_unset(monkeypatch):
-    _reload_rag_config(monkeypatch, None)
-    assert config.UPLOAD_EXTS == {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
-
-
-def test_upload_exts_from_env_normalizes_case_and_whitespace(monkeypatch):
-    _reload_rag_config(monkeypatch, " .MD , .Markdown ")
-    assert config.UPLOAD_EXTS == {".md", ".markdown"}
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, config.SUPPORTED_UPLOAD_EXTS),
+        ("", config.SUPPORTED_UPLOAD_EXTS),
+        (" .MD , .Markdown ", {".md", ".markdown"}),
+        ("md,pdf", {".md", ".pdf"}),
+        (".md,.py", {".md"}),
+        (".py,.exe", config.SUPPORTED_UPLOAD_EXTS),
+    ],
+)
+def test_upload_exts_env(monkeypatch, value, expected):
+    _reload(monkeypatch, value)
+    assert config.UPLOAD_EXTS == expected
+    assert config.UPLOAD_EXTS is not config.SUPPORTED_UPLOAD_EXTS
 
 
 @pytest.mark.parametrize(
@@ -48,9 +53,8 @@ def test_upload_exts_from_env_normalizes_case_and_whitespace(monkeypatch):
     ],
 )
 def test_save_upload_respects_upload_exts_env(rag_home, monkeypatch, exts, filename, allowed):
-    _reload_rag_config(monkeypatch, exts)
+    _reload(monkeypatch, exts)
     upload = UploadFile(file = io.BytesIO(b"content"), filename = filename)
-
     if allowed:
         _, out_name, content_hash = _save_upload(upload)
         assert out_name == filename
