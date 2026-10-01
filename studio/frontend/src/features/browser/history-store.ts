@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
+import { accountDatabaseName } from "@/lib/account-transition";
 
 export type HistoryItem = { id: string; url: string; title: string; visitedAt: number };
 export type DownloadItem = {
@@ -95,7 +96,8 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       clearDownloads: () => set({ downloads: [] }),
     }),
     {
-      name: "unsloth_browser_history",
+      // Per account: a write still deferred at a switch lands under the account that made it.
+      name: accountDatabaseName("unsloth_browser_history"),
       version: 1,
       storage: createJSONStorage(deferredLocalStorage),
     },

@@ -169,9 +169,9 @@ function webEntry(url: string, method?: "GET" | "POST", body?: string): BrowserE
   return method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
 }
 
-/** Drop blobs no remaining history entry points at. */
-// Pending file refreshes per tab, run in order.
+// Pending file refreshes per tab, run in order, and the blobs they will compare.
 const refreshes = new Map<string, Promise<void>>();
+const queuedFiles = new Set<string>();
 
 async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   if (!a || a.size !== b.size) return false;
@@ -179,8 +179,9 @@ async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   return x.every((byte, index) => byte === y[index]);
 }
 
+/** Drop blobs no remaining history entry points at or queued refresh holds. */
 function releaseFiles(tabs: BrowserTab[]): void {
-  const live = new Set<string>();
+  const live = new Set<string>(queuedFiles);
   for (const tab of tabs) {
     for (const entry of tab.history) if (entry.kind === "file") live.add(entry.fileId);
   }
@@ -392,6 +393,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         // The file may have been rewritten since it opened: if so, show the new bytes. In order
         // per tab, each against what the tab shows by then, so the last reopen wins.
         const previous = refreshes.get(existing.id) ?? Promise.resolve();
+        queuedFiles.add(fileId);
         const next = previous.then(async () => {
           const tab = get().tabs.find((candidate) => candidate.id === existing.id);
           const shown = tab && currentEntry(tab);
@@ -411,6 +413,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         });
         refreshes.set(existing.id, next);
         void next.finally(() => {
+          queuedFiles.delete(fileId);
           if (refreshes.get(existing.id) === next) refreshes.delete(existing.id);
         });
         return;
