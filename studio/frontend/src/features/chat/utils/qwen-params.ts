@@ -19,6 +19,11 @@ export function applyQwenThinkingParams(thinkingOn: boolean): void {
     return;
   }
   // Deliberately unmarked, unlike the post-load path applying the same table: the user asked for
-  // this mode here, so it must land even on a chat pinning sampling.
-  store.setParams({ ...store.params, ...params });
+  // this mode here, so it must land even on a chat pinning sampling. A fresh mask, since setParams
+  // marks changed values as user edits when it's handed the live one.
+  store.setParams({
+    ...store.params,
+    ...params,
+    samplingFieldsExplicit: [...(store.params.samplingFieldsExplicit ?? [])],
+  });
 }

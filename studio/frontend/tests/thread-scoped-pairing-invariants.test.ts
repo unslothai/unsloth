@@ -697,7 +697,7 @@ test("a model's recommendation does not overwrite the chat's sampling", () => {
 // load-time path applies the same table unasked, so it stays marked.
 test("toggling Think applies its params even in a chat that pins sampling", () => {
   const qwen = readText("../src/features/chat/utils/qwen-params.ts");
-  assert.match(qwen, /store\.setParams\(\{ \.\.\.store\.params, \.\.\.params \}\);/);
+  assert.match(qwen, /store\.setParams\(\{\s*\.\.\.store\.params,\s*\.\.\.params,/);
   assert.doesNotMatch(
     qwen,
     /fromModelDefaults/,

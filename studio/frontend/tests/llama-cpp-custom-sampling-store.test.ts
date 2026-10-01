@@ -177,3 +177,22 @@ test("a preset whose value equals the live one still pins it", () => {
     ["temperature", "top_p"],
   );
 });
+
+test("the Thinking toggle's Qwen sampling stays unmarked, so a later INI still applies", async () => {
+  const { applyQwenThinkingParams } = await import(
+    "../src/features/chat/utils/qwen-params.ts"
+  );
+  reset();
+  const managed = { version: 1, mode: "managed" } as const;
+  useChatRuntimeStore.setState({
+    params: { ...DEFAULT_INFERENCE_PARAMS, checkpoint: "unsloth/qwen3-1.7b-gguf" },
+    llamaCppConfig: managed,
+    loadedLlamaCppConfig: managed,
+    activePresetSource: "builtin-default",
+  });
+  const before = useChatRuntimeStore.getState().params.temperature;
+  applyQwenThinkingParams(false);
+  const { params } = useChatRuntimeStore.getState();
+  assert.notEqual(params.temperature, before);
+  assert.deepEqual(params.samplingFieldsExplicit, []);
+});
