@@ -191,9 +191,10 @@ class RawTextDataLoader:
                 break
             start_idx += chunk_size - stride
 
-        # Stride 0 + exact multiple leaves a lone-EOS chunk: overlap (not move) one token to keep its label.
+        # Stride 0 + exact multiple leaves a lone-EOS chunk: end a full window at the EOS instead, so the
+        # EOS keeps its context (a [token, EOS] row spikes loss) and no content token loses its label.
         if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
-            bounds[-1][0] -= 1
+            bounds[-1][0] = num_tokens - chunk_size
 
         chunks = []
         for i, (start_idx, end_idx) in enumerate(bounds):

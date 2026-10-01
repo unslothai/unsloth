@@ -835,6 +835,9 @@ def test_tokenized_chunks_reserve_space_for_the_final_eos():
                 # A chunk's first token is never a label: the last content token must still be one.
                 labelled = {t for chunk in chunks for t in chunk["input_ids"][1:]}
                 assert count < 2 or count - 1 in labelled
+                if stride == 0 and count % size == 0:
+                    # The EOS gets a full window of context, not a [token, EOS] row.
+                    assert len(chunks[-1]["input_ids"]) == size
                 dataset = loader.create_causal_dataset(chunks)
                 assert dataset["labels"] == dataset["input_ids"]
 
