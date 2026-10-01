@@ -601,16 +601,18 @@ def test_a_chat_starting_on_a_victim_during_eviction_spares_it(backends, monkeyp
 
 def test_a_routed_request_holds_its_slot_until_it_ends(backends):
     _, extra = backends
-    ended = asyncio.Event()
+    routed, ended = asyncio.Event(), asyncio.Event()
     seen = {}
 
     async def request():
         await inf._route_to_extra_slot("org/B-GGUF")
+        routed.set()
         await ended.wait()
 
     async def main():
         task = asyncio.create_task(request())
-        await asyncio.sleep(0)
+        # Routing hops through a thread: wait for it, not a fixed number of loop turns.
+        await routed.wait()
         seen["refs"] = extra.refs
         seen["victims"] = model_slots.eviction_victims(None, 5000)
         seen["claimed"] = model_slots.claim_victim(extra)
