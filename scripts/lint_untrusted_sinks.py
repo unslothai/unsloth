@@ -151,7 +151,11 @@ UNTRUSTED_CALLS = frozenset(
 )
 
 # Attribute reads that turn a trusted handle into untrusted bytes.
-UNTRUSTED_METHODS = frozenset({"read", "read_text", "readlines", "readline", "json"})
+UNTRUSTED_METHODS = frozenset(
+    # read_bytes beside read_text: `pickle.loads(Path(download).read_bytes())` is the
+    # shorter spelling of the handle shape and lost the taint the path already carried.
+    {"read", "read_text", "read_bytes", "readlines", "readline", "json"}
+)
 
 # Artefact names. A string literal containing one of these anywhere in a function is
 # what makes a `json.load` in that function a *model repository* read rather than a read
@@ -455,6 +459,8 @@ class _FileFacts:
         self.contexts: dict[str, str] = {}
         # qualname -> name of its **kwargs parameter, so a forwarded keyword lands
         self.star_kwargs: dict[str, str] = {}
+        # qualname -> name of its *args parameter, so overflow positionals land
+        self.varargs: dict[str, str] = {}
         # Class names defined in this file, so `parser = Parser()` can be recognised as
         # constructing one and `parser.parse(...)` resolved to `Parser.parse`.
         self.classes: set = set()
@@ -494,6 +500,8 @@ class _FileFacts:
                     self.contexts[qualname] = _norm_hash(child)
                     if child.args.kwarg is not None:
                         self.star_kwargs[qualname] = child.args.kwarg.arg
+                    if child.args.vararg is not None:
+                        self.varargs[qualname] = child.args.vararg.arg
                     declared = {
                         name
                         for node in ast.walk(child)
@@ -651,6 +659,14 @@ class _FileFacts:
                 candidate = f"{constructed}.{tail}"
                 if candidate in self.functions:
                     return [(self.path, candidate)]
+                # An imported class: the instance carries the dotted target instead.
+                file, module = self.index.resolve_module(candidate)
+                if file is not None and module:
+                    qualname = (
+                        candidate[len(module) + 1 :] if candidate.startswith(module + ".") else ""
+                    )
+                    if qualname:
+                        return [(file, qualname)]
         # `from pkg.mod import f` then `f(...)`.
         targets = self._targets(head)
         if not targets:
@@ -930,6 +946,23 @@ class _TaintPass(ast.NodeVisitor):
     def _attr_key(self, node: ast.Attribute) -> str:
         if isinstance(node.value, ast.Name) and node.value.id == "self" and self.class_name:
             return f"{self.facts.relative}::{self.class_name}.{node.attr}"
+        # `runner.module = parsed` on a constructed local. Only the literal `self`
+        # receiver was recognised, so the write was discarded: the method that later reads
+        # self.module saw a clean value and could hand it to a sink unreported. Keyed the
+        # same way `self.module` is keyed inside the class, which is what makes the two
+        # halves meet.
+        if isinstance(node.value, ast.Name):
+            constructed = self.instance_types.get(node.value.id)
+            if constructed:
+                if constructed in self.facts.classes:
+                    return f"{self.facts.relative}::{constructed}.{node.attr}"
+                # An imported class is keyed against the file that declares it, because
+                # that is the file whose `self.attr` reads have to see this.
+                file, module = self.facts.index.resolve_module(constructed)
+                if file is not None and module and constructed.startswith(module + "."):
+                    owner = constructed[len(module) + 1 :]
+                    if owner:
+                        return f"{_relative(file)}::{owner}.{node.attr}"
         return ""
 
     # -- taint writes ------------------------------------------------------------------
@@ -1011,12 +1044,31 @@ class _TaintPass(ast.NodeVisitor):
                     if isinstance(target, ast.Name):
                         self.instance_types.setdefault(target.id, candidate)
                 return
+        # `from producer import Parser` then `parser = Parser()`. Accepting only classes
+        # declared in this file left an imported first-party class unresolvable, so its
+        # methods were outside the analysis exactly as local ones had been. Stored as the
+        # dotted target, which the resolver tells apart from a local class name.
+        for dotted in self.facts._targets(constructed.partition(".")[0]):
+            full = dotted if "." not in constructed else f"{dotted}.{constructed.partition('.')[2]}"
+            file, module = self.facts.index.resolve_module(full)
+            if file is None:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.instance_types.setdefault(target.id, full)
+            return
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             reason = self.tainted(node.value)
             if reason:
                 self._assign(node.target, reason)
+            # `parser: Parser = Parser()` is the same construction as the plain form, and
+            # only the plain form was recording it, so the annotated spelling left the
+            # method unresolvable.
+            synthetic = ast.Assign(targets = [node.target], value = node.value)
+            self._note_construction(synthetic)
+            self._note_sink_alias(synthetic)
         self.generic_visit(node)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
@@ -1112,7 +1164,15 @@ class _TaintPass(ast.NodeVisitor):
                         self._bind(bound, parameter, reason)
                 continue
             index = position + offset
-            if index < len(params):
+            # `def execute(*commands)`: positions at or past the vararg all land in it.
+            # The flattened parameter list contains the vararg's name once, so anything
+            # beyond that position was dropped and a value executed out of commands[1]
+            # was reported nowhere.
+            vararg = self.state.varargs.get(target)
+            vararg_index = params.index(vararg) if vararg in params else None
+            if vararg_index is not None and index >= vararg_index:
+                self._bind(bound, vararg, reason)
+            elif index < len(params):
                 self._bind(bound, params[index], reason)
         star_kwargs = self.state.star_kwargs.get(target)
         for keyword in node.keywords:
@@ -1163,6 +1223,15 @@ class _TaintPass(ast.NodeVisitor):
                     self._record(node, sink, reason, _short(node.args[index]))
                     return
         for keyword in node.keywords:
+            if keyword.arg is None:
+                # `importlib.import_module(**json.loads(blob))`. The expansion can supply
+                # the sink's own argument, and the earlier handling for this only covered
+                # propagation into a first-party callee, so a direct sink skipped it.
+                reason = self.tainted(keyword.value)
+                if reason:
+                    self._record(node, sink, reason, _short(keyword.value))
+                    return
+                continue
             if keyword.arg in keywords:
                 reason = self.tainted(keyword.value)
                 if reason:
@@ -1268,6 +1337,8 @@ class _State:
         self.is_method: dict[tuple[Path, str], bool] = {}
         # (file, qualname) -> the name of the callee's **kwargs parameter, if it has one
         self.star_kwargs: dict[tuple[Path, str], str] = {}
+        # (file, qualname) -> the name of the callee's *args parameter, if it has one
+        self.varargs: dict[tuple[Path, str], str] = {}
 
     def snapshot(self) -> str:
         return json.dumps(
@@ -1559,6 +1630,9 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             star = facts.star_kwargs.get(qualname)
             if star:
                 state.star_kwargs[key] = star
+            vararg = facts.varargs.get(qualname)
+            if vararg:
+                state.varargs[key] = vararg
             # Tier B seeding: a parameter whose name says it carries untrusted data.
             seeded = {name for name in facts.params[qualname] if name in UNTRUSTED_PARAM_NAMES}
             if seeded:

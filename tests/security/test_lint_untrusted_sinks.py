@@ -1300,3 +1300,113 @@ def test_taint_enters_an_inherited_method_through_super(tmp_path):
         "        return super().execute(json.loads(blob)['model_type'])\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_taint_survives_a_pathlib_read_bytes(tmp_path):
+    """`pickle.loads(Path(download).read_bytes())` is the short form of the handle shape.
+
+    read_text was in the method list and read_bytes was not, so the bytes lost the taint
+    the path already carried.
+    """
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from pathlib import Path\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    blob = Path(hf_hub_download(repo, 'state.pkl')).read_bytes()\n"
+        "    return pickle.loads(blob)\n",
+    )
+    assert "pickle.loads" in _sinks(findings) or "pickle.load" in _sinks(findings)
+
+
+def test_a_method_on_an_imported_class_instance_resolves(tmp_path):
+    """`from producer import Parser` then `parser = Parser()`.
+
+    Accepting only classes declared in the same file left an imported first-party class
+    unresolvable, so its methods were outside the analysis exactly as local ones had been.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import json\n"
+        "class Parser:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['model_type']\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import importlib\nfrom producer import Parser\n"
+        "def load(blob):\n"
+        "    parser = Parser()\n"
+        "    return importlib.import_module('x.' + parser.parse(blob))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_attribute_written_through_a_constructed_local_is_tainted(tmp_path):
+    """`runner.module = parsed` then `runner.run()` reading self.module.
+
+    Only the literal `self` receiver was recognised, so the write was discarded and the
+    method that reads it saw a clean value.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Runner:\n"
+        "    def run(self):\n"
+        "        return importlib.import_module('x.' + self.module)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    runner.module = json.loads(blob)['module']\n"
+        "    return runner.run()\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_expanded_dictionary_at_a_direct_sink_is_reported(tmp_path):
+    """`importlib.import_module(**json.loads(blob))`.
+
+    The expansion can supply the sink's own argument, and the earlier handling covered
+    only propagation into a first-party callee, so a direct sink skipped it.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(**json.loads(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_overflow_positional_arguments_bind_to_the_vararg(tmp_path):
+    """`def execute(*commands)` takes every positional, not just the first.
+
+    The flattened parameter list names the vararg once, so anything past that position
+    was dropped and a value executed out of commands[1] was reported nowhere.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(*commands):\n"
+        "    return subprocess.run(commands[1])\n"
+        "def load(blob):\n"
+        "    return execute('safe', json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_annotated_constructor_is_tracked(tmp_path):
+    """`parser: Parser = Parser()` is the same construction as the plain form."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Parser:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['model_type']\n"
+        "def load(blob):\n"
+        "    parser: Parser = Parser()\n"
+        "    return importlib.import_module('x.' + parser.parse(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
