@@ -143,6 +143,7 @@ rm -f "$_GI_FILE"
 # ── abort kills the background frontend job ──
 _ABORT_FILE=$(mktemp)
 sed -n '/^_setup_restore_twbuild_gitignores_from()/,/^}/p' "$SETUP_SH" > "$_ABORT_FILE"
+sed -n '/^_setup_pid_tree()/,/^}/p' "$SETUP_SH" >> "$_ABORT_FILE"
 sed -n '/^_setup_abort_frontend_job()/,/^}/p' "$SETUP_SH" >> "$_ABORT_FILE"
 # shellcheck disable=SC1090
 . "$_ABORT_FILE"
@@ -158,6 +159,29 @@ if kill -0 "$_sleep_pid" 2>/dev/null; then
 else
     echo "  PASS: abort kills the frontend job"
     PASS=$((PASS + 1))
+fi
+
+# npm and vite run as grandchildren of the job; a bash waiting on them defers SIGTERM.
+( bash -c 'bash -c "sleep 31; true"; true'; true ) &
+_SETUP_FRONTEND_BG_PID=$!
+_tree_pids=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    _c1=$(pgrep -P "$_SETUP_FRONTEND_BG_PID" 2>/dev/null | head -1)
+    _c2=$( [ -n "$_c1" ] && pgrep -P "$_c1" 2>/dev/null | head -1 )
+    _c3=$( [ -n "$_c2" ] && pgrep -P "$_c2" 2>/dev/null | head -1 )
+    [ -n "$_c3" ] && { _tree_pids="$_c1 $_c2 $_c3"; break; }
+    sleep 0.2
+done
+_setup_abort_frontend_job
+_orphans=""
+for _p in $_tree_pids; do kill -0 "$_p" 2>/dev/null && _orphans="$_orphans $_p"; done
+if [ -n "$_tree_pids" ] && [ -z "$_orphans" ]; then
+    echo "  PASS: abort kills the job's grandchildren"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: abort left descendants running (tree='$_tree_pids' orphans='$_orphans')"
+    FAIL=$((FAIL + 1))
+    for _p in $_orphans; do kill -KILL "$_p" 2>/dev/null || true; done
 fi
 rm -f "$_ABORT_FILE"
 

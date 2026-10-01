@@ -2531,27 +2531,35 @@ _setup_frontend_join() {
     fi
 }
 
+# Descendants of $1, deepest first; listed before any kill since orphans reparent away.
+_setup_pid_tree() {
+    local child
+    if command -v pgrep >/dev/null 2>&1; then
+        for child in $(pgrep -P "$1" 2>/dev/null); do
+            _setup_pid_tree "$child"
+        done
+    fi
+    echo "$1"
+}
+
 _setup_abort_frontend_job() {
-    local pid="${_SETUP_FRONTEND_BG_PID:-}"
+    local pid="${_SETUP_FRONTEND_BG_PID:-}" tree p n=0 alive
     _SETUP_FRONTEND_BG_PID=""
     [ -n "$pid" ] || return 0
     kill -0 "$pid" 2>/dev/null || return 0
-    # SIGTERM so the job's EXIT trap can restore gitignores; then reap children.
-    kill -TERM "$pid" 2>/dev/null || true
-    if command -v pkill >/dev/null 2>&1; then
-        pkill -TERM -P "$pid" 2>/dev/null || true
-    fi
-    local n=0
-    while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 20 ]; do
+    # Leaves first: a bash waiting on npm acts on SIGTERM only once npm exits, then its EXIT
+    # trap restores the gitignores.
+    tree=$(_setup_pid_tree "$pid")
+    for p in $tree; do kill -TERM "$p" 2>/dev/null || true; done
+    while [ "$n" -lt 20 ]; do
+        alive=""
+        # Not $pid: it stays a zombie, answering kill -0, until the wait below.
+        for p in $tree; do [ "$p" = "$pid" ] || ! kill -0 "$p" 2>/dev/null || alive=1; done
+        [ -n "$alive" ] || break
         sleep 0.1
         n=$((n + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -KILL "$pid" 2>/dev/null || true
-        if command -v pkill >/dev/null 2>&1; then
-            pkill -KILL -P "$pid" 2>/dev/null || true
-        fi
-    fi
+    for p in $tree; do kill -KILL "$p" 2>/dev/null || true; done
     wait "$pid" 2>/dev/null || true
     _setup_restore_twbuild_gitignores_from "${SCRIPT_DIR:-}/frontend"
 }
