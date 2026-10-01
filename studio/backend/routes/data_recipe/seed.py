@@ -882,18 +882,10 @@ def _load_preview_rows(
 ) -> list[dict[str, Any]]:
     streamed_ds = load_dataset_fn(**load_kwargs)
     if managed_account():
-        streamed_ds = _without_image_decoding(streamed_ds)
+        # Media cells, nested ones included, stay {bytes, path} dicts, so the preview checks a
+        # path against the account before anything opens it.
+        streamed_ds = streamed_ds.decode(False)
     return [row for row in islice(streamed_ds, preview_size)]
-
-
-def _without_image_decoding(dataset):
-    """Image cells stay {bytes, path} dicts, so a path is checked against the account before it is opened."""
-    from datasets import Image
-
-    for name, feature in (getattr(dataset, "features", None) or {}).items():
-        if isinstance(feature, Image) and feature.decode:
-            dataset = dataset.cast_column(name, Image(decode = False))
-    return dataset
 
 
 def _extract_columns(rows: list[dict[str, Any]]) -> list[str]:

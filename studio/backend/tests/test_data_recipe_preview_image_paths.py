@@ -72,13 +72,19 @@ def test_owner_previews_any_local_path(studio_home):
     assert _is_image_payload(preview["image"])
 
 
-def _path_only_parquet(tmp_path: Path, image: Path) -> Path:
+def _path_only_parquet(
+    tmp_path: Path,
+    image: Path,
+    nested: bool = False,
+) -> Path:
     import datasets
 
-    features = datasets.Features({"image": datasets.Image(), "label": datasets.Value("string")})
+    cell = {"bytes": None, "path": str(image)}
+    image_feature = [datasets.Image()] if nested else datasets.Image()
+    features = datasets.Features({"image": image_feature, "label": datasets.Value("string")})
     out = tmp_path / "rows.parquet"
     datasets.Dataset.from_dict(
-        {"image": [{"bytes": None, "path": str(image)}], "label": ["x"]}, features = features
+        {"image": [[cell] if nested else cell], "label": ["x"]}, features = features
     ).to_parquet(str(out))
     return out
 
@@ -100,23 +106,41 @@ def _hub_preview(parquet: Path) -> list[dict]:
     return _serialize_preview_rows(rows)
 
 
-def test_managed_account_streamed_image_feature_is_checked_before_it_is_opened(studio_home):
+@pytest.mark.parametrize("nested", [False, True])
+def test_managed_account_streamed_image_feature_is_checked_before_it_is_opened(studio_home, nested):
     pytest.importorskip("datasets")
-    parquet = _path_only_parquet(studio_home, _png(studio_home / "elsewhere" / "private.png"))
+    private = _png(studio_home / "elsewhere" / "private.png")
+    parquet = _path_only_parquet(studio_home, private, nested = nested)
 
     (row,) = run_as(ALICE, _hub_preview, parquet)
 
     assert row["label"] == "x"
-    assert not _is_image_payload(row["image"])
+    cells = row["image"] if nested else [row["image"]]
+    assert cells and not any(_is_image_payload(cell) for cell in cells)
 
 
-def test_owner_streamed_image_feature_still_previews(studio_home):
+@pytest.mark.parametrize("nested", [False, True])
+def test_managed_account_streamed_image_inside_its_workspace_previews(studio_home, nested):
     pytest.importorskip("datasets")
-    parquet = _path_only_parquet(studio_home, _png(studio_home / "elsewhere" / "local.png"))
+    own = run_as(ALICE, lambda: _png(workspace_root() / "data" / "mine.png"))
+    parquet = _path_only_parquet(studio_home, own, nested = nested)
+
+    (row,) = run_as(ALICE, _hub_preview, parquet)
+
+    cells = row["image"] if nested else [row["image"]]
+    assert cells and all(_is_image_payload(cell) for cell in cells)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_owner_streamed_image_feature_still_previews(studio_home, nested):
+    pytest.importorskip("datasets")
+    image = _png(studio_home / "elsewhere" / "local.png")
+    parquet = _path_only_parquet(studio_home, image, nested = nested)
 
     (row,) = _hub_preview(parquet)
 
-    assert _is_image_payload(row["image"])
+    cells = row["image"] if nested else [row["image"]]
+    assert cells and all(_is_image_payload(cell) for cell in cells)
 
 
 def test_managed_account_image_file_lookup_skips_the_cwd_fallback(studio_home, monkeypatch):
