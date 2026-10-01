@@ -72,7 +72,7 @@ _setup_stdio_lock_init() {
 }
 
 _step_printf() {
-    # Serialize lines from parallel setup jobs (frontend + T5 sidecars).
+    # Serialize lines from the parallel frontend and T5 sidecar jobs.
     if [ -n "${_SETUP_STDIO_LOCK_FILE:-}" ] && command -v flock >/dev/null 2>&1; then
         (
             flock -w 600 200 || true
@@ -699,7 +699,6 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
-# ── Parallel background jobs (issue #8818) ──
 _SETUP_PARALLEL_PIDS=()
 _SETUP_PARALLEL_LABELS=()
 
@@ -2380,10 +2379,7 @@ _try_bun_install() {
 }
 
 
-# Tailwind v4's oxide scanner respects ancestor .gitignore files. Python venvs
-# create a .gitignore with "*" which hides .tsx sources. Hide those only for
-# `npm run build`, not for the whole frontend job — a backgrounded build must
-# not leave them renamed if setup aborts before the footer wait.
+# Tailwind's oxide scanner honours ancestor "*" .gitignores (venvs write one), so hide them during the build only.
 _HIDDEN_GITIGNORES=()
 _setup_hide_star_gitignores_from() {
     local _dir="$1"
@@ -2421,17 +2417,14 @@ _setup_frontend_build_and_oxc() {
     local _need_build="${_NEED_FRONTEND_BUILD:-false}"
 
     if [ "$_need_build" = true ]; then
-        # ── Install bun (optional, faster package installs) ──
-        # Install bun via npm only when we manage the isolated Node (npm -g lands in the
-        # isolated prefix); on a system Node we install nothing global. Build falls back to npm.
+        # bun only into the isolated Node prefix, never globally on a system Node.
         if command -v bun &>/dev/null; then
             substep "bun already installed ($(bun --version))"
         elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
             verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
         elif [ "$NODE_SOURCE" = bundled ]; then
             substep "installing bun..."
-            # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
-            # postinstall fetches its binary; without it the install is a broken stub.
+            # npm >=11.16 gates install scripts; bun's postinstall fetches its binary.
             if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
                 substep "bun installed ($(bun --version))"
             else
@@ -2441,11 +2434,10 @@ _setup_frontend_build_and_oxc() {
             verbose_substep "skipping global bun install on system Node (npm will be used)"
         fi
 
-        # ── Build frontend ──
         substep "building frontend..."
         cd "$SCRIPT_DIR/frontend"
 
-        # Capture install output (bun + npm fallback) so we can detect a registry block.
+        # Captured so _suggest_npm_registry can spot a registry block.
         _FRONTEND_INSTALL_LOG=$(mktemp)
         _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
         _bun_install_ok=false
@@ -2456,8 +2448,7 @@ _setup_frontend_build_and_oxc() {
             if _try_bun_install; then
                 _bun_install_ok=true
             else
-                # First attempt failed, likely due to corrupt cache entries.
-                # Clear the cache and retry once.
+                # Likely a corrupt bun cache: clear it and retry once.
                 echo "   Clearing bun cache and retrying..."
                 run_maybe_quiet bun pm cache rm || true
                 if _try_bun_install; then
@@ -2466,9 +2457,7 @@ _setup_frontend_build_and_oxc() {
             fi
         fi
         if [ "$_bun_install_ok" = false ]; then
-            # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
-            # returns non-zero on failure) so the hint branch is reachable; it also captures
-            # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
+            # `|| rc=$?` keeps set -e off this path so the registry hint is reachable.
             _npm_install_rc=0
             run_quiet_no_exit "npm $_NPM_INSTALL" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
             if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL"; then
@@ -2482,7 +2471,6 @@ _setup_frontend_build_and_oxc() {
         fi
         _CAPTURE_LOG=""
         rm -f "$_FRONTEND_INSTALL_LOG"
-        # Hide "*" ancestor gitignores only around the Tailwind/Vite build.
         _setup_hide_star_gitignores_from "$(pwd)"
         trap '_setup_restore_star_gitignores; trap - EXIT' EXIT
         run_quiet "npm run build" npm run build
@@ -2501,15 +2489,11 @@ _setup_frontend_build_and_oxc() {
         cd "$SCRIPT_DIR"
     fi
 
-    # ── oxc-validator runtime ──
-    # Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
-    # Node, so do not run npm install against an unsuitable/absent system Node.
+    # oxc-validator runtime; NODE_SOURCE=skip means no suitable Node to install with.
     if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
         cd "$_OXC_DIR"
         _OXC_INSTALL_LOG=$(mktemp)
         _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-        # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
-        # below is reachable; it also captures the exact exit code.
         _oxc_install_rc=0
         _NPM_INSTALL=install
         [ -f package-lock.json ] && _NPM_INSTALL=ci
@@ -2526,8 +2510,7 @@ _setup_frontend_build_and_oxc() {
         rm -f "$_OXC_INSTALL_LOG"
         cd "$SCRIPT_DIR"
     elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-        # No npm on PATH: skip rather than abort; the backend Node resolver degrades
-        # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+        # No npm: the backend degrades the validator gracefully (mirrors setup.ps1).
         substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
     fi
 
@@ -2538,8 +2521,7 @@ _setup_frontend_build_and_oxc() {
 
 _SETUP_FRONTEND_BG_PID=""
 
-# Background frontend/OXC runs in a subshell: setup_fail there only ends that job.
-# Reap as soon as it exits so the parent aborts before llama.cpp / footer wait.
+# setup_fail in the background job only ends that subshell: reap early so the parent aborts too.
 _setup_frontend_reap_if_exited() {
     local pid="${_SETUP_FRONTEND_BG_PID:-}"
     [ -n "$pid" ] || return 0
