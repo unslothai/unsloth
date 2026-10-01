@@ -50,7 +50,14 @@ _CALLS = [0]
 # (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per (major, minor), measured best on the DiT shapes
 # (M = 4096, N/K in {3072, 3840, 4096, 9216, 10240, 11520, 12288, 14336, 15360}). An arch absent here is off.
 _ARCH_CONFIG = {
-    (8, 0): (128, 128, 128, 8, 4, 3),  # A100: 1.10-1.39x over the stock GEMM + epilogue, beats bare _int_mm
+    (8, 0): (
+        128,
+        128,
+        128,
+        8,
+        4,
+        3,
+    ),  # A100: 1.10-1.39x over the stock GEMM + epilogue, beats bare _int_mm
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4: 1.04-1.47x, on par with bare _int_mm
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000: 1.00-1.41x
 }
@@ -192,7 +199,9 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         a = torch.cat([a, a.new_zeros((_MIN_ROWS - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     y = (c * xs.reshape(-1, 1)).to(torch.bfloat16)
-    y = y * ws.reshape(-1)  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
+    y = y * ws.reshape(
+        -1
+    )  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
     if bias is not None:
         y = y + bias
     return y.to(torch.bfloat16)
@@ -288,7 +297,6 @@ def device_config(index: int) -> Optional[tuple]:
     cfg = None
     try:
         import torch
-
         if (
             torch.cuda.is_available()
             and not getattr(torch.version, "hip", None)
@@ -313,13 +321,19 @@ def _probe(index: int, cfg: tuple) -> bool:
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(0)
     try:
-        for m, n, k, bias, xs32 in ((257, 384, 512, False, False), (33, 200, 136, True, True), (300, 520, 1000, True, False)):
+        for m, n, k, bias, xs32 in (
+            (257, 384, 512, False, False),
+            (33, 200, 136, True, True),
+            (300, 520, 1000, True, False),
+        ):
             a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
             xs = (xs.float() if xs32 else xs).to(dev)
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
-            ws = ws.float() if xs32 else ws  # fp32 weight scales + bias: the prequant (v2) rounding order
+            ws = (
+                ws.float() if xs32 else ws
+            )  # fp32 weight scales + bias: the prequant (v2) rounding order
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
@@ -347,7 +361,10 @@ def _v1_parts(w: Any) -> Optional[tuple]:
         if type(aqt).__name__ != "AffineQuantizedTensor":
             return None
         impl = aqt.tensor_impl
-        if type(impl).__name__ != "PlainAQTTensorImpl" or type(getattr(impl, "_layout", None)).__name__ != "PlainLayout":
+        if (
+            type(impl).__name__ != "PlainAQTTensorImpl"
+            or type(getattr(impl, "_layout", None)).__name__ != "PlainLayout"
+        ):
             return None
         data, scale, zp = impl.int_data, impl.scale, getattr(impl, "zero_point", None)
         import torch
@@ -404,7 +421,6 @@ def _act_quant_v1(x2d: Any) -> tuple:
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
     from .diffusion_int8_fused import _act_quant
-
     return _act_quant(x2d, weight)
 
 
@@ -423,7 +439,9 @@ def _v1_act_quant_matches(index: int) -> bool:
         ref = _int8_symm_per_token_reduced_range_quant(x)
         q, s = _act_quant_v1(x)
         impl = ref.tensor_impl
-        return bool(torch.equal(q, impl.int_data) and torch.equal(s.reshape(-1), impl.scale.reshape(-1)))
+        return bool(
+            torch.equal(q, impl.int_data) and torch.equal(s.reshape(-1), impl.scale.reshape(-1))
+        )
     except Exception:  # noqa: BLE001
         return False
 
@@ -468,7 +486,11 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
     if _DEVICE_CFG.get(q.device.index) is None:
         return None
     parts = _v2_parts(weight)
-    if parts is None or q.shape[0] < _MIN_ROWS or parts[1].dtype not in (torch.bfloat16, torch.float32):
+    if (
+        parts is None
+        or q.shape[0] < _MIN_ROWS
+        or parts[1].dtype not in (torch.bfloat16, torch.float32)
+    ):
         return None
     if parts[0].shape[1] % _K_ALIGN or parts[0].shape[0] % _N_ALIGN:
         return None
@@ -511,7 +533,11 @@ def candidates(transformer: Any) -> int:
         return 0
 
 
-def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> int:
+def install(
+    transformer: Any,
+    logger: Any = None,
+    offload_active: bool = False,
+) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward."""
     if int8_gemm_mode() == "off" or transformer is None or offload_active:
         return 0
@@ -523,7 +549,6 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
     # probe and the swap at the first forward.
     try:
         import torch
-
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return 0
         if arch_config(torch.cuda.get_device_capability(torch.cuda.current_device())) is None:
@@ -561,7 +586,12 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             if _MARK in module.__dict__:
                 count += 1
                 continue
-            module.__dict__[_REC] = (rec[0], None, None, rec[3])  # kind + the Parameter, no payload alias
+            module.__dict__[_REC] = (
+                rec[0],
+                None,
+                None,
+                rec[3],
+            )  # kind + the Parameter, no payload alias
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1

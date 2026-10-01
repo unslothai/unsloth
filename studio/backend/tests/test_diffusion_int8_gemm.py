@@ -90,7 +90,9 @@ def _cuda_ready() -> bool:
     return True
 
 
-needs_cuda = pytest.mark.skipif(not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao")
+needs_cuda = pytest.mark.skipif(
+    not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao"
+)
 
 
 @pytest.fixture
@@ -119,7 +121,12 @@ def _int8_linear(k, n, bias, version):
 @needs_cuda
 @pytest.mark.parametrize(
     "m, k, n, bias, xs32",
-    [(4096, 4096, 4096, False, False), (1037, 520, 1400, True, False), (17, 256, 1024, True, True), (300, 12288, 256, False, False)],
+    [
+        (4096, 4096, 4096, False, False),
+        (1037, 520, 1400, True, False),
+        (17, 256, 1024, True, True),
+        (300, 12288, 256, False, False),
+    ],
 )
 @pytest.mark.parametrize("ws32", [False, True])
 def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
@@ -195,5 +202,7 @@ def test_small_m_and_misaligned_keep_stock(forced):
     assert g8.install(holder) == 1
     before = g8.call_count()
     with torch.inference_mode():
-        ok(torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16))  # M = 16 < _int_mm's floor: stock
+        ok(
+            torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16)
+        )  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
