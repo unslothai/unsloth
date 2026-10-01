@@ -1885,6 +1885,11 @@ export const de = {
       autoScrollManual: "Manuell",
       autoScrollKeywords:
         "scrollen automatisch mitscrollen folgen unten springen Streaming generieren Ansicht sperren scroll autoscroll follow",
+      scrollToBottomButton: "Schaltfläche „Nach unten scrollen“",
+      scrollToBottomButtonDescription:
+        "Eine Schaltfläche anzeigen, um nach dem Hochscrollen zur neuesten Nachricht zurückzuspringen.",
+      scrollToBottomButtonKeywords:
+        "scrollen unten springen neueste Pfeil Schaltfläche ausblenden scroll bottom button",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
@@ -2262,11 +2267,13 @@ export const de = {
       revoking: "Wird widerrufen...",
       decisionApi: {
         title: "Entscheidungs-API",
-        description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem lokalen Laya-Modell. Funktioniert mit dem TypeSafe-SDK.",
+        description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem Modell auf diesem Rechner oder einem Entscheidungsmodell aus den Verbindungen. Funktioniert mit dem TypeSafe-SDK.",
         enable: "Anfragen beantworten",
         enableDescription: "Stellt /v1/systemone bereit. Beim Einschalten wird das Modell heruntergeladen.",
+        enableRemoteDescription: "Stellt /v1/systemone bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         model: "Modell",
+        thisMachine: "Dieser Rechner",
         modelMultilingual: "Multilingual",
         modelEnglish: "Englisch",
         modelTypedDecisions: "Typisierte Entscheidungen",
@@ -2291,6 +2298,10 @@ export const de = {
         downloadFailed: "Der Download konnte nicht gestartet werden.",
         saveFailed: "Die Einstellung der Entscheidungs-API konnte nicht gespeichert werden.",
         loadError: "Die Einstellungen der Entscheidungs-API konnten nicht geladen werden.",
+        sendsTo: "Anfragen gehen an {provider}.",
+        connectionMissing: "Diese Verbindung gibt es nicht mehr oder sie hat keine Entscheidungsmodelle. Wähle ein anderes Modell.",
+        addConnection: "Für ein gehostetes Entscheidungsmodell füge TypeSafe, Liquid AI oder OpenRouter unter Verbindungen hinzu.",
+        openConnections: "Verbindungen öffnen",
       },
       usageNoModel:
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",

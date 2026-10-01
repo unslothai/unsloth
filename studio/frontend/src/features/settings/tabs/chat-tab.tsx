@@ -259,6 +259,12 @@ export function ChatTab() {
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
   );
+  const showScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.showScrollToBottomButton,
+  );
+  const setShowScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.setShowScrollToBottomButton,
+  );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
   );
@@ -452,6 +458,16 @@ export function ChatTab() {
               </button>
             ))}
           </div>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.scrollToBottomButton")}
+          description={t("settings.chat.scrollToBottomButtonDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.scrollToBottomButton")}
+            checked={showScrollToBottomButton}
+            onCheckedChange={setShowScrollToBottomButton}
+          />
         </SettingsRow>
       </SettingsSection>
 

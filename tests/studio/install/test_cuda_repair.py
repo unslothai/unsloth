@@ -1959,6 +1959,96 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert "could not re-check xFormers" in out
 
 
+class TestEvictXformersMismatch:
+    def test_a_mismatched_xformers_is_removed_with_its_scope(self, capsys):
+        with (
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
+        ):
+            assert (
+                stack_mod._evict_xformers_built_for_another_torch(
+                    scope = "linux torch repair", family_only = True
+                )
+                is True
+            )
+        uninstall.assert_called_once_with("xformers")
+        assert "linux torch repair" in capsys.readouterr().out
+
+    def test_a_matching_xformers_is_not_removed(self):
+        with (
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(
+                stack_mod, "_resident_xformers_build_torch", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(stack_mod, "_uninstall_distribution") as uninstall,
+        ):
+            assert stack_mod._evict_xformers_built_for_another_torch() is False
+        uninstall.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "resident, removed",
+        [("2.11.0+cu128", False), ("2.10.0+cu126", False), ("2.11.0+cu130", True)],
+    )
+    def test_the_cuda_major_decides_on_the_linux_path(self, resident, removed):
+        with (
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = resident),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
+        ):
+            assert (
+                stack_mod._evict_xformers_built_for_another_torch(
+                    scope = "linux torch repair", family_only = True
+                )
+                is removed
+            )
+        assert uninstall.called is removed
+
+    @pytest.mark.parametrize(
+        "label, family",
+        [
+            ("2.10.0+cu128", "cuda12"),
+            ("2.11.0+cu130", "cuda13"),
+            ("2.11.0+rocm7.13.0", "rocm"),
+            ("2.10.0+xpu", "xpu"),
+            ("2.10.0+cpu", "cpu"),
+            ("2.10.0", ""),
+            ("2.10.0a0+git1234", ""),
+        ],
+    )
+    def test_the_build_family_is_read_from_the_local_tag(self, label, family):
+        assert stack_mod._torch_build_family(label) == family
+
+    def test_a_blocked_removal_is_reported_not_claimed(self, capsys):
+        with (
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.10.0+rocm7.1"
+            ),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = False),
+        ):
+            assert stack_mod._evict_xformers_built_for_another_torch() is False
+        out = capsys.readouterr().out
+        assert "could not be removed" in out
+        assert "-- removed" not in out
+
+    def test_the_final_repair_checks_the_build_even_when_torch_did_not_move(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+        step = step.split("# 13w.", 1)[0]
+        guard = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
+        after = step.split(guard, 1)[1]
+        call = (
+            '\n        _evict_xformers_built_for_another_torch(scope = "linux torch repair", '
+            "family_only = True)\n"
+        )
+        assert call in after, "the check must sit outside the torch-moved guard"
+
+
 class TestTheResidentXformersBuildIsReadFromDisk:
     def test_the_recorded_torch_is_returned(self, tmp_path):
         pkg = tmp_path / "xformers"

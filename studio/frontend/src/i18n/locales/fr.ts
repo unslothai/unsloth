@@ -1882,6 +1882,11 @@ export const fr = {
       autoScrollManual: "Manuel",
       autoScrollKeywords:
         "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
+      scrollToBottomButton: "Bouton « Défiler vers le bas »",
+      scrollToBottomButtonDescription:
+        "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
+      scrollToBottomButtonKeywords:
+        "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -2263,11 +2268,13 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
-        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle Laya local. Compatible avec le SDK TypeSafe.",
+        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
+        enableRemoteDescription: "Sert /v1/systemone.",
         lockedByEnv: "Défini par {name}.",
         model: "Modèle",
+        thisMachine: "Cette machine",
         modelMultilingual: "Multilingue",
         modelEnglish: "Anglais",
         modelTypedDecisions: "Décisions typées",
@@ -2292,6 +2299,10 @@ export const fr = {
         downloadFailed: "Impossible de lancer le téléchargement.",
         saveFailed: "Impossible d'enregistrer le réglage de l'API de décision.",
         loadError: "Impossible de charger les réglages de l'API de décision.",
+        sendsTo: "Les requêtes sont envoyées à {provider}.",
+        connectionMissing: "Cette connexion n'existe plus ou n'a pas de modèle de décision. Choisissez un autre modèle.",
+        addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez TypeSafe, Liquid AI ou OpenRouter dans Connexions.",
+        openConnections: "Ouvrir Connexions",
       },
       usageNoModel:
         "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",

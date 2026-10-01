@@ -183,6 +183,14 @@ import {
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
+import {
+  type RunConfigImport,
+  SharedRunConfigControls,
+  SharedRunConfigReview,
+  cancelRunConfigImportForEdit,
+  isRunConfigEditorChange,
+  isRunConfigVariantUnresolved,
+} from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -2037,6 +2045,7 @@ export function ModelConfigPage({
     (s) => s.loadedMlxKvQuantRequested,
   );
   const isActiveModel = loadedConfig != null;
+  const sharedVariantUnresolved = isRunConfigVariantUnresolved(target);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -2195,6 +2204,15 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
+  const [importedConfig, setImportedConfig] = useState<RunConfigImport | null>(
+    null,
+  );
+  const handleSharedConfigImport = useCallback((imported: RunConfigImport) => {
+    setImportedConfig(imported);
+    if (Object.keys(imported.changes).length > 0) {
+      setAutoOpenAdvanced(true);
+    }
+  }, []);
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
   const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
@@ -2231,7 +2249,7 @@ export function ModelConfigPage({
     : templateDefaults.loading;
 
   // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
-  const contextFetchKey = target.isGguf
+  const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
   const [fetchedStagedDims, setFetchedStagedDims] = useState<{
@@ -2651,7 +2669,12 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
+  const handleSharedConfigEdit = () => {
+    cancelRunConfigImportForEdit(draftKey);
+    setImportedConfig(null);
+  };
   const update = (patch: Partial<PerModelConfig>) => {
+    handleSharedConfigEdit();
     // Every control lands here and nothing else does: the hydration effect's own sanitising
     // writes go through setConfig, and marking those would have the read refuse its result.
     markModelConfigDraftEdited(draftKey);
@@ -3180,6 +3203,9 @@ export function ModelConfigPage({
   };
 
   const handleSave = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
     const { effectiveRuntimeConfig } = commitDraft();
     const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (!saved) {
@@ -3202,6 +3228,9 @@ export function ModelConfigPage({
   };
 
   const handleRun = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
     if (budgetSettling) {
       return;
     }
@@ -3268,7 +3297,14 @@ export function ModelConfigPage({
   };
 
   return (
-    <div className="hint-on-hover flex flex-col">
+    <div
+      className="hint-on-hover flex flex-col"
+      onChange={(event) => {
+        if (isRunConfigEditorChange(event)) {
+          handleSharedConfigEdit();
+        }
+      }}
+    >
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
         // the same left edge as the rows below.
@@ -3297,6 +3333,14 @@ export function ModelConfigPage({
         </div>
       )}
 
+      <SharedRunConfigReview
+        target={target}
+        imported={importedConfig}
+        draftConfig={configState}
+        currentConfig={config}
+        remember={remember}
+        hasSavedSettings={savedRemember}
+      />
       <div className="space-y-5">
         {!target.isGguf && !targetIsMlx && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
@@ -3496,6 +3540,7 @@ export function ModelConfigPage({
             size="sm"
             className={FOOTER_BUTTON_CLASS}
             disabled={
+              sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
               stagedMetadataPending ||
               budgetSettling ||
@@ -3522,6 +3567,7 @@ export function ModelConfigPage({
               // settings the load path strips or has already captured. Forget stores nothing, so
               // broken saved arguments must not lock it.
               disabled={
+                sharedVariantUnresolved ||
                 stagedMetadataPending ||
                 budgetSettling ||
                 (remember &&
@@ -3541,6 +3587,7 @@ export function ModelConfigPage({
             className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
             disabled={atDefault}
             onClick={() => {
+              handleSharedConfigEdit();
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
               // And drops the raw edit: token equality alone would make the discarded text
@@ -3556,6 +3603,21 @@ export function ModelConfigPage({
           >
             Reset
           </Button>
+          {target.isGguf && (
+            <SharedRunConfigControls
+              className={FOOTER_BUTTON_CLASS}
+              target={target}
+              config={config}
+              ready={!extraArgsHydrating}
+              canImport={variant !== "sidebar"}
+              isDiffusion={resolvedIsDiffusion}
+              disabled={
+                sharedExtraArgsRefused ||
+                (!extraArgsLoadable && !sharedExtraArgsCleared)
+              }
+              onImport={handleSharedConfigImport}
+            />
+          )}
         </div>
       </div>
 

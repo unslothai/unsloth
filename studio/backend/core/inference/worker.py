@@ -1653,6 +1653,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
+                use_adapter = cmd.get("use_adapter"),
                 cancel_event = cancel_event,
                 **extra_audio_kwargs,
             )

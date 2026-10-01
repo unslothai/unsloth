@@ -90,8 +90,8 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    # Studio's own Decisions server is answered in process, so no request leaves this machine.
-    if not _managed_mcp_restricted() or is_studio_decisions(url):
+    # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
+    if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
     if is_stdio(url):
         from fastapi import HTTPException
@@ -554,6 +554,12 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
                 "invoke the executable directly, or use node.exe with the JavaScript entry point"
             )
     return [executable, *parts[1:]]
+
+
+def _local_decisions() -> bool:
+    from core.systemone.catalog import parse_connection
+    from utils.systemone_settings import get_model
+    return parse_connection(get_model()) is None
 
 
 def is_studio_decisions(url: str) -> bool:

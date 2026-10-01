@@ -1842,6 +1842,11 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
+      scrollToBottomButton: "맨 아래로 스크롤 버튼",
+      scrollToBottomButtonDescription:
+        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
+      scrollToBottomButtonKeywords:
+        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -2211,11 +2216,13 @@ export const ko = {
       revoking: "폐기 중...",
       decisionApi: {
         title: "판단 API",
-        description: "로컬 Laya 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
+        enableRemoteDescription: "/v1/systemone을 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         model: "모델",
+        thisMachine: "이 컴퓨터",
         modelMultilingual: "다국어",
         modelEnglish: "영어",
         modelTypedDecisions: "유형별 판단",
@@ -2240,6 +2247,10 @@ export const ko = {
         downloadFailed: "다운로드를 시작하지 못했습니다.",
         saveFailed: "판단 API 설정을 저장하지 못했습니다.",
         loadError: "판단 API 설정을 불러오지 못했습니다.",
+        sendsTo: "요청은 {provider}(으)로 전송됩니다.",
+        connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
+        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
+        openConnections: "연결 열기",
       },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",

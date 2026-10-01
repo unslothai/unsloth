@@ -5193,10 +5193,7 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))
-    assert counted["messages"][0] == {
-        "role": "system",
-        "content": "The current date is 2026-08-15.",
-    }
+    assert counted["messages"] == [{"role": "user", "content": "[Current date: 2026-08-15]\n\nhi"}]
 
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
@@ -10130,7 +10127,16 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     # The Images and Video backends own these; /v1/chat/completions cannot serve them.
 
     pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
-    (pipeline / "model_index.json").write_text("{}")
+    manifest = {
+        "_class_name": "DiffusionPipeline",
+        "transformer": ["diffusers", "Transformer2DModel"],
+    }
+    (pipeline / "model_index.json").write_text(json.dumps(manifest))
+    (pipeline / "transformer").mkdir()
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
+        _safetensors_bytes()
+    )
     info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
     assert resolver.local_servable_model(info) is None
 
