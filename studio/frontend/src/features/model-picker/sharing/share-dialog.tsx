@@ -115,7 +115,6 @@ export function ShareRunConfigDialog({
   const [includeVariant, setIncludeVariant] = useState(
     shareableModel && Boolean(target.ggufVariant),
   );
-  // A tunnel or LAN address: whoever has it and the password reaches this machine.
   const remoteAddress =
     !isTauri && !loopbackHostname.test(window.location.hostname);
   const [destination, setDestination] = useState(
