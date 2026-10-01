@@ -5125,8 +5125,9 @@ class DiffusionBackend:
         apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
-        # Before the first `import diffusers` below, which is the earliest dynamo consumer on this
-        # path and therefore the only position that dominates the rest of them. Importing
+        # Before the first `import diffusers` below, which is the earliest dynamo consumer in
+        # load_pipeline (the download steps before it are covered by the gate at the top of
+        # _run_load and in hf_xet_fallback). Importing
         # diffusers alone pulls in torch._dynamo (every module in diffusers.hooks evaluates
         # @torch.compiler.disable() at class-body time), and so do the hook-based paths that
         # follow: the FP8 text-encoder cast (diffusion_precision), the step cache
