@@ -1545,10 +1545,65 @@ class FastSentenceTransformer(FastModel):
                 return cached
             if cached is not None:
                 # Unreachable, and the cache already recorded that this repo has no
-                # modules.json. Offline that is the whole answer and the load can only use
-                # the cache too, so this is not a refusal. No commit is reported, because
-                # none was resolved and the recorded one is a stale local pointer.
-                return None
+                # modules.json. "The load can only use the cache too" was the reasoning
+                # here and it is wrong: this request failed, not every request, so the
+                # delegated load can recover and fetch the current branch, which may have
+                # gained a module type since the cached answer. Returning success with no
+                # pin let exactly that through.
+                #
+                # So the load is pinned to the commit the cache holds for this revision,
+                # recovered from a file that lives in the same snapshot. That is the
+                # snapshot whose absence was recorded, which makes the load consistent
+                # with what was checked, and offline it is what would have been served
+                # anyway.
+                snapshot_commit = ""
+                for probe in (
+                    "config.json",
+                    "config_sentence_transformers.json",
+                    "tokenizer_config.json",
+                    "README.md",
+                ):
+                    try:
+                        hit = try_to_load_from_cache(
+                            model_name,
+                            probe,
+                            cache_dir = cache_dir,
+                            revision = revision,
+                        )
+                    except Exception:
+                        continue
+                    if isinstance(hit, str):
+                        snapshot_commit = FastSentenceTransformer._snapshot_revision(hit)
+                        if snapshot_commit:
+                            break
+                if snapshot_commit:
+                    if resolved is not None:
+                        resolved["revision"] = snapshot_commit
+                    return None
+                # No commit to pin to, so there is no way to make the load match what was
+                # checked. Fail closed below 6.0, the same rule as every other branch that
+                # could not establish an answer.
+                import sentence_transformers
+
+                if Version(sentence_transformers.__version__).major >= 6:
+                    logging.debug(
+                        "Unsloth: %s is unreachable and its cached absence names no "
+                        "commit; sentence-transformers gates the module class itself on "
+                        "this version.",
+                        model_name,
+                    )
+                    return None
+                raise ValueError(
+                    f"Unsloth: Could not reach {model_name} to check its module classes, "
+                    f"and the cached answer names no commit to load instead "
+                    f"({type(exception).__name__}: {exception}). The installed "
+                    f"sentence-transformers "
+                    f"({getattr(sentence_transformers, '__version__', 'unknown')}) imports "
+                    f"a module class named in modules.json without checking it, so this "
+                    f"refuses rather than loading whatever the retry returns. Retry, or "
+                    f"pass the argument `trust_remote_code=True` to allow custom code to "
+                    f"be run."
+                ) from exception
             unverifiable = exception
         except EntryNotFoundError as exception:
             # The repo really has no modules.json at this revision. Pin anyway: absence is

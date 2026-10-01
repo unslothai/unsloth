@@ -559,34 +559,36 @@ def test_an_ordinary_embedder_fetches_no_module_configs(tmp_path, monkeypatch):
     assert requested == []
 
 
-def test_a_recorded_absence_answers_an_unreachable_hub(tmp_path, monkeypatch):
-    """Offline, a recorded "this repo has no modules.json" is the answer, not a refusal.
+def test_a_recorded_absence_pins_the_commit_the_cache_holds(tmp_path, monkeypatch):
+    """Unreachable, with a recorded absence: pin to the snapshot that absence belongs to.
 
-    The cache is consulted from the unreachable handler now rather than before the
-    download. Consulting it first decided a security question from a local refs pointer,
-    which for a branch is stale, and reported no commit so the load went unpinned. It is
-    still what answers an unreachable hub, which is what keeps an offline load working.
+    "The load can only use the cache too" was the reasoning for returning success with no
+    pin, and it is wrong: this request failed, not every request, so the delegated load
+    can recover and fetch the current branch, which may have gained a module type since
+    the cached answer. The commit is recovered from a file in the same snapshot, so the
+    load matches what was checked, and offline it is what would have been served anyway.
 
-    It also has to read the cache hf_hub_download reads: HUGGINGFACE_HUB_CACHE is the
-    legacy constant and does not follow HF_HUB_CACHE, so naming one of our own searched a
-    different cache and a recorded absence there was missed.
+    The lookup also has to read the cache hf_hub_download reads: HUGGINGFACE_HUB_CACHE is
+    the legacy constant and does not follow HF_HUB_CACHE, so naming one of our own
+    searched a different cache and a recorded absence there was missed.
     """
     from huggingface_hub.errors import LocalEntryNotFoundError
 
+    commit = "e" * 40
+    snapshot = tmp_path / "active" / "models--acme--embedder" / "snapshots" / commit
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}", encoding = "utf8")
+
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "active"))
     monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
-    monkeypatch.setattr(
-        FastSentenceTransformer,
-        "_module_path",
-        staticmethod(lambda *a, **k: None),
-    )
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
     _simulate_pre_six(monkeypatch)
     _patch_download(
         monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
     )
 
-    seen = {}
+    seen = []
 
     def fake_try_to_load_from_cache(
         repo_id,
@@ -594,18 +596,61 @@ def test_a_recorded_absence_answers_an_unreachable_hub(tmp_path, monkeypatch):
         cache_dir = None,
         revision = None,
     ):
-        seen["cache_dir"] = cache_dir
+        seen.append((filename, cache_dir))
+        if filename == "config.json":
+            return str(snapshot / "config.json")
         # The sentinel the hub returns when it has recorded that the file does not exist.
         return object()
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_try_to_load_from_cache)
 
-    # Not a refusal, and nothing to pin: no commit was resolved and the recorded one is a
-    # stale local pointer.
-    assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == ""
-    assert (
-        seen["cache_dir"] is None
+    assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == commit
+    assert all(
+        cache_dir is None for _, cache_dir in seen
     ), "a cache of our own choosing is not the cache hf_hub_download reads"
+
+
+def test_a_recorded_absence_with_no_recoverable_commit_refuses(tmp_path, monkeypatch):
+    """No commit to pin to means no way to make the load match what was checked.
+
+    Fail closed below 6.0, the same rule as every other branch that could not establish an
+    answer.
+    """
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _simulate_pre_six(monkeypatch)
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda *a, **k: object(),
+    )
+
+    with pytest.raises(ValueError, match = "names no commit"):
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+
+def test_a_recorded_absence_is_tolerated_where_upstream_gates_it(tmp_path, monkeypatch):
+    """From 6.0 upstream refuses the type itself, so refusing here would only break a load
+    that is already safe."""
+    import sentence_transformers
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda *a, **k: object(),
+    )
+
+    assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == ""
 
 
 def test_a_module_at_the_repository_root_is_checked_too(tmp_path, monkeypatch):
