@@ -253,9 +253,15 @@ def test_a_rotating_vae_moves_by_repointing_at_its_pinned_copy(monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
-def test_a_pinned_swap_round_trip_on_cuda():
+@pytest.mark.parametrize("pin_capped", [False, True], ids = ["uncapped", "windows_wsl_pin_cap"])
+def test_a_pinned_swap_round_trip_on_cuda(monkeypatch, pin_capped):
+    import core.inference.diffusion_memory as mem
     from core.inference.video_minimax_h3_residency import install_pinned_swap
 
+    # The round trip is under test, not the host pin policy: Windows / WSL cap pinned memory, so
+    # h3_te_pin_allowed() declines there by default. Opt in through the production override.
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: pin_capped)
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
     vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
     expect = {k: v.clone() for k, v in vae.state_dict().items()}
     assert install_pinned_swap(vae)
