@@ -217,7 +217,9 @@ class GaLoreProjector:
             current_vector = float_ortho[:, :1].flatten()
 
         if self.past_ortho_vector is not None:
-            cos_sim = torch.dot(self.past_ortho_vector, current_vector).item()
+            # A singular vector is defined only up to sign, so an SVD of the same subspace can
+            # come back negated. Compare directions, not orientations.
+            cos_sim = abs(torch.dot(self.past_ortho_vector, current_vector).item())
 
             self.queue.append(cos_sim)
 
