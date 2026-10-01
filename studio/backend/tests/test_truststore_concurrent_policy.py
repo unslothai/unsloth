@@ -47,7 +47,8 @@ def truststore(monkeypatch):
             api._original_super_SSLContext.verify_mode.__set__(ctx, verify_mode)
 
     monkeypatch.setattr(api, "_configure_context", flipping)
-    monkeypatch.setattr(api, "_HOLDS_POLICY", True)
+    # raising=False: an unpatched copy has no such flag, and must fail on behaviour instead.
+    monkeypatch.setattr(api, "_HOLDS_POLICY", True, raising = False)
     yield module, api
     for key in [k for k in sys.modules if k.startswith(name)]:
         sys.modules.pop(key, None)
