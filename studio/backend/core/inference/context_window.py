@@ -154,7 +154,9 @@ def _first_text_index(content: Any) -> Optional[int]:
             (
                 index
                 for index, part in enumerate(content)
-                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip()
+                if isinstance(part, dict)
+                and isinstance(part.get("text"), str)
+                and part["text"].strip()
             ),
             None,
         )
@@ -166,7 +168,9 @@ def _texts(message: dict) -> list[str]:
     if isinstance(content, str):
         return [content]
     if isinstance(content, list):
-        return [p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)]
+        return [
+            p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)
+        ]
     return []
 
 

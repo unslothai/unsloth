@@ -411,9 +411,7 @@ def _fit_with_instruction_pins(
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)
     ):
-        fitted, truncation = _fit_context(
-            messages, protected_message_ids = anchors or None, **kwargs
-        )
+        fitted, truncation = _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
     return keep_date_note(messages, fitted), truncation
 
 
