@@ -5,6 +5,7 @@
 // coverage regexes the source, which passes with the body deleted; these call them.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -61,6 +62,9 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: true,
     loadedContextEnforced: null,
+    loadedContextUnboundedWhenBatched: false,
+    loadedParallelSlots: null,
+    loadedContextBudget: null,
   });
   // Transformers, which sizes nothing, still contributes no window.
   assert.deepEqual(loadedContextFields({ is_gguf: false, context_length: 2048 }), {
@@ -70,6 +74,9 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: null,
     loadedContextEnforced: null,
+    loadedContextUnboundedWhenBatched: false,
+    loadedParallelSlots: null,
+    loadedContextBudget: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
 });
@@ -84,6 +91,31 @@ test("the enforcement verdict is a tri-state, and GGUF is true by construction",
   assert.equal(
     loadedContextFields({ ...MLX, context_length_enforced: false }).loadedContextEnforced,
     false,
+  );
+});
+
+test("a limit kept as a per-request budget travels beside the enforcement verdict", () => {
+  const budgeted = loadedContextFields({
+    ...MLX,
+    context_length_enforced: false,
+    mlx_context_budget: 32768,
+  });
+  assert.equal(budgeted.loadedContextBudget, 32768);
+  assert.equal(budgeted.loadedContextEnforced, false);
+  assert.equal(loadedContextFields(MLX).loadedContextBudget, null);
+  assert.equal(loadedContextFields({ ...GGUF, mlx_context_budget: 8192 }).loadedContextBudget, null);
+});
+
+test("a budgeted limit is advised on as a refusal, not as a slowdown or a decoration", () => {
+  const advice = (extra: Record<string, unknown>) =>
+    deriveContextUsageBar({ used: 30000, total: 32768, isMlx: true, ...extra })?.advice;
+
+  assert.equal(advice({ contextEnforced: false, contextBudget: 32768 }), "mlx-refuses-past-limit");
+  assert.equal(advice({ contextEnforced: false }), "unenforced-limit");
+  assert.equal(advice({ contextEnforced: true }), "mlx-near-limit");
+  assert.equal(
+    deriveContextUsageBar({ used: 100, total: 32768, isMlx: true, contextBudget: 32768 })?.advice,
+    "none",
   );
 });
 
@@ -193,6 +225,12 @@ test("the usage bar names the three ways a window can end", () => {
   assert.equal(at(30000, { contextEnforced: undefined }), "unenforced-limit");
   // Only for MLX: nothing else installs a window whose bound could go unjudged.
   assert.equal(at(30000, { isMlx: false, contextEnforced: null }), "stops-at-limit");
+  const batched = { contextUnboundedWhenBatched: true };
+  assert.equal(at(30000, { ...batched, parallelSlots: 4 }), "unenforced-limit");
+  assert.equal(at(40000, { ...batched, parallelSlots: 4 }), "unenforced-limit");
+  assert.equal(at(30000, { ...batched, parallelSlots: 1 }), "mlx-near-limit");
+  assert.equal(at(30000, { ...batched, parallelSlots: null }), "mlx-near-limit");
+  assert.equal(at(30000, { parallelSlots: 4 }), "mlx-near-limit");
 });
 
 test("an outgoing self-sizing window does not become the next model's request", () => {
@@ -285,4 +323,56 @@ test("a load keeps the pin it was built from, wherever the record held it", () =
       presetSource: "custom",
     }),
   );
+});
+
+test("a load response's two window facts and width reach the bar together", () => {
+  const wide = loadedContextFields({
+    is_mlx: true,
+    context_length: 32768,
+    native_context_length: 32768,
+    context_length_enforced: true,
+    context_unbounded_when_batched: true,
+    parallel_slots: 4,
+  });
+  assert.equal(wide.loadedContextUnboundedWhenBatched, true);
+  assert.equal(wide.loadedParallelSlots, 4);
+
+  assert.equal(
+    deriveContextUsageBar({
+      used: 30000,
+      total: 32768,
+      isMlx: true,
+      contextEnforced: wide.loadedContextEnforced,
+      contextUnboundedWhenBatched: wide.loadedContextUnboundedWhenBatched,
+      parallelSlots: wide.loadedParallelSlots,
+    })?.advice,
+    "unenforced-limit",
+  );
+
+  const gguf = loadedContextFields({
+    is_gguf: true,
+    context_length: 32768,
+    native_context_length: 32768,
+    context_unbounded_when_batched: true,
+    parallel_slots: 4,
+  });
+  assert.equal(gguf.loadedContextUnboundedWhenBatched, false);
+});
+
+test("a background load cannot leave the visible model reading another model's window", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const list = source.slice(
+    source.indexOf("const VISIBLE_MODEL_RUNTIME_KEYS = ["),
+    source.indexOf("] as const satisfies"),
+  );
+  for (const key of [
+    "loadedContextEnforced",
+    "loadedContextUnboundedWhenBatched",
+    "loadedParallelSlots",
+  ]) {
+    assert.match(list, new RegExp(`"${key}"`), `${key} is not preserved`);
+  }
 });

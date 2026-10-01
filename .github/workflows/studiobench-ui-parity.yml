@@ -163,6 +163,26 @@ on:
       # The gate itself, and the tooling it runs, or the filter rots silently.
       - 'tests/studio/studiobench/**'
       - '.github/workflows/studiobench-ui-parity.yml'
+      # parity-install-side.sh runs install.sh --local on this ref, which hands off to
+      # studio/setup.sh and the installer modules and builds the frontend with npm ci
+      # (reading .npmrc). Both instances then boot through this checkout's unsloth CLI.
+      # routes/auth.py above imports models/auth.py and the auth package, and
+      # routes/inference.py imports models/inference.py. python -m
+      # tests.studio.studiobench imports the tests package.
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/backend/requirements/**'
+      - 'pyproject.toml'
+      - 'studio/frontend/.npmrc'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/models/auth.py'
+      - 'studio/backend/auth/**'
+      - 'studio/backend/models/inference.py'
+      - 'tests/__init__.py'
       # Executed by this job. install.sh is what builds both sides, so a change
       # that breaks it should be able to trigger the job it breaks.
       - 'install.sh'

@@ -12,7 +12,8 @@ import {
   MAX_SEQ_LENGTH_MAX,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
-  MLX_KV_BITS,
+  mlxKvQuantLabel,
+  normalizeMlxKvQuant,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
@@ -45,7 +46,7 @@ export type PresetLoadConfig = Pick<
   | "customContextLength"
   | "maxSeqLength"
   | "kvCacheDtype"
-  | "mlxKvBits"
+  | "mlxKvQuant"
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
@@ -71,7 +72,7 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -150,11 +151,7 @@ export function normalizePresetLoadConfig(
   const normalized: PresetLoadConfig = {
     customContextLength: requestableContextLength(partial.customContextLength),
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
-    mlxKvBits:
-      typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
-        ? partial.mlxKvBits
-        : null,
+    mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -263,7 +260,7 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     customContextLength: effectiveContextLength ?? null,
     maxSeqLength: isMlx ? null : normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
-    mlxKvBits: snapshot.mlxKvBits ?? null,
+    mlxKvQuant: snapshot.mlxKvQuant ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
@@ -329,7 +326,7 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
       customContextLength: config.customContextLength ?? null,
       kvCacheDtype: config.kvCacheDtype ?? null,
-      mlxKvBits: config.mlxKvBits ?? null,
+      mlxKvQuant: config.mlxKvQuant ?? null,
       speculativeType: config.speculativeType ?? null,
       specDraftNMax: config.specDraftNMax ?? null,
       nParallel: config.nParallel ?? null,
@@ -367,8 +364,8 @@ export function formatPresetLoadConfigSummary(
   if (config.kvCacheDtype) {
     parts.push(`KV ${config.kvCacheDtype}`);
   }
-  if (config.mlxKvBits) {
-    parts.push(`MLX KV ${config.mlxKvBits}-bit`);
+  if (config.mlxKvQuant) {
+    parts.push(`MLX KV ${mlxKvQuantLabel(config.mlxKvQuant)}`);
   }
   if (config.speculativeType && config.speculativeType !== "auto") {
     parts.push(`Spec ${config.speculativeType}`);

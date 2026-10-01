@@ -14,14 +14,67 @@ name: Unsloth export capability
 on:
   pull_request:
     paths:
-      - 'studio/backend/utils/hardware/hardware.py'
       - 'studio/backend/core/export/export.py'
       - 'studio/backend/routes/export.py'
       - 'studio/backend/main.py'
       - 'studio/backend/tests/test_export_capability.py'
+      # The install below is `uses:` on these two, so an edit to either changes what
+      # this workflow actually runs. Absent while the push trigger was unfiltered,
+      # every commit re-ran this after merge and the gap could not be observed;
+      # scoping push is what turns it into a real hole.
+      - '.github/actions/pip-cache-restore/action.yml'
+      - '.github/actions/pip-cache-save/action.yml'
+      - 'studio/backend/utils/hardware/**'
       - '.github/workflows/studio-export-capability-ci.yml'
+      # The test imports core.export.export under pytest in studio/backend, so
+      # collection loads studio/backend/tests/conftest.py (which execs
+      # tests/_shared/compile_cache_isolation.py and imports loggers) and the pytest
+      # config in pyproject.toml, and export.py imports these packages at module scope.
+      # A new top-level torch import in any of them is what this Windows lane exists to
+      # catch.
+      - 'studio/backend/tests/conftest.py'
+      - 'tests/_shared/compile_cache_isolation.py'
+      - 'studio/backend/loggers/**'
+      - 'pyproject.toml'
+      - 'studio/backend/core/__init__.py'
+      - 'studio/backend/core/export/__init__.py'
+      - 'studio/backend/core/inference/__init__.py'
+      - 'studio/backend/hub/__init__.py'
+      - 'studio/backend/hub/utils/__init__.py'
+      - 'studio/backend/hub/utils/hf_tokens.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/models/**'
+      - 'studio/backend/utils/paths/**'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/core/export/export.py'
+      - 'studio/backend/routes/export.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/tests/test_export_capability.py'
+      - '.github/actions/pip-cache-restore/action.yml'
+      - '.github/actions/pip-cache-save/action.yml'
+      - 'studio/backend/utils/hardware/**'
+      - '.github/workflows/studio-export-capability-ci.yml'
+      # The test imports core.export.export under pytest in studio/backend, so
+      # collection loads studio/backend/tests/conftest.py (which execs
+      # tests/_shared/compile_cache_isolation.py and imports loggers) and the pytest
+      # config in pyproject.toml, and export.py imports these packages at module scope.
+      # A new top-level torch import in any of them is what this Windows lane exists to
+      # catch.
+      - 'studio/backend/tests/conftest.py'
+      - 'tests/_shared/compile_cache_isolation.py'
+      - 'studio/backend/loggers/**'
+      - 'pyproject.toml'
+      - 'studio/backend/core/__init__.py'
+      - 'studio/backend/core/export/__init__.py'
+      - 'studio/backend/core/inference/__init__.py'
+      - 'studio/backend/hub/__init__.py'
+      - 'studio/backend/hub/utils/__init__.py'
+      - 'studio/backend/hub/utils/hf_tokens.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/models/**'
+      - 'studio/backend/utils/paths/**'
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +83,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

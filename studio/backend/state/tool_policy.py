@@ -100,6 +100,11 @@ def get_tool_policy_default() -> Optional[bool]:
     return _tool_policy_default
 
 
+def conversation_recall_allowed() -> bool:
+    """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
+    return not _force_disabled.get()
+
+
 @contextmanager
 def tools_force_disabled() -> Iterator[None]:
     """Hard-disable server-side tools for the current async context."""

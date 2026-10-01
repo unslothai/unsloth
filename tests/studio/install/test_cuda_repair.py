@@ -1996,6 +1996,54 @@ class TestTheResidentXformersBuildIsReadFromDisk:
             assert stack_mod._resident_xformers_build_torch() is None
 
 
+class TestTheLinuxRepairRemovesAnXformersItsTorchCannotImport:
+    """Remove incompatible xFormers even when the final repair leaves torch unchanged (#11545)."""
+
+    def _evict(
+        self,
+        mismatch,
+        *,
+        uninstall_ok = True,
+    ):
+        with (
+            patch.object(stack_mod, "xformers_torch_requirement_unmet", return_value = mismatch),
+            patch.object(
+                stack_mod, "_uninstall_distribution", return_value = uninstall_ok
+            ) as uninstall,
+        ):
+            return stack_mod._evict_xformers_requiring_another_torch(), uninstall
+
+    def test_an_xformers_requiring_a_newer_torch_is_removed(self, capsys):
+        removed, uninstall = self._evict(("0.0.35", ">=2.10", "2.6.0+cu124"))
+        assert removed is True
+        uninstall.assert_called_once_with("xformers")
+        out = capsys.readouterr().out
+        assert "xformers 0.0.35 requires torch>=2.10, not 2.6.0+cu124" in out
+
+    def test_an_xformers_whose_requirement_holds_is_kept(self):
+        removed, uninstall = self._evict(None)
+        assert removed is False
+        uninstall.assert_not_called()
+
+    def test_a_blocked_removal_is_reported(self, capsys):
+        removed, _ = self._evict(("0.0.35", ">=2.10", "2.6.0+cu124"), uninstall_ok = False)
+        assert removed is False
+        assert "could not be removed" in capsys.readouterr().out
+
+    def test_the_final_repair_checks_even_when_torch_did_not_move(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+        step = step.split("# 13w.", 1)[0]
+        guard = "if _torch_after_repair and _torch_after_repair != _torch_before_repair:"
+        assert guard in step
+        after = step.split(guard, 1)[1]
+        call = "\n        _evict_xformers_requiring_another_torch()\n"
+        assert (
+            call in after
+        ), "the check must sit at the step's indent, outside the torch-moved guard"
+        assert after.index("_install_torchao_for_torch(_torch_after_repair)") < after.index(call)
+
+
 class TestTheResyncNoticesItsOwnFailures:
     """Both halves report failure by return value, not by raising.
 
@@ -2283,7 +2331,7 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
 
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
-        block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        block = source[source.index("_windows_rocm_torch_pkg_specs_for(") :][:1200]
         # The interpreter's arch, not the machine's: an emulated x64 venv installs win_amd64.
         assert (
             "_is_win_arm64_interpreter()" in block
@@ -2295,7 +2343,7 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
 
     def test_x64_windows_still_asks_for_all_three(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
-        block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        block = source[source.index("_windows_rocm_torch_pkg_specs_for(") :][:1200]
         assert "_rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]" in block
 
 
