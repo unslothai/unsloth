@@ -198,8 +198,6 @@ def test_null_cells_match_the_merged_prompt_path():
 
 
 def test_conversation_extension_with_columns_kept():
-    # Both flags are documented. Extending shuffled copies used to concatenate
-    # the caller's columns once per extension, which datasets rejects.
     to_sharegpt = _load_to_sharegpt()
     converted = to_sharegpt(
         _alpaca(),
