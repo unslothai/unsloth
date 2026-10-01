@@ -331,6 +331,16 @@ def test_durable_research_refuses_a_decision_connection():
     assert refused.value.status_code == 400
 
 
+def test_a_model_unticked_on_the_connection_is_not_called(upstream):
+    client = _client()
+    client.put("/api/settings/systemone", json = {"model": _connection()})
+    providers_db.update_provider("deciders", models = ["jev-1.13"])
+    response = _post(client)
+    assert response.status_code == 503
+    assert "no longer enabled" in response.json()["detail"]["message"]
+    assert upstream.calls == []
+
+
 def test_a_disabled_connection_is_not_called(upstream):
     client = _client()
     client.put("/api/settings/systemone", json = {"model": _connection()})

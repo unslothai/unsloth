@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject, security
 from core.inference.external_provider import ExternalProviderClient
-from core.inference.providers import validate_provider_base_url
+from core.inference.providers import answers_decisions_only, validate_provider_base_url
 from core.systemone import catalog, laya_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
@@ -221,6 +221,16 @@ async def _connection_decide(
             503,
             "api_usage_error",
             "The Decision API connection was removed. Pick another model in Settings > API.",
+        )
+    # OpenRouter's list is a cache, empty until refreshed; a decision connection's saved models are authoritative.
+    if (
+        answers_decisions_only(config["provider_type"], config.get("api_type"))
+        and connection.model not in config["models"]
+    ):
+        raise _error(
+            503,
+            "api_usage_error",
+            f"'{connection.model}' is no longer enabled on '{config['display_name']}'. Pick another model in Settings > API.",
         )
     if not config["is_enabled"]:
         raise _error(503, "api_usage_error", f"Connection '{config['display_name']}' is disabled.")
