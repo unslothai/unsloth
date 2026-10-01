@@ -112,10 +112,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
-      // Omit until the runtime reports args; null would block model-config-page hydration.
-      ...(loadedLlamaExtraArgs != null
-        ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
-        : {}),
     };
     if (!isGguf) {
       return base;
@@ -128,6 +124,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       selectedGpuIds,
       selectedGpuIndexKind,
       tensorSplit: splitRatio,
+      // Absent until the runtime reports a list: undefined is what lets the editor hydrate the stored row.
+      ...(loadedLlamaExtraArgs != null
+        ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
+        : {}),
     };
   }, [
     checkpoint,
