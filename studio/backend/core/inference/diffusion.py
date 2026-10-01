@@ -127,6 +127,12 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _torchao_stream_pinnable,
+    pipeline_host_mib,
+    torchao_offload_plan,
+    torchao_scheme_streams,
+    torchao_streaming_plan,
+    torchao_survives_plan,
     unified_memory_shortfall_message,
     vae_tile_side,
     vae_can_slice,
@@ -1626,6 +1632,66 @@ def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
     return max((len(chunk) for chunk in chunks), default = 1)
 
 
+def _inplace_torchao_placement(
+    plan: Any,
+    scheme: Optional[str],
+    estimate: Any,
+    largest_companion_mib: Callable[[], Optional[int]],
+) -> tuple[Any, Optional[str]]:
+    """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
+    if plan_keeps_transformer_resident(plan):
+        return plan, None
+    if plan.offload_policy == OFFLOAD_MODEL:
+        estimates = getattr(plan, "estimates", None) or {}
+        budget = int(estimates.get("safe_device_budget_mib") or 0)
+        overhead = int(estimates.get("runtime_headroom_mib") or 0) + int(
+            estimates.get("base_overhead_mib") or 0
+        )
+        if (
+            estimate is not None
+            and estimate.steady_transformer_mib + overhead <= budget
+            and (largest_companion_mib() or 0) <= budget
+        ):
+            return plan, None
+        if torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan):
+            return torchao_streaming_plan(plan), None
+        return plan, (
+            "whole-module offload onloads each component whole, and the quantised transformer or a text "
+            "encoder is not known to fit the device budget"
+        )
+    placed = torchao_offload_plan(plan, scheme)
+    if placed is not None:
+        return placed, None
+    return plan, (
+        f"'{plan.offload_policy}' offload streams the transformer through hooks torchao weights do not survive "
+        f"({scheme} on this torchao). Pin low_vram or a resident memory mode to combine the two"
+    )
+
+
+def _denoiser_hooked(pipe: Any) -> bool:
+    """Whether an offload hook moves a denoiser of ``pipe``; a CUDA graph over it would replay stale pointers."""
+    for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        if getattr(module, "_hf_hook", None) is not None:
+            return True
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
+def _torchao_render_needs_no_grad(state: Any) -> bool:
+    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad."""
+    if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
+        return False
+    return bool(
+        getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None)
+    )
+
+
 def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
     """Whether this memory request offloads the transformer no matter what the weights measure.
     ``balanced`` and ``low_vram`` name their policy outright in ``resolve_offload_policy``, and
@@ -1669,7 +1735,8 @@ def _pipeline_quant_uncompilable_reason(
 def _plan_proves_resident(plan: Any) -> bool:
     """Resident AND fits; the planner also stays resident when it cannot read the card."""
     estimates = getattr(plan, "estimates", None) or {}
-    budget = estimates.get("safe_device_budget_mib")
+    # An explicit fast proves its fit against the budget it was placed with.
+    budget = estimates.get("resident_budget_mib", estimates.get("safe_device_budget_mib"))
     required = estimates.get("resident_required_mib")
     # Unified memory plans 'none' whatever the size (offload frees nothing there), so compare the two as well.
     return (
@@ -3409,7 +3476,13 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 -- no lower rungs is just "no retry"
                         pass
                 declined = False
+                # An offloaded quantised rung beats bf16 shards; a later resident rung beats both.
+                offloaded_rung: Optional[str] = None
                 memory = snapshot_device_memory(target)
+                # Like the VRAM override below: the outgoing pipeline's host weights are gone before this one pins.
+                reclaimable_host_mib = pipeline_host_mib(
+                    getattr(getattr(self, "_state", None), "pipe", None)
+                )
                 for rung in rungs:
                     source = denoiser_prequant_source(
                         fam,
@@ -3452,16 +3525,24 @@ class DiffusionBackend:
                         ),
                         device_memory_override = replace(memory, free_mib = memory.total_mib),
                     )
-                    if not plan_keeps_transformer_resident(planned):
+                    if not torchao_survives_plan(
+                        planned, rung, reclaimable_host_mib = reclaimable_host_mib
+                    ):
                         logger.info(
-                            "diffusion.denoiser_prequant: an artifact-sized plan for %s streams the "
-                            "denoiser on this card, and offload moves the denoiser via Module.to(), "
-                            "so the released shards are kept",
+                            "diffusion.denoiser_prequant: an artifact-sized plan for %s places the "
+                            "denoiser with '%s' offload, which its torchao weights do not survive "
+                            "here, so the released shards are kept",
                             rung,
+                            planned.offload_policy,
                         )
                         declined = True
                         continue
+                    if not plan_keeps_transformer_resident(planned):
+                        offloaded_rung = offloaded_rung or rung
+                        continue
                     return rung
+                if offloaded_rung is not None:
+                    return offloaded_rung
                 return PIPELINE_SEED_DECLINED if declined else None
         except Exception as exc:  # noqa: BLE001 -- an unanswerable probe keeps the released shards
             logger.warning("diffusion.denoiser_prequant_plan_failed: %s", exc)
@@ -5152,17 +5233,22 @@ class DiffusionBackend:
                         fetch_base = fetch_base,
                         text_encoder_quant = text_encoder_quant,
                     )
-                    if seeded_plan is None or not plan_keeps_transformer_resident(seeded_plan):
-                        # Offload hooks use Module.to(), which torchao tensors reject, and live free
-                        # memory can undercut the CAPACITY the plan settled this against.
+                    seeded_placement = (
+                        None
+                        if seeded_plan is None
+                        else torchao_offload_plan(seeded_plan, pipeline_seed_scheme)
+                    )
+                    if seeded_placement is None:
+                        # Live free memory can undercut the CAPACITY the plan settled this against.
                         logger.info(
-                            "diffusion.denoiser_prequant: an artifact-sized plan for %s offloads on "
-                            "this card, so the released denoiser is loaded instead",
+                            "diffusion.denoiser_prequant: an artifact-sized plan for %s places the "
+                            "denoiser where its torchao weights do not survive on this card, so the "
+                            "released denoiser is loaded instead",
                             pipeline_seed_scheme,
                         )
                         pipeline_seed_scheme = None
                     else:
-                        plan = seeded_plan
+                        plan = seeded_placement
                 # On unified memory the plan above is final (the quant re-plans below are CUDA-only) and its 'none'
                 # policy is a placement, not a fit. Refuse here, after the eviction above freed the previous pipeline
                 # and before any weight is materialised. A pipeline's weight term is cached SHARD bytes, which is a
@@ -6297,14 +6383,28 @@ class DiffusionBackend:
                                         ),
                                         text_encoder_quant = text_encoder_quant,
                                     )
-                                    if plan_keeps_transformer_resident(replanned):
+                                    # Native schemes (incl. explicit int8 offloaded) keep the resident-only rule.
+                                    placed = (
+                                        (
+                                            replanned
+                                            if plan_keeps_transformer_resident(replanned)
+                                            else None
+                                        )
+                                        if native_scheme is not None
+                                        or native_offload_scheme is not None
+                                        else torchao_offload_plan(replanned, preview_scheme)
+                                    )
+                                    if placed is not None:
+                                        replanned = placed
                                         logger.info(
-                                            "diffusion.transformer_quant: %s fits resident (%d MiB "
-                                            "steady, encoders streamed=%s); replacing the bf16 plan's "
-                                            "'%s' offload",
+                                            "diffusion.transformer_quant: %s fits the '%s' placement "
+                                            "(%d MiB steady, denoiser streamed=%s, encoders streamed=%s); "
+                                            "replacing the bf16 plan's '%s' offload",
                                             preview_scheme,
+                                            replanned.offload_policy,
                                             estimate.steady_transformer_mib,
-                                            replanned.offload_policy != OFFLOAD_NONE,
+                                            not plan_keeps_transformer_resident(replanned),
+                                            bool(getattr(replanned, "stream_text_encoders", False)),
                                             plan.offload_policy,
                                         )
                                         plan = replanned
@@ -6321,34 +6421,16 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            # Group offload is WRONG for torchao: its stream cache aliases weights and swap_tensors fails when compiled.
-                            quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
-                            quant_overhead = int(
-                                plan.estimates.get("runtime_headroom_mib") or 0
-                            ) + int(plan.estimates.get("base_overhead_mib") or 0)
-                            if (
-                                not keeps_resident
-                                and native_scheme is None
-                                and (
-                                    plan.offload_policy != OFFLOAD_MODEL
-                                    or estimate is None
-                                    or estimate.steady_transformer_mib + quant_overhead
-                                    > quant_budget
-                                    or (largest_streamable_companion_mib(pipe) or 0) > quant_budget
+                            inplace_decline = None
+                            if not keeps_resident and native_scheme is None:
+                                plan, inplace_decline = _inplace_torchao_placement(
+                                    plan,
+                                    preview_scheme,
+                                    estimate,
+                                    lambda: largest_streamable_companion_mib(pipe),
                                 )
-                            ):
-                                if plan.offload_policy == OFFLOAD_MODEL:
-                                    transformer_quant_decline = (
-                                        "whole-module offload onloads each component whole, and the "
-                                        "quantised transformer or a text encoder is not known to fit "
-                                        "the device budget"
-                                    )
-                                else:
-                                    transformer_quant_decline = (
-                                        f"'{plan.offload_policy}' offload streams the transformer through "
-                                        "hooks torchao weights do not survive. Pin low_vram or a resident "
-                                        "memory mode to combine the two"
-                                    )
+                            if inplace_decline is not None:
+                                transformer_quant_decline = inplace_decline
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (%s)",
                                     transformer_quant_decline,
@@ -6635,6 +6717,7 @@ class DiffusionBackend:
                         cache_active = cache_graph_break or cache_may_toggle,
                         cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
+                        denoiser_offloaded = not plan_keeps_transformer_resident(plan),
                         logger = logger,
                     )
                     if vae_fp16:
@@ -6738,6 +6821,11 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    if speed_applied.get("cuda_graph") and _denoiser_hooked(pipe):
+                        cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+                        pipe._unsloth_cuda_graphs = ()
+                        pipe._unsloth_cuda_graph_reason = "offload active"
+                        speed_applied["cuda_graph"] = False
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -7739,7 +7827,10 @@ class DiffusionBackend:
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
             # undershoot the bf16 footprint ~2x. Plan against the size table's bf16 total when it knows this repo.
-            is_narrow_base = bool(repo_id) and repo_id.strip().lower() == fam.base_repo.lower()
+            # A known mirror is a byte copy of its upstream, so it reads the upstream's table.
+            is_narrow_base = (
+                bool(repo_id) and canonical_base(repo_id).lower() == fam.base_repo.strip().lower()
+            )
             if (
                 not is_narrow_base
                 and fam.name == IDEOGRAM4_FAMILY_NAME
@@ -8332,6 +8423,8 @@ class DiffusionBackend:
             cache_active = cache_breaks_graph(state.transformer_cache) or state.cache_auto,
             cache_engaged = cache_breaks_graph(state.transformer_cache),
             offload_active = state.offload_policy != OFFLOAD_NONE,
+            denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
+            and _denoiser_hooked(state.pipe),
             logger = logger,
         )
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
@@ -8353,6 +8446,19 @@ class DiffusionBackend:
             att["value"] = attention_engaged or "native"
             att["reason"] = (
                 "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
+            )
+        # The load recorded "speed tier does not capture" for the deferred tier; the profile that just engaged may
+        # have armed graphs, so re-derive the entry the same way the load does or the badge keeps saying "off".
+        graph = (state.resolved or {}).get("cuda_graph")
+        if isinstance(graph, dict):
+            graph["value"] = "on" if speed_applied.get("cuda_graph") else "off"
+            graph["reason"] = (
+                "denoiser step captured per input shape, replayed bit-identically"
+                if speed_applied.get("cuda_graph")
+                else str(
+                    getattr(state.pipe, "_unsloth_cuda_graph_reason", None)
+                    or "speed tier does not capture"
+                )
             )
         logger.info(
             "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s)",
@@ -8919,12 +9025,11 @@ class DiffusionBackend:
                             gen.eta_seconds = None
 
                         try:
-                            # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
+                            # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
                             with (
                                 (
                                     torch.no_grad()
-                                    if state.transformer_quant
-                                    and state.offload_policy == OFFLOAD_MODEL
+                                    if _torchao_render_needs_no_grad(state)
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,

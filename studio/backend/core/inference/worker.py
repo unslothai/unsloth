@@ -1635,8 +1635,15 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # numpy arrays can't go through mp.Queue, so decode from list.
-        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
+        # "audio_data" is the older single-clip list form.
+        if "audio_clips" in cmd:
+            # Copy: frombuffer views are read-only.
+            clips = [np.frombuffer(clip, dtype = np.float32).copy() for clip in cmd["audio_clips"]]
+        else:
+            clips = [np.array(cmd["audio_data"], dtype = np.float32)]
+        audio_array = clips[0]
+        # Passed only when present, so single-clip calls are unchanged.
+        extra_audio_kwargs = {"extra_audio_arrays": clips[1:]} if len(clips) > 1 else {}
 
         audio_type = cmd.get("audio_type")
 
@@ -1647,6 +1654,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
                 cancel_event = cancel_event,
+                **extra_audio_kwargs,
             )
         else:
             audio_kwargs = {
@@ -1670,7 +1678,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
-            generator = backend.generate_audio_input_response(**audio_kwargs)
+            generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 

@@ -6284,6 +6284,101 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
 
 
+_GPU_DEVICE_TOKEN_RE = re.compile(r"(CUDA|ROCm)(\d+)$", re.IGNORECASE)
+# One group per companion: llama.cpp is last-wins within a group, so only its last flag counts.
+_COMPANION_DEVICE_FLAG_GROUPS = (
+    frozenset({"--mmproj-device", "-mmdev"}),
+    frozenset({"--spec-draft-device", "-devd", "--device-draft"}),
+)
+
+
+def _widen_pin_ids_for_companion_devices(
+    cmd: List[str],
+    pin_ids: list[int],
+    inherited_ids: Optional[list[int]],
+    *,
+    may_widen: bool = True,
+) -> tuple[list[int], str]:
+    """Fit a pinned GPU mask to the companion devices the argv names (#11810).
+
+    Companion ``CUDA<n>`` / ``ROCm<n>`` tokens use the unpinned numbering (position in
+    ``inherited_ids``, else the physical index). Cards they name are appended after the
+    pinned ones, the winning flag is renumbered to the child's mask, and a main
+    ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
+    the parent cannot see are left alone. ``may_widen`` False (explicit gpu_ids) only
+    renumbers within the pin. Returns the mask and a log note, empty when unchanged.
+    """
+    if not pin_ids:
+        return list(pin_ids), ""
+    main_ids = [int(i) for i in pin_ids]
+    # A main --device past the pinned positions would resolve to a widened companion card.
+    for token in str(_extra_args_main_device(cmd) or "").split(","):
+        match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+        if match and int(match.group(2)) >= len(main_ids):
+            return list(main_ids), ""
+    # (value index, prefix before "=" or None, [(token, physical id or None)])
+    sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
+    prefix_word = None
+    last_of_group: dict[int, int] = {}
+    for i, raw in enumerate(cmd):
+        for group, flags in enumerate(_COMPANION_DEVICE_FLAG_GROUPS):
+            if _flag_name(str(raw)) in flags:
+                last_of_group[group] = i
+    for i in sorted(last_of_group.values()):
+        raw = str(cmd[i])
+        head, eq, inline = raw.partition("=")
+        if eq:
+            at, value, lead = i, inline, head + "="
+        elif i + 1 < len(cmd):
+            at, value, lead = i + 1, str(cmd[i + 1]), None
+        else:
+            continue
+        tokens: list[tuple[str, Optional[int]]] = []
+        for token in value.split(","):
+            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            physical = None
+            if match:
+                prefix_word = prefix_word or match.group(1)
+                n = int(match.group(2))
+                if inherited_ids is None:
+                    physical = n
+                elif n < len(inherited_ids):
+                    physical = int(inherited_ids[n])
+                if not may_widen and physical not in main_ids:
+                    physical = None
+            tokens.append((token, physical))
+        if any(physical is not None for _, physical in tokens):
+            sites.append((at, lead, tokens))
+    if not sites:
+        return list(main_ids), ""
+    widened = list(main_ids)
+    for _, _, tokens in sites:
+        for _, physical in tokens:
+            if physical is not None and physical not in widened:
+                widened.append(physical)
+    changed = False
+    for at, lead, tokens in sites:
+        rewritten = []
+        for token, physical in tokens:
+            if physical is None:
+                rewritten.append(token)
+                continue
+            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            rewritten.append(f"{match.group(1)}{widened.index(physical)}")
+        value = ",".join(rewritten)
+        new = f"{lead}{value}" if lead is not None else value
+        if new != cmd[at]:
+            cmd[at] = new
+            changed = True
+    if len(widened) > len(main_ids) and _extra_args_main_device(cmd) is None:
+        # Pinned cards lead the mask, so the main model's devices are the first positions.
+        cmd.extend(["--device", ",".join(f"{prefix_word}{k}" for k in range(len(main_ids)))])
+        changed = True
+    if not changed and widened == main_ids:
+        return list(main_ids), ""
+    return widened, f"{main_ids} -> {widened}"
+
+
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return a GPU draft-device override; cpu/none do not conflict with a pin."""
     last_dev = _extra_args_draft_device(extra_args)
@@ -12010,6 +12105,9 @@ class LlamaCppBackend:
 
     # Property of the host, not the model, so warn once rather than per launch.
     _warned_no_nvlink = False
+
+    # The loaded template refuses an empty render. Reset on every load.
+    _empty_chat_render_refused = False
 
     @staticmethod
     def _sanitize_p2p_env(env: dict) -> Optional[str]:
@@ -18128,6 +18226,7 @@ class LlamaCppBackend:
         # carry over when switching models.
         self._context_length = None
         self._chat_template = None
+        self._empty_chat_render_refused = False
         self._markup_tokens = []
         self._markup_profile = None
         self._supports_reasoning = False
@@ -27937,6 +28036,7 @@ class LlamaCppBackend:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
 
                 self._chat_template_override = chat_template_override
+                self._empty_chat_render_refused = False
                 _effective_template = self._effective_chat_template(chat_template_override)
                 if _effective_template:
                     import tempfile
@@ -29119,6 +29219,9 @@ class LlamaCppBackend:
                 # own devices, the child aborting on a pin it cannot see. The
                 # draft-device forms count too: parsed with no drafter loaded.
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
+                # companion flags fitted to the child's mask, refitted by the arch-crash retry
+                _companion_fit_mask: Optional[list[int]] = None
+                _companion_added_device: Optional[list[str]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
 
@@ -29226,6 +29329,31 @@ class LlamaCppBackend:
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
+                    # Companion flags use the unpinned numbering (#11810). Skipped for a
+                    # uuid/MIG mask (CUDA<n> is ambiguous) and an inherited LLAMA_ARG_DEVICE
+                    # (the appended --device would override it).
+                    _companion_widen = ""
+                    if not self._visibility_mask_is_unmappable() and not (
+                        _extra_args_main_device(cmd) is None
+                        and str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+                    ):
+                        _had_main_device = _extra_args_main_device(cmd) is not None
+                        _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
+                            cmd,
+                            _pin_ids,
+                            self._resolve_visible_physical_ids(),
+                            may_widen = not gpu_ids,
+                        )
+                        if _companion_widen:
+                            _companion_fit_mask = list(_pin_ids)
+                            if not _had_main_device and _extra_args_main_device(cmd) is not None:
+                                _companion_added_device = list(cmd[-2:])
+                    if _companion_widen:
+                        logger.info(
+                            "Companion device flags name GPUs by their unpinned "
+                            "numbering; fitted the pinned mask to them: %s",
+                            _companion_widen,
+                        )
                     self._emit_child_gpu_visibility(
                         env,
                         LlamaCppBackend._child_visibility_for(_pin_ids),
@@ -29717,8 +29845,9 @@ class LlamaCppBackend:
                             "\n".join(self._stdout_lines[-200:])
                         ):
                             _sched_abort_seen = True
+                        # Scan the full buffer: gdb output can bury the assert.
                         _tensor_capability_crash = self._is_tensor_split_assert(
-                            _startup_output
+                            "\n".join(self._stdout_lines)
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         # No fit retry reaches it, and the rung below needs this
@@ -30282,10 +30411,16 @@ class LlamaCppBackend:
                     _ts_out = "\n".join(self._stdout_lines[-50:])
                     _proc_snap2 = self._process  # snapshot: re-reading races the teardown
                     _ts_rc = _proc_snap2.poll() if _proc_snap2 is not None else None
-                    if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
-                        LlamaCppBackend._record_tensor_split_abort(
-                            binary, model_identifier, _planned_cache_pair
-                        )
+                    if self._should_record_tensor_split_abort(
+                        _ts_rc, "\n".join(self._stdout_lines)
+                    ):
+                        # A drafter crash must not disable tensor split for drafterless loads.
+                        if not _extra_args_mtp_draft_path(
+                            _last_spawn_cmd, env = _child_spec_env(extra_args)
+                        ):
+                            LlamaCppBackend._record_tensor_split_abort(
+                                binary, model_identifier, _planned_cache_pair
+                            )
                         self._kill_process()
                         raise RuntimeError(
                             "llama-server aborted on --split-mode tensor "
@@ -30458,10 +30593,36 @@ class LlamaCppBackend:
                                 "weights outgrow; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
+                        _retry_mask = list(_remaining)
+                        if _companion_fit_mask is not None:
+                            # tokens are positions in the crashed launch's mask
+                            if _companion_added_device is not None:
+                                for _k in range(len(cmd) - 1, 0, -1):
+                                    if cmd[_k - 1 : _k + 1] == _companion_added_device:
+                                        del cmd[_k - 1 : _k + 1]
+                                        break
+                            _had_main_device = _extra_args_main_device(cmd) is not None
+                            _retry_mask, _refit = _widen_pin_ids_for_companion_devices(
+                                cmd,
+                                list(_remaining),
+                                list(_companion_fit_mask),
+                                may_widen = not gpu_ids,
+                            )
+                            _companion_added_device = (
+                                list(cmd[-2:])
+                                if not _had_main_device and _extra_args_main_device(cmd) is not None
+                                else None
+                            )
+                            _companion_fit_mask = list(_retry_mask)
+                            if _refit:
+                                logger.info(
+                                    "Refitted companion device flags to the retry's mask: %s",
+                                    _refit,
+                                )
                         self._emit_child_gpu_visibility(
-                            env, ",".join(str(i) for i in _remaining), prefer_rocr = True
+                            env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
-                        _child_gpu_physical_ids = tuple(int(i) for i in _remaining)
+                        _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
                         # Same for the inherited env twins of the flags dropped
                         # below: the new mask re-indexes the survivors under them.
                         self._clear_split_placement_env(env)
@@ -32368,6 +32529,7 @@ class LlamaCppBackend:
             self._markup_tokens = []
             self._markup_profile = None
             self._chat_template_override = None
+            self._empty_chat_render_refused = False
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_budget = -1
@@ -39948,60 +40110,79 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
-                # An empty list is passed through as-is: llama-server renders through minja, not
-                # jinja2, so messages[0] yields undefined rather than raising and the template
-                # returns its bare preamble. A placeholder turn would add a system block instead.
-                apply_template_failed = False
-                try:
-                    # llama-server's /apply-template renders tool declarations
-                    # into the prompt when ``tools`` is supplied, so pass them
-                    # through, otherwise tool-schema tokens go uncounted.
-                    template_body = {"messages": template_messages}
-                    if tools:
-                        template_body["tools"] = llama_grammar_tools(tools)
-                    # Layered over the load-time --chat-template-kwargs: only keys sent here move.
-                    if chat_template_kwargs:
-                        template_body["chat_template_kwargs"] = chat_template_kwargs
-                    if continue_final_message:
-                        template_body["continue_final_message"] = True
-                        template_body["add_generation_prompt"] = False
-                    if prefer_native:
-                        if should_abort is not None and should_abort():
-                            raise CountAborted()
-                        try:
-                            native = client.post(
-                                f"{self.base_url}/v1/chat/completions/input_tokens",
-                                json = template_body,
-                            )
-                            if native.status_code == 200:
-                                count = native.json().get("input_tokens")
-                                if type(count) is int and count > 0:
-                                    return count
-                        except Exception:
-                            pass
-                        if should_abort is not None and should_abort():
-                            raise CountAborted()
-                    resp = client.post(
-                        f"{self.base_url}/apply-template",
-                        json = template_body,
-                    )
-                    if resp.status_code == 200:
+
+                def _render_count(render_messages) -> tuple[Optional[int], bool]:
+                    """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
+                    try:
+                        # /apply-template renders tool schemas; omitting them undercounts.
+                        template_body = {"messages": render_messages}
+                        if tools:
+                            template_body["tools"] = llama_grammar_tools(tools)
+                        # Layered over the load-time --chat-template-kwargs: only keys sent here move.
+                        if chat_template_kwargs:
+                            template_body["chat_template_kwargs"] = chat_template_kwargs
+                        if continue_final_message:
+                            template_body["continue_final_message"] = True
+                            template_body["add_generation_prompt"] = False
+                        if prefer_native:
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
+                            try:
+                                native = client.post(
+                                    f"{self.base_url}/v1/chat/completions/input_tokens",
+                                    json = template_body,
+                                )
+                                if native.status_code == 200:
+                                    count = native.json().get("input_tokens")
+                                    if type(count) is int and count > 0:
+                                        return count, False
+                            except Exception:
+                                pass
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
+                        resp = client.post(
+                            f"{self.base_url}/apply-template",
+                            json = template_body,
+                        )
+                        if resp.status_code != 200:
+                            return None, resp.status_code == 500
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt)
-                    apply_template_failed = True
-                except CountAborted:
-                    # Not a template failure: swallowed, the text fallback tokenizes anyway,
-                    # which is the work being declined. Must precede the generic except.
-                    raise
-                except Exception:
-                    apply_template_failed = True
+                            return _tokenize(prompt), False
+                    except CountAborted:
+                        # Not a template failure: swallowed, the text fallback tokenizes anyway,
+                        # which is the work being declined. Must precede the generic except.
+                        raise
+                    except Exception:
+                        pass
+                    return None, False
+
+                # Qwen3.5+ templates raise on an empty render (#12327); a lone assistant turn is
+                # stripped as a prefill, so renders empty too. Retry behind an empty user turn.
+                renders_empty = not template_messages or (
+                    len(template_messages) == 1
+                    and isinstance(template_messages[0], dict)
+                    and template_messages[0].get("role") == "assistant"
+                )
+                with_user_turn = [{"role": "user", "content": ""}] + template_messages
+                if renders_empty and self._empty_chat_render_refused:
+                    count, _refused = _render_count(with_user_turn)
+                else:
+                    count, _refused = _render_count(template_messages)
+                    if count is None and _refused and renders_empty:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        count, _ = _render_count(with_user_turn)
+                        if count is not None:
+                            self._empty_chat_render_refused = True
+                if count is not None:
+                    return count
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a
                 # six-turn two-tool prompt), so strict callers error rather than undercount.
-                if strict and apply_template_failed:
+                if strict:
                     raise RuntimeError("llama-server could not render the chat template")
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
