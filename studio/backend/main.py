@@ -286,8 +286,8 @@ _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
 
 def _read_studio_install_id() -> str:
     """Per-install opaque id at $STUDIO_HOME/share/studio_install_id. Returns "" when absent or not a 64-char
-    lowercase-hex token; then /api/health emits "" and the launcher accepts any healthy backend. Carries no
-    install-path info (matters when Unsloth runs -H 0.0.0.0)."""
+    lowercase-hex token; a launcher with a baked id rejects "", so it restores a missing id before starting
+    Studio. Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
         token = (
             (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
@@ -304,7 +304,7 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 def _studio_root_id() -> str:
     """Same-install discriminator for /api/health (cached at import). Empty when no installer token is
-    present; the launcher treats "" as "accept any healthy backend"."""
+    present."""
     return _STUDIO_ROOT_ID_CACHE
 
 
@@ -365,6 +365,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.library import router as library_router
@@ -658,10 +659,29 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
             import structlog as _structlog
             _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
+        try:
+            _refresh_quantised_streaming_capability()
+        except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
+            import structlog as _structlog
+            _structlog.get_logger(__name__).debug(
+                "quantised streaming capability skipped: %s", _qs_exc
+            )
 
     if _post_warm_retired(generation):
         return
     _start_linked_folder_auto_sync(generation)
+
+    try:
+        from core import chat_originals
+        from core.training.account_jobs import startup_reconciliation_accounts
+        from utils.account_context import run_as
+
+        for account in startup_reconciliation_accounts():
+            if _post_warm_retired(generation):
+                return
+            run_as(account, chat_originals.sweep, True)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Last, and deliberately so: it is the only item here that is pure latency work rather than
     # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
@@ -987,10 +1007,15 @@ app = FastAPI(
 )
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
+from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
+
+# Mounted ahead of /mcp, which would otherwise swallow this path.
+_decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
+app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
+
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
-    from fastmcp.utilities.lifespan import combine_lifespans
-
     from mcp_server import BearerTokenMiddleware, create_studio_mcp
 
     _studio_mcp_app = create_studio_mcp().http_app(path = "/")
@@ -999,7 +1024,9 @@ if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
     if not _mcp_token:
         raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
     _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
-    app.router.lifespan_context = combine_lifespans(lifespan, _studio_mcp_lifespan)
+    app.router.lifespan_context = combine_lifespans(
+        app.router.lifespan_context, _studio_mcp_lifespan
+    )
     app.mount("/mcp", _studio_mcp_app)
 
 from loggers.config import LogConfig
@@ -1147,6 +1174,10 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     )
 
 
+# Any of these means the response already says how a browser may cache or revalidate it.
+_CACHE_POLICY_HEADERS = ("cache-control", "expires", "etag", "last-modified")
+
+
 class SecurityHeadersMiddleware:
     """Set baseline security headers; splice per-response inline-script nonces into CSP. Pure ASGI (not
     BaseHTTPMiddleware) so streaming responses are not wrapped in an anyio stream."""
@@ -1185,6 +1216,14 @@ class SecurityHeadersMiddleware:
                     "Permissions-Policy",
                     "camera=(), microphone=(self), geolocation=()",
                 )
+                # An API read with no cache policy and no validators can never be reused, yet Chromium and
+                # WebView2 still write each one to the disk cache. The UI polls several for as long as it is
+                # open, and the API monitor returns its whole history each time: ~200 KB of disk writes every
+                # 2 s from an idle desktop app. Routes with their own policy or validators keep them.
+                if path.startswith("/api/") and not any(
+                    name in headers for name in _CACHE_POLICY_HEADERS
+                ):
+                    headers["Cache-Control"] = "no-store"
                 headers["server"] = "unsloth-studio"
             await send(message)
 
@@ -1601,6 +1640,8 @@ app.add_middleware(
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
         "X-Unsloth-Refusal",
+        "x-typesafe-request-id",
+        "X-Unsloth-Monitor-ID",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
@@ -2143,6 +2184,7 @@ def _get_cached_system_gpu_info(
     import time
     from utils.hardware import (
         get_backend_visible_gpu_info,
+        get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
     )
@@ -2162,7 +2204,15 @@ def _get_cached_system_gpu_info(
             visibility_info = {"available": False, "devices": []}
 
         try:
-            utilization_info = get_visible_gpu_utilization() or {"devices": []}
+            import contextlib
+
+            from utils.hardware import gpu_query
+
+            # Already behind a 10 s cache: no stale-while-revalidate on top.
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
+                utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
@@ -2257,15 +2307,20 @@ def _get_cached_system_gpu_info(
             inference_gpu_info = gpu_info
         else:
             vulkan_info = get_vulkan_inference_gpu_info()
-            inference_gpu_info = (
-                {
+            cross_vendor_info = (
+                get_cross_vendor_inference_gpu_info() if vulkan_info is None else None
+            )
+            if vulkan_info is not None:
+                inference_gpu_info = {
                     **vulkan_info,
                     # Pinnable only once the probe enumerated devices: without ordinals there is nothing to offer.
                     "gguf_gpu_ids_supported": bool(vulkan_info.get("devices")),
                 }
-                if vulkan_info is not None
-                else gpu_info
-            )
+            elif cross_vendor_info is not None:
+                # SMI row numbers, not the ordinals a pin is applied in.
+                inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
+            else:
+                inference_gpu_info = gpu_info
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)
@@ -2282,10 +2337,7 @@ def _probe_dense_quant_supported() -> bool:
     sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
     failure in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import dense_quant_host_capable
 
         import torch
@@ -2293,10 +2345,10 @@ def _probe_dense_quant_supported() -> bool:
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
             return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        # No device scope: cudaSetDevice pins a primary context on every card (CUDA 12).
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
-                    return False
+            if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                return False
         return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
         return False
@@ -2311,10 +2363,7 @@ def _probe_dense_quant_schemes() -> list[str]:
     the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
     this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
 
         import torch
@@ -2324,10 +2373,9 @@ def _probe_dense_quant_schemes() -> list[str]:
             return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
         common: Optional[list[str]] = None
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                schemes = list(
-                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
-                )
+            schemes = list(
+                auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+            )
             common = schemes if common is None else [s for s in common if s in schemes]
         return common or []
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
@@ -2361,6 +2409,52 @@ def _dense_quant_supported() -> bool:
     if "torch" in sys.modules and "torchao" in sys.modules:
         return _refresh_dense_quant_capability()
     return bool(_dense_quant_capability)
+
+
+# Whether group offload can stream torchao weights (diffusers >= 0.40) on a GPU that can run the INT8
+# denoiser. None until resolved off the polled path; the picker offers no streamed tier before then.
+_quantised_streaming_capability: Optional[bool] = None
+
+
+def _refresh_quantised_streaming_capability() -> bool:
+    """Resolve and cache the streaming bit. Imports diffusers; never call from the polled route."""
+    global _quantised_streaming_capability
+    from core.inference.video import h3_streamed_int8_supported
+
+    _quantised_streaming_capability = _probe_quantised_streaming(h3_streamed_int8_supported)
+    return _quantised_streaming_capability
+
+
+def _probe_quantised_streaming(supported: Any) -> bool:
+    """Every visible CUDA card must qualify: a load may be pinned to any of them, and one that
+    resolves to float16 keeps bf16 (the same intersection as ``_probe_dense_quant_schemes``)."""
+    try:
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return bool(supported())
+        from core.inference.diffusion_device import resolve_diffusion_device_target
+
+        return all(
+            bool(supported(resolve_diffusion_device_target(ordinal = ordinal)))
+            for ordinal in range(count)
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe hides the tier
+        return False
+
+
+def _quantised_streaming() -> bool:
+    """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    if _quantised_streaming_capability is None and all(
+        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+    ):
+        try:
+            return _refresh_quantised_streaming_capability()
+        except Exception:  # noqa: BLE001 -- the picker then keeps the tier hidden
+            return False
+    return bool(_quantised_streaming_capability)
 
 
 def _nvfp4_diffusion_enabled() -> bool:
@@ -2478,6 +2572,8 @@ def get_system_info(
         # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
+        # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
+        "quantised_streaming": _quantised_streaming(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }

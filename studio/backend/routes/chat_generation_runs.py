@@ -71,6 +71,7 @@ _EXTERNAL_ROUTING_FIELDS = {
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
+    "extra_audio_base64",
     "video_base64",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
@@ -311,6 +312,9 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
+    from routes.inference import _request_used_api_key
+
+    sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
     if timezone_headers := _timezone_headers(request):
         sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or

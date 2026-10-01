@@ -33,6 +33,7 @@ export const ContextUsageBar: FC<
   completionTokens,
   isMlx,
   contextEnforced,
+  contextBudget,
   className,
 }) => {
   const state = deriveContextUsageBar({
@@ -44,6 +45,7 @@ export const ContextUsageBar: FC<
     completionTokens,
     isMlx,
     contextEnforced,
+    contextBudget,
   });
   if (!state) return null;
 
@@ -143,6 +145,15 @@ export const ContextUsageBar: FC<
                   answers get slower and less accurate. Increase{" "}
                   <span className="font-medium">Context Length</span> in the
                   chat Settings panel to fit the whole conversation.
+                </>
+              ) : advice === "mlx-refuses-past-limit" ? (
+                <>
+                  Close to the context limit. This model quantizes its cache
+                  instead of capping it, so{" "}
+                  <span className="font-medium">Context Length</span> is applied
+                  to each request rather than to the cache: past it the request
+                  is refused instead of the chat slowing down. Increase it in
+                  the chat Settings panel, or shorten the conversation.
                 </>
               ) : advice === "unenforced-limit" ? (
                 <>

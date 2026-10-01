@@ -427,6 +427,15 @@ def _compute_all_hf_cache_scans() -> list:
     return scans
 
 
+def scan_folder_hf_caches(folder: Path) -> list[Path]:
+    # A registered HF_HOME keeps its cache one level down, in hub/.
+    hub = folder / "hub"
+    try:
+        return [folder, hub] if hub.is_dir() else [folder]
+    except OSError:
+        return [folder]
+
+
 def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
     """Snapshot dir that ``refs/main`` names in *repo_dir*, or ``None``. Where ``from_pretrained(repo_id)`` lands, so the repo id is safe as a load id only when this matches the snapshot the row advertises."""
     ref_path = repo_dir / "refs" / "main"

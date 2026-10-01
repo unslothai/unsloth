@@ -840,6 +840,7 @@ def collect_local_models(
     """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
+    from hub.utils import inventory_scan as hf_cache_scan
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -876,7 +877,11 @@ def collect_local_models(
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
-    state_cache_dirs.extend(Path(folder["path"]) for folder in custom_folders)
+    state_cache_dirs.extend(
+        cache_dir
+        for folder in custom_folders
+        for cache_dir in hf_cache_scan.scan_folder_hf_caches(Path(folder["path"]))
+    )
     for cache_dir in dict.fromkeys(state_cache_dirs):
         try:
             for repo_dir in cache_dir.glob("models--*"):
@@ -928,11 +933,15 @@ def collect_local_models(
                 m
                 for m in (
                     _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + _scan_hf_cache(
-                        folder_path,
-                        active_cache = False,
-                        variant_states = variant_states,
-                    )
+                    + [
+                        row
+                        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
+                        for row in _scan_hf_cache(
+                            cache_dir,
+                            active_cache = False,
+                            variant_states = variant_states,
+                        )
+                    ]
                     + _scan_lmstudio_dir(folder_path)
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -2905,6 +2914,8 @@ def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
+    from utils.models.checkpoints import parse_adapter_features
+
     lora_list: List[LoRAInfo] = []
 
     trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
@@ -2919,6 +2930,7 @@ def _scan_loras_sync(
                 export_type = model_type,
                 size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -2933,6 +2945,7 @@ def _scan_loras_sync(
                 export_type = export_type,
                 size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -5580,6 +5593,7 @@ async def list_checkpoints(
                 peft_type = metadata.get("peft_type"),
                 lora_rank = metadata.get("lora_rank"),
                 is_quantized = metadata.get("is_quantized", False),
+                adapter_features = metadata.get("adapter_features"),
             )
             for model_name, checkpoints, metadata in raw_models
         ]
