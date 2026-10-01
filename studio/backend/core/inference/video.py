@@ -6994,6 +6994,13 @@ class VideoBackend:
                             h3_dit_resident_enabled,
                         )
 
+                        if denoiser_streamed in ("stream", "stream_lazy"):
+                            from .video_minimax_h3_residency import pin_streamed_top_level_group
+
+                            try:
+                                pin_streamed_top_level_group(denoiser, logger = logger)
+                            except Exception as exc:  # noqa: BLE001 -- a speed-up only
+                                logger.warning("video.h3_top_group: %s", exc)
                         if h3_dit_resident_enabled() and denoiser_streamed in ("stream", "stream_lazy"):
                             try:
                                 residency = H3Residency(denoiser, device, logger = logger)
@@ -7133,6 +7140,14 @@ class VideoBackend:
                 logger = logger,
             )
             speed_optims = tuple(k for k, v in applied.items() if v)
+            if denoiser_streamed and "compiled" in speed_optims:
+                # The group-offload hooks stay eager and only the block's own forward is compiled (no hook state in
+                # the guards, so no recompile per resident-set change or per prefetch chain).
+                from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
+
+                compile_blocks_below_offload_hooks(
+                    getattr(pipe, denoiser_component, None), logger = logger
+                )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
         # nothing here compiles, so it follows the REQUESTED tier, not the denoiser's eager downgrade above
@@ -7155,6 +7170,16 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
                 logger.warning("video.h3_audio_vae: keeping the stock audio VAE: %s", exc)
 
+        if offload_policy != "none" and (te_streamed or denoiser_streamed):
+            # With the conditioner and / or the denoiser out of the rotation, the VAEs are what rotates, and they evict
+            # each other inside every render. Installed last: the VAE levers above replace weights.
+            from .video_minimax_h3_residency import install_pinned_swap
+
+            for vae_name in ("vae", "audio_vae"):
+                try:
+                    install_pinned_swap(getattr(pipe, vae_name, None), logger = logger, label = vae_name)
+                except Exception as exc:  # noqa: BLE001 -- stock moves
+                    logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
         resolved = build_resolved_record(
             {
                 "memory_mode": (
