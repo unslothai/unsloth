@@ -377,6 +377,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "context_length_fitted": model_info.get("context_length_fitted"),
         "context_unbounded_when_batched": model_info.get("context_unbounded_when_batched"),
         "mlx_context_budget": model_info.get("mlx_context_budget"),
     }
@@ -386,6 +387,9 @@ class InferenceOrchestrator:
     """Inference backend orchestrator, subprocess-based. Same API surface as InferenceBackend (so
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
+
+    # Registry keys of the downloads the in-flight load announced; released when the load ends.
+    _load_download_keys: Sequence[str] = ()
 
     def __init__(self):
         self._proc: Optional[mp.Process] = None
@@ -1219,6 +1223,11 @@ class InferenceOrchestrator:
 
             if rtype == "status":
                 logger.info("Subprocess status: %s", resp.get("message", ""))
+                deadline = time.monotonic() + timeout
+                continue
+
+            if rtype == "downloads":
+                self._claim_load_downloads(resp)
                 deadline = time.monotonic() + timeout
                 continue
 
@@ -2259,6 +2268,31 @@ class InferenceOrchestrator:
             except Exception as teardown_exc:
                 logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
+        finally:
+            self._release_load_downloads()
+
+    def _claim_load_downloads(self, resp: dict) -> None:
+        from hub.services.load_downloads import claim_load_downloads
+        self._release_load_downloads()
+        try:
+            self._load_download_keys = claim_load_downloads(
+                resp.get("repo_ids") or [],
+                xet_disabled = bool(resp.get("xet_disabled")),
+                hub_cache = resp.get("hub_cache"),
+            )
+        except Exception as exc:
+            logger.warning("Could not register the load's downloads: %s", exc)
+
+    def _release_load_downloads(self) -> None:
+        keys, self._load_download_keys = self._load_download_keys, []
+        if not keys:
+            return
+        from hub.services.load_downloads import release_load_downloads
+
+        try:
+            release_load_downloads(keys)
+        except Exception as exc:
+            logger.warning("Could not release the load's downloads: %s", exc)
 
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess. Returns True if a load for
@@ -3283,8 +3317,10 @@ class InferenceOrchestrator:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR: sends audio to the subprocess and yields text."""
         yield from self._generate_audio_input_inner(
@@ -3292,8 +3328,10 @@ class InferenceOrchestrator:
             audio_type = "whisper",
             messages = [],
             system_prompt = "",
+            use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
+            extra_audio_arrays = extra_audio_arrays,
         )
 
     def generate_audio_input_response(
@@ -3311,6 +3349,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         stop = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n): streams text tokens."""
         yield from self._generate_audio_input_inner(
@@ -3328,6 +3367,7 @@ class InferenceOrchestrator:
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             stop = stop,
+            extra_audio_arrays = extra_audio_arrays,
         )
 
     def _generate_audio_input_inner(
@@ -3346,6 +3386,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         stop = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR). ``stats_holder``: as in
         generate_chat_response, caller-owned and filled on gen_done with the worker's usage /
@@ -3368,15 +3409,16 @@ class InferenceOrchestrator:
                 return
             request_id = str(uuid.uuid4())
 
-            # numpy array -> list for mp.Queue serialization
-            audio_data = (
-                audio_array.tolist() if hasattr(audio_array, "tolist") else list(audio_array)
-            )
+            import numpy as np
+
+            # Raw float32 bytes per clip; far cheaper to pickle than tolist().
+            clips = [audio_array, *(extra_audio_arrays or [])]
+            audio_clips = [np.asarray(clip, dtype = np.float32).tobytes() for clip in clips]
 
             cmd = {
                 "type": "generate_audio_input",
                 "request_id": request_id,
-                "audio_data": audio_data,
+                "audio_clips": audio_clips,
                 "audio_type": audio_type,
                 "messages": messages or [],
                 "system_prompt": system_prompt,

@@ -236,14 +236,20 @@ async def get_dataset_download_progress_response(
 
 
 def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownloadJobStatus:
+    registry = _account_registry()
     state, error, generation = download_lifecycle.idle_status(
-        _account_registry(),
+        registry,
         key,
         repo_type = "dataset",
         repo_id = repo_id,
         variant = None,
     )
-    return DatasetDownloadJobStatus(state = state, error = error, generation = generation)
+    return DatasetDownloadJobStatus(
+        state = state,
+        error = error,
+        generation = generation,
+        attempt = registry.current_attempt(key),
+    )
 
 
 async def download_dataset_response(

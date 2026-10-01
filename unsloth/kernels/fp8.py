@@ -1007,9 +1007,33 @@ def fp8_linear(
     return out
 
 
+_FP8_WEIGHT_DTYPES = tuple(
+    getattr(torch, n)
+    for n in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
+    if hasattr(torch, n)
+)
+
+
 def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     def patched_forward(self, X):
-        out = forward_function(X, self.weight, getattr(self, scale_attr))
+        weight = self.weight
+        if weight.dtype not in _FP8_WEIGHT_DTYPES:
+            # bf16 layer the skip list missed: its scale was never loaded.
+            bias = self._parameters.get("bias")
+            return torch.nn.functional.linear(
+                X, weight.to(X.dtype), None if bias is None else bias.to(X.dtype)
+            )
+        weight_scale = getattr(self, scale_attr)
+        # Kernels read block_size off weight/scale, else assume 128x128; tagging 128x128 would only cost a recompile.
+        module_block_size = getattr(self, "block_size", None)
+        if (
+            module_block_size is not None
+            and list(module_block_size) != [128, 128]
+            and getattr(weight, "block_size", None) is None
+            and getattr(weight_scale, "block_size", None) is None
+        ):
+            weight.block_size = list(module_block_size)
+        out = forward_function(X, weight, weight_scale)
         # The kernels take no bias, so a biased Linear (Qwen2-style q/k/v) adds it here; fbgemm keeps it fp32.
         bias = self._parameters.get("bias")
         return out if bias is None else out + bias.to(out.dtype)

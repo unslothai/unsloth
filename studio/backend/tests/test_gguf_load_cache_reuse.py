@@ -1064,6 +1064,7 @@ class TestLoadHubDownloadExclusion:
             "chat_template_override_reason",
             # Constant True: llama.cpp allocates the window it reports.
             "context_length_enforced",
+            "context_length_fitted",
             # Constant False: each slot decodes against its own window.
             "context_unbounded_when_batched",
             # Read from requested_extra_args, which is what the load was invoked
@@ -1150,6 +1151,9 @@ class TestLoadHubDownloadExclusion:
             return frozenset()
 
         class _Registry:
+            def get_job_metadata(self, _key):
+                return None
+
             def claim(self, *_args, admission_check, **_kwargs):
                 assert admission_check() is False
                 return False, "admission_blocked"

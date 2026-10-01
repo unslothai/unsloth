@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -5127,13 +5128,125 @@ def test_write_opencode_config_fresh(tmp_path):
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
     # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
-        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
+        MODEL["id"]: {
+            "name": MODEL["id"],
+            "limit": {"context": 131072, "input": 131072, "output": 32_000},
+        }
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
+
+
+@pytest.mark.parametrize(
+    "window, max_tokens, expected",
+    [
+        (16_384, None, 4_096),
+        (32_768, None, 8_192),
+        # No longer pinned at 8,192 (#12009).
+        (131_072, None, 32_000),
+        (143_616, None, 32_000),
+        (143_616, 65_536, 65_536),
+        (143_616, 200_000, 71_808),
+        (32_768, 4_000, 4_000),
+    ],
+)
+def test_opencode_output_limit(window, max_tokens, expected):
+    assert start.opencode_output_limit(window, max_tokens) == expected
+
+
+def test_opencode_max_tokens_sets_limit_and_raises_opencode_ceiling(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
+    )
+    assert result.exit_code == 0, result.output
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    config = json.loads(config_path.read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit == {"context": 131072, "input": 131072, "output": 65536}
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "65536")
+
+
+def test_opencode_limit_input_keeps_compaction_off_the_output_limit(tmp_path):
+    # Without input, OpenCode compacts at context - output and a 65,536 limit compacts at half full.
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, max_tokens = 65536)
+    config = json.loads(path.read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["input"] == limit["context"] == 131072
+    assert config["compaction"]["reserved"] == 131072 // 10
+
+
+@pytest.mark.parametrize(
+    "window, expected_reserved, expected_compacts_at",
+    [
+        (16_384, 4_096, 12_288),
+        (32_768, 8_192, 24_576),
+        (131_072, 13_107, 117_965),
+        (262_144, 26_214, 235_930),
+    ],
+)
+def test_opencode_compaction_reserved(window, expected_reserved, expected_compacts_at):
+    reserved = start.opencode_compaction_reserved(window, start.opencode_output_limit(window))
+    assert reserved == expected_reserved
+    assert window - reserved == expected_compacts_at
+
+
+def test_opencode_subagent_drops_the_compaction_a_normal_session_wrote(tmp_path):
+    path = tmp_path / "opencode.json"
+    small = {**MODEL, "context_length": 16_384}
+    start.write_opencode_config(BASE, "sk-unsloth-abc", small, path)
+    assert json.loads(path.read_text())["compaction"] == {"auto": True, "reserved": 4_096}
+    start.write_opencode_config(BASE, "sk-unsloth-abc", small, path, as_subagent = True)
+    assert "compaction" not in json.loads(path.read_text())
+
+
+def test_opencode_max_tokens_without_a_window_warns(capsys):
+    assert start._opencode_output_env({"id": "m"}, 65536) == {}
+    assert "--max-tokens is ignored" in capsys.readouterr().err
+
+
+def test_opencode_max_tokens_under_ceiling_leaves_opencode_env_alone(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]
+    )
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["output"] == 16000
+    assert "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX" not in result.output
+
+
+def test_opencode_max_tokens_raises_a_smaller_inherited_ceiling(fake_studio, monkeypatch):
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "8000")
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "16000")
+
+
+def test_opencode_max_tokens_recipe_keeps_a_larger_inherited_ceiling(fake_studio, monkeypatch):
+    # The --no-launch recipe must carry the ceiling, or a shell without the export reverts to 32,000.
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
+
+
+def test_opencode_max_tokens_past_half_the_window_is_capped(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "120000"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "leaves too little" in result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["output"] == 131072 // 2
 
 
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
@@ -5687,7 +5800,7 @@ def test_write_pi_config_fresh(tmp_path):
     # Pin the loaded window (and a sane output cap) so Pi compacts instead of
     # overflowing; without it Pi assumes its 128000 default.
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
 
 
@@ -5732,7 +5845,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["providers"]["unsloth"]["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
@@ -6237,9 +6350,22 @@ def test_write_dsh_patch_fresh(dsh_patch):
     assert "sk-unsloth" not in dsh_patch.read_text()
     assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (143_616, 32_000)])
+def test_pi_and_dsh_output_limit_follows_the_context(tmp_path, window, expected):
+    model = {**MODEL, "context_length": window}
+    start.write_pi_config(BASE, "sk-unsloth-abc", model, tmp_path / "models.json")
+    start.write_pi_subagent_config(BASE, "sk-unsloth-abc", model, tmp_path / "subagent.json")
+    start.write_dsh_patch(BASE, model, tmp_path / "unsloth.patch.yml")
+    pi = json.loads((tmp_path / "models.json").read_text())["providers"]["unsloth"]["models"][0]
+    subagent = json.loads((tmp_path / "subagent.json").read_text())
+    patch = _dsh_entries(tmp_path / "unsloth.patch.yml")
+    dsh = patch["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+    assert pi["maxTokens"] == subagent["maxTokens"] == dsh["maxTokens"] == expected
 
 
 def test_write_dsh_patch_without_window_omits_limits(dsh_patch):
@@ -9686,3 +9812,163 @@ def test_openclaw_memory_search_clears_a_stale_external_fallback(
     config = json.loads(config_path.read_text())
     assert config["memory"]["search"]["fallback"] == "none"
     assert config["memory"]["search"]["provider"] == "openai-compatible"
+
+
+def test_direct_gguf_labels_keep_packed_and_grouped_quants():
+    # Mirrors model_config._extract_quant_label: prism-ml/Ternary-Bonsai-*-gguf ships all three.
+    for name, label in (
+        ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
+        ("Ternary-Bonsai-8B-Q2_0.gguf", "Q2_0"),
+        ("Ternary-Bonsai-8B-Q2_0_g64.gguf", "Q2_0_g64"),
+        ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
+    ):
+        assert start._direct_gguf_variant_labels(name)[1] == label
+
+
+GiB = 1024**3
+
+
+class _LoadServer:
+    """Fake Studio: `listing` answers active-downloads, `repos` maps repo -> iterator of progress readings."""
+
+    def __init__(self, listing, repos):
+        self.listing = listing
+        self.repos = {repo: iter(readings) for repo, readings in repos.items()}
+        self.urls = []
+
+    def __call__(
+        self,
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        self.urls.append(url)
+        if url.endswith("/active-downloads"):
+            if isinstance(self.listing, Exception):
+                raise self.listing
+            return {"downloads": self.listing}
+        repo = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["repo_id"][0]
+        reading = next(self.repos[repo])
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    def count(self, fragment):
+        return sum(fragment in url for url in self.urls)
+
+
+def _reading(
+    downloaded,
+    expected = 4 * GiB,
+    completed = 0,
+):
+    return {
+        "downloaded_bytes": downloaded,
+        "completed_bytes": completed,
+        "expected_bytes": expected,
+    }
+
+
+def _load_job(repo, **extra):
+    return {"repo_id": repo, "owner": "load", "state": "running", **extra}
+
+
+def _progress(monkeypatch, server, clock):
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    return start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+
+def test_model_download_progress_counts_the_base_a_load_reports(monkeypatch, capsys):
+    adapter_done = _reading(8 * 1024**2, 8 * 1024**2, 8 * 1024**2)
+    server = _LoadServer(
+        [
+            _load_job("owner/base"),
+            {"repo_id": "someone/else", "state": "running"},
+            {"repo_id": "owner/attached", "state": "running", "load_attached": True},
+        ],
+        {
+            "owner/adapter": [adapter_done] * 3,
+            "owner/base": [_reading(0), _reading(1 * GiB), _reading(2 * GiB)],
+            "owner/attached": [_reading(3 * GiB)] + [TimeoutError("slow")] * 2,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(3):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert progress.downloaded_bytes == 8 * 1024**2 + 2 * GiB + 3 * GiB
+    assert server.count("someone%2Felse") == 0
+    # The line follows the base as it grows, not the attached job first seen at 3 GiB.
+    out = capsys.readouterr().out
+    assert "1.0 GiB / 4.0 GiB" in out and "3.0 GiB" not in out
+
+
+def test_model_download_progress_lists_load_jobs_at_most_every_interval(monkeypatch):
+    done = _reading(4 * GiB, completed = 4 * GiB)
+    server = _LoadServer(
+        [_load_job("owner/base")],
+        {
+            "owner/adapter": [_reading(1024)] * 20,
+            "owner/base": [_reading(GiB), done] + [AssertionError] * 20,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 3
+    # A finished base is not scanned again, but its bytes still count.
+    assert server.count("owner%2Fbase") == 2
+    assert progress.downloaded_bytes == 1024 + 4 * GiB
+
+
+def test_model_download_progress_stops_listing_on_a_server_without_the_route(monkeypatch):
+    missing = urllib.error.HTTPError(BASE, 404, "Not Found", None, None)
+    server = _LoadServer(missing, {"owner/adapter": [_reading(1024)] * 20})
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 1
+    assert progress.downloaded_bytes == 1024
+
+
+def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    display.update(_reading(19 * 1024**2, 20 * 1024**2), "owner/adapter")
+    display.update(_reading(GiB), "owner/base")
+
+    out = capsys.readouterr().out
+    assert "19.0 MiB / 20.0 MiB" in out
+    assert "1.0 GiB / 4.0 GiB" in out
+
+
+def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monkeypatch):
+    server = _LoadServer(
+        [_load_job("owner/base")], {"owner/base": [_reading(GiB), _reading(2 * GiB)]}
+    )
+    clock = [0.0]
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "/models/my-lora", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 2 * GiB
+    assert server.count("my-lora") == 0

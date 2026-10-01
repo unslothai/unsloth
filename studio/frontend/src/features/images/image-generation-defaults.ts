@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { explicitFamily } from "../model-picker/components/model-selector/family-override.ts";
+
 // Generation defaults when the model is unrecognised. Also seeds the Create sliders.
 export const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
@@ -49,6 +51,19 @@ export function defaultsFor(repoId: string): {
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
+}
+
+/** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
+export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+}
+
+export function residentDefaultsKey(
+  repoId: string,
+  baseRepo: string | null | undefined,
+  resolvedFamily: { value?: unknown; source?: "auto" | "explicit" } | null | undefined,
+): string {
+  return defaultsKeyFor(baseRepo ?? repoId, resolvedFamily?.source === "explicit" ? resolvedFamily.value : null);
 }
 
 // The canvas every family is tuned for, and what an unrecognised model gets.

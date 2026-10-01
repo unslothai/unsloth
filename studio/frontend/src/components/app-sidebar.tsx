@@ -80,6 +80,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -98,11 +99,10 @@ import {
   Download01Icon,
   Edit03Icon,
   FolderExportIcon,
-  FolderOpenIcon,
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  Globe02Icon,
+  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -139,7 +139,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
@@ -152,10 +152,7 @@ import {
   ChatSearchDialog,
   clearNewChatDraft,
   canForkChatRow,
-  chatExportOptions,
   EditProjectDialog,
-  OpenChatFolderUnavailableItem,
-  exportConversationByFormat,
   forkChatRow,
   showForkCreatedToast,
   getSidebarItemThreadIds,
@@ -163,7 +160,6 @@ import {
   sandboxSessionIdsHolding,
   deleteChatProject,
   deleteChatItem,
-  listStoredChatThreads,
   moveChatItemToProject,
   notifyChatHistoryUpdated,
   renameChatItem,
@@ -191,9 +187,7 @@ import {
   customSectionIdOf,
   PROJECTS_SECTION_KEY,
   PINNED_SECTION_KEY,
-  inSectionOrder,
   resolveSectionOrder,
-  assignmentMap,
   type SidebarChatSort,
   type SidebarCustomSection,
   type SidebarOrganizeBy,
@@ -208,13 +202,11 @@ import {
   recentChatItemAtSlot,
   useChatNavigationStore,
   SectionNameDialog,
+  removeCustomSectionWithUndo,
   sectionKeyLanding,
   useSectionDrag,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import {
-  revealSandbox,
-} from "@/components/assistant-ui/sandbox-reveal";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   sidebarNavRowPinned,
@@ -264,9 +256,9 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type PointerEvent,
   type ReactNode,
 } from "react";
-import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   folderRingKey,
@@ -389,6 +381,8 @@ const MOVE_TO_MENU =
 // which doubled the gap at both its ends; -my-0.5 gives that 2px back.
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+// Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
+const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
@@ -564,13 +558,6 @@ function formatRelativeShort(iso: string): string {
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
   return `${d}d`;
-}
-
-function createNavigationNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function preloadSilently(request: Promise<unknown>): void {
@@ -807,6 +794,13 @@ function ImagesWorkflowList({
   );
 }
 
+// Hugeicons' three dots, spread 1.5 units and centred vertically (its own sit half a unit low).
+const MORE_DOTS_ICON: IconSvgElement = [
+  ["circle", { cx: "4.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+];
+
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
   icon,
@@ -1012,39 +1006,58 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
-  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
+  // Mouse hover previews the flyout; a press pins or unpins it. Touch and keyboard pin it.
   const [moreHoverOpen, setMoreHoverOpen] = useState(false);
   const [morePinnedOpen, setMorePinnedOpen] = useState(false);
   const moreOpen = moreHoverOpen || morePinnedOpen;
+  const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const moreContentRef = useRef<HTMLDivElement | null>(null);
+  // A hover preview must not move focus in or out of the composer.
+  const moreChosen = useRef(false);
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearMoreCloseTimer = useCallback(() => {
     if (!moreCloseTimer.current) return;
     clearTimeout(moreCloseTimer.current);
     moreCloseTimer.current = null;
   }, []);
-  const openMorePreview = useCallback(() => {
-    clearMoreCloseTimer();
-    setMoreHoverOpen(true);
-  }, [clearMoreCloseTimer]);
-  const closeMorePreviewSoon = useCallback(() => {
-    clearMoreCloseTimer();
-    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
-  }, [clearMoreCloseTimer]);
-  const handleMoreOpenChange = useCallback((next: boolean) => {
-    if (next) {
-      setMorePinnedOpen(true);
-      return;
-    }
-    setMorePinnedOpen(false);
-    setMoreHoverOpen(false);
-  }, []);
-  useEffect(
-    () => () => {
+  const openMorePreview = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
       clearMoreCloseTimer();
+      setMoreHoverOpen(true);
     },
     [clearMoreCloseTimer],
   );
+  // Grace period for crossing the gap to the flyout.
+  const closeMorePreviewSoon = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") return;
+      clearMoreCloseTimer();
+      moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
+    },
+    [clearMoreCloseTimer],
+  );
+  const setMoreOpen = useCallback(
+    (next: boolean) => {
+      clearMoreCloseTimer();
+      if (next) moreChosen.current = true;
+      setMorePinnedOpen(next);
+      if (!next) setMoreHoverOpen(false);
+    },
+    [clearMoreCloseTimer],
+  );
+  useEffect(() => clearMoreCloseTimer, [clearMoreCloseTimer]);
+  // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
+  const moreContentFocusProps = {
+    onOpenAutoFocus: (event: Event) => {
+      if (!moreChosen.current) event.preventDefault();
+    },
+  } as Record<string, unknown>;
+  const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
+  const moreFocusReturning = useRef(false);
+  const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
+    if (!(next && moreFocusReturning.current)) setMoreTooltipOpen(next);
+  }, []);
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -1222,9 +1235,6 @@ export function AppSidebar() {
   const renameCustomSection = useSidebarOrganizationStore(
     (s) => s.renameCustomSection,
   );
-  const deleteCustomSection = useSidebarOrganizationStore(
-    (s) => s.deleteCustomSection,
-  );
   const setCustomSectionSort = useSidebarOrganizationStore(
     (s) => s.setCustomSectionSort,
   );
@@ -1274,6 +1284,42 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
+  // A project's last activity: its own edits or its newest chat. Its updatedAt only moves when it
+  // is edited.
+  const projectActivityAt = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const project of projects) {
+      const newest = chatsByProjectId.get(project.id)?.[0]?.updatedAt ?? 0;
+      map.set(project.id, Math.max(project.updatedAt ?? project.createdAt, newest));
+    }
+    return map;
+  }, [projects, chatsByProjectId]);
+  // "Move to" order: most recently active first.
+  const recentProjects = useMemo(
+    () =>
+      [...projects].sort(
+        (a, b) => (projectActivityAt.get(b.id) ?? 0) - (projectActivityAt.get(a.id) ?? 0),
+      ),
+    [projects, projectActivityAt],
+  );
+  // Sections by last activity: when made or modified, or their newest chat or project. Drag
+  // order is not recency; older sections without timestamps rank by their members' activity.
+  const recentSections = useMemo(() => {
+    const at = new Map(
+      customSections.map((section) => [
+        section.id,
+        Math.max(section.createdAt ?? 0, section.modifiedAt ?? 0),
+      ]),
+    );
+    const touch = (sectionId: string | undefined, time: number) => {
+      if (sectionId && at.has(sectionId) && time > (at.get(sectionId) ?? 0)) at.set(sectionId, time);
+    };
+    for (const item of allChatItems) touch(sectionByChatId[item.id], item.updatedAt);
+    for (const [projectId, sectionId] of Object.entries(sectionByProjectId)) {
+      touch(sectionId, projectActivityAt.get(projectId) ?? 0);
+    }
+    return [...customSections].sort((a, b) => (at.get(b.id) ?? 0) - (at.get(a.id) ?? 0));
+  }, [customSections, allChatItems, sectionByChatId, sectionByProjectId, projectActivityAt]);
   // Pinned folders in pin order, then the order they were dragged into while Pinned kept
   // folders apart from its chats. Pinned is one list now; this only seeds it.
   const pinnedProjectBase = useMemo(() => {
@@ -1291,16 +1337,9 @@ export function AppSidebar() {
       (project) => project.id,
     );
   }, [projects, pinnedProjectIds, manualOrder]);
-  // The folders Projects still owns: unpinned, by activity, then manual order. Activity comes from
-  // the member chats, since a project's own updatedAt only moves when it is edited.
+  // The folders Projects still owns: unpinned, by activity (see projectActivityAt), then manual order.
   const sidebarProjectRecords = useMemo(() => {
-    const lastActivityAt = (project: ProjectRecord) => {
-      let latest = project.updatedAt ?? project.createdAt;
-      for (const chat of chatsByProjectId.get(project.id) ?? []) {
-        if (chat.updatedAt > latest) latest = chat.updatedAt;
-      }
-      return latest;
-    };
+    const lastActivityAt = (project: ProjectRecord) => projectActivityAt.get(project.id) ?? 0;
     const rest = projects
       .filter((p) => !pinnedProjectIdSet.has(p.id) && !sectionByProjectId[p.id])
       .sort((a, b) =>
@@ -1318,7 +1357,7 @@ export function AppSidebar() {
     pinnedProjectIdSet,
     sectionByProjectId,
     manualOrder,
-    chatsByProjectId,
+    projectActivityAt,
     projectSort,
   ]);
   // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
@@ -2709,7 +2748,7 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: Globe02Icon,
+      icon: InternetIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
@@ -3529,56 +3568,9 @@ export function AppSidebar() {
   /** Deletes a section. Nothing in it is deleted: its rows go back where they came from, and the
    *  toast can put the section back with them. */
   function removeCustomSection(section: SidebarCustomSection) {
-    const state = useSidebarOrganizationStore.getState();
-    const index = state.customSections.findIndex((s) => s.id === section.id);
-    const chatIds = Object.keys(state.sectionByChatId).filter(
-      (id) => state.sectionByChatId[id] === section.id,
-    );
-    const projectIds = Object.keys(state.sectionByProjectId).filter(
-      (id) => state.sectionByProjectId[id] === section.id,
-    );
-    const order = state.manualOrder[customSectionScope(section.id)];
-    const hidden = state.hiddenSections.includes(section.id);
-    // The sections drawn after it, so undo can put it back above the first one still there.
-    const drawnOrder = resolveSectionOrder(state.sectionOrder, state.customSections);
-    const followers = drawnOrder.slice(drawnOrder.indexOf(section.id) + 1);
-    deleteCustomSection(section.id);
+    const undo = removeCustomSectionWithUndo(section);
     toast.success(t("shell.sections.deleted", { name: section.name }), {
-      action: {
-        label: t("shell.sections.undo"),
-        onClick: () => {
-          useSidebarOrganizationStore.setState((now) => {
-            if (now.customSections.some((s) => s.id === section.id)) return now;
-            const restored = [...now.customSections];
-            restored.splice(Math.min(index, restored.length), 0, section);
-            const sectionByChatId = assignmentMap(now.sectionByChatId);
-            for (const id of chatIds) sectionByChatId[id] ??= section.id;
-            const sectionByProjectId = assignmentMap(now.sectionByProjectId);
-            for (const id of projectIds) sectionByProjectId[id] ??= section.id;
-            const sectionOrder = resolveSectionOrder(now.sectionOrder, now.customSections);
-            const follower = followers.find((key) => sectionOrder.includes(key));
-            sectionOrder.splice(
-              follower === undefined ? sectionOrder.length : sectionOrder.indexOf(follower),
-              0,
-              section.id,
-            );
-            return {
-              // In the order the sidebar now draws them, which the sections left behind may have
-              // been dragged out of since: the Show and Section lists read top to bottom like it.
-              customSections: inSectionOrder(restored, sectionOrder),
-              sectionOrder,
-              sectionByChatId,
-              sectionByProjectId,
-              hiddenSections: hidden
-                ? [...now.hiddenSections, section.id]
-                : now.hiddenSections,
-              manualOrder: order
-                ? { ...now.manualOrder, [customSectionScope(section.id)]: order }
-                : now.manualOrder,
-            };
-          });
-        },
-      },
+      action: { label: t("shell.sections.undo"), onClick: undo },
     });
   }
 
@@ -4171,7 +4163,9 @@ export function AppSidebar() {
       ? customSections.find((section) => section.id === config.current)
       : undefined;
     // The section the rows are in is not a place to move them to, so it is left out, not greyed.
-    const destinations = customSections.filter((section) => section.id !== config.current);
+    const destinations = recentSections
+      .filter((section) => section.id !== config.current)
+      .slice(0, MOVE_TO_MAX);
     return (
       <>
         {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
@@ -4365,12 +4359,18 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    const moveProjects = recentProjects
+      .filter((project) => project.id !== item.projectId)
+      .slice(0, MOVE_TO_MAX);
     // A compare row outside a project spans two sandboxes, and there is no
     // honest single folder to offer for it.
     const sandboxSessionId =
       item.type === "single" || item.projectId
         ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
         : undefined;
+    const alreadyUnread = threadIds.some((threadId) =>
+      unreadThreadIds.has(threadId),
+    );
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
       item.type === "compare"
@@ -4389,6 +4389,22 @@ export function AppSidebar() {
               <span>{isPinned ? "Unpin" : "Pin"}</span>
             </P.Item>
             <P.Item
+              onSelect={() =>
+                alreadyUnread
+                  ? clearThreadsUnread(threadIds)
+                  : markThreadsUnread(threadIds, rowIdByThreadId)
+              }
+            >
+              <HugeiconsIcon icon={alreadyUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+              <span>
+                {alreadyUnread
+                  ? t("shell.selection.markRead")
+                  : t("shell.selection.markUnread")}
+              </span>
+            </P.Item>
+            {/* Above: edits the row. Below: copies or moves the chat. */}
+            <P.Separator />
+            <P.Item
               disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
               title="Copy this chat into a new one, from its last message"
               onSelect={() => void forkChatFromRow(item)}
@@ -4396,47 +4412,6 @@ export function AppSidebar() {
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               <span>Fork</span>
             </P.Item>
-            {/* Rename through Fork act on the row; the rule sets off what reaches outside it. */}
-            <P.Separator />
-            {sandboxSessionId ? (
-              isTauri ? (
-                <P.Item
-                  title="Open the folder this chat's tool calls read and write"
-                  onSelect={() => {
-                    void (async () => {
-                      try {
-                        // A chat moved between projects keeps the sandbox it wrote to, so its own
-                        // history names the folder, not current membership. A failed read is
-                        // reported below rather than caught per pane.
-                        const ids =
-                          threadIds.length > 0 ? threadIds : [item.id];
-                        const distinct = await sandboxSessionIdsHolding(ids);
-                        if (distinct.length > 1) {
-                          toast.error("This chat wrote to more than one folder.", {
-                            description:
-                              "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-                          });
-                          return;
-                        }
-                        await revealSandbox(distinct[0] ?? sandboxSessionId);
-                      } catch (error) {
-                        toast.error("Could not open the chat folder.", {
-                          description:
-                            error instanceof Error
-                              ? error.message
-                              : String(error),
-                        });
-                      }
-                    })();
-                  }}
-                >
-                  <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>Open chat folder</span>
-                </P.Item>
-              ) : (
-                <OpenChatFolderUnavailableItem Item={P.Item} />
-              )
-            ) : null}
             {/* Projects and sections in one place: both are where the chat is kept. */}
             <P.Sub>
               <P.SubTrigger>
@@ -4459,9 +4434,9 @@ export function AppSidebar() {
                   <span>New project</span>
                 </P.Item>
                 {/* The project the chat is in is not a place to move it to: left out, not greyed. */}
-                {projects.some((project) => project.id !== item.projectId) && (
+                {moveProjects.length > 0 && (
                   <div className={MOVE_TO_LIST}>
-                    {projects.filter((project) => project.id !== item.projectId).map((project) => (
+                    {moveProjects.map((project) => (
                       <P.Item
                         key={project.id}
                         onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
@@ -4494,44 +4469,6 @@ export function AppSidebar() {
                   anyFiled: !pinnedIdSet.has(item.id) && Boolean(sectionByChatId[item.id]),
                   heading: true,
                 })}
-              </P.SubContent>
-            </P.Sub>
-            <P.Sub>
-              <P.SubTrigger>
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                <span>Export</span>
-              </P.SubTrigger>
-              <P.SubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
-                {chatExportOptions().map(({ label, format }) => (
-                  <P.Item
-                    key={label}
-                    onSelect={async () => {
-                      try {
-                        const ids = item.type === "single"
-                          ? [item.id]
-                          : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                        for (const id of ids) {
-                          await exportConversationByFormat(id, format);
-                        }
-                      } catch (error) {
-                        if (!isDownloadCancelled(error)) {
-                          toast.error("Export failed.");
-                        }
-                      }
-                    }}
-                  >
-                    {label}
-                  </P.Item>
-                ))}
-                <P.Separator />
-                {/* Bulk export and import live in Settings -> Data. */}
-                <P.Item
-                  onSelect={() =>
-                    useSettingsDialogStore.getState().openDialog("data")
-                  }
-                >
-                  Export all chats…
-                </P.Item>
               </P.SubContent>
             </P.Sub>
             <P.Separator />
@@ -5072,6 +5009,8 @@ export function AppSidebar() {
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
         usesNativeMacTitlebar &&
           "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+        usesDesktopTitlebar && !usesNativeMacTitlebar && pinned &&
+          "[&_[data-sidebar=sidebar]]:border-r-0",
       )}
     >
       <SidebarHeader
@@ -5125,7 +5064,7 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5143,10 +5082,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -5372,37 +5311,38 @@ export function AppSidebar() {
                 >
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={handleMoreOpenChange}
+                    onOpenChange={setMoreOpen}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
-                    <Tooltip>
+                    <Tooltip
+                      open={moreTooltipOpen && !moreOpen}
+                      onOpenChange={handleMoreTooltipOpenChange}
+                    >
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
+                            ref={moreTriggerRef}
                             // More is a container, not a destination: no active style just because the current page
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
-                            onPointerDownCapture={(event) => {
-                              if (event.button !== 0 || event.ctrlKey) return;
+                            // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
+                            onPointerDown={(event) => {
+                              if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
                               event.preventDefault();
-                              event.stopPropagation();
-                              event.currentTarget.focus({ preventScroll: true });
-                              clearMoreCloseTimer();
-                              if (morePinnedOpen) {
-                                setMorePinnedOpen(false);
-                                setMoreHoverOpen(false);
-                              } else {
-                                setMorePinnedOpen(true);
+                              // An open preview never mounts again, so focus it as a click-open would.
+                              if (!morePinnedOpen && moreHoverOpen) {
+                                moreContentRef.current?.focus({ preventScroll: true });
                               }
+                              setMoreOpen(!morePinnedOpen);
                             }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MoreHorizontalIcon}
+                              icon={MORE_DOTS_ICON}
                               strokeWidth={1.75}
-                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                              className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
                             <span className="text-ui-14p5 leading-ui-19 tracking-nav">
                               {t("shell.navigation.more")}
@@ -5421,12 +5361,30 @@ export function AppSidebar() {
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent
+                      ref={moreContentRef}
                       side="right"
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
                       onPointerEnter={openMorePreview}
                       onPointerLeave={closeMorePreviewSoon}
+                      // The trigger handles its own presses.
+                      onPointerDownOutside={(event) => {
+                        if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+                      }}
+                      {...moreContentFocusProps}
+                      onCloseAutoFocus={(event) => {
+                        const chosen = moreChosen.current;
+                        moreChosen.current = false;
+                        if (!chosen) {
+                          event.preventDefault();
+                          return;
+                        }
+                        moreFocusReturning.current = true;
+                        queueMicrotask(() => {
+                          moreFocusReturning.current = false;
+                        });
+                      }}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
@@ -5816,7 +5774,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
@@ -6014,7 +5972,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}

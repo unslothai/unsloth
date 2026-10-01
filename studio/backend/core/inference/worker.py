@@ -12,6 +12,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 
 from __future__ import annotations
 
+import functools
 import base64
 import inspect
 import json
@@ -509,9 +510,115 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _load_download_repos(
+    mc,
+    load_in_4bit: bool,
+    backend,
+    companions = (),
+) -> list[str]:
+    from hub.utils.paths import is_valid_repo_id
+    from utils.paths import is_local_path
+    from utils.security.file_security import load_scan_target
+    from utils.third_party_source import SPEECH_CODEC_REPOSITORIES
+
+    audio_type = getattr(mc, "audio_type", None)
+    repos = [str(mc.identifier), *(str(repo) for repo in companions)]
+    base = getattr(mc, "base_model", None)
+    if base:
+        repos.append(str(base))
+        mapped = None
+        if getattr(backend, "device", None) == "mlx":
+            from core.inference.model_ids import mlx_bnb_base_repo
+            mapped = mlx_bnb_base_repo(str(base))
+        else:
+            try:
+                from unsloth.models import loader
+                from unsloth.models.loader_utils import get_model_name
+
+                quantized = (
+                    load_in_4bit
+                    and not getattr(mc, "is_audio", False)
+                    and getattr(loader, "ALLOW_BITSANDBYTES", True)
+                )
+                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
+                    mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
+            except Exception:
+                mapped = None
+        if mapped:
+            repos.append(str(mapped))
+    repos.extend(SPEECH_CODEC_REPOSITORIES.get(audio_type, ()))
+    hub_ids: list[str] = []
+    for repo in repos:
+        repo, _subdirs = load_scan_target(repo, ())
+        if is_valid_repo_id(repo) and not is_local_path(repo) and repo not in hub_ids:
+            hub_ids.append(repo)
+    return hub_ids
+
+
+def _hub_cache_dir() -> Optional[str]:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        return str(get_hf_cache_paths().hub_cache)
+    except Exception:
+        return None
+
+
+# The token env before a load scrubbed it; the next load restores it.
+_TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
+
+
+def _token_env_keys() -> tuple:
+    from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+    return (*_HF_TOKEN_ENV_KEYS, "HF_HUB_DISABLE_IMPLICIT_TOKEN")
+
+
+def _restore_token_environment() -> None:
+    """Undo an earlier load's anonymous scrub (the token may have been replaced since)."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    saved, _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD, None
+    for key, value in (saved or {}).items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _drop_a_rejected_token(config: dict) -> None:
+    """The Hub refused this load's token while anonymous reads worked: load the rest anonymously."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    from hub.utils.hf_tokens import saved_token_rejected
+
+    token = _config_hf_token(config)
+    if token is not False and saved_token_rejected(token):
+        config["anonymous_hf_access"] = True
+        if _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD is None:
+            _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = {k: os.environ.get(k) for k in _token_env_keys()}
+        _apply_worker_hf_token_environment(config)
+        logger.warning(
+            "Hugging Face rejected the token for %s; loading it without the token.",
+            config.get("model_name"),
+        )
+
+
+def _in_token_rejection_scope(handler):
+    """Run one load in its own rejected-token scope, so a verdict never outlives it."""
+
+    @functools.wraps(handler)
+    def scoped(*args, **kwargs):
+        from hub.utils.hf_tokens import token_rejection_scope
+        with token_rejection_scope():
+            return handler(*args, **kwargs)
+
+    return scoped
+
+
+@_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
+    _restore_token_environment()
     try:
         mc = _build_model_config(config)
+        _drop_a_rejected_token(config)
 
         hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
@@ -596,6 +703,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     },
                 )
 
+        _send_response(
+            resp_queue,
+            {
+                "type": "downloads",
+                "repo_ids": _load_download_repos(mc, load_in_4bit, backend, targets),
+                "xet_disabled": os.environ.get("HF_HUB_DISABLE_XET") == "1",
+                "hub_cache": _hub_cache_dir(),
+            },
+        )
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
             on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
@@ -640,13 +756,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            # The whole group: the parent reports all four and can recompute none of
-            # them once the worker holds the model.
             for _ctx_field in (
                 "context_length",
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
+                "context_length_fitted",
                 "mlx_context_budget",
             ):
                 try:
@@ -1520,8 +1635,15 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # numpy arrays can't go through mp.Queue, so decode from list.
-        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
+        # "audio_data" is the older single-clip list form.
+        if "audio_clips" in cmd:
+            # Copy: frombuffer views are read-only.
+            clips = [np.frombuffer(clip, dtype = np.float32).copy() for clip in cmd["audio_clips"]]
+        else:
+            clips = [np.array(cmd["audio_data"], dtype = np.float32)]
+        audio_array = clips[0]
+        # Passed only when present, so single-clip calls are unchanged.
+        extra_audio_kwargs = {"extra_audio_arrays": clips[1:]} if len(clips) > 1 else {}
 
         audio_type = cmd.get("audio_type")
 
@@ -1531,7 +1653,9 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
+                use_adapter = cmd.get("use_adapter"),
                 cancel_event = cancel_event,
+                **extra_audio_kwargs,
             )
         else:
             audio_kwargs = {
@@ -1555,7 +1679,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
-            generator = backend.generate_audio_input_response(**audio_kwargs)
+            generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
