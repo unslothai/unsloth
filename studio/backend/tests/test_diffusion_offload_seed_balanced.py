@@ -264,3 +264,13 @@ def test_balanced_refinement_is_wired_before_component_refinement():
         "refine_memory_plan_for_components(\n                        pipe, refine_balanced_plan_for_components(pipe, plan)\n"
         in src
     )
+
+
+def test_measured_placement_honours_the_legacy_cpu_offload_flag():
+    # cpu_offload=True without a memory_mode asks for offload; the measured refinement must not make that load resident
+    src = (BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8")
+    call = src.index("plan = refine_plan_from_loaded_weights(")
+    guard = src.rindex("\n", 0, src.rindex("\n", 0, call))
+    assert (
+        "if not cpu_offload or normalize_memory_mode(memory_mode) is not None:" in src[guard:call]
+    )

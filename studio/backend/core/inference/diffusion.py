@@ -6795,13 +6795,15 @@ class DiffusionBackend:
                     plan = refined_plan
                     # A measured family re-places from its loaded weights + measured activation peak: residency
                     # the flat 8 GiB-per-megapixel headroom and the family-table sizes declined (no-op elsewhere).
-                    plan = refine_plan_from_loaded_weights(
-                        pipe,
-                        plan,
-                        family = fam.name,
-                        speed_mode = effective_speed,
-                        logger = logger,
-                    )
+                    # Not under the legacy cpu_offload flag without a memory_mode: that request asked for offload.
+                    if not cpu_offload or normalize_memory_mode(memory_mode) is not None:
+                        plan = refine_plan_from_loaded_weights(
+                            pipe,
+                            plan,
+                            family = fam.name,
+                            speed_mode = effective_speed,
+                            logger = logger,
+                        )
 
                     # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the
                     # text-encoder forward. After the TE quant so the key reflects the encoders that run; ``base``
