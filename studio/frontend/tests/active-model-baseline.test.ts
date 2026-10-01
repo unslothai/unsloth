@@ -39,7 +39,11 @@ function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
 
 function configsEqual(persistedMode: string) {
   return loadWithStubs<{
-    perModelConfigsEqual: (a: PerModelConfig, b: PerModelConfig) => boolean;
+    perModelConfigsEqual: (
+      a: PerModelConfig,
+      b: PerModelConfig,
+      options?: { againstRuntime?: boolean },
+    ) => boolean;
   }>(
     new URL(
       "../src/features/model-picker/model-config/apply-per-model-config.ts",
@@ -95,15 +99,19 @@ test("unreported or non-llama.cpp arguments stay absent so the stored row can hy
   );
 });
 
-test("a stored Auto (null) equals the mode the runtime resolved it to", () => {
+test("against the runtime, a stored Auto (null) equals the mode it resolved to", () => {
+  const runtime = { againstRuntime: true };
   const autoEqual = configsEqual("auto");
-  assert.ok(
-    autoEqual(BASE, { ...BASE, speculativeType: "auto" }),
-    "null follows the global Auto",
-  );
-  assert.ok(!autoEqual(BASE, { ...BASE, speculativeType: "off" }));
+  assert.ok(autoEqual(BASE, { ...BASE, speculativeType: "auto" }, runtime));
+  assert.ok(!autoEqual(BASE, { ...BASE, speculativeType: "off" }, runtime));
   const offEqual = configsEqual("off");
-  assert.ok(offEqual(BASE, { ...BASE, speculativeType: "off" }));
-  assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "auto" }));
-  assert.ok(autoEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));
+  assert.ok(offEqual(BASE, { ...BASE, speculativeType: "off" }, runtime));
+  assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "auto" }, runtime));
+});
+
+test("between stored configs a null mode stays distinct from an explicit one", () => {
+  // Presets: null means no mode carried, so an explicit Off must never fold into it.
+  const offEqual = configsEqual("off");
+  assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "off" }));
+  assert.ok(offEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));
 });

@@ -155,18 +155,23 @@ export function currentRuntimePerModelConfig(
   };
 }
 
+/** `againstRuntime`: `b` is what the runtime resolved, so a null mode in `a` means the global one.
+ *  Off for presets, where null means the preset carries no mode at all. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
+  { againstRuntime = false }: { againstRuntime?: boolean } = {},
 ): boolean {
+  const speculative = againstRuntime
+    ? resolvedSpeculativeType
+    : normalizeSpeculativeType;
   return (
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
-    resolvedSpeculativeType(a.speculativeType) ===
-      resolvedSpeculativeType(b.speculativeType) &&
+    speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
@@ -186,7 +191,6 @@ export function perModelConfigsEqual(
   );
 }
 
-// A stored config keeps Auto as null (follow the global mode) while the runtime holds the mode it resolved.
 function resolvedSpeculativeType(value: string | null | undefined): string {
   return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }

@@ -1230,7 +1230,7 @@ def test_context_commit_rechecks_persistence_only_shortcut():
     """Committed context changes must bypass persistence-only saves."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
     assert "const effectivePersistenceOnly =" in src
     assert "if (effectivePersistenceOnly)" in src
 
