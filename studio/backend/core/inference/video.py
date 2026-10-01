@@ -1015,6 +1015,9 @@ class _VideoLoadState:
     # MiniMax-H3: the conditioner streams leaf by leaf (group offload) instead of rotating onto the device whole, so
     # the VRAM floor counts its streamed footprint, not its 27.2 GB.
     te_streamed: bool = False
+    # MiniMax-H3: the resident part of a streamed denoiser (video_minimax_h3_residency.H3Residency), re-fitted per
+    # request. None when the denoiser is not streamed or residency is off.
+    h3_residency: Any = None
     resolved: Optional[dict] = None
 
 
@@ -1162,25 +1165,14 @@ def h3_streamed_int8_supported(target: Any = None) -> bool:
 
 
 def _h3_others_bytes(
-    fam: Any,
-    components: Any,
-    *,
-    te_scheme: Optional[str],
-    dtype: Any,
-    rotating: bool,
-    te_streamed: bool = False,
+    fam: Any, components: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool
 ) -> int:
     """Bytes beside the denoiser. ``rotating``: conditioner and VAEs rotate (the 40 GB reserve evicts
-    one before placing the other), so only the larger counts; otherwise they add up.
-    ``te_streamed``: the conditioner streams leaf by leaf, so only its streamed footprint is on the device."""
+    one before placing the other), so only the larger counts; otherwise they add up."""
     import torch
 
-    from .video_minimax_h3_te import H3_TE_STREAMED_GB
-
     scale = 2.0 if dtype is torch.float32 else 1.0
-    text_encoder_gb = (
-        H3_TE_STREAMED_GB if te_streamed else h3_te_resident_gb(te_scheme, bf16_gb = components[1])
-    )
+    text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
     headroom_bytes = (
         estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
@@ -1201,7 +1193,6 @@ def _h3_dense_denoiser_resident_bytes(
     te_scheme: Optional[str],
     dtype: Any,
     rotating: bool = False,
-    te_streamed: bool = False,
 ) -> Optional[tuple[int, int]]:
     """``(denoiser_bytes, everything_else_bytes)`` for a MiniMax-H3 modular pipeline, or None.
 
@@ -1223,12 +1214,7 @@ def _h3_dense_denoiser_resident_bytes(
         if denoiser_bytes <= 0:
             return None
         others = _h3_others_bytes(
-            fam,
-            components,
-            te_scheme = te_scheme,
-            dtype = dtype,
-            rotating = rotating,
-            te_streamed = te_streamed,
+            fam, components, te_scheme = te_scheme, dtype = dtype, rotating = rotating
         )
         return int(denoiser_bytes), others
     except Exception:  # noqa: BLE001 -- an unanswerable estimate keeps the rotation as it is
@@ -1308,6 +1294,51 @@ def _h3_dense_denoiser_fits(sizes: Optional[tuple[int, int]], free_bytes: Option
         return False
     denoiser_bytes, others_bytes = sizes
     return int(free_bytes) >= int(denoiser_bytes) + int(others_bytes)
+
+
+def _h3_residency_budget_bytes(
+    residency: Any,
+    device: str,
+    *,
+    width: int,
+    height: int,
+    frames: int,
+    te_streamed: bool,
+    te_scheme: Optional[str],
+    fragmentation: bool = True,
+    top_gb: float = 0.0,
+) -> int:
+    """Device bytes a streamed H3 denoiser's resident set may occupy for a ``width`` x ``height`` x ``frames`` render:
+    what is available (free + allocator cache + what the resident set already holds) minus the request's largest
+    phase need. Negative means not even a fully streamed render fits. Never raises: unreadable is 0 (all streamed)."""
+    try:
+        import torch
+
+        from .video_minimax_h3 import H3_TEXT_ENCODER_BF16_GB
+        from .video_minimax_h3_residency import h3_phase_need_gb
+        from .video_minimax_h3_te import H3_TE_STREAMED_GB
+
+        free = _h3_free_device_bytes(device)
+        if free is None:
+            return 0
+        cached = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+        available = int(free) + max(0, cached) + int(residency.resident_bytes())
+        te_gb = (
+            H3_TE_STREAMED_GB
+            if te_streamed
+            else h3_te_resident_gb(te_scheme, bf16_gb = H3_TEXT_ENCODER_BF16_GB)
+        )
+        need = h3_phase_need_gb(
+            width,
+            height,
+            frames,
+            te_streamed_gb = te_gb,
+            fragmentation = fragmentation,
+            top_gb = top_gb,
+        )
+        return available - int(need * 1e9)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _h3_placement_tier(
@@ -6814,6 +6845,7 @@ class VideoBackend:
         denoiser_pinned = False
         denoiser_streamed: Optional[str] = None
         te_streamed: Optional[str] = None
+        residency = None
         # load_components just spent minutes building ~145 GB of components, and everything below this line either moves
         # weights onto the card or mutates process-wide backend flags. The conventional placement path fences on the
         # token for exactly that reason; without the same fence here a cancelled or superseded worker resumes into a GPU
@@ -6898,9 +6930,10 @@ class VideoBackend:
 
                     if text_encoder_quant_engaged is not None:
                         # The conditioner streams leaf by leaf instead of rotating onto the card whole (27.2 GB, the
-                        # floor that kept 24 GB and smaller cards out). Decided BEFORE the denoiser's tier: with the
-                        # conditioner no longer the largest rotating component, a 32-48 GB card can keep the denoiser
-                        # resident. None (switch off, no group offload, refused) leaves the rotation as it was.
+                        # floor that kept 24 GB and smaller cards out). The denoiser's tier below is still sized with
+                        # the conditioner ROTATING, so pinned stays exactly where it was; a card that streams the
+                        # denoiser now keeps as many of its blocks resident as each request leaves room for (see
+                        # video_minimax_h3_residency). None (switch off, no group offload, refused) keeps the rotation.
                         from .video_minimax_h3_te import stream_h3_text_encoder
 
                         te_streamed = stream_h3_text_encoder(
@@ -6912,7 +6945,6 @@ class VideoBackend:
                         te_scheme = text_encoder_quant_engaged,
                         dtype = dtype,
                         rotating = True,
-                        te_streamed = bool(te_streamed),
                     )
                     stream = (
                         denoiser is not None
@@ -6949,6 +6981,38 @@ class VideoBackend:
                             sum(pinned_sizes) / 1e9,
                             transformer_quant_engaged,
                         )
+                        # Spend whatever the card has left on residency: the top-level group, then a prefix of the
+                        # blocks, so the copy stream only carries the tail. Sized for the family's largest preset at
+                        # its default length and re-fitted per request in generate().
+                        from .video_minimax_h3_residency import (
+                            H3Residency,
+                            h3_dit_resident_enabled,
+                        )
+
+                        if h3_dit_resident_enabled() and denoiser_streamed in ("stream", "stream_lazy"):
+                            try:
+                                residency = H3Residency(denoiser, device, logger = logger)
+                                if residency.usable:
+                                    big_w, big_h = max(
+                                        fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
+                                    )
+                                    residency.fit(
+                                        _h3_residency_budget_bytes(
+                                            residency,
+                                            device,
+                                            width = big_w,
+                                            height = big_h,
+                                            frames = fam.default_num_frames,
+                                            te_streamed = bool(te_streamed),
+                                            te_scheme = text_encoder_quant_engaged,
+                                        ),
+                                        initial = True,
+                                    )
+                                else:
+                                    residency = None
+                            except Exception as exc:  # noqa: BLE001 -- residency is a speed-up, stay streamed
+                                logger.warning("video.h3_residency: staying fully streamed: %s", exc)
+                                residency = None
                     else:
                         denoiser_pinned = pin_prequantized_module(
                             manager, denoiser, device, logger = logger
@@ -7206,6 +7270,7 @@ class VideoBackend:
                 denoiser_streamed = bool(denoiser_streamed),
                 denoiser_host_copy = denoiser_streamed == "stream",
                 te_streamed = bool(te_streamed),
+                h3_residency = residency,
                 resolved = resolved,
             )
             self._precommit_globals = None
@@ -7870,6 +7935,32 @@ class VideoBackend:
                             transformer_streamed = bool(getattr(state, "denoiser_streamed", False)),
                             text_encoder_streamed = bool(getattr(state, "te_streamed", False)),
                         )
+                        residency = getattr(state, "h3_residency", None)
+                        if residency is not None and getattr(state, "denoiser_streamed", False):
+                            # The resident part of the streamed denoiser is demotable, so it is available to this
+                            # request; the floor is the request's largest phase plus the top-level group (on the device
+                            # for the whole denoise either way). Then the resident set is re-fitted to what is left.
+                            fit_kwargs = dict(
+                                width = width,
+                                height = height,
+                                frames = frames,
+                                te_streamed = bool(getattr(state, "te_streamed", False)),
+                                te_scheme = state.text_encoder_quant,
+                            )
+                            # The floor leaves out the fragmentation slack (a fully streamed render runs in what is
+                            # left, as before); the resident set is sized with it.
+                            floor_room = _h3_residency_budget_bytes(
+                                residency,
+                                state.device,
+                                fragmentation = False,
+                                top_gb = residency.top_bytes / 1_000_000_000,
+                                **fit_kwargs,
+                            )
+                            available_vram_gb += residency.resident_bytes() / 1_000_000_000
+                            required_vram_gb = available_vram_gb - floor_room / 1_000_000_000
+                            residency.fit(
+                                max(0, _h3_residency_budget_bytes(residency, state.device, **fit_kwargs))
+                            )
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "

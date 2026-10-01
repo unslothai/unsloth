@@ -555,43 +555,63 @@ def _round_up(value: int, multiple: int) -> int:
     return (value + multiple - 1) // multiple * multiple
 
 
-def pin_module_in_place(module: Any, *, arena_bytes: int = _PIN_ARENA_BYTES) -> int:
+def pin_module_in_place(
+    module: Any, *, arena_bytes: int = _PIN_ARENA_BYTES, _arena_factory: Any = None
+) -> int:
     """Move every CPU parameter / buffer of ``module`` into pinned host arenas, in place.
 
-    Each tensor's ``.data`` becomes a view into a pinned arena and its pageable storage is released as it goes, so the
-    host peak is the module plus ONE arena rather than two copies of the module (diffusers' stream path otherwise keeps
-    the pageable original beside its pinned copy until the first offload). A tensor that is already pinned, off the
-    CPU, or a tensor subclass is left alone. Returns the pinned payload bytes. Raises on an allocation failure; the
-    tensors moved so far stay valid (pinned memory is ordinary host memory to every reader)."""
+    Each tensor is REPLACED in its module (``_parameters`` / ``_buffers``) by a view into a pinned arena, so the
+    pageable original is released as it goes and the host peak is the module plus ONE arena rather than two copies
+    (diffusers' stream path otherwise keeps the pageable original beside its pinned copy). Replaced rather than
+    re-pointed through ``.data``: the hosted safetensors tensors are views of one memory-mapped file, and ``.data =``
+    keeps a view's ``_base`` alive, which pinned 27 GB of the mapping for the life of the load (measured: RssFile
+    stayed at 27.0 GB beside the 27.3 GB pinned copy). A tensor that is already pinned, off the CPU, or a tensor
+    subclass is left alone; tied tensors stay tied. Returns the pinned payload bytes. Raises on an allocation failure;
+    the tensors moved so far stay valid (pinned memory is ordinary host memory to every reader)."""
     import torch
 
-    tensors = []
-    seen: set[int] = set()
-    for tensor in list(module.parameters()) + list(module.buffers()):
-        if id(tensor) in seen:
-            continue
-        seen.add(id(tensor))
+    slots: dict[int, list] = {}  # id(tensor) -> [tensor, [(owner dict, name, is_param)]]
+    for sub in module.modules():
+        for table, is_param in ((sub._parameters, True), (sub._buffers, False)):
+            for name, tensor in list(table.items()):
+                if tensor is None:
+                    continue
+                entry = slots.setdefault(id(tensor), [tensor, []])
+                entry[1].append((table, name, is_param))
+    todo = []
+    for tensor, owners in slots.values():
         if tensor.device.type != "cpu" or type(tensor.data) is not torch.Tensor:
             continue
-        if tensor.numel() == 0 or tensor.is_pinned():
+        if tensor.numel() == 0 or (_arena_factory is None and tensor.is_pinned()):
             continue
-        tensors.append(tensor)
+        todo.append((tensor, owners))
     # Largest first, first fit: the big MLP projections fill arenas, the small norms fill the tails.
-    tensors.sort(key = lambda t: t.numel() * t.element_size(), reverse = True)
+    todo.sort(key = lambda item: item[0].numel() * item[0].element_size(), reverse = True)
     arenas: list[list] = []  # [arena tensor, used bytes]
     pinned = 0
-    for tensor in tensors:
+    for tensor, owners in todo:
         nbytes = tensor.numel() * tensor.element_size()
         need = _round_up(nbytes, _PIN_ALIGN)
         slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
         if slot is None:
             size = max(int(arena_bytes), 1 << (need - 1).bit_length())
-            slot = [torch.empty(size, dtype = torch.uint8, pin_memory = True), 0]
+            arena = (
+                _arena_factory(size)
+                if _arena_factory is not None
+                else torch.empty(size, dtype = torch.uint8, pin_memory = True)
+            )
+            slot = [arena, 0]
             arenas.append(slot)
         offset = slot[1]
         view = slot[0][offset : offset + nbytes].view(tensor.dtype).view(tensor.shape)
-        view.copy_(tensor.data)
-        tensor.data = view
+        view.copy_(tensor.detach())
+        replacement = (
+            torch.nn.Parameter(view, requires_grad = tensor.requires_grad)
+            if isinstance(tensor, torch.nn.Parameter)
+            else view
+        )
+        for table, name, _is_param in owners:
+            table[name] = replacement
         slot[1] = offset + need
         pinned += nbytes
     return pinned

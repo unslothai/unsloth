@@ -103,6 +103,7 @@ def estimate_h3_diffusers_vram_gb(
     transformer_gb: Optional[float] = None,
     transformer_pinned: bool = False,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> float:
     """Measured available-VRAM floor for an H3 Diffusers generation.
 
@@ -111,6 +112,23 @@ def estimate_h3_diffusers_vram_gb(
     keeps the released-bfloat16 floor this shipped with.
     ``transformer_streamed``: no two large components are ever resident together."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
+    if text_encoder_streamed:
+        from .video_minimax_h3_te import H3_TE_STREAMED_GB
+
+        text_encoder_gb = H3_TE_STREAMED_GB
+        if transformer_streamed:
+            # Nothing big is resident: the floor is the largest PHASE (encode window, denoise window + activations,
+            # VAE decode) plus the denoiser's top-level group, on the device for the whole denoise.
+            from .video_minimax_h3_residency import H3_TOP_LEVEL_GB, h3_phase_need_gb
+
+            return h3_phase_need_gb(
+                width,
+                height,
+                num_frames,
+                te_streamed_gb = H3_TE_STREAMED_GB,
+                fragmentation = False,
+                top_gb = H3_TOP_LEVEL_GB,
+            )
     if transformer_streamed:
         text_encoder = (
             H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
