@@ -18,6 +18,8 @@ let mutationVersion = 0;
 function publishRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
   cachedRecipeList = [...recipes].sort((a, b) => b.updatedAt - a.updatedAt);
   recipeListReady = true;
+  // The list is authoritative: a recipe deleted elsewhere must not reopen from the cache.
+  recentRecipeCache.clear();
   for (const recipe of cachedRecipeList) {
     recentRecipeCache.set(recipe.id, recipe);
   }

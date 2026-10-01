@@ -28,7 +28,21 @@ async function putExecution(record: RecipeExecutionRecord): Promise<void> {
       body: JSON.stringify(record),
     },
   );
-  if (!res.ok) throw new Error(`Save execution failed (${res.status})`);
+  if (!res.ok) {
+    throw Object.assign(new Error(`Save execution failed (${res.status})`), {
+      status: res.status,
+    });
+  }
+}
+
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+function isTransient(error: unknown): boolean {
+  const status = (error as { status?: number }).status;
+  // No status = the request never got an answer (network, server restart).
+  return (
+    status === undefined || status === 408 || status === 429 || status >= 500
+  );
 }
 
 type Waiter = { resolve: () => void; reject: (error: unknown) => void };
@@ -37,14 +51,29 @@ type Queue = { record: RecipeExecutionRecord | null; waiters: Waiter[] };
 const queues = new Map<string, Queue>();
 
 async function drain(id: string, queue: Queue): Promise<void> {
+  let carried: Waiter[] = [];
+  let attempt = 0;
   while (queue.record) {
-    const { record, waiters } = queue;
+    const record = queue.record;
+    const waiters = [...carried, ...queue.waiters];
     queue.record = null;
     queue.waiters = [];
+    carried = [];
     try {
       await putExecution(record);
+      attempt = 0;
       for (const waiter of waiters) waiter.resolve();
     } catch (error) {
+      // The final snapshot of a finished run is never sent again, so a transient failure retries
+      // it unless a newer snapshot has arrived meanwhile.
+      if (isTransient(error) && attempt < RETRY_DELAYS_MS.length) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        attempt += 1;
+        queue.record ??= record;
+        carried = waiters;
+        continue;
+      }
+      attempt = 0;
       for (const waiter of waiters) waiter.reject(error);
     }
   }

@@ -85,12 +85,35 @@ test("every coalesced caller hears about the failed write that carried its recor
     saveRecipeExecution({ id: "e1", recipeId: "r1", done }),
   );
   const settled = Promise.allSettled([first, ...later]);
-  status = 503;
+  status = 422;
   await server.flush();
   const outcomes = await settled;
   assert.deepEqual(
     outcomes.map((o) => o.status),
     ["fulfilled", "rejected", "rejected"],
+  );
+});
+
+test("a transient failure retries the newest snapshot instead of dropping it", async () => {
+  const statuses = [503, 204];
+  const server = fakeServer(() => statuses.shift() ?? 204);
+  const { saveRecipeExecution } = loadWithStubs<{
+    saveRecipeExecution: (record: Record<string, unknown>) => Promise<void>;
+  }>(
+    new URL(
+      "../src/features/recipe-studio/data/executions-db.ts",
+      import.meta.url,
+    ),
+    { "@/features/auth": { authFetch: server.authFetch } },
+  );
+  const saved = saveRecipeExecution({ id: "e1", recipeId: "r1", done: 9 });
+  await server.flush();
+  await new Promise((r) => setTimeout(r, 1100));
+  await server.flush();
+  await saved;
+  assert.deepEqual(
+    server.calls.map((c) => (c.body as { done: number }).done),
+    [9, 9],
   );
 });
 
