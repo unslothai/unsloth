@@ -185,3 +185,18 @@ def test_a_raising_logger_does_not_stop_the_drain():
     finally:
         llama_cpp.logger = llama_cpp_logger
     assert b._stdout_lines == lines
+
+
+def test_coloured_and_timestamp_free_prefixes_keep_their_level(monkeypatch):
+    log = _logger(monkeypatch)
+    # Verbatim from llama.cpp b11317 with --log-colors on / --no-log-timestamps.
+    coloured = "\x1b[34m0.08.894.798\x1b[0m \x1b[35mW srv  llama_server: no API key is set"
+    bare = "E gguf_init_from_file: cannot open GGUF file '/x.gguf'"
+    _backend(
+        [
+            "\x1b[34m0.00.002.742\x1b[0m \x1b[32mI \x1b[0msrv  llama_server: initializing",
+            coloured,
+            bare,
+        ]
+    )._drain_stdout()
+    assert _info_lines(log) == [f"[llama-server] {coloured}", f"[llama-server] {bare}"]
