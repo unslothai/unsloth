@@ -2873,3 +2873,107 @@ def test_streamed_transformer_runs_pinned_and_overlapped_on_a_real_gpu(monkeypat
             got = net(x.cuda())
     torch.cuda.synchronize()
     assert torch.allclose(got.cpu(), want, atol = 1e-5)
+
+
+def _top_group_module(monkeypatch, *, stream = None, torchao = False):
+    """A module whose diffusers registry holds a top-level group, on a fake diffusers.hooks.group_offloading."""
+    import sys
+
+    torch = pytest.importorskip("torch")
+    go = types.ModuleType("diffusers.hooks.group_offloading")
+    go._GROUP_OFFLOADING = "group_offloading"
+    go._is_torchao_tensor = lambda t: torchao
+    hooks = types.ModuleType("diffusers.hooks")
+    hooks.group_offloading = go
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks.group_offloading", go)
+    if "diffusers" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    leaf = torch.nn.Linear(4, 4)
+    group = types.SimpleNamespace(
+        stream = stream,
+        offload_to_disk_path = None,
+        onload_device = types.SimpleNamespace(type = "cuda"),
+        modules = [leaf],
+        parameters = [],
+        buffers = [],
+        onload_ = "diffusers",
+        offload_ = "diffusers",
+    )
+    hook = types.SimpleNamespace(group = group)
+    module = types.SimpleNamespace(
+        _diffusers_hook = types.SimpleNamespace(get_hook = lambda name: hook if name == "group_offloading" else None)
+    )
+    return module, group
+
+
+def test_top_level_group_kill_switch(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    module, group = _top_group_module(monkeypatch)
+    monkeypatch.setenv(mem.PIN_TOP_GROUP_ENV, "0")
+    assert mem._pin_top_level_group(module) is False
+    assert group.onload_ == "diffusers" and group.offload_ == "diffusers"
+
+
+@pytest.mark.parametrize("kind", ["streamed_group", "torchao"])
+def test_top_level_group_left_alone_when_not_the_streamless_top_group(monkeypatch, kind):
+    import core.inference.diffusion_memory as mem
+
+    module, group = _top_group_module(
+        monkeypatch, stream = object() if kind == "streamed_group" else None, torchao = kind == "torchao"
+    )
+    monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    assert mem._pin_top_level_group(module) is False
+    assert group.onload_ == "diffusers"
+
+
+@pytest.mark.parametrize("tier", ["group", "streaming"])
+def test_top_level_weights_onload_from_one_pinned_copy_on_a_real_gpu(monkeypatch, tier):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    pytest.importorskip("diffusers.hooks")
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PIN_TOP_GROUP", raising = False)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+
+    class Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj_in = torch.nn.Linear(64, 64)
+            self.blocks = torch.nn.ModuleList(torch.nn.Linear(64, 64) for _ in range(4))
+            self.proj_out = torch.nn.Linear(64, 64)
+
+        def forward(self, x):
+            x = self.proj_in(x)
+            for block in self.blocks:
+                x = x + torch.tanh(block(x))
+            return self.proj_out(x)
+
+    torch.manual_seed(0)
+    net = Net().eval()
+    x = torch.randn(8, 64)
+    with torch.no_grad():
+        want = net(x)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    if tier == "group":
+        assert mem._apply_group_offload(pipe, "cuda", logger = None) is True
+    else:
+        mem._apply_streaming_offload(pipe, "cuda", None)
+    with torch.no_grad():
+        got = [net(x.cuda()).cpu() for _ in range(3)]
+    torch.cuda.synchronize()
+    # offloaded between forwards onto the same pinned host copy: no device-to-host copy into a fresh host buffer
+    ptr = net.proj_out.weight.data_ptr()
+    assert net.proj_out.weight.device.type == "cpu" and net.proj_out.weight.is_pinned()
+    with torch.no_grad():
+        got.append(net(x.cuda()).cpu())
+    torch.cuda.synchronize()
+    assert net.proj_out.weight.data_ptr() == ptr
+    assert all(torch.allclose(g, want, atol = 1e-5) for g in got)

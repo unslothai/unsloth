@@ -2248,6 +2248,88 @@ def install_group_offload_buffer_restore() -> bool:
     return True
 
 
+PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
+
+
+def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
+    """Keep a pinned host copy of a block-streamed DiT's top-level weights instead of copying them back every forward.
+
+    diffusers' block-level offload puts the weights outside the block lists (embedders, norm_out, proj_out, ...) into
+    one top-level group WITHOUT a stream: every forward uploads them synchronously from pageable host memory, and every
+    offload copies them back into a freshly allocated host buffer, a device-to-host copy inference never needs since
+    the weights do not change. With one pinned copy the onload is an async H2D on the compute stream (ordered before
+    the forward's kernels, so no wait and no race) and the offload only re-points the tensors. VRAM is unchanged: the
+    group is resident for exactly the same span. Skipped for torchao weights (their tensors cannot be re-pointed through
+    .data) and when the copy does not fit the pinnable host RAM. UNSLOTH_DIFFUSION_PIN_TOP_GROUP=0 turns it off."""
+    if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+
+        registry = getattr(module, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        hook = get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading")) if callable(get_hook) else None
+        group = getattr(hook, "group", None)
+        if (
+            group is None
+            or getattr(group, "stream", None) is not None
+            or getattr(group, "offload_to_disk_path", None)
+            or getattr(getattr(group, "onload_device", None), "type", None) != "cuda"
+            or getattr(group, "_unsloth_pinned_top", False)
+        ):
+            return False
+        tensors: list = []
+        seen: set = set()
+        for tensor in (
+            [p for m in group.modules for p in m.parameters()]
+            + [b for m in group.modules for b in m.buffers()]
+            + list(group.parameters or [])
+            + list(group.buffers or [])
+        ):
+            if id(tensor) not in seen:
+                seen.add(id(tensor))
+                tensors.append(tensor)
+        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
+            return False
+        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+            return False
+        need_mib = sum(int(t.numel()) * int(t.element_size()) for t in tensors) // (1024 * 1024)
+        budget = None if _pinned_memory_capped() else _pin_budget_mib()
+        if budget is None or need_mib > budget:
+            return False
+        host = {t: (t.data if t.data.device.type == "cpu" else t.data.cpu()).pin_memory() for t in tensors}
+        device = group.onload_device
+
+        def onload_() -> None:
+            for tensor, pinned in host.items():
+                tensor.data = pinned.to(device, non_blocking = True)
+
+        def offload_() -> None:
+            for tensor, pinned in host.items():
+                tensor.data = pinned
+
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        if callable(disable):
+            onload_, offload_ = disable(onload_), disable(offload_)
+        offload_()
+        group.onload_ = onload_
+        group.offload_ = offload_
+        group._unsloth_pinned_top = True
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s top-level weights (%d MiB) onload from a pinned copy, no copy back",
+                type(module).__name__,
+                need_mib,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 - diffusers keeps its own (slower) path
+        if logger is not None:
+            logger.debug("diffusion.memory: top-level group left as diffusers built it (%s)", exc)
+        return False
+
+
 def _apply_group_offload(
     pipe: Any,
     device: str,
@@ -2369,6 +2451,8 @@ def _apply_group_offload(
                     module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
                 )
             installed += 1
+            if use_stream:
+                _pin_top_level_group(module, logger)
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
         # recognisable block list can refuse), and this tier is a rescue: the alternative to streaming an encoder is
@@ -2982,6 +3066,8 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
             if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 _defer_pinning(pipe, module, onload, logger)
             installed += 1
+            if use_stream and offload_type == "block_level":
+                _pin_top_level_group(module, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
     except Exception as exc:
