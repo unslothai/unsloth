@@ -1750,6 +1750,7 @@ class FastSentenceTransformer(FastModel):
             ) and hasattr(st_model[0], "unpad_inputs"):
                 # Refresh ST's cached capability decision after changing the backend.
                 st_model[0].unpad_inputs = st_model[0].unpad_inputs
+            st_model._unsloth_trust_remote_code = trust_remote_code
             return st_model
 
         if "auto_model" not in kwargs:
@@ -1927,6 +1928,7 @@ class FastSentenceTransformer(FastModel):
 
             st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
 
+            st_model._unsloth_trust_remote_code = trust_remote_code
             return st_model
 
         # Warn if using 4-bit with an encoder: it is slow due to dequantization overhead.
@@ -2179,6 +2181,7 @@ class FastSentenceTransformer(FastModel):
             print(f"Unsloth: Successfully pushed merged model to https://huggingface.co/{repo_id}")
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
+        st_model._unsloth_trust_remote_code = trust_remote_code
         return st_model
 
     @staticmethod
@@ -2567,7 +2570,13 @@ def _patch_st_trainer_load_from_checkpoint():
             # module_cls comes from the live model, so the class is trusted, but load() still reads
             # the checkpoint's own config files and some versions import dotted paths out of them.
             FastSentenceTransformer._check_module_config_class_refs(
-                module_dir, saved_type or module_cls.__name__, root, False, module_cls
+                module_dir,
+                saved_type or module_cls.__name__,
+                root,
+                # The consent the model was loaded with. Hard-coding False would make a resume
+                # impossible for a model that legitimately needed it, with no way to say so here.
+                getattr(self.model, "_unsloth_trust_remote_code", False),
+                module_cls,
             )
             fresh = module_cls.load(module_dir)
             if not isinstance(fresh, module_cls):

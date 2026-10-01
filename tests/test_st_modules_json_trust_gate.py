@@ -306,3 +306,42 @@ def test_a_legacy_module_class_without_config_file_name_is_still_read(tmp_path):
             False,
             WordEmbeddings,
         )
+
+
+@pytest.mark.parametrize("trusted, expect_refusal", [(False, True), (True, False)])
+def test_the_checkpoint_reload_honours_the_consent_the_model_was_loaded_with(
+    trusted, expect_refusal, tmp_path
+):
+    """Hard-coding False here would make resume impossible for a model that legitimately needed
+    consent, and the reload takes only a checkpoint path, so there is no way to pass it there."""
+    from sentence_transformers.models import Dense
+
+    load_path = tmp_path / "2_Dense"
+    load_path.mkdir()
+    (load_path / "config.json").write_text(
+        json.dumps({"activation_function": f"{MARKER}.Thing"}), encoding = "utf-8"
+    )
+
+    class FakeModel:
+        _unsloth_trust_remote_code = trusted
+
+    trust = getattr(FakeModel, "_unsloth_trust_remote_code", False)
+    if expect_refusal:
+        with pytest.raises(ValueError, match = "executes third-party code"):
+            FastSentenceTransformer._check_module_config_class_refs(
+                str(load_path), "sentence_transformers.models.Dense", str(tmp_path), trust, Dense
+            )
+    else:
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(load_path), "sentence_transformers.models.Dense", str(tmp_path), trust, Dense
+        )
+
+
+def test_every_load_route_records_the_consent_it_used():
+    """The reload reads the flag off the model, so every route that builds one must set it."""
+    import inspect
+
+    source = inspect.getsource(FastSentenceTransformer.from_pretrained)
+    assert source.count("_unsloth_trust_remote_code = trust_remote_code") == source.count(
+        "return st_model"
+    )
