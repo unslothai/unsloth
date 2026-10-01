@@ -71,3 +71,20 @@ def test_validate_markdown_text_accepts_unmatched_brackets_and_parens():
 def test_validate_json_text_rejects_nan_and_accepts_native_values():
     assert _validate_json_text("NaN")["is_valid"] is False
     assert _validate_json_text({"a": True})["is_valid"] is True
+
+
+def test_validate_markdown_text_follows_commonmark_fences():
+    for text in (
+        "````md\nuse ```python\n````",
+        "Wrap code in ``` fences.",
+        "```markdown\n# T\n```python\nx = 1\n```",
+    ):
+        assert _validate_markdown_text(text)["is_valid"] is True, text
+    for text in ("```python\nprint(1)", "~~~\nx", "````\nx\n```"):
+        assert _validate_markdown_text(text)["is_valid"] is False, text
+
+
+def test_validate_json_text_accepts_native_scalars():
+    for value in (True, False, 0, 2.5):
+        assert _validate_json_text(value)["is_valid"] is True, value
+    assert _validate_json_text(float("nan"))["is_valid"] is False

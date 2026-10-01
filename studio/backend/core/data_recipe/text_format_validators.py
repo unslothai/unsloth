@@ -13,7 +13,9 @@ from typing import Any
 JSON_VALIDATION_FN_MARKER = "unsloth_json_validator"
 MARKDOWN_VALIDATION_FN_MARKER = "unsloth_markdown_validator"
 
-_MARKDOWN_FENCE_RE = re.compile(r"```")
+# CommonMark fenced code blocks: https://spec.commonmark.org/0.31.2/#fenced-code-blocks
+_MARKDOWN_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}(?=[^`]*$)|~{3,})")
+_MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 
 
 @dataclass(frozen = True)
@@ -181,7 +183,7 @@ def _validate_text_format(*, value: Any, format_kind: str) -> dict[str, Any]:
 
 
 def _validate_json_text(value: Any) -> dict[str, Any]:
-    if isinstance(value, (dict, list)):
+    if isinstance(value, (dict, list, bool, int, float)):
         payload = value
     else:
         stripped = str(value).strip()
@@ -200,11 +202,25 @@ def _validate_json_text(value: Any) -> dict[str, Any]:
 
 # Markdown accepts unmatched brackets and parentheses as text ("1) item", "Status (draft"),
 # so an unclosed code fence is the only structural break worth rejecting.
+def _has_unclosed_markdown_fence(text: str) -> bool:
+    fence = ""
+    for line in text.splitlines():
+        if not fence:
+            match = _MARKDOWN_FENCE_OPEN_RE.match(line)
+            if match:
+                fence = match.group(1)
+            continue
+        match = _MARKDOWN_FENCE_CLOSE_RE.match(line)
+        if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+            fence = ""
+    return bool(fence)
+
+
 def _validate_markdown_text(value: Any) -> dict[str, Any]:
     stripped = str(value).strip()
     if not stripped:
         return _invalid_result("Markdown value is empty.")
-    if len(_MARKDOWN_FENCE_RE.findall(stripped)) % 2 != 0:
+    if _has_unclosed_markdown_fence(stripped):
         return _invalid_result("Markdown has an unclosed code fence.")
     return _valid_result()
 
