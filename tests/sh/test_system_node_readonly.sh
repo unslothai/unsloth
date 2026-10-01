@@ -26,10 +26,11 @@ bundled_arm="$(awk '
     grab {print}
 ' "$SETUP")"
 # The optional-bun block (the only global install, gated on the bundled path).
+# Ends at the `fi` with the same indent as its `if` (the block lives inside a function).
 bun_block="$(awk '
-    /^if command -v bun &>\/dev\/null; then/ {grab=1}
+    !grab && /^[[:space:]]*if command -v bun &>\/dev\/null; then/ {grab=1; ind=$0; sub(/if.*/, "", ind)}
     grab {print}
-    grab && /^fi$/ {exit}
+    grab && $0 == ind "fi" {exit}
 ' "$SETUP")"
 
 # Self-validate extraction so a setup.sh refactor cannot silently void the test.

@@ -79,6 +79,7 @@ setup_fail() {
     local tauri_marker=0
     case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
     case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
+    [ -z "${_SETUP_FAIL_NO_MARKER:-}" ] || tauri_marker=0
     if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
     # Guarded: tests slice this function out without the abort helper.
     if [ "$(type -t _setup_abort_frontend_job 2>/dev/null)" = function ]; then
@@ -700,8 +701,7 @@ _setup_parallel_run() {
 # A failed job already printed its own [TAURI:ERROR]; Desktop keeps the last one, so add none.
 _setup_bg_fail() {
     step "error" "$2 failed (exit code $1)" "$C_ERR" >&2
-    _setup_abort_frontend_job
-    exit "$1"
+    _SETUP_FAIL_NO_MARKER=1 setup_fail "$1" "$2 failed (exit code $1)"
 }
 
 _setup_parallel_wait() {
@@ -724,6 +724,213 @@ _setup_parallel_wait() {
     if [ "$fail" -ne 0 ]; then
         _setup_bg_fail 1 "A parallel setup task"
     fi
+}
+
+# Defined unconditionally: llama-only updates and skipped-frontend runs still reap and join.
+# Tailwind's oxide scanner honours ancestor "*" .gitignores (venvs write one), so hide them during the build only.
+_HIDDEN_GITIGNORES=()
+_setup_hide_star_gitignores_from() {
+    local _dir="$1"
+    _HIDDEN_GITIGNORES=()
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+            mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+            _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+        fi
+    done
+}
+
+_setup_restore_star_gitignores() {
+    local _gi
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+    done
+    _HIDDEN_GITIGNORES=()
+}
+
+_setup_restore_twbuild_gitignores_from() {
+    local _dir="${1:-}"
+    [ -n "$_dir" ] && [ -d "$_dir" ] || return 0
+    _dir="$(cd "$_dir" && pwd)"
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore._twbuild" ] && [ ! -e "$_dir/.gitignore" ]; then
+            mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || true
+        fi
+    done
+}
+
+_setup_frontend_build_and_oxc() {
+    local _need_build="${_NEED_FRONTEND_BUILD:-false}"
+
+    if [ "$_need_build" = true ]; then
+        # bun only into the isolated Node prefix, never globally on a system Node.
+        if command -v bun &>/dev/null; then
+            substep "bun already installed ($(bun --version))"
+        elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
+            verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
+        elif [ "$NODE_SOURCE" = bundled ]; then
+            substep "installing bun..."
+            # npm >=11.16 gates install scripts; bun's postinstall fetches its binary.
+            if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
+                substep "bun installed ($(bun --version))"
+            else
+                substep "bun install skipped (npm will be used instead)"
+            fi
+        else
+            verbose_substep "skipping global bun install on system Node (npm will be used)"
+        fi
+
+        substep "building frontend..."
+        cd "$SCRIPT_DIR/frontend"
+
+        # Captured so _suggest_npm_registry can spot a registry block.
+        _FRONTEND_INSTALL_LOG=$(mktemp)
+        _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
+        _bun_install_ok=false
+        _NPM_INSTALL=install
+        [ -f package-lock.json ] && _NPM_INSTALL=ci
+        if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
+            substep "using bun for package install (faster)"
+            if _try_bun_install; then
+                _bun_install_ok=true
+            else
+                # Likely a corrupt bun cache: clear it and retry once.
+                echo "   Clearing bun cache and retrying..."
+                run_maybe_quiet bun pm cache rm || true
+                if _try_bun_install; then
+                    _bun_install_ok=true
+                fi
+            fi
+        fi
+        if [ "$_bun_install_ok" = false ]; then
+            # `|| rc=$?` keeps set -e off this path so the registry hint is reachable.
+            _npm_install_rc=0
+            run_quiet_no_exit "npm $_NPM_INSTALL" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+            if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL"; then
+                _npm_install_rc=0
+            fi
+            if [ "$_npm_install_rc" -ne 0 ]; then
+                _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+                rm -f "$_FRONTEND_INSTALL_LOG"
+                setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
+            fi
+        fi
+        _CAPTURE_LOG=""
+        rm -f "$_FRONTEND_INSTALL_LOG"
+        _setup_hide_star_gitignores_from "$(pwd)"
+        trap '_setup_restore_star_gitignores; trap - EXIT' EXIT
+        run_quiet "npm run build" npm run build
+        _setup_restore_star_gitignores
+        trap - EXIT
+
+        _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+        if [ -z "$_MAX_CSS" ]; then
+            step "frontend" "built (warning: no CSS emitted)" "$C_WARN"
+        elif [ "$_MAX_CSS" -lt 100000 ]; then
+            step "frontend" "built (warning: CSS may be truncated)" "$C_WARN"
+        else
+            step "frontend" "built"
+        fi
+
+        cd "$SCRIPT_DIR"
+    fi
+
+    # oxc-validator runtime; NODE_SOURCE=skip means no suitable Node to install with.
+    if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+        cd "$_OXC_DIR"
+        _OXC_INSTALL_LOG=$(mktemp)
+        _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+        _oxc_install_rc=0
+        _NPM_INSTALL=install
+        [ -f package-lock.json ] && _NPM_INSTALL=ci
+        run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+        if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
+            _oxc_install_rc=0
+        fi
+        _CAPTURE_LOG=""
+        if [ "$_oxc_install_rc" -ne 0 ]; then
+            _suggest_npm_registry "$_OXC_INSTALL_LOG"
+            rm -f "$_OXC_INSTALL_LOG"
+            setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
+        fi
+        rm -f "$_OXC_INSTALL_LOG"
+        cd "$SCRIPT_DIR"
+    elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+        # No npm: the backend degrades the validator gracefully (mirrors setup.ps1).
+        substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+    fi
+
+    _remove_agent_instruction_files \
+        "$SCRIPT_DIR/frontend/node_modules" \
+        "$_OXC_DIR/node_modules"
+}
+
+_SETUP_FRONTEND_BG_PID=""
+
+# setup_fail in the background job only ends that subshell: reap early so the parent aborts too.
+_setup_frontend_reap_if_exited() {
+    local pid="${_SETUP_FRONTEND_BG_PID:-}"
+    [ -n "$pid" ] || return 0
+    kill -0 "$pid" 2>/dev/null && return 0
+    local wait_status=0
+    wait "$pid" || wait_status=$?
+    _SETUP_FRONTEND_BG_PID=""
+    if [ "$wait_status" -ne 0 ]; then
+        _setup_bg_fail "$wait_status" "Frontend build or OXC install"
+    fi
+}
+
+_setup_frontend_join() {
+    local pid="${_SETUP_FRONTEND_BG_PID:-}"
+    [ -n "$pid" ] || return 0
+    local wait_status=0
+    wait "$pid" || wait_status=$?
+    _SETUP_FRONTEND_BG_PID=""
+    if [ "$wait_status" -ne 0 ]; then
+        _setup_bg_fail "$wait_status" "Frontend build or OXC install"
+    fi
+}
+
+# Descendants of $1, deepest first; listed before any kill since orphans reparent away.
+_setup_pid_tree() {
+    local child
+    if command -v pgrep >/dev/null 2>&1; then
+        for child in $(pgrep -P "$1" 2>/dev/null); do
+            _setup_pid_tree "$child"
+        done
+    fi
+    echo "$1"
+}
+
+_setup_abort_frontend_job() {
+    local pid="${_SETUP_FRONTEND_BG_PID:-}" tree p n=0 alive
+    _SETUP_FRONTEND_BG_PID=""
+    [ -n "$pid" ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    # Leaves first: a bash waiting on npm acts on SIGTERM only once npm exits, then its EXIT
+    # trap restores the gitignores.
+    tree=$(_setup_pid_tree "$pid")
+    for p in $tree; do kill -TERM "$p" 2>/dev/null || true; done
+    while [ "$n" -lt 20 ]; do
+        alive=""
+        # Not $pid: it stays a zombie, answering kill -0, until the wait below.
+        for p in $tree; do [ "$p" = "$pid" ] || ! kill -0 "$p" 2>/dev/null || alive=1; done
+        [ -n "$alive" ] || break
+        sleep 0.1
+        n=$((n + 1))
+    done
+    for p in $tree; do kill -KILL "$p" 2>/dev/null || true; done
+    wait "$pid" 2>/dev/null || true
+    _setup_restore_twbuild_gitignores_from "${SCRIPT_DIR:-}/frontend"
+}
+
+_setup_launch_frontend_build_and_oxc() {
+    _setup_frontend_build_and_oxc &
+    _SETUP_FRONTEND_BG_PID=$!
+    # setup_fail aborts the job itself; this covers set -e exits and signals.
+    trap _setup_abort_frontend_job EXIT
 }
 
 _nvcc_meets_llama_minimum() {
@@ -2365,210 +2572,6 @@ _try_bun_install() {
 }
 
 
-# Tailwind's oxide scanner honours ancestor "*" .gitignores (venvs write one), so hide them during the build only.
-_HIDDEN_GITIGNORES=()
-_setup_hide_star_gitignores_from() {
-    local _dir="$1"
-    _HIDDEN_GITIGNORES=()
-    while [ "$_dir" != "/" ]; do
-        _dir="$(dirname "$_dir")"
-        if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
-            mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
-            _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
-        fi
-    done
-}
-
-_setup_restore_star_gitignores() {
-    local _gi
-    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
-        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
-    done
-    _HIDDEN_GITIGNORES=()
-}
-
-_setup_restore_twbuild_gitignores_from() {
-    local _dir="${1:-}"
-    [ -n "$_dir" ] && [ -d "$_dir" ] || return 0
-    _dir="$(cd "$_dir" && pwd)"
-    while [ "$_dir" != "/" ]; do
-        _dir="$(dirname "$_dir")"
-        if [ -f "$_dir/.gitignore._twbuild" ]; then
-            mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || true
-        fi
-    done
-}
-
-_setup_frontend_build_and_oxc() {
-    local _need_build="${_NEED_FRONTEND_BUILD:-false}"
-
-    if [ "$_need_build" = true ]; then
-        # bun only into the isolated Node prefix, never globally on a system Node.
-        if command -v bun &>/dev/null; then
-            substep "bun already installed ($(bun --version))"
-        elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
-            verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
-        elif [ "$NODE_SOURCE" = bundled ]; then
-            substep "installing bun..."
-            # npm >=11.16 gates install scripts; bun's postinstall fetches its binary.
-            if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
-                substep "bun installed ($(bun --version))"
-            else
-                substep "bun install skipped (npm will be used instead)"
-            fi
-        else
-            verbose_substep "skipping global bun install on system Node (npm will be used)"
-        fi
-
-        substep "building frontend..."
-        cd "$SCRIPT_DIR/frontend"
-
-        # Captured so _suggest_npm_registry can spot a registry block.
-        _FRONTEND_INSTALL_LOG=$(mktemp)
-        _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
-        _bun_install_ok=false
-        _NPM_INSTALL=install
-        [ -f package-lock.json ] && _NPM_INSTALL=ci
-        if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
-            substep "using bun for package install (faster)"
-            if _try_bun_install; then
-                _bun_install_ok=true
-            else
-                # Likely a corrupt bun cache: clear it and retry once.
-                echo "   Clearing bun cache and retrying..."
-                run_maybe_quiet bun pm cache rm || true
-                if _try_bun_install; then
-                    _bun_install_ok=true
-                fi
-            fi
-        fi
-        if [ "$_bun_install_ok" = false ]; then
-            # `|| rc=$?` keeps set -e off this path so the registry hint is reachable.
-            _npm_install_rc=0
-            run_quiet_no_exit "npm $_NPM_INSTALL" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
-            if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL"; then
-                _npm_install_rc=0
-            fi
-            if [ "$_npm_install_rc" -ne 0 ]; then
-                _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
-                rm -f "$_FRONTEND_INSTALL_LOG"
-                setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
-            fi
-        fi
-        _CAPTURE_LOG=""
-        rm -f "$_FRONTEND_INSTALL_LOG"
-        _setup_hide_star_gitignores_from "$(pwd)"
-        trap '_setup_restore_star_gitignores; trap - EXIT' EXIT
-        run_quiet "npm run build" npm run build
-        _setup_restore_star_gitignores
-        trap - EXIT
-
-        _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
-        if [ -z "$_MAX_CSS" ]; then
-            step "frontend" "built (warning: no CSS emitted)" "$C_WARN"
-        elif [ "$_MAX_CSS" -lt 100000 ]; then
-            step "frontend" "built (warning: CSS may be truncated)" "$C_WARN"
-        else
-            step "frontend" "built"
-        fi
-
-        cd "$SCRIPT_DIR"
-    fi
-
-    # oxc-validator runtime; NODE_SOURCE=skip means no suitable Node to install with.
-    if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
-        cd "$_OXC_DIR"
-        _OXC_INSTALL_LOG=$(mktemp)
-        _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-        _oxc_install_rc=0
-        _NPM_INSTALL=install
-        [ -f package-lock.json ] && _NPM_INSTALL=ci
-        run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-        if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
-            _oxc_install_rc=0
-        fi
-        _CAPTURE_LOG=""
-        if [ "$_oxc_install_rc" -ne 0 ]; then
-            _suggest_npm_registry "$_OXC_INSTALL_LOG"
-            rm -f "$_OXC_INSTALL_LOG"
-            setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
-        fi
-        rm -f "$_OXC_INSTALL_LOG"
-        cd "$SCRIPT_DIR"
-    elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-        # No npm: the backend degrades the validator gracefully (mirrors setup.ps1).
-        substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
-    fi
-
-    _remove_agent_instruction_files \
-        "$SCRIPT_DIR/frontend/node_modules" \
-        "$_OXC_DIR/node_modules"
-}
-
-_SETUP_FRONTEND_BG_PID=""
-
-# setup_fail in the background job only ends that subshell: reap early so the parent aborts too.
-_setup_frontend_reap_if_exited() {
-    local pid="${_SETUP_FRONTEND_BG_PID:-}"
-    [ -n "$pid" ] || return 0
-    kill -0 "$pid" 2>/dev/null && return 0
-    local wait_status=0
-    wait "$pid" || wait_status=$?
-    _SETUP_FRONTEND_BG_PID=""
-    if [ "$wait_status" -ne 0 ]; then
-        _setup_bg_fail "$wait_status" "Frontend build or OXC install"
-    fi
-}
-
-_setup_frontend_join() {
-    local pid="${_SETUP_FRONTEND_BG_PID:-}"
-    [ -n "$pid" ] || return 0
-    local wait_status=0
-    wait "$pid" || wait_status=$?
-    _SETUP_FRONTEND_BG_PID=""
-    if [ "$wait_status" -ne 0 ]; then
-        _setup_bg_fail "$wait_status" "Frontend build or OXC install"
-    fi
-}
-
-# Descendants of $1, deepest first; listed before any kill since orphans reparent away.
-_setup_pid_tree() {
-    local child
-    if command -v pgrep >/dev/null 2>&1; then
-        for child in $(pgrep -P "$1" 2>/dev/null); do
-            _setup_pid_tree "$child"
-        done
-    fi
-    echo "$1"
-}
-
-_setup_abort_frontend_job() {
-    local pid="${_SETUP_FRONTEND_BG_PID:-}" tree p n=0 alive
-    _SETUP_FRONTEND_BG_PID=""
-    [ -n "$pid" ] || return 0
-    kill -0 "$pid" 2>/dev/null || return 0
-    # Leaves first: a bash waiting on npm acts on SIGTERM only once npm exits, then its EXIT
-    # trap restores the gitignores.
-    tree=$(_setup_pid_tree "$pid")
-    for p in $tree; do kill -TERM "$p" 2>/dev/null || true; done
-    while [ "$n" -lt 20 ]; do
-        alive=""
-        # Not $pid: it stays a zombie, answering kill -0, until the wait below.
-        for p in $tree; do [ "$p" = "$pid" ] || ! kill -0 "$p" 2>/dev/null || alive=1; done
-        [ -n "$alive" ] || break
-        sleep 0.1
-        n=$((n + 1))
-    done
-    for p in $tree; do kill -KILL "$p" 2>/dev/null || true; done
-    wait "$pid" 2>/dev/null || true
-    _setup_restore_twbuild_gitignores_from "${SCRIPT_DIR:-}/frontend"
-}
-
-_setup_launch_frontend_build_and_oxc() {
-    _setup_frontend_build_and_oxc &
-    _SETUP_FRONTEND_BG_PID=$!
-}
-
 if [ "$_FRONTEND_SKIP" = true ]; then
     : # no suitable Node (skip source): message already shown above; nothing to build
 elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
@@ -2581,6 +2584,10 @@ elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
 else
     _setup_launch_frontend_build_and_oxc
 fi
+# Without a job (no suitable Node), still strip agent files left by an earlier install.
+[ -n "$_SETUP_FRONTEND_BG_PID" ] || _remove_agent_instruction_files \
+    "$SCRIPT_DIR/frontend/node_modules" \
+    "$_OXC_DIR/node_modules"
 
 fi  # end frontend build check
 
@@ -2767,13 +2774,14 @@ _setup_uv_sha256() {
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
-# archive behind plus a staging file inside a directory on PATH. No trap is active here (the
-# gitignore EXIT trap is cleared well above), so the pinned install owns these four for its
-# duration and hands them back on the way out.
+# archive behind plus a staging file inside a directory on PATH. The pinned install owns these
+# four for its duration, so its cleanup also stops the background frontend job, whose EXIT trap
+# it replaces, and hands EXIT back on the way out.
 _setup_uv_cleanup_temporaries() {
     [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
     [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
     [ -n "${_SIUP_STAGE2:-}" ] && rm -f "$_SIUP_STAGE2" 2>/dev/null || true
+    _setup_abort_frontend_job
 }
 
 _setup_uv_on_signal() {
@@ -2884,6 +2892,7 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
     _SIUP_STAGE=""
     _SIUP_STAGE2=""
     trap - EXIT HUP INT TERM
+    [ -z "${_SETUP_FRONTEND_BG_PID:-}" ] || trap _setup_abort_frontend_job EXIT
     # The staged binary already answered --version above, before it replaced anything.
     [ -x "$_siup_dest/uv" ] || _siup_rc=1
     if [ "$_siup_rc" = "0" ]; then

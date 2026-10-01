@@ -73,7 +73,7 @@ rm -f "$_FUNC_FILE"
 
 # ── under set -e a failed job still joins the rest and reports its label ──
 _SETE_FILE=$(mktemp)
-for _fn in _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait; do
+for _fn in setup_fail _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait; do
     sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_SETE_FILE"
 done
 _SETE_OUT=$(
@@ -236,6 +236,54 @@ else
     FAIL=$((FAIL + 1))
 fi
 rm -f "$_MARK_FILE"
+
+# ── helpers the footer calls are defined outside every top-level if (llama-only, no-OXC runs) ──
+_nested_defs=$(awk '
+    /^if / {depth++}
+    /^fi( |$)/ {depth--}
+    /^(_setup_frontend_reap_if_exited|_setup_frontend_join|_setup_abort_frontend_job|_setup_pid_tree|_setup_launch_frontend_build_and_oxc|_setup_frontend_build_and_oxc)\(\) \{/ && depth != 0 {print $1}
+' "$SETUP_SH")
+_defs_found=$(grep -cE '^(_setup_frontend_reap_if_exited|_setup_frontend_join|_setup_abort_frontend_job)\(\) \{' "$SETUP_SH" || true)
+if [ -z "$_nested_defs" ] && [ "$_defs_found" -eq 3 ]; then
+    echo "  PASS: frontend job helpers are defined unconditionally"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: frontend job helpers defined inside a conditional: $_nested_defs (found $_defs_found)"
+    FAIL=$((FAIL + 1))
+fi
+
+# ── a set -e exit after launch stops the background job tree ──
+_EXIT_FILE=$(mktemp)
+for _fn in _setup_restore_twbuild_gitignores_from _setup_pid_tree _setup_abort_frontend_job _setup_launch_frontend_build_and_oxc; do
+    sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_EXIT_FILE"
+done
+_EXIT_PIDS=$(mktemp)
+bash -c '
+    set -euo pipefail
+    SCRIPT_DIR=/nonexistent
+    . "$1"
+    _setup_frontend_build_and_oxc() { bash -c "sleep 32; true"; true; }
+    _setup_launch_frontend_build_and_oxc
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        _c=$(pgrep -P "$_SETUP_FRONTEND_BG_PID" 2>/dev/null | head -1)
+        _g=$( [ -n "$_c" ] && pgrep -P "$_c" 2>/dev/null | head -1 )
+        [ -n "$_g" ] && break
+        sleep 0.2
+    done
+    echo "$_SETUP_FRONTEND_BG_PID $_c $_g" > "$2"
+    false
+' _ "$_EXIT_FILE" "$_EXIT_PIDS" 2>/dev/null && _exit_rc=0 || _exit_rc=$?
+_exit_left=""
+for _p in $(cat "$_EXIT_PIDS"); do kill -0 "$_p" 2>/dev/null && _exit_left="$_exit_left $_p"; done
+if [ "$_exit_rc" -ne 0 ] && [ "$(wc -w < "$_EXIT_PIDS")" -eq 3 ] && [ -z "$_exit_left" ]; then
+    echo "  PASS: set -e exit after launch stops the frontend job"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: set -e exit left the job running (rc=$_exit_rc pids=$(cat "$_EXIT_PIDS") left=$_exit_left)"
+    FAIL=$((FAIL + 1))
+    for _p in $_exit_left; do kill -KILL "$_p" 2>/dev/null || true; done
+fi
+rm -f "$_EXIT_FILE" "$_EXIT_PIDS"
 
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
