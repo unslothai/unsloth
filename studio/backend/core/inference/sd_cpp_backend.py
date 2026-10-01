@@ -811,8 +811,8 @@ def _installer_module():
 _failed_accelerator_upgrades: set[str] = set()
 
 
-# Pins whose upgrade failed this process: keep the old bundle instead of retrying every load.
-_failed_pin_upgrades: set[str] = set()
+# (pin, accelerator class) upgrades that failed this process: keep the old bundle instead of retrying every load.
+_failed_pin_upgrades: set[tuple[str, str]] = set()
 _PIN_UPGRADE_ENV = "UNSLOTH_SD_CPP_AUTO_UPGRADE"
 
 
@@ -820,7 +820,7 @@ def _pin_upgrade_disabled() -> bool:
     return os.environ.get(_PIN_UPGRADE_ENV, "").strip().lower() in ("0", "false", "no", "off")
 
 
-def _pin_moved(binary: str) -> bool:
+def _pin_moved(binary: str, accelerator: str) -> bool:
     """True when ``binary`` is a managed install made for an older pin. Unknown answers False."""
     if _pin_upgrade_disabled():
         return False
@@ -832,24 +832,25 @@ def _pin_moved(binary: str) -> bool:
     try:
         mod = _installer_module()
         want = mod._pinned_tag()
-        if not want or want in _failed_pin_upgrades:
+        if not want or (want, mod.accelerator_class(accelerator)) in _failed_pin_upgrades:
             return False
         return bool(mod.install_is_stale(root))
     except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary
         return False
 
 
-def _note_failed_pin_upgrade() -> None:
+def _note_failed_pin_upgrade(accelerator: str) -> None:
     try:
-        want = _installer_module()._pinned_tag()
+        mod = _installer_module()
+        want = mod._pinned_tag()
         if want:
-            _failed_pin_upgrades.add(want)
+            _failed_pin_upgrades.add((want, mod.accelerator_class(accelerator)))
     except Exception:  # noqa: BLE001
         pass
 
 
 def _needs_reinstall(binary: str, accelerator: str) -> bool:
-    return _accelerator_changed(binary, accelerator) or _pin_moved(binary)
+    return _accelerator_changed(binary, accelerator) or _pin_moved(binary, accelerator)
 
 
 def _note_failed_upgrade(accelerator: str) -> None:
@@ -1915,7 +1916,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None:
                     _note_failed_upgrade(accelerator)
-                    _note_failed_pin_upgrade()
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
 
 
@@ -1970,7 +1971,7 @@ def ensure_sd_server_binary(
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
-                    _note_failed_pin_upgrade()
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
         installed = find_sd_server_binary()
         # The finder also probes the tree an older build left beside the Unsloth home, so when the bundle just

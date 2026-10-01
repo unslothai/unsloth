@@ -228,6 +228,29 @@ def test_a_failed_pin_upgrade_keeps_the_old_binary_and_stops_retrying(tmp_path, 
     assert cli.read_bytes() == b"old-build"
 
 
+def test_a_failed_upgrade_for_one_accelerator_still_lets_another_upgrade_the_pin(
+    tmp_path, monkeypatch
+):
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cpu", "repo": "r", "tag": OLD}
+    )
+    installs: list = []
+    ok = _recording_install(root, cli, server, installs)
+
+    def _install(**kwargs):
+        if kwargs["accelerator"] == "cuda":
+            installs.append(kwargs)
+            raise RuntimeError("no CUDA asset for this host")
+        return ok(**kwargs)
+
+    monkeypatch.setattr(sdmod, "install", _install)
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert cli.read_bytes() == b"old-build"
+    assert bk.ensure_sd_cpp_binary(accelerator = "cpu") == str(cli)
+    assert [k["accelerator"] for k in installs] == ["cuda", "cpu"]
+    assert cli.read_bytes() == b"new-build"
+
+
 def test_no_upgrade_while_the_managed_tree_is_in_use(tmp_path, monkeypatch):
     bk, root, cli, server = _tree(
         tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
