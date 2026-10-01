@@ -367,3 +367,82 @@ def test_validation_reads_the_sentence_transformers_cache(tmp_path, monkeypatch)
         FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
 
     assert seen["cache_dir"] == str(st_home)
+
+
+def test_consent_skips_validation_so_a_repo_local_class_still_loads(model_dir, monkeypatch):
+    """Below 6 the delegated loader fetches a repo-local class with get_class_from_dynamic_module,
+    which this helper cannot, so validating a consented load would break it."""
+    model, witness = model_dir
+
+    called = []
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_module_path",
+        staticmethod(lambda *a, **k: called.append(1) or None),
+    )
+
+    FastSentenceTransformer._check_modules_json_types(str(model), None, True)
+
+    assert not called, "a consented load must not be validated or resolved here"
+    assert not witness.exists()
+
+
+def test_an_unverifiable_modules_json_fails_closed_where_upstream_would_not_gate(monkeypatch):
+    """_module_path turns every failure into absent, so a transient failure would read as
+    "nothing to check" while the load that follows could still import the type."""
+    import sentence_transformers
+
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_modules_json_for_gating",
+        staticmethod(lambda *a, **k: (_ for _ in ()).throw(ValueError("Unsloth: Could not read"))),
+    )
+
+    with pytest.raises(ValueError, match = "Could not read"):
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+
+def test_a_local_directory_without_modules_json_is_a_confirmed_absence(tmp_path):
+    """A transformers-native encoder has no modules.json and must not be refused for it."""
+    model = tmp_path / "model"
+    model.mkdir()
+
+    assert FastSentenceTransformer._modules_json_for_gating(str(model), None) is None
+
+
+def test_unreachable_is_not_read_as_absent(tmp_path, monkeypatch):
+    """LocalEntryNotFoundError subclasses EntryNotFoundError, so catching the latter first turned
+    "could not reach it" into "the repo has no modules.json", which is the opposite answer."""
+    import sentence_transformers
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    import unsloth.models.sentence_transformer as st_mod
+
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        st_mod,
+        "hf_hub_download",
+        lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
+    )
+    monkeypatch.setattr(sentence_transformers, "__version__", "5.2.0", raising = False)
+
+    with pytest.raises(ValueError, match = "Could not read modules.json"):
+        FastSentenceTransformer._modules_json_for_gating("acme/embedder", None)
+
+
+def test_unreachable_is_tolerated_where_upstream_gates_it_anyway(tmp_path, monkeypatch):
+    """From 6.0 sentence-transformers refuses the type itself, so an unreachable check there must
+    not turn a working load into a failure."""
+    import sentence_transformers
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    import unsloth.models.sentence_transformer as st_mod
+
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        st_mod,
+        "hf_hub_download",
+        lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
+    )
+    monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
+
+    assert FastSentenceTransformer._modules_json_for_gating("acme/embedder", None) is None

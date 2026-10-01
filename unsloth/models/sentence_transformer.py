@@ -1341,6 +1341,85 @@ class FastSentenceTransformer(FastModel):
                 )
 
     @staticmethod
+    def _modules_json_for_gating(
+        model_name,
+        token,
+        cache_dir = None,
+        revision = None,
+    ):
+        """Return the modules.json path, or None when the repo confirmedly has none.
+
+        Raise when neither can be established: _module_path turns every failure into "absent", and
+        a guard must not read "could not check" as "nothing to check". Only worth refusing over
+        where sentence-transformers would not gate the type itself, which it does from 6.0.
+        """
+        path = FastSentenceTransformer._module_path(
+            model_name, token, cache_dir = cache_dir, revision = revision
+        )
+        if path:
+            return path
+
+        try:
+            if os.path.isdir(model_name):
+                return None
+        except (OSError, TypeError, ValueError):
+            pass
+
+        from huggingface_hub import try_to_load_from_cache
+        from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE
+        from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+        try:
+            cached = try_to_load_from_cache(
+                model_name,
+                "modules.json",
+                cache_dir = cache_dir or HUGGINGFACE_HUB_CACHE,
+                revision = revision,
+            )
+        except Exception:
+            cached = None
+        if isinstance(cached, str):
+            return cached
+        if cached is not None:
+            # The sentinel recording that the hub already answered "no such file".
+            return None
+
+        try:
+            return hf_hub_download(
+                model_name,
+                "modules.json",
+                token = token,
+                cache_dir = cache_dir,
+                revision = revision,
+            )
+        except LocalEntryNotFoundError as exception:
+            # Checked before EntryNotFoundError, which it subclasses: not reachable is not the same
+            # answer as not present, and catching it there read one as the other.
+            unverifiable = exception
+        except EntryNotFoundError:
+            return None
+        except Exception as exception:
+            unverifiable = exception
+
+        import sentence_transformers
+
+        if Version(sentence_transformers.__version__).major >= 6:
+            logging.debug(
+                "Unsloth: Could not read modules.json of %s (%s); sentence-transformers gates the "
+                "module class itself on this version.",
+                model_name,
+                unverifiable,
+            )
+            return None
+        raise ValueError(
+            f"Unsloth: Could not read modules.json of {model_name} to check its module classes "
+            f"({type(unverifiable).__name__}: {unverifiable}). The installed sentence-transformers "
+            f"({getattr(sentence_transformers, '__version__', 'unknown')}) imports a module class "
+            f"named there without checking it, so this refuses rather than loading unchecked. "
+            f"Retry, or pass the argument `trust_remote_code=True` to allow custom code to be run."
+        ) from unverifiable
+
+    @staticmethod
     def _check_modules_json_types(
         model_name,
         token,
@@ -1350,11 +1429,17 @@ class FastSentenceTransformer(FastModel):
     ):
         """Validate only. for_inference and the fast encoder route return a stock
         SentenceTransformer without reaching _load_modules, and below 6.0 it has no gate."""
+        # Consent means the code may run, so there is nothing to gate and nothing to import here.
+        # Resolving anyway would also break a repo-local class: below 6 the delegated loader fetches
+        # it with get_class_from_dynamic_module, where this helper's fallback cannot.
+        if trust_remote_code:
+            return
+
         # The delegated loads honour SENTENCE_TRANSFORMERS_HOME, and hf_hub_download does not, so
         # resolve it here too: otherwise _module_path looks in the wrong cache, swallows the miss,
         # and the gate passes on a modules.json it never read.
         cache_dir = cache_dir or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-        modules_json_path = FastSentenceTransformer._module_path(
+        modules_json_path = FastSentenceTransformer._modules_json_for_gating(
             model_name, token, cache_dir = cache_dir, revision = revision
         )
         if not modules_json_path:
