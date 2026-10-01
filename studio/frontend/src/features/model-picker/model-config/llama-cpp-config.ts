@@ -128,7 +128,8 @@ export function iniSamplingDefaults(
   summary: LlamaCppConfigSummary | null,
   explicit: readonly string[] | undefined,
 ): { applied: [string, unknown][]; overridden: string[] } {
-  const pinned = new Set(explicit ?? []);
+  // The composer always sends Max Tokens as max_tokens, which keeps the INI's n_predict out.
+  const pinned = new Set([...(explicit ?? []), "n_predict"]);
   const entries = Object.entries(summary?.request_defaults ?? {});
   return {
     applied: entries.filter(([wire]) => !pinned.has(wire)),

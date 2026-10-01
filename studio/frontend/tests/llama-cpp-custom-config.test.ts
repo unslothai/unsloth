@@ -458,4 +458,8 @@ test("the Sampling note lists the INI defaults in effect and the ones pinned ove
     overridden: ["temperature"],
   });
   assert.deepEqual(iniSamplingDefaults(null, ["temperature"]), { applied: [], overridden: [] });
+  assert.deepEqual(
+    iniSamplingDefaults({ ...summary, request_defaults: { n_predict: 64, top_k: 7 } }, []),
+    { applied: [["top_k", 7]], overridden: ["n_predict"] },
+  );
 });
