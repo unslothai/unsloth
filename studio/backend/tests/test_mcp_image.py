@@ -114,11 +114,18 @@ def test_execute_tool_inserts_the_image_only_when_given_one(mapped_server):
     out = tools_mod.execute_tool("mcp__srv1__lookup", args)
     assert out.startswith("Error: no approved image") and mapped_server == []
 
-    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = image)
+    share = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)
+    approved = image.approved_for(share["recipient"])
+    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
     assert mapped_server[0]["args"]["image"] == image.encoded("data_url")
     assert args == {"image": ATTACHED_IMAGE}
     # The server echoed its input; the bytes must not reach the model.
     assert out == "match for [attached image]"
+
+    # Repointing the server after approval must not redirect the image.
+    mcp_servers_db.update_server("srv1", {"url": "https://elsewhere.example/mcp"})
+    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
+    assert out.startswith("Error: the MCP server changed") and len(mapped_server) == 1
 
 
 def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
@@ -129,11 +136,9 @@ def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
         tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": "https://x/y.png"}, image) is None
     )
     assert tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": ATTACHED_IMAGE}, None) is None
-    assert tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": ATTACHED_IMAGE}, image) == {
-        "server": "Trace",
-        "tool": "lookup",
-        "size_bytes": len(image.data),
-    }
+    share = tools_mod.mcp_image_share("mcp__srv1__lookup", {"image": ATTACHED_IMAGE}, image)
+    assert share["server"] == "Trace" and share["tool"] == "lookup"
+    assert share["size_bytes"] == len(image.data)
 
 
 def _one_call_turns():
@@ -181,7 +186,8 @@ def test_safetensors_loop_always_asks_before_sending_the_image(mapped_server, de
             assert resolve_tool_decision(event["approval_id"], decision, session_id = "s")
     assert starts[0]["awaiting_confirmation"] is True
     assert starts[0]["image_disclosure"]["server"] == "Trace"
-    assert seen == ([image] if decision == "allow" else [])
+    assert [getattr(s, "data", None) for s in seen] == ([image.data] if decision == "allow" else [])
+    assert all(s.recipient == starts[0]["image_disclosure"]["recipient"] for s in seen)
 
 
 def test_route_requires_an_interactive_stream_for_the_image():
@@ -237,4 +243,4 @@ def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
         ast.unparse(node) for node in ast.walk(ast.parse(src)) if isinstance(node, ast.stmt)
     }
     assert "needs_confirm = needs_confirm or image_share is not None" in statements
-    assert "kwargs['mcp_image'] = mcp_image" in statements
+    assert "kwargs['mcp_image'] = mcp_image.approved_for(image_share['recipient'])" in statements

@@ -1665,7 +1665,7 @@ def run_safetensors_tool_loop(
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
                     if image_share is not None:
-                        kwargs["mcp_image"] = mcp_image
+                        kwargs["mcp_image"] = mcp_image.approved_for(image_share["recipient"])
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

@@ -8,7 +8,7 @@ import {
   imageFieldCandidates,
   mcpImageMappingsEnabled,
   modelVisibleMessage,
-  toolOnlyImage,
+  toolOnlyImages,
 } from "../src/features/chat/api/mcp-image.ts";
 
 const PRIVATE = "data:image/png;base64,UFJJVkFURQ==";
@@ -36,7 +36,7 @@ test("tool-only images never reach the model but become mcp_image", () => {
     ["a2"],
   );
   assert.ok(!JSON.stringify(visible).includes(PRIVATE));
-  assert.equal(toolOnlyImage(message), PRIVATE);
+  assert.deepEqual(toolOnlyImages(message), [PRIVATE]);
 
   // A reloaded thread can carry the flagged image as message content.
   const reloaded = {
@@ -48,11 +48,11 @@ test("tool-only images never reach the model but become mcp_image", () => {
   assert.deepEqual(modelVisibleMessage(reloaded).content, [
     { type: "text", text: "hi" },
   ]);
-  assert.equal(toolOnlyImage(reloaded), PRIVATE);
+  assert.deepEqual(toolOnlyImages(reloaded), [PRIVATE]);
 
   const plain = { content: [{ type: "text", text: "hi" }] };
   assert.equal(modelVisibleMessage(plain), plain);
-  assert.equal(toolOnlyImage(plain), undefined);
+  assert.deepEqual(toolOnlyImages(plain), []);
 });
 
 test("only enabled servers with a mapping make images tool-only", () => {

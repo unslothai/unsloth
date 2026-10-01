@@ -1852,7 +1852,7 @@ async def stream_with_studio_tools(
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 if image_share is not None:
-                    kwargs["mcp_image"] = mcp_image
+                    kwargs["mcp_image"] = mcp_image.approved_for(image_share["recipient"])
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long

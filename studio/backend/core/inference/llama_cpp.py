@@ -38773,7 +38773,9 @@ class LlamaCppBackend:
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             if image_share is not None:
-                                kwargs["mcp_image"] = mcp_image
+                                kwargs["mcp_image"] = mcp_image.approved_for(
+                                    image_share["recipient"]
+                                )
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

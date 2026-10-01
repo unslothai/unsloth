@@ -15,7 +15,7 @@ import binascii
 import copy
 import io
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 ATTACHED_IMAGE = "attached_image"
@@ -32,6 +32,11 @@ class McpImageError(ValueError):
 class McpImage:
     mime: str
     data: bytes = field(repr = False)
+    # The server configuration the user approved; execute_tool sends nowhere else.
+    recipient: Optional[str] = None
+
+    def approved_for(self, recipient: str) -> "McpImage":
+        return replace(self, recipient = recipient)
 
     def encoded(self, encoding: str) -> str:
         text = base64.b64encode(self.data).decode("ascii")

@@ -12,9 +12,8 @@ import {
 } from "../lib/min-p-recovery";
 import {
   type ImageDisclosure,
-  isMcpToolOnly,
   modelVisibleMessage,
-  toolOnlyImage,
+  toolOnlyImages,
 } from "./mcp-image";
 import {
   clearedServerTuningState,
@@ -1690,7 +1689,13 @@ function isPrivateMediaPart(part: { type: string }): boolean {
 }
 
 export function messagesUsePrivateContent(messages: RunMessages): boolean {
-  if (messagesContainImage(messages)) return true;
+  // Tool-only images are hidden from the model, not public.
+  if (
+    messagesContainImage(messages) ||
+    messages.some((message) => toolOnlyImages(message).length > 0)
+  ) {
+    return true;
+  }
   return messages.some((message) => {
     if (
       (message.content ?? []).some(
@@ -5302,12 +5307,12 @@ export function createOpenAIStreamAdapter(
       const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
         typeof findLatestUserImageBase64
       >[0];
-      const toolOnlyImages =
-        generationUserMessage?.attachments?.filter(isMcpToolOnly) ?? [];
-      if (toolOnlyImages.length > 1) {
+      const [mcpImage, ...extraToolImages] = toolOnlyImages(
+        generationUserMessage,
+      );
+      if (extraToolImages.length > 0) {
         throw new Error("Attach only one image for MCP tools per message.");
       }
-      const mcpImage = toolOnlyImage(generationUserMessage);
       const currentTurnCarriesMedia = Boolean(
         // A tool-only image needs the live stream to ask before it is sent.
         mcpImage ||

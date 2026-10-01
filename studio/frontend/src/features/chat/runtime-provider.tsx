@@ -316,7 +316,9 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 
 const MCP_TOOL_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
 
-/** Whether images go to mapped MCP tool fields instead of the model; null when unknown. */
+let lastMcpImageMappingsEnabled: boolean | null = null;
+
+/** Whether images go to mapped MCP tool fields instead of the model; null when never known. */
 async function mcpToolOnlyEnabled(): Promise<boolean | null> {
   const state = useChatRuntimeStore.getState();
   const checkpoint = state.params.checkpoint;
@@ -331,10 +333,13 @@ async function mcpToolOnlyEnabled(): Promise<boolean | null> {
       });
   if (!toolsSupported || !state.mcpEnabledForChat) return false;
   try {
-    return mcpImageMappingsEnabled(await listMcpServers());
+    lastMcpImageMappingsEnabled = mcpImageMappingsEnabled(
+      await listMcpServers(),
+    );
   } catch {
-    return null;
+    // A failed read keeps the last answer, so a configured mapping still holds.
   }
+  return lastMcpImageMappingsEnabled;
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
@@ -440,6 +445,12 @@ class VisionImageAdapter implements AttachmentAdapter {
     // Removed while converting: yielding again would put it back.
     if (!this.converted.has(attachment.id)) {
       return;
+    }
+    if (mcpToolOnly && file.size > 10 * 1024 * 1024) {
+      const reason =
+        "The converted image is over the 10 MB limit for MCP tools.";
+      toast.error(reason);
+      throw new Error(reason);
     }
     yield { ...attachment, name: file.name, contentType: file.type, file };
   }

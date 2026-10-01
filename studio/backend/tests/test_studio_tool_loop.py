@@ -604,7 +604,10 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
 
 
 def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch):
-    shared = {"server": "Trace", "tool": "lookup", "size_bytes": 3}
+    from core.inference.mcp_image import McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    shared = {"server": "Trace", "tool": "lookup", "size_bytes": 3, "recipient": "r1"}
     asked: list = []
     monkeypatch.setattr(
         loop_mod, "mcp_image_share", lambda name, args, image: shared if image else None
@@ -621,11 +624,11 @@ def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch)
         [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
         [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
     ]
-    lines = _run(FakeTransport(turns), mcp_image = "IMG", bypass_permissions = True)
+    lines = _run(FakeTransport(turns), mcp_image = image, bypass_permissions = True)
 
     start = _events(lines, "tool_start")[0]
     assert start["awaiting_confirmation"] is True and start["image_disclosure"] == shared
-    assert len(asked) == 1 and executed[0]["mcp_image"] == "IMG"
+    assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
     # Without an image the same call keeps the ordinary path: no card, no image.
     executed.clear()
     lines = _run(FakeTransport(turns), bypass_permissions = True)

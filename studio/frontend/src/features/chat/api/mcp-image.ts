@@ -50,20 +50,18 @@ export function modelVisibleMessage<T extends Message>(message: T): T {
   };
 }
 
-/** Data URL of the message's tool-only image, sent as the request's mcp_image. */
-export function toolOnlyImage(
-  message: Message | undefined,
-): string | undefined {
+/** Data URLs of the message's tool-only images; the request's mcp_image carries one. */
+export function toolOnlyImages(message: Message | undefined): string[] {
   const parts = [
     ...(message?.attachments ?? [])
       .filter(isMcpToolOnly)
       .flatMap((attachment) => attachment.content ?? []),
     ...(message?.content ?? []).filter(isMcpToolOnly),
   ];
-  const part = parts.find(
-    (p) => p.type === "image" && typeof p.image === "string",
-  );
-  return part?.image as string | undefined;
+  const images = parts
+    .filter((p) => p.type === "image" && typeof p.image === "string")
+    .map((p) => p.image as string);
+  return [...new Set(images)];
 }
 
 /** Top-level string fields a mapping can target; the backend applies the same rule. */

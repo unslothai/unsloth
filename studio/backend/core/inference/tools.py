@@ -13328,6 +13328,17 @@ def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     return None
 
 
+def _mcp_image_recipient(server: dict, mapping: dict) -> str:
+    identity = [
+        server["id"],
+        server["url"],
+        server.get("headers_json"),
+        server.get("use_oauth"),
+        mapping,
+    ]
+    return hashlib.sha256(json.dumps(identity, sort_keys = True).encode()).hexdigest()
+
+
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
     """Approval-card details when this call would send the user's attached image, else None."""
     if mcp_image is None or not isinstance(arguments, dict):
@@ -13340,6 +13351,7 @@ def mcp_image_share(name, arguments, mcp_image) -> dict | None:
         "server": server.get("display_name") or server["id"],
         "tool": tool_name,
         "size_bytes": len(mcp_image.data),
+        "recipient": _mcp_image_recipient(server, mapping),
     }
 
 
@@ -13906,6 +13918,8 @@ def execute_tool(
             # Only a tool loop that just got the user's approval for this call passes mcp_image.
             if mcp_image is None:
                 return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
+            if mcp_image.recipient != _mcp_image_recipient(server, mapping):
+                return "Error: the MCP server changed after the image was approved. Call the tool again."
             arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
 
         def _config_current() -> bool:
