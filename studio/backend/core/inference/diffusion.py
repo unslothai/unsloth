@@ -1145,10 +1145,12 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
 
 
 def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any) -> Any:
-    """Promote float16 -> float32 for fp16-incompatible families (e.g. Z-Image), whose activations
-    overflow float16's finite range and render a black image. Every other dtype/family passes
-    through unchanged."""
-    if fam is None or not getattr(fam, "fp16_incompatible", False):
+    """Promote float16 -> float32 for fp16-incompatible families whose activations overflow float16's finite range
+    (black image) and that have no fp16 guard (``DiffusionFamily.fp16_guard``; kill switch
+    ``UNSLOTH_STUDIO_FP16_GUARD=0``). Every other dtype/family passes through unchanged."""
+    from .diffusion_fp16_guard import fp16_promotes_to_fp32
+
+    if not fp16_promotes_to_fp32(fam):
         return dtype
     import torch
 
@@ -6698,6 +6700,15 @@ class DiffusionBackend:
                     from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
 
                     install_q21_fast_step(pipe, logger)
+                    # fp16-only cards: a guarded family stays float16 (no float32 promotion); patch its overflow sites.
+                    from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
+
+                    install_fp16_guard(
+                        getattr(pipe, "transformer", None),
+                        family_fp16_guard(fam),
+                        getattr(target, "dtype", None),
+                        logger = logger,
+                    )
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the

@@ -84,6 +84,9 @@ class VideoFamily:
     supports_cuda_graph: bool = False
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
+    # diffusion_fp16_guard recipe that keeps the family in float16 on an fp16-only card instead of the promotion:
+    # "native" = measured finite and accurate in plain float16. None = promote (unmeasured families).
+    fp16_guard: Optional[str] = None
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
     # already fp32.
     vae_force_fp32: bool = False
@@ -273,6 +276,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
+        # Finite in plain float16 (DiT activations peak at 7.8e2; UMT5 keeps its overflowing `wo` in fp32 itself); the
+        # 1280x704 render matches float32 at LPIPS ~0.01. The VAE stays fp32 (vae_force_fp32).
+        fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
     ),
