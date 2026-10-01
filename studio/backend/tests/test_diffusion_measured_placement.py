@@ -95,6 +95,25 @@ def test_16gb_keeps_transformer_resident_streams_encoder(q21_pipe):
     assert dm.plan_keeps_transformer_resident(new)
 
 
+def test_l4_class_card_keeps_most_of_the_encoder_resident(q21_pipe):
+    """An L4 reports 23034 MiB: its 10% reserve leaves the whole encoder ~900 MiB short, so the DiT stays resident
+    and only the encoder layers past the budget stream."""
+    budget = 20000
+    new = _refine(q21_pipe, _flat_plan(budget, 23034))
+    assert new.offload_policy == dm.OFFLOAD_GROUP and not new.stream_transformer and new.stream_text_encoders
+    room = budget - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+    assert new.resident_text_encoder_mib == room and 0 < room < 8959
+    assert new.as_public_dict()["resident_text_encoder_mib"] == room
+
+
+def test_16gb_encoder_room_and_kill_switch(q21_pipe, monkeypatch):
+    new = _refine(q21_pipe, _flat_plan(13638, 16376))
+    assert new.resident_text_encoder_mib == 13638 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", "0")
+    new = _refine(q21_pipe, _flat_plan(13638, 16376))
+    assert not new.stream_transformer and new.resident_text_encoder_mib is None
+
+
 def test_12gb_partial_residency_sized_from_budget(q21_pipe):
     plan = _flat_plan(9550, 12288)
     assert plan.offload_policy == dm.OFFLOAD_STREAMING
@@ -165,7 +184,8 @@ def test_every_tier_fits_measured_need(q21_pipe, budget):
     if new.offload_policy == dm.OFFLOAD_NONE:
         kept = 6922 + 8959 + 644
     elif not new.stream_transformer:
-        kept = 6922 + 644
+        kept = 6922 + 644 + int(new.resident_text_encoder_mib or 0)
+        assert int(new.resident_text_encoder_mib or 0) < 8959
     else:
         kept = 644 + int(new.resident_transformer_mib) + (0 if new.stream_text_encoders or new.offload_policy == dm.OFFLOAD_STREAMING else 8959)
     assert kept + head <= budget
@@ -287,3 +307,33 @@ def test_only_measured_family_moves(q21_pipe, speed, budget, total):
         if family == "qwen-image-2.1" and speed in ("default", "max"):
             continue
         assert new is plan, family
+
+
+def test_resident_group_keeps_copy_stream_wait(monkeypatch):
+    """A streamed group that prefetched its successor skips its own wait and relies on the successor's onload_ to
+    synchronize the copy stream. A resident successor must still do that wait (else the streamed group computes on
+    weights in flight), and its offload must free nothing."""
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers.hooks")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+
+    class Stream:
+        waits = 0
+
+        def synchronize(self):
+            Stream.waits += 1
+
+    module = object()
+    stream = Stream()
+    groups = [
+        types.SimpleNamespace(modules = [], parameters = [], buffers = [], offload_leader = object(), stream = stream,
+                              cpu_param_dict = {}, offload_to_disk_path = None)
+        for _ in range(3)
+    ]
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
+    dm._keep_groups_resident(module, 1, "cpu")
+    assert all(getattr(g, "_unsloth_resident", False) for g in groups)
+    for g in groups:
+        g.onload_()
+        g.offload_()
+    assert Stream.waits == 3

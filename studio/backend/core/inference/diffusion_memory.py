@@ -567,6 +567,8 @@ class MemoryPlan:
     # MiB of the streamed denoiser that may stay resident instead (whole offload groups, top-level group first, then
     # blocks in order); None streams every group, today's behaviour. Set only by refine_plan_from_loaded_weights.
     resident_transformer_mib: Optional[int] = None
+    # Same for the streamed text encoders (leaf groups in module order) on the tier keeping the denoiser resident.
+    resident_text_encoder_mib: Optional[int] = None
 
     @property
     def engages_offload(self) -> bool:
@@ -584,6 +586,7 @@ class MemoryPlan:
             "stream_text_encoders": self.stream_text_encoders,
             "stream_transformer": self.stream_transformer,
             "resident_transformer_mib": self.resident_transformer_mib,
+            "resident_text_encoder_mib": self.resident_text_encoder_mib,
         }
 
 
@@ -1843,17 +1846,22 @@ def refine_plan_from_loaded_weights(
                 ),
             )
         elif floor + dit <= budget:
+            # What is left after the resident denoiser keeps the first encoder layers resident, so a new prompt
+            # streams only the rest (a 24 GB-class card whose 10% reserve leaves the full encoder just short).
+            te_room = 0 if _env_off(PARTIAL_RESIDENT_ENV) else max(0, budget - floor - dit)
             new = replace(
                 plan,
                 offload_policy = OFFLOAD_GROUP,
                 stream_text_encoders = True,
                 stream_transformer = False,
                 resident_transformer_mib = None,
-                estimates = estimates,
+                resident_text_encoder_mib = int(te_room) if te_room > 0 else None,
+                estimates = {**estimates, "resident_text_encoder_mib": int(te_room)},
                 reasons = plan.reasons
                 + (
                     f"loaded transformer {dit} MiB + measured peak {headroom} MiB fit the {budget} MiB budget "
-                    "with the text encoders streamed; every denoise step runs resident",
+                    "with the text encoders streamed; every denoise step runs resident"
+                    + (f"; {int(te_room)} MiB of the encoders stays resident" if te_room > 0 else ""),
                 ),
             )
         else:
@@ -1927,8 +1935,22 @@ def _keep_groups_resident(module: Any, room_mib: int, device: Any, logger: Any =
                     out.append(t)
             return out
 
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+
         def _noop(*args: Any, **kwargs: Any) -> None:
             return None
+
+        def _resident_onload(stream: Any) -> Callable[[], None]:
+            # diffusers' prefetch protocol: a streamed group that prefetched its successor skips its own wait and
+            # relies on the successor's onload_ to synchronize the copy stream first (_onload_from_memory). A resident
+            # successor must keep that wait, or the streamed group computes on weights still in flight.
+            def onload_(*args: Any, **kwargs: Any) -> None:
+                if stream is not None:
+                    stream.synchronize()
+
+            return disable(onload_) if callable(disable) else onload_
+
+        noop = disable(_noop) if callable(disable) else _noop
 
         for group in ordered:
             if getattr(group, "offload_to_disk_path", None):
@@ -1936,7 +1958,9 @@ def _keep_groups_resident(module: Any, room_mib: int, device: Any, logger: Any =
             tensors = _tensors(group)
             need = sum(sum(_storage_nbytes(t)) for t in tensors)
             if need > left:
-                break  # in order: a later, smaller group would break the prefetch chain's contiguity for no gain
+                # a group too large for what is left streams; a later, smaller one may still fit (each group's hook
+                # prefetches its successor whether or not that successor is resident)
+                continue
             cpu = getattr(group, "cpu_param_dict", None) or {}
             for t in tensors:
                 if t.device.type == onload.type:
@@ -1946,8 +1970,8 @@ def _keep_groups_resident(module: Any, room_mib: int, device: Any, logger: Any =
                     go._swap_torchao_tensor(t, moved)
                 else:
                     t.data = moved
-            group.onload_ = _noop
-            group.offload_ = _noop
+            group.onload_ = _resident_onload(getattr(group, "stream", None))
+            group.offload_ = noop
             group._unsloth_resident = True
             if isinstance(cpu, dict) and cpu:
                 group.cpu_param_dict = {}
@@ -2021,6 +2045,9 @@ def apply_memory_plan(
         resident_mib = getattr(plan, "resident_transformer_mib", None)
         if resident_mib:
             group_kwargs["resident_transformer_mib"] = int(resident_mib)
+        resident_te_mib = getattr(plan, "resident_text_encoder_mib", None)
+        if resident_te_mib and group_kwargs["stream_text_encoders"]:
+            group_kwargs["resident_text_encoder_mib"] = int(resident_te_mib)
         if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
             if "stream_transformer" in group_kwargs and _pipe_denoisers_hold_torchao(pipe):
                 raise RuntimeError(
@@ -2655,6 +2682,7 @@ def _apply_group_offload(
     stream_transformer: bool = True,
     background_pin: Optional[bool] = None,
     resident_transformer_mib: Optional[int] = None,
+    resident_text_encoder_mib: Optional[int] = None,
 ) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
     smaller components resident. Returns False (caller falls back to whole-module) on any failure.
@@ -2790,6 +2818,7 @@ def _apply_group_offload(
         if "low_cpu_mem_usage" in gkwargs:
             ekwargs["low_cpu_mem_usage"] = not pin_streamed[1]
         transformer_demoted = False
+        te_room = int(resident_text_encoder_mib or 0)
         for name, module in streamed_encoders.items():
             try:
                 if defer and not ekwargs.get("low_cpu_mem_usage", False):
@@ -2799,6 +2828,8 @@ def _apply_group_offload(
                     apply_group_offloading(module, **ekwargs)
                 installed += 1
                 _pin_vision_embedding_device(module)
+                if te_room > 0:
+                    te_room -= _keep_groups_resident(module, te_room, onload, logger)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
                     # Resident encoder here would OOM; fall back to model offload, which rejects partial hooks.
