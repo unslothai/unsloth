@@ -267,7 +267,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
             {
               key: resolved,
               title,
-              fileName: downloadName(""),
+              fileName: downloadName,
               load: () =>
                 file !== null && sandbox.state.status === "loaded"
                   ? Promise.resolve(sandbox.state.blob)

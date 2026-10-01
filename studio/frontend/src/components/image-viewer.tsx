@@ -30,8 +30,8 @@ export type ViewerImage = {
   /** Stable identity within the gallery. */
   key: string;
   title: string;
-  /** File name for Download, with its extension. */
-  fileName: string;
+  /** File name for Download, with its extension; a function gets the loaded image's type. */
+  fileName: string | ((contentType: string) => string);
   load: () => Promise<Blob>;
   /** The page the image came from, opened by "Open source". */
   source?: string;
@@ -207,7 +207,9 @@ function ViewerBody() {
 
   const download = () => {
     if (!loaded || "failed" in loaded || !image) return;
-    void downloadFile(loaded.blob, image.fileName, loaded.blob.type).catch(
+    const { blob } = loaded;
+    const name = typeof image.fileName === "string" ? image.fileName : image.fileName(blob.type);
+    void downloadFile(blob, name, blob.type).catch(
       (error) => {
         if (!isDownloadCancelled(error))
           toast.error(t("imageViewer.downloadFailed"));

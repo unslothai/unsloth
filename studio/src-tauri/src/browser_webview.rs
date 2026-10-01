@@ -204,7 +204,8 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
 
 /// Links only other apps open, offered to the user.
 fn is_external_handoff(url: &Url) -> bool {
-    matches!(url.scheme(), "mailto" | "tel")
+    // What the opener capability allows.
+    url.scheme() == "mailto"
 }
 
 /// URL prefixes (WebKit content-rule regexes, which have no `|`) a page may not request.
@@ -1192,7 +1193,7 @@ mod tests {
     #[test]
     fn only_mail_and_phone_links_go_to_other_apps() {
         assert!(is_external_handoff(&Url::parse("mailto:a@b.co").unwrap()));
-        assert!(is_external_handoff(&Url::parse("tel:+1555").unwrap()));
+        assert!(!is_external_handoff(&Url::parse("tel:+1555").unwrap()));
         assert!(!is_external_handoff(&Url::parse("zoommtg://join").unwrap()));
     }
 
