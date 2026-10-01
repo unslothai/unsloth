@@ -43,6 +43,13 @@ def test_specific_bind_hosts_are_not_wildcards(host):
 
 
 @pytest.mark.parametrize(
+    "host", ["127.0.0.1", "::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "localhost"]
+)
+def test_loopback_hosts_include_ipv4_mapped_spellings(host):
+    assert host_policy.is_loopback_host(host) is True
+
+
+@pytest.mark.parametrize(
     "host,expected",
     [
         ("0.0.0.0", "127.0.0.1"),

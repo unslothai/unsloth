@@ -212,7 +212,6 @@ export function InferenceEnginesSection() {
         <SettingsRow
           key={engine.engine}
           label={names[engine.engine]}
-          alignTop={true}
         >
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>

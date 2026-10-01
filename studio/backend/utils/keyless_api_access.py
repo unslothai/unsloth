@@ -36,6 +36,7 @@ _INFERENCE_ROUTES = frozenset(
         ("POST", "/v1/embeddings"),
         ("POST", "/v1/messages"),
         ("POST", "/v1/messages/count_tokens"),
+        ("POST", "/mcp/decisions"),
         ("GET", "/v1/models"),
         ("GET", "/api/inference/loaded-models"),
         ("POST", "/v1/responses"),

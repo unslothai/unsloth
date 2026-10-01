@@ -1273,6 +1273,29 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
     return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint, card)
 
 
+def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
+    """Why ``binary`` is not provably the off-torch card's build, else None. Any other build ignores
+    CUDA_VISIBLE_DEVICES (Vulkan) or reads it as HIP's mask (ROCm), so it would run on torch's cards
+    past the arbiter and the training guard; an unrecorded one (SD_CLI_PATH) could be either."""
+    if off_torch is None or not binary:
+        return None
+    klass = _installed_accelerator_of(binary)
+    if klass != _accelerator_class_of(off_torch.accelerator):
+        return klass or "unrecorded"
+    return None
+
+
+def _refuse_off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> None:
+    klass = off_torch_build_mismatch(off_torch, binary)
+    if klass:
+        raise RuntimeError(
+            f"UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} needs the "
+            f"{off_torch.accelerator} stable-diffusion.cpp build, but the installed one is "
+            f"{klass}. Let the {off_torch.accelerator} build install, or unset the setting, "
+            "then load again."
+        )
+
+
 def usable_or_recorded_failure(
     binary,
     requested,
@@ -1946,6 +1969,12 @@ class _SdState:
     physical_gpu_id: Optional[int] = None
     # This load's card, as the failure record names cards.
     selected_card: Optional[str] = None
+    # UNSLOTH_DIFFUSION_SD_CPP_DEVICE placement: its label, and the env every spawn gets to open only that card.
+    off_torch_device: Optional[str] = None
+    child_env: tuple[tuple[str, str], ...] = ()
+
+    def spawn_env(self) -> Optional[dict[str, str]]:
+        return dict(self.child_env) or None
 
 
 def _offload_with_device_pin_impl(
@@ -2027,6 +2056,7 @@ class _SdLoading:
     expected_bytes: int = 0
     downloaded_bytes: int = 0
     error: Optional[str] = None
+    off_torch_device: Optional[str] = None
 
 
 @dataclass
@@ -2179,6 +2209,16 @@ class SdCppDiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
+    @property
+    def runs_off_torch_device(self) -> bool:
+        """Everything resident or loading sits on a card torch cannot see. A pending load counts, or
+        training would cancel it; a torch-placed resident beside it still has to be freed."""
+        loading = getattr(self, "_loading", None)
+        if loading is not None and loading.error is not None:
+            loading = None
+        held = [x for x in (self._state, loading) if x is not None]
+        return bool(held) and all(getattr(x, "off_torch_device", None) for x in held)
+
     def _loading_card_store(self) -> threading.local:
         """Lazily, so an instance built with ``__new__`` (the unit-test seam) still answers."""
         store = getattr(self, "_loading_cards", None)
@@ -2258,9 +2298,9 @@ class SdCppDiffusionBackend:
 
         ``preferred_accelerator`` is applied here so all four call sites agree, or
         ``_accelerator_changed`` would reinstall over what the others chose."""
-        from core.inference.diffusion_engine_router import _install_accelerator_for
+        from core.inference.diffusion_engine_router import image_install_accelerator
         return preferred_accelerator(
-            _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
+            image_install_accelerator(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
             card,
         )
 
@@ -2433,6 +2473,11 @@ class SdCppDiffusionBackend:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        from core.inference.diffusion_engine_router import off_torch_sd_cpp_device
+
+        off_torch = off_torch_sd_cpp_device()
+        if off_torch is not None:
+            gpu_ids, gpu_ordinal = None, None
         # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
         # but a direct caller (an MCP client, a test, a plugin) hands over gpu_ids alone, and without this the native
         # engine is the one engine that would drop the pick silently. Re-ranked only when nobody has, so a
@@ -2504,6 +2549,7 @@ class SdCppDiffusionBackend:
                         if kind != "diffusion_model"
                     )
                 ),
+                off_torch_device = off_torch.label if off_torch is not None else None,
             )
 
         account_thread(
@@ -2519,6 +2565,7 @@ class SdCppDiffusionBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 gpu_ordinal = gpu_ordinal,
+                off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -2542,6 +2589,7 @@ class SdCppDiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        off_torch: Any = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -2668,7 +2716,12 @@ class SdCppDiffusionBackend:
                 llm_vision = paths.get("llm_vision"),
                 qwen2vl = paths.get("qwen2vl"),
             )
-            device = resolve_diffusion_device_target().device
+            device = (
+                off_torch.accelerator
+                if off_torch is not None
+                else resolve_diffusion_device_target().device
+            )
+            spawn_env = off_torch.child_env() if off_torch is not None else None
             # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
             offload: tuple[str, ...] = ()
             if device != "cpu":
@@ -2758,6 +2811,7 @@ class SdCppDiffusionBackend:
                                 "load again."
                             )
                         else:
+                            _refuse_off_torch_build_mismatch(off_torch, server_binary)
                             server = SdCppServer(server_binary)
                             # Published INSIDE the claim: _tree_in_use reads _pending_server, so this is the handover
                             # from "a reader holds the tree" to "a starting server does", with no gap between them.
@@ -2794,6 +2848,7 @@ class SdCppDiffusionBackend:
                             ),
                             native_speed = native_speed,
                             threads = _default_threads(),
+                            env = spawn_env,
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -2853,6 +2908,8 @@ class SdCppDiffusionBackend:
                         "The stable-diffusion.cpp binary was replaced by an install for a "
                         "different accelerator while this model was loading. Try the load again."
                     )
+                if mode == "oneshot":
+                    _refuse_off_torch_build_mismatch(off_torch, getattr(engine, "binary", None))
                 committed_offload_flags = tuple(
                     _offload_with_device_pin_impl(
                         offload,
@@ -2882,6 +2939,7 @@ class SdCppDiffusionBackend:
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image, long after this
                     # decision, and has nothing else to check the answer against.
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
+                    # Never on an off-torch card: the parent-visible ids are torch's, so CUDA0 would name one of them.
                     physical_gpu_id = (
                         _resolved_server_physical_gpu_id(
                             server_binary,
@@ -2889,10 +2947,12 @@ class SdCppDiffusionBackend:
                             gpu_ordinal,
                             committed_offload_flags,
                         )
-                        if mode == "server"
+                        if mode == "server" and off_torch is None
                         else None
                     ),
                     selected_card = self._loading_card,
+                    off_torch_device = off_torch.label if off_torch is not None else None,
+                    child_env = tuple(sorted((spawn_env or {}).items())),
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -2922,7 +2982,9 @@ class SdCppDiffusionBackend:
                     "sd_cpp.loaded: repo=%s gguf=%s device=%s mode=%s speed=%s offload_flags=%s",
                     state.repo_id,
                     state.gguf_filename,
-                    state.device,
+                    f"{state.device} ({state.off_torch_device}, outside torch)"
+                    if state.off_torch_device
+                    else state.device,
                     state.mode,
                     state.native_speed,
                     without_device_backend_flags(state.offload_flags) or "none",
@@ -3822,6 +3884,7 @@ class SdCppDiffusionBackend:
                 offload = without_device_backend_flags(state.offload_flags),
                 native_speed = state.native_speed,
                 threads = state.threads,
+                env = state.spawn_env(),
                 extra_args = list(CPU_BACKEND_FLAGS),
             )
         except Exception:  # noqa: BLE001 -- the original abort is the more useful error
@@ -3940,6 +4003,7 @@ class SdCppDiffusionBackend:
                         native_speed = state.native_speed,
                         threads = state.threads,
                         extra_args = extra_args or None,
+                        env = state.spawn_env(),
                         on_log = self._on_log,
                         cancel_event = cancel,
                     )
