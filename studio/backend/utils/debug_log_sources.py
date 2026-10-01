@@ -26,7 +26,6 @@ FAMILIES: dict[str, tuple[str, str]] = {
 
 # Per family, so a busy host cannot make the picker unusable. Several, not one: the llama runner writes a file per load ATTEMPT, so after a retry the useful one is often not the newest.
 MAX_SOURCES_PER_FAMILY = 10
-RECENT_LLAMA_ATTEMPTS = 3
 
 _DIGEST_CHARS = 16
 
@@ -40,7 +39,6 @@ class LogSource:
     size_bytes: int
     modified_at: float
     is_current: bool
-    is_recent_attempt: bool = False
 
 
 def candidate_roots() -> list[Path]:
@@ -159,13 +157,6 @@ def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
 
 def list_sources() -> list[LogSource]:
     sources: list[LogSource] = []
-    recent_llama_paths: set[Path] = set()
-    llama_files = _family_files("llama-server")
-    for path in llama_files[:RECENT_LLAMA_ATTEMPTS]:
-        try:
-            recent_llama_paths.add(Path(os.path.realpath(path)))
-        except OSError:
-            recent_llama_paths.add(path)
     for family in FAMILIES:
         files = _family_files(family)
         newest = files[0] if files else None
@@ -175,10 +166,6 @@ def list_sources() -> list[LogSource]:
             except OSError:
                 continue
             real = str(path)
-            try:
-                real_path = Path(os.path.realpath(path))
-            except OSError:
-                real_path = path
             sources.append(
                 LogSource(
                     id = f"{family}:{_digest(real)}",
@@ -188,9 +175,6 @@ def list_sources() -> list[LogSource]:
                     size_bytes = stat.st_size,
                     modified_at = stat.st_mtime,
                     is_current = _is_current(family, path, newest),
-                    is_recent_attempt = (
-                        family == "llama-server" and real_path in recent_llama_paths
-                    ),
                 )
             )
     return sources
@@ -209,6 +193,30 @@ def resolve_source_id(source_id: str) -> Optional[Path]:
     return None
 
 
+def source_id_for_path(
+    raw: Optional[str], sources: Optional[list[LogSource]] = None
+) -> Optional[str]:
+    """The opaque id of the source a WRITER's own spelling of a path names, if any."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    wanted = set()
+    for expand in (False, True):
+        try:
+            spelling = Path(raw.strip())
+            wanted.add(_identity(os.path.realpath(spelling.expanduser() if expand else spelling)))
+        except (OSError, ValueError, RuntimeError):
+            pass
+    if not wanted:
+        return None
+    for source in list_sources() if sources is None else sources:
+        try:
+            if _identity(os.path.realpath(source.realpath)) in wanted:
+                return source.id
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def default_source_id() -> Optional[str]:
     """The active server session if we have one, else the newest log we found."""
     sources = list_sources()
@@ -219,30 +227,6 @@ def default_source_id() -> Optional[str]:
             return source.id
     # No live session: the newest file across every family, NOT any retained server log, which would open the tab on a previous run while the llama log holding the failure sat one entry down. That is the state after UNSLOTH_STUDIO_NO_FILE_LOG=1 or a failed log setup.
     return max(sources, key = lambda s: s.modified_at).id
-
-
-def troubleshooting_source_ids() -> list[str]:
-    """Ordered ids for support: live session, recent llama attempts, then shell log."""
-    sources = list_sources()
-    by_id = {source.id: source for source in sources}
-    ordered: list[str] = []
-
-    def _add(source_id: Optional[str]) -> None:
-        if source_id and source_id in by_id and source_id not in ordered:
-            ordered.append(source_id)
-
-    _add(default_source_id())
-    llama = sorted(
-        (s for s in sources if s.family == "llama-server"),
-        key = lambda s: s.modified_at,
-        reverse = True,
-    )
-    for source in llama[:RECENT_LLAMA_ATTEMPTS]:
-        _add(source.id)
-    shell = [s for s in sources if s.family == "desktop-shell"]
-    if shell:
-        _add(max(shell, key = lambda s: s.modified_at).id)
-    return ordered
 
 
 def file_logging_disabled() -> bool:

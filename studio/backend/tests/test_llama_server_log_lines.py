@@ -1,43 +1,137 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from utils.llama_server_log_lines import llama_server_line_uses_info_level
+from __future__ import annotations
+
+import sys
+import types as _types
+from pathlib import Path
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+_loggers_stub = _types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+_structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+sys.modules.setdefault("structlog", _structlog_stub)
+if not hasattr(sys.modules["structlog"], "get_logger"):
+    sys.modules["structlog"].get_logger = _structlog_stub.get_logger
+
+import core.inference.llama_cpp as llama_cpp  # noqa: E402
+from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+
+# Verbatim from llama.cpp b11317 (load of a missing GGUF, then a normal start).
+_NOISE = (
+    "0.00.003.868 I srv  llama_server: initializing ...",
+    "0.13.635.789 I srv    load_model: loading model '/nonexistent.gguf'",
+    "0.34.561.161 I cmn          init: llama threadpool init, n_threads = 96",
+    "0.13.636.121 I srv    operator(): operator(): cleaning up before exit...",
+)
+_NOTABLE = (
+    "0.13.616.121 W srv  llama_server: security: no API key is set and CORS allows all origins",
+    "0.13.635.929 E gguf_init_from_file: failed to open GGUF file '/nonexistent.gguf'",
+    "0.13.650.267 E srv  llama_server: exiting due to model loading error",
+)
 
 
-def test_readiness_lines_are_info():
-    assert llama_server_line_uses_info_level("main: server is listening on 127.0.0.1:8080")
-    assert llama_server_line_uses_info_level("model loaded")
+class _Proc:
+    def __init__(
+        self,
+        lines,
+        returncode = None,
+    ):
+        self.stdout = iter(line + "\n" for line in lines)
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
 
 
-def test_errors_and_warnings_are_info():
-    assert llama_server_line_uses_info_level("ggml: CUDA error")
-    assert llama_server_line_uses_info_level("error: failed to load model")
-    assert llama_server_line_uses_info_level("warning: something odd")
+def _backend(lines):
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._process = _Proc(lines)
+    b._stdout_lines = []
+    return b
 
 
-def test_routine_ggml_and_cuda_lines_stay_debug():
-    assert not llama_server_line_uses_info_level("ggml: using CUDA backend")
-    assert not llama_server_line_uses_info_level("ggml: BLAS = 0")
+class _Recorder:
+    def __init__(self):
+        self.records = []
+
+    def _at(level):
+        def log(self, msg, *args, **kwargs):
+            self.records.append((level, msg % args if args else msg))
+
+        return log
+
+    debug, info, warning, error = _at(10), _at(20), _at(30), _at(40)
 
 
-def test_llama_model_loader_metadata_stays_debug():
-    samples = (
-        "llama_model_loader: loaded meta data with key general.name",
-        "llama_model_loader: - kv 2: general.name str = test",
-        "llama_model_loader: n_layers = 32",
+def _logger(monkeypatch):
+    rec = _Recorder()
+    monkeypatch.setattr(llama_cpp, "logger", rec)
+    return rec
+
+
+def _info_lines(rec, floor = 20):
+    return [m for level, m in rec.records if level >= floor]
+
+
+def test_only_warnings_errors_and_readiness_reach_info(monkeypatch):
+    ready = "0.40.000.000 I srv  llama_server: server is listening on http://127.0.0.1:8080"
+    log = _logger(monkeypatch)
+    _backend(_NOISE + _NOTABLE + (ready,))._drain_stdout()
+    info = _info_lines(log)
+    assert info == [f"[llama-server] {line}" for line in _NOTABLE + (ready,)]
+
+
+def test_builds_without_level_letters_fall_back_to_keywords(monkeypatch):
+    log = _logger(monkeypatch)
+    _backend(
+        ["llama_model_loader: - kv 2: general.name str = test", "error: failed to load model"]
+    )._drain_stdout()
+    assert _info_lines(log) == ["[llama-server] error: failed to load model"]
+
+
+def test_a_failing_tee_warns_once_and_a_closed_one_stays_quiet(monkeypatch):
+    class _Broken:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def write(self, _):
+            raise self.exc
+
+    log = _logger(monkeypatch)
+    b = _backend(_NOISE)
+    b._llama_log_fh = _Broken(OSError("disk full"))
+    b._drain_stdout()
+    assert sum("disk full" in m for m in _info_lines(log)) == 1
+
+    log.records.clear()
+    b = _backend(_NOISE)
+    b._llama_log_fh = _Broken(ValueError("I/O operation on closed file"))
+    b._drain_stdout()
+    assert not _info_lines(log, 30)
+
+
+def test_close_writes_reason_and_exit_code_and_rearms_the_tee_warning(tmp_path, monkeypatch):
+    log = _logger(monkeypatch)
+    b = _backend([])
+    b._process.returncode = 1
+    b._llama_log_path = tmp_path / "llama.log"
+    b._llama_log_fh = open(b._llama_log_path, "w", encoding = "utf-8")
+    b._llama_log_tee_failed = True
+    b._close_attempt_log(reason = "killed")
+    assert b._llama_log_fh is None
+    assert not b._llama_log_tee_failed
+    assert b._llama_log_path.read_text(encoding = "utf-8").endswith(
+        "attempt end reason=killed exit_code=1\n"
     )
-    assert sum(llama_server_line_uses_info_level(line) for line in samples) == 0
+    assert any("exit_code=1" in m for m in _info_lines(log))
 
-
-def test_llama_model_loader_failures_are_info():
-    assert llama_server_line_uses_info_level(
-        "llama_model_loader: - kv 2: general.name str = Symbol not found: MTLResidency"
-    )
-    assert llama_server_line_uses_info_level(
-        "llama_model_loader: - kv 2: general.name str = Library not loaded: libfake.so"
-    )
-
-
-def test_load_progress_stays_debug():
-    assert not llama_server_line_uses_info_level("load_tensors: tensor 42/9000 ( 12.3%)")
-    assert not llama_server_line_uses_info_level("offloading 50% of layers to GPU")
+    log.records.clear()
+    b._close_attempt_log()
+    assert not _info_lines(log)

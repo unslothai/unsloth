@@ -53,11 +53,18 @@ import {
   useChatSidebarItems,
 } from "@/features/chat";
 import {
+  LibraryStorageBar,
+  STORAGE_LABELS,
+  formatSize,
+  refreshLibraryStorage,
+  useLibraryStorage,
+} from "@/features/library";
+import {
   LinkedFoldersManager,
   listKnowledgeBases,
   useRagAvailabilityStore,
 } from "@/features/rag";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
 import {
@@ -73,13 +80,13 @@ import {
   Download01Icon,
   FlimSlateIcon,
   Image03Icon,
-  Message01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -88,7 +95,6 @@ import {
   type ArchivedMediaKind,
   ArchivedMediaView,
 } from "../components/archived-media-dialog";
-import { ManageChatsView } from "../components/manage-chats-view";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -101,6 +107,59 @@ import {
 
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
+
+function LibraryDataSection() {
+  const t = useT();
+  const locale = useLocale();
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
+  const storage = useLibraryStorage();
+  const count = storage.categories.reduce((sum, entry) => sum + entry.count, 0);
+  const size = (bytes: number) => formatSize(bytes, locale, t) ?? "";
+  const largest = storage.categories
+    .slice(0, 3)
+    .map((entry) => `${t(STORAGE_LABELS[entry.category])} ${size(entry.bytes)}`)
+    .join(" · ");
+
+  let summary: string;
+  if (storage.status === "loading") summary = "";
+  else if (storage.status === "error") summary = t("settings.library.storageError");
+  else if (storage.totalBytes === 0 && count === 0) summary = t("settings.library.storageEmpty");
+  else {
+    summary = [
+      t("settings.library.storageUsed", { size: size(storage.totalBytes) }),
+      count === 1
+        ? t("settings.library.itemCountOne")
+        : count > 0 && t("settings.library.itemCount", { count: count.toLocaleString() }),
+      storage.hiddenBytes > 0 && t("settings.library.storageHidden", { size: size(storage.hiddenBytes) }),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  return (
+    <SettingsSection title={t("shell.navigation.library")}>
+      <SettingsRow
+        label={t("settings.library.dataStorage")}
+        description={summary || "\u00a0"}
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => openDialog("library", { scrollTarget: "library-storage" })}
+        >
+          {t("settings.library.manageStorage")}
+          <HugeiconsIcon icon={ChevronRightStandardIcon} className="ml-1 size-3.5" />
+        </Button>
+      </SettingsRow>
+      {storage.status === "ready" && (count > 0 || storage.totalBytes > 0) && (
+        <div className="flex flex-col gap-2 pb-3">
+          <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
+          {largest && <p className="text-xs text-muted-foreground">{largest}</p>}
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
 
 // Which subpage an "open the archive" request lands on.
 const SUBPAGE_FOR_SHELF = {
@@ -126,7 +185,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
     | "main"
-    | "manage"
     | "archived"
     | "archived-images"
     | "archived-videos"
@@ -307,7 +365,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     try {
       const { imported, failed } = await importConversationsFromSource(
         source,
-        null,
+        // This tab has no destination picker, so it chooses nothing and a backup keeps its
+        // own projects. The projects page does pick, and passes null for Recents.
+        undefined,
         {
           onProgress: ({ imported: done, bytesRead, totalBytes }) => {
             const percent = totalBytes
@@ -475,6 +535,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       const result = await clearAllChats({
         deleteFiles: deleteFilesOnClear,
       });
+      refreshLibraryStorage();
       const clearedCount = result.deletedThreadIds.length;
       // A sandbox the backend could not remove, asked for or not.
       // After a clear there is no row left to reach it from.
@@ -531,38 +592,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     }
   };
 
-  if (subpage === "manage") {
-    return (
-      <div className="flex flex-col gap-6">
-        <header className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setSubpage("main")}
-            aria-label={t("settings.data.backToData")}
-            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
-          </button>
-          <h1 className="text-xl font-semibold font-heading">
-            {t("settings.data.title")}
-          </h1>
-        </header>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {t("settings.data.manageChats")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.data.manageChatsDescription")}
-          </p>
-        </div>
-        <ManageChatsView />
-      </div>
-    );
-  }
-
   if (subpage === "archived") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -578,7 +610,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         </header>
         <div className="flex items-start justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <h2 className="text-sm font-semibold">
+            <h2 className="settings-heading text-sm font-semibold">
               {t("settings.data.archivedChats")}
             </h2>
             <p className="text-xs text-muted-foreground">
@@ -635,7 +667,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       audio: t("settings.data.archivedAudioDescription"),
     }[kind];
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -650,7 +682,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">{heading}</h2>
+          <h2 className="settings-heading text-sm font-semibold">{heading}</h2>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
@@ -663,7 +695,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
 
   if (subpage === "files") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -678,7 +710,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
+          <h2 className="settings-heading text-sm font-semibold">
             {t("settings.data.uploadedFiles")}
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -691,7 +723,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.data.title")}
@@ -702,18 +734,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       </header>
 
       <SettingsSection title={t("settings.data.chatsSection")}>
-        <SettingsRow
-          label={t("settings.data.manageChats")}
-          description={t("settings.data.manageChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("manage")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
         <div
           data-settings-label={t("settings.data.archives")}
           className="py-3"
@@ -723,7 +743,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </p>
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
             {([
-              ["archived", "archivedChats", "settings.data.archiveChatsLabel", Message01Icon],
+              ["archived", "archivedChats", "settings.data.archiveChatsLabel", MessageCircleIcon],
               [
                 "archived-images",
                 "archivedImages",
@@ -1035,6 +1055,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </SettingsRow>
         </div>
       </SettingsSection>
+
+      <LibraryDataSection />
 
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow

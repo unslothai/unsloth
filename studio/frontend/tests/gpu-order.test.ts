@@ -83,7 +83,7 @@ test("the ordering controls and their promise are withheld for diffusion", () =>
   );
   assert.match(
     src,
-    /!isDiffusion &&\s*" Their order here is the order they are given to the model/,
+    /!isDiffusion &&\s*" Their order here is the order the model gets them/,
     "the help text must not promise ordering for a diffusion model",
   );
 });
