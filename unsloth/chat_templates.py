@@ -2170,14 +2170,9 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
-# `{{` and `}}` are how str.format spells a literal brace, and the merged prompt is rendered with
-# str.format, so they are not column references. Blank them out before scanning or a prompt that asks
-# the model for JSON reports its own text as a missing dataset column.
-_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
-
-
 def _column_names_in(text):
-    return re.findall(r"\{(.+?)\}", _ESCAPED_BRACES_RE.sub("", text))
+    # The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+    return re.findall(r"\{(.+?)\}", re.sub(r"\{\{|\}\}", "", text))
 
 
 def _parse_combined_prompt(combined_prompt, dataset):
