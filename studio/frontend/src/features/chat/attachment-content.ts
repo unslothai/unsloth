@@ -757,7 +757,6 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
-// Transitional, then Strict OOXML (Word's "Strict Open XML Document").
 const WORDPROCESSINGML_NAMESPACES = new Set([
   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
   "http://purl.oclc.org/ooxml/wordprocessingml/main",
@@ -774,7 +773,7 @@ function childElements(node: Node, ns: string, name: string): Element[] {
   );
 }
 
-/** An unfilled content control holds Word's prompt ("Click or tap here to enter text."), not a value. */
+/** An unfilled content control holds Word's prompt, not a value. */
 function isDocxPlaceholder(element: Element, ns: string): boolean {
   const flag = childElements(element, ns, "sdtPr").flatMap((pr) =>
     childElements(pr, ns, "showingPlcHdr"),
@@ -832,12 +831,7 @@ function romanNumeral(n: number): string {
 }
 
 
-/**
- * Puts a sentinel after each note reference in the main document; `label` numbers the
- * references that survived extraction as Word does (footnotes 1, 2; endnotes i, ii),
- * swaps in the labels and appends the notes. extractRawText drops the references and
- * the notes, and skips deleted or moved text, so only it knows which references show.
- */
+/** Sentinels after note references; `label` numbers those extractRawText kept (1, 2 / i, ii) and appends the notes. */
 export function markDocxNotes(archive: Uint8Array): {
   archive: Uint8Array;
   label: (text: string) => string;
@@ -902,7 +896,7 @@ export function markDocxNotes(archive: Uint8Array): {
   }
 
   const refs: { kind: keyof typeof kinds; id: string }[] = [];
-  // Per call, so text that already looks like a sentinel is left alone.
+  // Nonce: document text shaped like a sentinel stays as written.
   const nonce = Math.random().toString(36).slice(2, 10);
   const sentinel = new RegExp(`\\uE000${nonce}\\.(\\d+)\\uE001`, "g");
   const mainXml = read(main);
@@ -925,7 +919,7 @@ export function markDocxNotes(archive: Uint8Array): {
           notes.referenced.add(id);
           refs.push({ kind, id });
           const marker = `\uE000${nonce}.${refs.length - 1}\uE001`;
-          // Declares its own namespace: the reference's prefix may be bound on the reference alone.
+          // Own xmlns: the reference's prefix may be declared on the reference alone.
           return `${reference}<t xmlns="${notes.ns}">${marker}</t>`;
         },
       )
@@ -946,8 +940,7 @@ export function markDocxNotes(archive: Uint8Array): {
     const sections: string[] = [];
     for (const [kind, notes] of Object.entries(kinds)) {
       const seen = numbers[kind as keyof typeof kinds];
-      // A note no reference points at still carries text; one referenced only from deleted
-      // or moved-away text is gone from the document Word shows.
+      // Unreferenced notes stay; ones referenced only from deleted or moved text go.
       for (const id of notes.bodies.keys()) {
         if (!notes.referenced.has(id) && !seen.has(id)) {
           seen.set(id, seen.size + 1);

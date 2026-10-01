@@ -608,9 +608,7 @@ def _roman(n: int) -> str:
 
 
 def _docx_mark_notes(document):
-    """Puts a sentinel after each body note reference; the returned function numbers the
-    references that survived extraction as Word does (footnotes 1, 2; endnotes i, ii),
-    swaps in the labels and appends the notes."""
+    """Sentinels after body note references; the returned function labels the surviving ones (1, 2 / i, ii) and appends the notes."""
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
     from docx.oxml import OxmlElement, parse_xml
     from docx.table import Table
@@ -647,7 +645,7 @@ def _docx_mark_notes(document):
         return lambda text: text
 
     refs: list[tuple[int, str]] = []
-    # Per call, so text that already looks like a sentinel is left alone.
+    # Nonce: document text shaped like a sentinel stays as written.
     nonce = secrets.token_hex(4)
     sentinel = re.compile(f"\ue000{nonce}\\.(\\d+)\ue001")
     referenced: list[set[str]] = [set() for _ in kinds]
@@ -675,8 +673,7 @@ def _docx_mark_notes(document):
         text = sentinel.sub(label, text)
         lines = [text] if text else []
         for k, (kind, label_of, bodies) in enumerate(kinds):
-            # A note no reference points at still carries text; one referenced only from deleted
-            # or moved-away text is gone from the document Word shows.
+            # Unreferenced notes stay; ones referenced only from deleted or moved text go.
             for note_id in bodies:
                 if note_id not in referenced[k]:
                     numbers[k].setdefault(note_id, len(numbers[k]) + 1)
