@@ -157,7 +157,9 @@ def _dtype_name(dtype: Any) -> str:
 
 
 def _itemsize(name: str) -> int:
-    return {"float32": 4, "bfloat16": 2, "float16": 2, "float8_e4m3fn": 1, "float8_e5m2": 1}.get(name, 2)
+    return {"float32": 4, "bfloat16": 2, "float16": 2, "float8_e4m3fn": 1, "float8_e5m2": 1}.get(
+        name, 2
+    )
 
 
 @dataclass(frozen = True)
@@ -326,9 +328,7 @@ def quantize_int8_weight_(
     keep = torch.device(keep_device)
     stats = {"linears": 0, "dense_linears": 0, "int8_bytes": 0}
     targets = [
-        (name, child)
-        for name, child in module.named_modules()
-        if type(child) is torch.nn.Linear
+        (name, child) for name, child in module.named_modules() if type(child) is torch.nn.Linear
     ]
     for name, lin in targets:
         if lin.weight.numel() < _INT8_MIN_ELEMENTS:

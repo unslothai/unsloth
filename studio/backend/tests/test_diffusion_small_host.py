@@ -41,7 +41,13 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-def _decide(comps, dtype = torch.float16, total = KAGGLE_TOTAL, available = KAGGLE_AVAILABLE, **kw):
+def _decide(
+    comps,
+    dtype = torch.float16,
+    total = KAGGLE_TOTAL,
+    available = KAGGLE_AVAILABLE,
+    **kw,
+):
     return sh.decide_small_host(
         comps,
         dtype,
@@ -97,14 +103,22 @@ def test_lora_keeps_the_dense_load():
 def test_torch_dtype_map_only_names_routed_components():
     d = _decide(FLUX1)
     m = sh.torch_dtype_map(d, torch.float16)
-    assert m == {"default": torch.float16, "transformer": torch.bfloat16, "text_encoder_2": torch.bfloat16}
+    assert m == {
+        "default": torch.float16,
+        "transformer": torch.bfloat16,
+        "text_encoder_2": torch.bfloat16,
+    }
     assert sh.torch_dtype_map(_decide(FLUX1, available = 10**6), torch.float16) is torch.float16
 
 
 def _write_safetensors(path, tensors):
     header, offset = {}, 0
     for name, (dtype, nbytes) in tensors.items():
-        header[name] = {"dtype": dtype, "shape": [nbytes // 2], "data_offsets": [offset, offset + nbytes]}
+        header[name] = {
+            "dtype": dtype,
+            "shape": [nbytes // 2],
+            "data_offsets": [offset, offset + nbytes],
+        }
         offset += nbytes
     raw = json.dumps(header).encode()
     with open(path, "wb") as fh:
@@ -180,7 +194,9 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
     torch.manual_seed(0)
     enc = Enc()
     for p in enc.parameters():
-        p.data = p.data.to(torch.bfloat16)  # the stored-dtype load: parameters bf16, init-time buffers fp32
+        p.data = p.data.to(
+            torch.bfloat16
+        )  # the stored-dtype load: parameters bf16, init-time buffers fp32
     dense = Enc()
     dense.load_state_dict({k: v.float() for k, v in enc.state_dict().items()})
     dense.inv_freq = enc.inv_freq.clone()
@@ -197,7 +213,10 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
     # the first float parameter's owner converts so .dtype reports the compute dtype
     assert enc.dtype == torch.float32
     assert enc.block.wi.weight.dtype == torch.bfloat16  # memory-mapped storage stays
-    assert HookRegistry.check_if_exists_or_initialize(enc.block.wi).get_hook("layerwise_casting") is not None
+    assert (
+        HookRegistry.check_if_exists_or_initialize(enc.block.wi).get_hook("layerwise_casting")
+        is not None
+    )
     assert enc.block.wo.weight.dtype == torch.float32  # kept-fp32 converts now
     ids = torch.randint(0, 100, (2, 7))
     with torch.no_grad():
@@ -228,7 +247,11 @@ def test_route_plan_streams_encoders_and_keeps_what_fits(monkeypatch):
     monkeypatch.setattr(
         dm,
         "_loaded_component_mib",
-        lambda pipe: {"transformer": (11353, "dit"), "text_encoder_2": (9346, "text_encoder"), "vae": (160, "other")},
+        lambda pipe: {
+            "transformer": (11353, "dit"),
+            "text_encoder_2": (9346, "text_encoder"),
+            "vae": (160, "other"),
+        },
     )
     pipe = types.SimpleNamespace(_unsloth_small_host = {"components": {}})
     log = types.SimpleNamespace(info = lambda *a, **k: None)
@@ -245,7 +268,11 @@ def test_route_plan_streams_encoders_and_keeps_what_fits(monkeypatch):
 def test_lora_refused_and_status_reports_the_int8_route():
     from core.inference.diffusion import _small_host_int8
 
-    pipe = types.SimpleNamespace(_unsloth_small_host = {"components": {"transformer": "int8 weights (1 MiB)"}})
+    pipe = types.SimpleNamespace(
+        _unsloth_small_host = {"components": {"transformer": "int8 weights (1 MiB)"}}
+    )
     assert _small_host_int8(pipe)
-    assert not _small_host_int8(types.SimpleNamespace(_unsloth_small_host = {"components": {"transformer": "cast on device"}}))
+    assert not _small_host_int8(
+        types.SimpleNamespace(_unsloth_small_host = {"components": {"transformer": "cast on device"}})
+    )
     assert not _small_host_int8(object())

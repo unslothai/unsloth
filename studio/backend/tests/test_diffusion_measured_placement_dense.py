@@ -38,7 +38,11 @@ def _memory(budget_mib: int, total_mib: int) -> "dm.DeviceMemory":
     return dm.DeviceMemory("cuda", "cuda", "discrete_vram", budget_mib + reserve, total_mib)
 
 
-def _flat_plan(budget_mib: int, total_mib: int = T4_TOTAL, mode = None):
+def _flat_plan(
+    budget_mib: int,
+    total_mib: int = T4_TOTAL,
+    mode = None,
+):
     return dm.plan_diffusion_memory(
         target = types.SimpleNamespace(supports_model_cpu_offload = True),
         device_memory = _memory(budget_mib, total_mib),
@@ -62,7 +66,12 @@ def klein_pipe(monkeypatch):
     return types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.float16))
 
 
-def _refine(pipe, plan, family = "flux.2-klein", speed = "off"):
+def _refine(
+    pipe,
+    plan,
+    family = "flux.2-klein",
+    speed = "off",
+):
     return dm.refine_plan_from_loaded_weights(pipe, plan, family = family, speed_mode = speed)
 
 

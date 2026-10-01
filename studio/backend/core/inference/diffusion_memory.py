@@ -2062,7 +2062,6 @@ def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
     fp32-promoted family. None for bf16 (unmeasured there) or when unreadable."""
     try:
         import torch
-
         for name in ("transformer", "unet"):
             module = getattr(pipe, name, None)
             dtype = getattr(module, "dtype", None) if module is not None else None

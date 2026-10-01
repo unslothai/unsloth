@@ -6266,7 +6266,14 @@ class DiffusionBackend:
                                 )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
-                                        pipe, plan, small_host, target, dtype, fam, logger, _load_token
+                                        pipe,
+                                        plan,
+                                        small_host,
+                                        target,
+                                        dtype,
+                                        fam,
+                                        logger,
+                                        _load_token,
                                     )
                         elif kind == "single_file" and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
@@ -6391,7 +6398,14 @@ class DiffusionBackend:
                                 )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
-                                        pipe, plan, small_host, target, dtype, fam, logger, _load_token
+                                        pipe,
+                                        plan,
+                                        small_host,
+                                        target,
+                                        dtype,
+                                        fam,
+                                        logger,
+                                        _load_token,
                                     )
 
                     # The same helper the route preflight asked, so the two cannot disagree.
@@ -7834,13 +7848,7 @@ class DiffusionBackend:
         return unified_memory_shortfall_message(plan, family = fam.name)
 
     def _small_host_decision(
-        self,
-        source: Any,
-        pipe_kwargs: dict,
-        target: Any,
-        dtype: Any,
-        *,
-        lora_active: bool,
+        self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool
     ) -> Any:
         """Host-RAM pre-check for a diffusers pipeline load (see diffusion_small_host). Raises the refusal when even
         the low-memory route cannot fit; None when the decision cannot be made (no local snapshot)."""
@@ -7963,7 +7971,11 @@ class DiffusionBackend:
             reasons = plan.reasons
             + (
                 f"small-host route: encoders stream from memory-mapped storage; transformer {dit} MiB "
-                + ("resident" if not stream_dit else f"streams with {resident_dit or 0} MiB resident"),
+                + (
+                    "resident"
+                    if not stream_dit
+                    else f"streams with {resident_dit or 0} MiB resident"
+                ),
             ),
         )
         if (

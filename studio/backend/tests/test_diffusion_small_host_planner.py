@@ -15,7 +15,6 @@ import core.inference.diffusion_memory as dm
 def test_qwen_image_is_fp16_incompatible():
     from core.inference.diffusion import _resolve_diffusion_compute_dtype
     from core.inference.diffusion_families import detect_family
-
     for name in ("qwen-image", "qwen-image-edit"):
         fam = detect_family("", override = name)
         assert fam.fp16_incompatible, name
@@ -38,12 +37,20 @@ def test_dense_table_skips_bf16_denoisers(monkeypatch):
     """The dense eager table was measured on fp16 (and fp32-promoted) cards; a bf16 card keeps the flat plan."""
     import types
 
-    for name in (dm.MEASURED_ACTIVATION_ENV, "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE", dm.PARTIAL_RESIDENT_ENV):
+    for name in (
+        dm.MEASURED_ACTIVATION_ENV,
+        "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE",
+        dm.PARTIAL_RESIDENT_ENV,
+    ):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(
         dm,
         "_loaded_component_mib",
-        lambda pipe: {"transformer": (22700, "dit"), "text_encoder_2": (9346, "text_encoder"), "vae": (160, "other")},
+        lambda pipe: {
+            "transformer": (22700, "dit"),
+            "text_encoder_2": (9346, "text_encoder"),
+            "vae": (160, "other"),
+        },
     )
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: False)
     memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", 24000, 24564)
