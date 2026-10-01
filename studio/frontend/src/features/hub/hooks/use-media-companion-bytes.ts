@@ -73,13 +73,15 @@ export async function resolveCompanionBytes(
     page === "video"
       ? await getVideoDownloadPlan(request)
       : await getDiffusionDownloadPlan(request);
-  if (plan.plan_failed) return null;
+  // Rejected, not null, so the per-card cache drops it and a later rerun retries.
+  if (plan.plan_failed) throw new Error("Download plan incomplete");
   const checkpointBytes = plan.checkpoint_bytes || sizeBytes;
   // Entries hold only uncached files; required_bytes would count cached companions too.
   const companionBytes = plan.entries.reduce(
     (sum, entry) =>
       sum +
-      (entry.checkpoint
+      // An older backend omits the flag; the pages infer it from the file list the same way.
+      ((entry.checkpoint ?? entry.files.includes(filename))
         ? Math.max(0, entry.bytes - checkpointBytes)
         : entry.bytes),
     0,

@@ -38,7 +38,10 @@ function entry(repo: string, bytes: number, checkpoint = false) {
   return { repo_id: repo, files: [], bytes, gguf_filename: null, checkpoint };
 }
 
-function plan(entries: ReturnType<typeof entry>[], extra = {}) {
+function plan(
+  entries: ({ bytes: number } & Record<string, unknown>)[],
+  extra = {},
+) {
   return {
     entries,
     // biome-ignore lint/style/useNamingConvention: API schema
@@ -94,6 +97,10 @@ test("companions are the uncached plan entries beyond the checkpoint", async () 
   // A cached checkpoint leaves its repo's missing companions unflagged.
   planBody = plan([entry(GGUF_REPO, 7)]);
   assert.equal(await resolve(), 7);
+  // An older backend sends no checkpoint flag.
+  const unflagged = { ...entry(GGUF_REPO, GGUF_BYTES + 7), files: ["q5.gguf"] };
+  planBody = plan([{ ...unflagged, checkpoint: undefined }]);
+  assert.equal(await resolve(), 7);
   // The listed size stands in for a checkpoint the planner could not size.
   planBody = plan([entry(GGUF_REPO, GGUF_BYTES + 7, true)], {
     // biome-ignore lint/style/useNamingConvention: API schema
@@ -107,12 +114,12 @@ test("cached companions add nothing, whatever required_bytes says", async () => 
   assert.equal(await resolve(), null);
 });
 
-test("an incomplete plan keeps the checkpoint size", async () => {
+test("an incomplete plan is rejected so it is not kept", async () => {
   planBody = plan([entry("Qwen/Qwen-Image-2.1", COMPANION_BYTES)], {
     // biome-ignore lint/style/useNamingConvention: API schema
     plan_failed: true,
   });
-  assert.equal(await resolve(), null);
+  await assert.rejects(resolve());
 });
 
 test("a video repo asks the video planner", async () => {
