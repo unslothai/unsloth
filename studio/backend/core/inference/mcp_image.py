@@ -26,8 +26,13 @@ WITHHELD_RESULT = (
 )
 _PROBE_BYTES = 48
 # Any inline image a call carrying the user's image returns may be a resized copy of it.
+_B64_RUN = r"(?:[A-Za-z0-9+/_=-]|\\/)+"
 _IMAGE_DATA_URL = re.compile(
-    r"data:image/[\w.+-]+;base64,[A-Za-z0-9+/_=-]+(?:(?:\\[rn]|\r?\n)[A-Za-z0-9+/_=-]+)*",
+    r"data:image\\?/[\w.+-]+(?:;[\w.+-]+=[^;,\s\"']*)*;base64,"
+    + _B64_RUN
+    + r"(?:(?:\\[rn]|\r?\n)"
+    + _B64_RUN
+    + r")*",
     re.IGNORECASE,
 )
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
