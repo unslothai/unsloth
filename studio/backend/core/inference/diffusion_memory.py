@@ -2036,9 +2036,8 @@ def refine_plan_from_loaded_weights(
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
-    Only moves toward residency: everything resident, else the denoiser resident with encoders streamed, else as
-    much of the denoiser resident as fits. Each tier needs the measured peak x margin plus the base overhead on top
-    of the weights within the safe budget. No-op for explicit modes, non-CUDA / unified memory, unmeasured families
+    Keeps the flat plan's offload hooks and makes whole groups resident (denoiser first, then encoders) within the
+    safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families
     or speed tiers, non-torchao denoisers and ``model`` plans."""
     try:
         if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
@@ -2075,64 +2074,37 @@ def refine_plan_from_loaded_weights(
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
         )
-        if floor + dit + encoders <= budget:
-            new = replace(
-                plan,
-                offload_policy = OFFLOAD_NONE,
-                vae_tiling = False,
-                vae_slicing = False,
-                stream_text_encoders = False,
-                stream_transformer = True,
-                resident_transformer_mib = None,
-                estimates = estimates,
-                reasons = plan.reasons
-                + (
-                    f"loaded weights {dit + encoders + other} MiB + measured peak {headroom} MiB + "
-                    f"{overhead} MiB overhead fit the {budget} MiB budget; everything resident",
-                ),
-            )
-        elif floor + dit <= budget:
-            # leftover room keeps the first encoder layers resident
-            te_room = 0 if _env_off(PARTIAL_RESIDENT_ENV) else max(0, budget - floor - dit)
-            new = replace(
-                plan,
-                offload_policy = OFFLOAD_GROUP,
-                stream_text_encoders = True,
-                stream_transformer = False,
-                resident_transformer_mib = None,
-                resident_text_encoder_mib = int(te_room) if te_room > 0 else None,
-                estimates = {**estimates, "resident_text_encoder_mib": int(te_room)},
-                reasons = plan.reasons
-                + (
-                    f"loaded transformer {dit} MiB + measured peak {headroom} MiB fit the {budget} MiB budget "
-                    "with the text encoders streamed; every denoise step runs resident"
-                    + (
-                        f"; {int(te_room)} MiB of the encoders stays resident"
-                        if te_room > 0
-                        else ""
-                    ),
-                ),
-            )
+        if _env_off(PARTIAL_RESIDENT_ENV):
+            return plan
+        # The flat plan's hooks stay installed and whole groups are kept resident within the room, so an oversized
+        # request can stream them again (release_resident_groups) and run exactly as the flat plan would.
+        stream_te = bool(getattr(plan, "stream_text_encoders", False))
+        room = budget - floor
+        if policy == OFFLOAD_GROUP and not stream_te:
+            room -= encoders  # resident companions
+        if not bool(getattr(plan, "stream_transformer", True)):
+            room -= dit
+            dit_room = 0
         else:
-            if _env_off(PARTIAL_RESIDENT_ENV):
-                return plan
-            # the measured peak already covers a streamed group in flight
-            if policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False)):
-                room = budget - floor - encoders
-            else:
-                room = budget - floor
-            if room <= 0:
-                return plan
-            new = replace(
-                plan,
-                resident_transformer_mib = int(room),
-                estimates = {**estimates, "resident_transformer_mib": int(room)},
-                reasons = plan.reasons
-                + (
-                    f"{int(room)} MiB of the {dit} MiB transformer stays resident (measured peak {headroom} MiB); "
-                    "only the remaining blocks stream",
-                ),
-            )
+            dit_room = min(max(room, 0), dit)
+        te_room = max(0, room - dit_room) if stream_te and policy == OFFLOAD_GROUP else 0
+        if dit_room <= 0 and te_room <= 0:
+            return plan
+        new = replace(
+            plan,
+            resident_transformer_mib = int(dit_room) if dit_room > 0 else None,
+            resident_text_encoder_mib = int(te_room) if te_room > 0 else None,
+            estimates = {
+                **estimates,
+                "resident_transformer_mib": int(dit_room),
+                "resident_text_encoder_mib": int(te_room),
+            },
+            reasons = plan.reasons
+            + (
+                f"{int(dit_room)} MiB of the {dit} MiB transformer and {int(te_room)} MiB of the {encoders} MiB "
+                f"encoders stay resident (measured peak {headroom} MiB); the rest streams",
+            ),
+        )
         if logger is not None:
             logger.info(
                 "diffusion.memory: measured-activation placement %s -> %s (%s)",
@@ -2200,11 +2172,19 @@ def _keep_groups_resident(
 
         noop = disable(_noop) if callable(disable) else _noop
 
+        try:
+            module._unsloth_resident_room = int(room_mib)
+            module._unsloth_resident_device = onload
+        except AttributeError:
+            pass
         for group in ordered:
             if getattr(group, "offload_to_disk_path", None):
                 break
             tensors = _tensors(group)
             need = sum(sum(_storage_nbytes(t)) for t in tensors)
+            if getattr(group, "_unsloth_resident", False):
+                left -= need
+                continue
             if need > left:
                 # too large: it streams; a later, smaller group may still fit
                 continue
@@ -2217,11 +2197,15 @@ def _keep_groups_resident(
                     go._swap_torchao_tensor(t, moved)
                 else:
                     t.data = moved
+            # host copies stay: release_resident_groups streams the group again for an oversized request
+            group._unsloth_streamed_hooks = (
+                group.__dict__.get("onload_"),
+                group.__dict__.get("offload_"),
+            )
             group.onload_ = _resident_onload(getattr(group, "stream", None))
             group.offload_ = noop
             group._unsloth_resident = True
-            if isinstance(cpu, dict) and cpu:
-                group.cpu_param_dict = {}
+            group._unsloth_resident_bytes = need
             left -= need
             kept += need
         if kept and onload.type == "cuda":
@@ -2239,6 +2223,107 @@ def _keep_groups_resident(
         if logger is not None:
             logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
         return 0
+
+
+def _release_group(group: Any) -> None:
+    onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
+    for name, fn in (("onload_", onload_), ("offload_", offload_)):
+        if fn is not None:
+            setattr(group, name, fn)
+        else:
+            group.__dict__.pop(name, None)
+    group._unsloth_resident = False
+    group.offload_()
+
+
+def release_resident_groups(
+    pipe: Any,
+    need_mib: int,
+    logger: Any = None,
+) -> Optional[Callable[[], None]]:
+    """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
+    blocks from the last); returns a callable restoring them, or None when nothing was resident. A request larger
+    than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as the flat plan."""
+    try:
+        import torch
+
+        modules = [
+            m
+            for m in (getattr(pipe, "components", {}) or {}).values()
+            if getattr(m, "_unsloth_resident_room", None)
+        ]
+        if not modules or int(need_mib) <= 0:
+            return None
+        modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
+        left = int(need_mib) * 1024 * 1024
+        released: list = []
+        for module in modules:
+            for group in reversed(_offload_groups(module) or []):
+                if left <= 0:
+                    break
+                if not getattr(group, "_unsloth_resident", False):
+                    continue
+                _release_group(group)
+                left -= int(getattr(group, "_unsloth_resident_bytes", 0))
+                if module not in released:
+                    released.append(module)
+        if not released:
+            return None
+        device = getattr(released[0], "_unsloth_resident_device", None)
+        if device is not None and torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: streaming %d MiB of resident groups for an oversized request",
+                (int(need_mib) * 1024 * 1024 - max(left, 0)) >> 20,
+            )
+
+        def restore() -> None:
+            for module in released:
+                _keep_groups_resident(
+                    module,
+                    module._unsloth_resident_room,
+                    module._unsloth_resident_device,
+                    logger,
+                )
+
+        return restore
+    except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
+        if logger is not None:
+            logger.warning("diffusion.memory: releasing resident groups failed (%s)", exc)
+        return None
+
+
+def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
+    for name, component in (getattr(pipe, "components", {}) or {}).items():
+        if component is module:
+            return str(name).startswith("text_encoder")
+    return False
+
+
+def measured_request_extra_mib(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    condition_pixels: int = 0,
+) -> int:
+    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made)."""
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve:
+        return 0
+    headroom, family, speed_mode = reserve
+    need = measured_image_runtime_mib(
+        family, speed_mode, width = width, height = height, batch_size = batch_size
+    )
+    if need is None:
+        return 0
+    cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
+    need += int(
+        8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
+    )
+    return max(0, int(need) - int(headroom))
 
 
 def apply_memory_plan(

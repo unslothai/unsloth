@@ -128,6 +128,8 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    release_resident_groups,
+    measured_request_extra_mib,
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
@@ -6800,6 +6802,15 @@ class DiffusionBackend:
                             speed_mode = effective_speed,
                             logger = logger,
                         )
+                        headroom = plan.estimates.get("measured_runtime_headroom_mib")
+                        if headroom and (
+                            plan.resident_transformer_mib or plan.resident_text_encoder_mib
+                        ):
+                            pipe._unsloth_measured_reserve = (
+                                int(headroom),
+                                fam.name,
+                                effective_speed,
+                            )
 
                     # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the
                     # text-encoder forward. After the TE quant so the key reflects the encoders that run; ``base``
@@ -8545,6 +8556,7 @@ class DiffusionBackend:
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_vae: Optional[Callable[[], None]] = None
+            restore_resident: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -8868,6 +8880,25 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
+                    # past what the measured placement reserved: stream resident groups again for this call
+                    extra_mib = measured_request_extra_mib(
+                        state.pipe,
+                        width = guard_width,
+                        height = guard_height,
+                        batch_size = guard_batch,
+                        condition_pixels = (
+                            int(
+                                (1 + len(ref_extra))
+                                * ref_resolution
+                                * ref_resolution
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
+                            if ref_resolution is not None
+                            else 0
+                        ),
+                    )
+                    if extra_mib > 0:
+                        restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
                     guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once
                         # per load but wrong on a per-generation path, since it releases every cached block and the
@@ -9195,6 +9226,11 @@ class DiffusionBackend:
                         logger.debug("diffusion.step_skip: reset failed: %s", exc)
                 if restore_vae is not None:
                     restore_vae()
+                if restore_resident is not None:
+                    try:
+                        restore_resident()
+                    except Exception as exc:  # noqa: BLE001 - the groups keep streaming
+                        logger.warning("diffusion.memory: re-residency failed: %s", exc)
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
