@@ -1328,7 +1328,6 @@ def _maybe_dequantize_gguf_one_dimensional(value: Any) -> Any:
     quant_shape = getattr(value, "quant_shape", None)
     if quant_shape is not None and len(quant_shape) == 1:
         from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
-
         return dequantize_gguf_tensor(value)
     return value
 
