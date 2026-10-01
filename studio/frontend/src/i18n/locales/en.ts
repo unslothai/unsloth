@@ -1201,7 +1201,7 @@ export const en = {
         action: "Repair install",
         confirmTitle: "Repair this installation?",
         confirmDescription:
-          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
