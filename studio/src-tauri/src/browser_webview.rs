@@ -458,6 +458,16 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     });
 }
 
+// A page picks its title, so it can't be large enough to stall the UI; the frame path's cap.
+const MAX_TITLE_CHARS: usize = 1024;
+
+fn bounded_title(title: String) -> String {
+    match title.char_indices().nth(MAX_TITLE_CHARS) {
+        Some((end, _)) => title[..end].to_string(),
+        None => title,
+    }
+}
+
 // Pages can start downloads without a click: a few at once and a few a minute, so one can't fill
 // the disk in the background.
 const MAX_DOWNLOADS_IN_FLIGHT: usize = 3;
@@ -732,7 +742,7 @@ fn create_view<R: Runtime>(
                 webview.app_handle(),
                 BrowserEvent::Title {
                     tab_id: title_tab.clone(),
-                    title,
+                    title: bounded_title(title),
                 },
             );
             refresh_history(&webview);
@@ -1433,6 +1443,15 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(bounds.viewport_width, 5.0);
+    }
+
+    #[test]
+    fn titles_are_bounded() {
+        assert_eq!(
+            bounded_title("é".repeat(5000)).chars().count(),
+            MAX_TITLE_CHARS
+        );
+        assert_eq!(bounded_title("short".into()), "short");
     }
 
     #[test]
