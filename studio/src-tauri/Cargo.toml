@@ -56,9 +56,9 @@ signal-hook = "0.4"
 objc2 = "0.6"
 
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueCoding", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString", "NSURL"] }
 # The browser panel's content rules (browser_webview.rs); wry already builds this crate.
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKWebViewConfiguration"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
 block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]

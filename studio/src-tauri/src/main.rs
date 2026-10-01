@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_proxy;
 mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]

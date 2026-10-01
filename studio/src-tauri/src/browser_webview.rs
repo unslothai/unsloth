@@ -6,7 +6,9 @@
 //!
 //! Pages are untrusted:
 //! - Navigations (frames too) must be http(s) to a public host: local URLs reach the app's
-//!   commands, and loopback the backend. On macOS a content rule list also blocks subresources.
+//!   commands, and loopback the backend. Every request goes through `browser_proxy`, which
+//!   refuses private addresses after DNS; macOS before 14, which can't set a proxy, gets a
+//!   content rule list against private hosts instead.
 //! - No IPC: capabilities are bound to `main`, and these commands only answer it.
 //! - Pages use their own profile, never the app's, which holds Studio's sign-in.
 //! - Popups become tabs; downloads get the OS quarantine mark.
@@ -143,7 +145,7 @@ pub(crate) fn navigation_allowed(url: &Url) -> bool {
 }
 
 /// Hosts that are this machine, its network, or Studio itself.
-fn host_is_private(host: &url::Host<&str>) -> bool {
+pub(crate) fn host_is_private(host: &url::Host<&str>) -> bool {
     match host {
         url::Host::Ipv4(ip) => ipv4_is_private(*ip),
         url::Host::Ipv6(ip) => ipv6_is_private(*ip),
@@ -155,11 +157,15 @@ fn host_is_private(host: &url::Host<&str>) -> bool {
                     .iter()
                     .any(|suffix| domain == *suffix || domain.ends_with(&format!(".{suffix}")))
                 // Written as a number the URL parser didn't normalise.
-                || domain.parse::<IpAddr>().is_ok_and(|ip| match ip {
-                    IpAddr::V4(ip) => ipv4_is_private(ip),
-                    IpAddr::V6(ip) => ipv6_is_private(ip),
-                })
+                || domain.parse::<IpAddr>().is_ok_and(ip_is_private)
         }
+    }
+}
+
+pub(crate) fn ip_is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ipv4_is_private(ip),
+        IpAddr::V6(ip) => ipv6_is_private(ip),
     }
 }
 
@@ -179,7 +185,13 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return ipv4_is_private(v4);
     }
-    let first = ip.segments()[0];
+    let segments = ip.segments();
+    // NAT64 (64:ff9b::/96) reaches the IPv4 address in its last 32 bits.
+    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        let [.., high, low] = segments;
+        return ipv4_is_private(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
+    }
+    let first = segments[0];
     ip.is_loopback()
         || ip.is_unspecified()
         // Unique local (fc00::/7) and link-local (fe80::/10).
@@ -503,26 +515,61 @@ fn macos_at_least(major: isize) -> bool {
     })
 }
 
-/// Pages' own profile, never the app's.
+/// Pages' own profile, never the app's, connecting through `browser_proxy` (set on macOS when
+/// the page first loads, see `load_when_protected`).
 fn with_page_profile<R: Runtime>(
     builder: WebviewBuilder<R>,
     app: &AppHandle<R>,
-) -> WebviewBuilder<R> {
+) -> Result<WebviewBuilder<R>, String> {
+    let proxy = crate::browser_proxy::address()?;
     #[cfg(target_os = "macos")]
     {
-        let _ = app;
+        let _ = (app, proxy);
         // Before macOS 14 the only other store is a private one.
-        if macos_at_least(14) {
+        Ok(if macos_at_least(14) {
             builder.data_store_identifier(PAGE_DATA_STORE)
         } else {
             builder.incognito(true)
-        }
+        })
     }
     #[cfg(not(target_os = "macos"))]
-    match app.path().app_local_data_dir() {
-        Ok(dir) => builder.data_directory(dir.join("browser-profile")),
-        Err(_) => builder.incognito(true),
+    {
+        // These replace wry's default arguments, so they repeat them. Chromium sends loopback
+        // past any proxy unless told not to.
+        #[cfg(windows)]
+        let builder = builder.additional_browser_args(&format!(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+             --proxy-server=http://{proxy} --proxy-bypass-list=<-loopback>"
+        ));
+        #[cfg(not(windows))]
+        let builder = builder
+            .proxy_url(Url::parse(&format!("http://{proxy}")).map_err(|error| error.to_string())?);
+        Ok(match app.path().app_local_data_dir() {
+            Ok(dir) => builder.data_directory(dir.join("browser-profile")),
+            Err(_) => builder.incognito(true),
+        })
     }
+}
+
+/// The page's address. wry's `url()` panics on macOS while WebKit has none (a failed load).
+async fn page_url<R: Runtime>(webview: &Webview<R>) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        webview
+            .with_webview(move |platform| {
+                let view = platform.inner() as *const objc2_web_kit::WKWebView;
+                // Safety: wry's live view, read on the main thread.
+                let url = unsafe { view.as_ref().and_then(|view| view.URL()) }
+                    .and_then(|url| url.absoluteString())
+                    .map(|url| url.to_string());
+                let _ = sender.send(url);
+            })
+            .ok()?;
+        receiver.await.ok().flatten()
+    }
+    #[cfg(not(target_os = "macos"))]
+    webview.url().ok().map(|url| url.to_string())
 }
 
 /// Poll the shown tab's address, which pushState changes without a load. Started once.
@@ -546,10 +593,9 @@ fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
             let Ok(webview) = view(&app, &tab_id) else {
                 continue;
             };
-            let Ok(url) = webview.url() else {
+            let Some(url) = page_url(&webview).await else {
                 continue;
             };
-            let url = url.to_string();
             let changed = {
                 let mut inner = state.inner.lock().unwrap();
                 let last = inner.urls.insert(tab_id.clone(), url.clone());
@@ -725,7 +771,7 @@ fn create_view<R: Runtime>(
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
         .focused(false);
-    let builder = with_page_profile(builder, &app);
+    let builder = with_page_profile(builder, &app)?;
 
     let (position, size) = logical_rect(caller, bounds);
     let window = caller.window();
@@ -739,7 +785,8 @@ fn create_view<R: Runtime>(
     Ok(webview)
 }
 
-/// Load `url` once the page's requests to private hosts are blocked.
+/// Load `url` once the page connects through the proxy and its requests to private hosts are
+/// blocked.
 #[cfg(target_os = "macos")]
 fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
     // Off the main thread: `protect` can finish inside `with_webview`, which holds the lock
@@ -750,17 +797,74 @@ fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
             let _ = page.navigate(url);
         });
     };
-    let fallback = load.clone();
-    let result = webview.with_webview(move |platform| {
+    let _ = webview.with_webview(move |platform| {
         let raw = platform.inner() as *mut objc2_web_kit::WKWebView;
         // Safety: wry's view, alive with its Tauri webview; retained for the callback.
-        match unsafe { objc2::rc::Retained::retain(raw) } {
-            Some(view) => content_rules::protect(view, Box::new(load)),
-            None => load(),
+        let Some(view) = (unsafe { objc2::rc::Retained::retain(raw) }) else {
+            return;
+        };
+        // Never unproxied where a proxy can be set; macOS 13 and earlier rely on the rules.
+        if macos_at_least(14)
+            && !crate::browser_proxy::address().is_ok_and(|proxy| page_proxy::route(&view, proxy))
+        {
+            log::error!("browser page not loaded: its proxy couldn't be set");
+            return;
         }
+        content_rules::protect(view, Box::new(load));
     });
-    if result.is_err() {
-        fallback();
+}
+
+#[cfg(target_os = "macos")]
+mod page_proxy {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{ns_string, NSArray, NSObjectNSKeyValueCoding};
+    use objc2_web_kit::WKWebView;
+    use std::ffi::{c_char, CString};
+    use std::net::SocketAddr;
+
+    type CreateHost = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut AnyObject;
+    type CreateConnect = unsafe extern "C" fn(*mut AnyObject, *mut AnyObject) -> *mut AnyObject;
+
+    /// Point the view's data store at the proxy. The Network calls are macOS 14+, so they're
+    /// looked up at run time rather than linked, which would stop older macOS launching the app.
+    pub fn route(view: &WKWebView, proxy: SocketAddr) -> bool {
+        let (Ok(ip), Ok(port)) = (
+            CString::new(proxy.ip().to_string()),
+            CString::new(proxy.port().to_string()),
+        ) else {
+            return false;
+        };
+        unsafe {
+            libc::dlopen(
+                c"/System/Library/Frameworks/Network.framework/Network".as_ptr(),
+                libc::RTLD_LAZY,
+            );
+            let create_host = libc::dlsym(libc::RTLD_DEFAULT, c"nw_endpoint_create_host".as_ptr());
+            let create_connect = libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"nw_proxy_config_create_http_connect".as_ptr(),
+            );
+            if create_host.is_null() || create_connect.is_null() {
+                return false;
+            }
+            let create_host: CreateHost = std::mem::transmute(create_host);
+            let create_connect: CreateConnect = std::mem::transmute(create_connect);
+            // Both return +1 references.
+            let Some(endpoint) = Retained::from_raw(create_host(ip.as_ptr(), port.as_ptr())) else {
+                return false;
+            };
+            let config =
+                create_connect(Retained::as_ptr(&endpoint).cast_mut(), std::ptr::null_mut());
+            let Some(config) = Retained::from_raw(config) else {
+                return false;
+            };
+            let configs = NSArray::from_retained_slice(&[config]);
+            view.configuration()
+                .websiteDataStore()
+                .setValue_forKey(Some(&configs), ns_string!("proxyConfigurations"));
+        }
+        true
     }
 }
 
@@ -974,7 +1078,7 @@ pub async fn browser_view_clear_data<R: Runtime>(webview: Webview<R>) -> Result<
         )
         .focused(false),
         &app,
-    );
+    )?;
     let page = webview
         .window()
         .add_child(
@@ -1023,6 +1127,7 @@ mod tests {
             "http://169.254.169.254/",
             "http://100.100.1.1/",
             "http://[fd00::1]/",
+            "http://[64:ff9b::7f00:1]/",
             "http://printer.local/",
             "http://router/",
             "file:///etc/passwd",
