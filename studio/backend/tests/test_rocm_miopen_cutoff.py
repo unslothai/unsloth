@@ -76,3 +76,8 @@ def test_detection_configures_only_rocm(monkeypatch, hip, version, enabled):
     detect = FunctionType(hw._detect_hardware_locked.__code__, vars(hw).copy())
     assert detect() == hw.DeviceType.CUDA
     assert configure.call_count == int(enabled)
+
+
+def test_desktop_launch_imports_a_shell_override():
+    from utils import desktop_shell_env as dse
+    assert "MIOPEN_SEARCH_CUTOFF" in dse.ROCM_SHELL_ENV_ALLOWLIST
