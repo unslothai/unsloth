@@ -238,9 +238,12 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        tail = names[-len(_TOOL_LOOP_HOOKS) :]
-        assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
-        assert names[-len(_TOOL_LOOP_HOOKS) - 1] == "request_template_kwargs"
+        # request_template_kwargs came after the hooks, so it is appended behind them.
+        tail = names[-len(_TOOL_LOOP_HOOKS) - 1 :]
+        assert tail == [
+            *_TOOL_LOOP_HOOKS,
+            "request_template_kwargs",
+        ], f"the hooks must keep their positions, got {tail}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect
