@@ -1161,16 +1161,13 @@ def test_packing_sdpa(tmp_path):
         device,
         *,
         sliding_window = None,
-        is_causal = True,
     ):
-        assert is_causal is True
         mask_calls.append(tuple(seq_info[0].tolist()))
         return original_mask(
             seq_info,
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
-            is_causal = is_causal,
         )
 
     def _capture_loss(*, logits, labels, **loss_kwargs):

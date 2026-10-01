@@ -360,9 +360,12 @@ def run_attention(
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
     xformers_kwargs = config.xformers_kwargs or {}
+    # Mask builders only see is_causal when False, so causal callers and their patches are unchanged.
+    direction = {}
     if not context.is_causal:
         flash_dense_kwargs = {**flash_dense_kwargs, "causal": False}
         flash_varlen_kwargs = {**flash_varlen_kwargs, "causal": False}
+        direction = {"is_causal": False}
 
     bsz = context.bsz
     n_heads = context.n_heads
@@ -437,7 +440,7 @@ def run_attention(
             context.seq_info,
             sliding_window = sliding_window,
             base_mask = base_mask,
-            is_causal = context.is_causal,
+            **direction,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -502,7 +505,7 @@ def run_attention(
                 dtype = Q.dtype,
                 device = Q.device,
                 sliding_window = sliding_window,
-                is_causal = context.is_causal,
+                **direction,
             )
         else:
             q_len_local = Q.shape[-2]
