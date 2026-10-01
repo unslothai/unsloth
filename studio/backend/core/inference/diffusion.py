@@ -5936,8 +5936,11 @@ class DiffusionBackend:
                                 else:
                                     dense_declined = True
                                     dense_fallback_allowed = False
-                                    transformer_quant_decline = sized_reason or _torchao_offload_decline(
-                                        "the pre-quantised transformer needs", sized_plan
+                                    transformer_quant_decline = (
+                                        sized_reason
+                                        or _torchao_offload_decline(
+                                            "the pre-quantised transformer needs", sized_plan
+                                        )
                                     )
                                     logger.info(
                                         "diffusion.transformer_quant_declined: %s",
@@ -7075,7 +7078,6 @@ class DiffusionBackend:
                     if gguf_offload_swap and transformer_quant_engaged is not None:
                         # The picked GGUF did not run: say what did, and keep the GGUF it replaced beside it.
                         from .diffusion_gguf_route import gguf_offload_swap_reason
-
                         resolved["transformer_quant"]["reason"] = gguf_offload_swap_reason(
                             transformer_quant_engaged,
                             transformer_quant_artifact,
@@ -7188,9 +7190,7 @@ class DiffusionBackend:
             from .diffusion_denoiser_prequant import prequant_artifact_label
 
             return prequant_artifact_label(
-                resolve_prequant_source(
-                    fam, scheme, path_override = prequant_path, base_repo = base
-                ),
+                resolve_prequant_source(fam, scheme, path_override = prequant_path, base_repo = base),
                 transformer,
             )
         except Exception:  # noqa: BLE001 - status only

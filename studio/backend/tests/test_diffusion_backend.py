@@ -14184,7 +14184,13 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
 _Q4 = "m-Q4_K_M.gguf"
 
 
-def _gguf_offload_swap_setup(monkeypatch, tmp_path, *, scheme = "int8", policy = "model"):
+def _gguf_offload_swap_setup(
+    monkeypatch,
+    tmp_path,
+    *,
+    scheme = "int8",
+    policy = "model",
+):
     """A CUDA GGUF pick whose plan and every quantised re-plan offload, with a cached hosted checkpoint."""
     import dataclasses
 
@@ -14210,7 +14216,9 @@ def _gguf_offload_swap_setup(monkeypatch, tmp_path, *, scheme = "int8", policy =
             scheme = scheme, transient_transformer_mib = 7_000, companions_mib = 8_000, prequant = True
         ),
     )
-    source = types.SimpleNamespace(kind = "repo", location = "unsloth/Z-FP8", filename = "Z-INT8.safetensors")
+    source = types.SimpleNamespace(
+        kind = "repo", location = "unsloth/Z-FP8", filename = "Z-INT8.safetensors"
+    )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: source)
     # The planner's own streamed-torchao rule is covered in test_diffusion_gguf_offload_route; here it accepts.
     monkeypatch.setattr(dmod, "torchao_offload_plan", lambda plan, s, **k: plan)
@@ -14232,8 +14240,15 @@ def _gguf_offload_swap_setup(monkeypatch, tmp_path, *, scheme = "int8", policy =
     return backend, calls
 
 
-def _load_gguf(backend, tmp_path, name = _Q4, **kwargs):
-    return backend.load_pipeline(str(tmp_path), gguf_filename = name, family_override = "z-image", **kwargs)
+def _load_gguf(
+    backend,
+    tmp_path,
+    name = _Q4,
+    **kwargs,
+):
+    return backend.load_pipeline(
+        str(tmp_path), gguf_filename = name, family_override = "z-image", **kwargs
+    )
 
 
 def test_offloading_gguf_pick_loads_the_cached_int8_checkpoint(fake_runtime, tmp_path, monkeypatch):
@@ -14273,7 +14288,9 @@ def test_gguf_offload_swap_keeps_a_q8_pick_on_auto(fake_runtime, tmp_path, monke
 
 
 @pytest.mark.parametrize("request_", ["off", "none"])
-def test_gguf_offload_swap_never_overrides_precision_off(fake_runtime, tmp_path, monkeypatch, request_):
+def test_gguf_offload_swap_never_overrides_precision_off(
+    fake_runtime, tmp_path, monkeypatch, request_
+):
     backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
     status = _load_gguf(backend, tmp_path, transformer_quant = request_)
     assert calls == []
@@ -14281,7 +14298,9 @@ def test_gguf_offload_swap_never_overrides_precision_off(fake_runtime, tmp_path,
     assert _FakeTransformer.last["path"].endswith(_Q4)
 
 
-def test_gguf_offload_swap_falls_back_to_the_gguf_when_the_build_fails(fake_runtime, tmp_path, monkeypatch):
+def test_gguf_offload_swap_falls_back_to_the_gguf_when_the_build_fails(
+    fake_runtime, tmp_path, monkeypatch
+):
     backend, _calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
 
     def boom(self, *a, **k):
@@ -14299,7 +14318,9 @@ def test_gguf_offload_swap_on_mps_keeps_the_gguf(fake_runtime, tmp_path, monkeyp
 
     backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
     torch = sys.modules["torch"]
-    monkeypatch.setattr(backend, "_target_for_ordinal", lambda fam, ordinal = None: _mps_target(torch))
+    monkeypatch.setattr(
+        backend, "_target_for_ordinal", lambda fam, ordinal = None: _mps_target(torch)
+    )
     # The real device gate, not the test's CUDA override.
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
@@ -14346,7 +14367,10 @@ def test_gguf_route_prequant_seed_lands_on_the_host_when_the_plan_offloads(
     monkeypatch.setattr(
         DiffusionBackend,
         "_assemble_pipe",
-        staticmethod(lambda pcls, base, tr, dtype, tok, device, *a, **k: assembled.append(device) or _FakePipe()),
+        staticmethod(
+            lambda pcls, base, tr, dtype, tok, device, *a, **k: assembled.append(device)
+            or _FakePipe()
+        ),
     )
     _pipe, scheme = DiffusionBackend()._load_dense_quant_pipeline(
         object,
@@ -14378,6 +14402,8 @@ def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
             "replaced": "gguf:m-Q4_K_M.gguf",
         }
     }
-    dumped = DiffusionStatusResponse(loaded = True, resolved = rec).model_dump()["resolved"]["transformer_quant"]
+    dumped = DiffusionStatusResponse(loaded = True, resolved = rec).model_dump()["resolved"][
+        "transformer_quant"
+    ]
     assert dumped["replaced"] == "gguf:m-Q4_K_M.gguf"
     assert dumped["artifact"] == "prequant:o/r/f.safetensors"

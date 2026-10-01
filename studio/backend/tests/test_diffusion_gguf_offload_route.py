@@ -52,7 +52,15 @@ INT8 = types.SimpleNamespace(scheme = "int8", prequant = True, transient_transfo
 DENSE = types.SimpleNamespace(scheme = "int8", prequant = False, transient_transformer_mib = 20_000)
 
 
-def _decide(plan, candidate = INT8, *, auto = True, gguf = "qwen-image-2.1-Q4_K_M.gguf", cached = True, version = (0, 18)):
+def _decide(
+    plan,
+    candidate = INT8,
+    *,
+    auto = True,
+    gguf = "qwen-image-2.1-Q4_K_M.gguf",
+    cached = True,
+    version = (0, 18),
+):
     return route.gguf_offload_prequant_placement(
         plan,
         candidate,
@@ -125,7 +133,9 @@ def test_accuracy_gate_by_quant(gguf, outranks):
     assert route.gguf_outranks_scheme(gguf, "int8") is outranks
 
 
-@pytest.mark.parametrize("gguf, outranks", [("x-Q4_K_M.gguf", False), ("x-Q5_K_M.gguf", True), ("x-Q6_K.gguf", True)])
+@pytest.mark.parametrize(
+    "gguf, outranks", [("x-Q4_K_M.gguf", False), ("x-Q5_K_M.gguf", True), ("x-Q6_K.gguf", True)]
+)
 def test_fp8_only_replaces_4_bit_and_narrower(gguf, outranks):
     assert route.gguf_outranks_scheme(gguf, "fp8") is outranks
 
@@ -133,7 +143,9 @@ def test_fp8_only_replaces_4_bit_and_narrower(gguf, outranks):
 def test_auto_keeps_a_q8_pick_explicit_int8_still_swaps():
     placement, reason = _decide(_plan(OFFLOAD_STREAMING), gguf = "qwen-image-2.1-Q8_0.gguf")
     assert placement is None and "Q8_0" in reason and "at least as accurate" in reason
-    placement, reason = _decide(_plan(OFFLOAD_STREAMING), gguf = "qwen-image-2.1-Q8_0.gguf", auto = False)
+    placement, reason = _decide(
+        _plan(OFFLOAD_STREAMING), gguf = "qwen-image-2.1-Q8_0.gguf", auto = False
+    )
     assert placement is not None and reason is None
 
 
@@ -144,7 +156,10 @@ def test_swap_reason_names_what_ran_and_how_to_keep_the_gguf():
         types.SimpleNamespace(offload_policy = OFFLOAD_STREAMING),
         "qwen-image-2.1-Q4_K_M.gguf",
     )
-    assert "Q4_K_M GGUF pick was replaced by unsloth/Qwen-Image-2.1-FP8/Qwen-Image-2.1-INT8.safetensors" in text
+    assert (
+        "Q4_K_M GGUF pick was replaced by unsloth/Qwen-Image-2.1-FP8/Qwen-Image-2.1-INT8.safetensors"
+        in text
+    )
     assert "'streaming'" in text and "Precision to Off" in text
 
 

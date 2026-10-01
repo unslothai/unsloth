@@ -50,7 +50,6 @@ def gguf_quant_token(gguf_filename: Optional[str]) -> Optional[str]:
         return None
     try:
         from hub.utils.gguf import extract_quant_token
-
         token = extract_quant_token(str(gguf_filename))
     except Exception:  # noqa: BLE001 - an unparseable name is treated as unknown precision
         token = None
@@ -65,7 +64,11 @@ def gguf_outranks_scheme(gguf_filename: Optional[str], scheme: Optional[str]) ->
         return True
     if token.startswith("UD-"):
         token = token[3:]
-    kept = _GGUF_PREFIXES_KEPT_UNDER_OFFLOAD if str(scheme) == "int8" else _GGUF_PREFIXES_KEPT_OTHER_SCHEMES
+    kept = (
+        _GGUF_PREFIXES_KEPT_UNDER_OFFLOAD
+        if str(scheme) == "int8"
+        else _GGUF_PREFIXES_KEPT_OTHER_SCHEMES
+    )
     return token.startswith(kept)
 
 
@@ -103,9 +106,15 @@ def gguf_offload_prequant_placement(
     return placement, None
 
 
-def gguf_offload_swap_reason(scheme: str, artifact: Optional[str], placement: Any, gguf_filename: Optional[str]) -> str:
+def gguf_offload_swap_reason(
+    scheme: str, artifact: Optional[str], placement: Any, gguf_filename: Optional[str]
+) -> str:
     """Status tooltip for an engaged swap: names what loaded instead of the GGUF, and why."""
-    what = artifact.split(":", 1)[1] if artifact and ":" in artifact else (artifact or f"the hosted {scheme} checkpoint")
+    what = (
+        artifact.split(":", 1)[1]
+        if artifact and ":" in artifact
+        else (artifact or f"the hosted {scheme} checkpoint")
+    )
     token = gguf_quant_token(gguf_filename) or "GGUF"
     return (
         f"the {token} GGUF pick was replaced by {what}: the plan offloads the denoiser "
