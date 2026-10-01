@@ -32,7 +32,7 @@ from core.inference.diffusion_memory import (
 )
 
 BACKEND = Path(__file__).resolve().parents[1]
-DIFFUSION_SRC = (BACKEND / "core/inference/diffusion.py").read_text()
+DIFFUSION_SRC = (BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8")
 MIB = 1024 * 1024
 SIZES_AUTO = dict(model_dense_mib = 19630, companion_dense_mib = 12182, text_encoder_dense_mib = 10847)
 SIZES_EXPLICIT_INT8 = dict(

@@ -2484,6 +2484,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    mcp_image: Optional[str] = Field(
+        None,
+        max_length = 15 * 1024 * 1024,
+        description = (
+            "[x-unsloth] PNG, JPEG or WebP data URL that MCP tools with a mapped image field can "
+            "receive after the user approves each call. Never shown to the model."
+        ),
+    )
     deep_research_armed: Optional[bool] = Field(
         None,
         description = (
