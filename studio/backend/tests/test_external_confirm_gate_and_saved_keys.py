@@ -221,7 +221,9 @@ _PNG = (
 def test_an_mcp_image_is_refused_when_the_tool_loop_will_not_run(monkeypatch):
     """The direct proxy forwards no MCP image, so accepting one would drop it silently."""
     inf = _install(monkeypatch, "openai")
-    payload = _payload(enable_tools = True, enabled_tools = ["web_search"], mcp_image = _PNG)
+    # A provider/model that runs no local tools proxies straight through.
+    monkeypatch.setattr(inf, "provider_model_runs_local_tools", lambda *a: False)
+    payload = _payload(enable_tools = True, mcp_enabled = True, mcp_image = _PNG)
     with pytest.raises(HTTPException) as excinfo:
         _run(inf, payload)
     assert excinfo.value.status_code == 400 and "MCP" in excinfo.value.detail
@@ -230,7 +232,10 @@ def test_an_mcp_image_is_refused_when_the_tool_loop_will_not_run(monkeypatch):
 def test_an_mcp_image_reaches_the_tool_loop(monkeypatch):
     inf = _install(monkeypatch, "openai")
     entered = _capture_loop(monkeypatch, inf)
-    _run(inf, _payload(enable_tools = True, permission_mode = "ask", mcp_image = _PNG))
+    _run(
+        inf,
+        _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG),
+    )
     assert entered["mcp_image"].mime == "image/png"
 
 

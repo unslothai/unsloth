@@ -13384,6 +13384,15 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
 
 
+def mcp_catalog_takes_image(names) -> bool:
+    """Whether any of these catalog tools has a field mapped to the attached image."""
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        if server and image_mapping(server, tool):
+            return True
+    return False
+
+
 def mcp_tool_input_schema(name) -> dict | None:
     tool = _mcp_resolve_tool(name)[1]
     return _mcp_input_schema(tool) if tool is not None else None

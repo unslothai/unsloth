@@ -4924,6 +4924,8 @@ async def _request_mcp_image(payload, ui_events: bool):
     """The decoded ``mcp_image``, or None. Sending it needs the user's approval, hence the UI stream."""
     if not getattr(payload, "mcp_image", None):
         return None
+    if not payload.mcp_enabled:
+        raise HTTPException(status_code = 400, detail = "mcp_image requires mcp_enabled=true.")
     if not (payload.stream and ui_events):
         raise HTTPException(
             status_code = 400,
@@ -4942,9 +4944,13 @@ _MCP_IMAGE_UNUSED = (
 )
 
 
-def _refuse_unused_mcp_image(mcp_image) -> None:
-    """Only Studio's tool loops hand the image to an MCP tool; every other path would drop it silently."""
-    if mcp_image is not None:
+def _refuse_unused_mcp_image(mcp_image, tool_names = None) -> None:
+    """Only a tool loop whose catalog has a mapped MCP tool can use the image; anything else would drop it silently."""
+    if mcp_image is None:
+        return
+    from core.inference.tools import mcp_catalog_takes_image
+
+    if tool_names is None or not mcp_catalog_takes_image(tool_names):
         raise HTTPException(status_code = 400, detail = _MCP_IMAGE_UNUSED)
 
 
@@ -27810,8 +27816,7 @@ async def produce_openai_chat_completions(
                 ),
             )
 
-        if not use_tools:
-            _refuse_unused_mcp_image(_mcp_image)
+        _refuse_unused_mcp_image(_mcp_image, _catalog_names(tools_to_use) if use_tools else None)
         if use_tools:
             # permission_mode ask/auto require the confirm gate for Unsloth's own
             # tool loop. The request validator self-enables confirm only for
@@ -29826,8 +29831,9 @@ async def produce_openai_chat_completions(
             ),
         )
 
-    if not _sf_use_tools:
-        _refuse_unused_mcp_image(_mcp_image)
+    _refuse_unused_mcp_image(
+        _mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None
+    )
     if _sf_use_tools:
         # permission_mode ask/auto require the confirm gate for Unsloth's own tool
         # loop; when a CLI policy (--enable-tools) forces the loop on without a

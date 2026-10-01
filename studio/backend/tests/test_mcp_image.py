@@ -390,6 +390,12 @@ def test_route_requires_an_interactive_stream_for_the_image():
     class Payload:
         mcp_image = _data_url(_png_bytes())
         stream = True
+        mcp_enabled = False
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(_request_mcp_image(Payload, ui_events = True))
+    assert "mcp_enabled" in exc.value.detail
+    Payload.mcp_enabled = True
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_request_mcp_image(Payload, ui_events = False))
@@ -445,16 +451,27 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
         ast.unparse(node) for node in ast.walk(ast.parse(src)) if isinstance(node, ast.stmt)
     }
     for guard in (
-        "if not use_tools:\n    _refuse_unused_mcp_image(_mcp_image)",
-        "if not _sf_use_tools:\n    _refuse_unused_mcp_image(_mcp_image)",
+        "_refuse_unused_mcp_image(_mcp_image, _catalog_names(tools_to_use) if use_tools else None)",
+        "_refuse_unused_mcp_image(_mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None)",
     ):
         assert guard in statements
     # NPU, both speech models, audio input and the GGUF passthrough return before either loop.
-    assert src.count("_refuse_unused_mcp_image(_mcp_image)") == 7
+    assert src.count("_refuse_unused_mcp_image(_mcp_image") == 7
     with pytest.raises(HTTPException) as exc:
         inf._refuse_unused_mcp_image(McpImage(mime = "image/png", data = _png_bytes()))
     assert exc.value.status_code == 400
     inf._refuse_unused_mcp_image(None)
+
+
+def test_the_tool_loop_must_offer_a_mapped_tool(mapped_server):
+    from routes import inference as inf
+
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    assert tools_mod.mcp_catalog_takes_image(["web_search", "mcp__srv1__lookup"])
+    assert not tools_mod.mcp_catalog_takes_image(["web_search"])
+    inf._refuse_unused_mcp_image(image, ["mcp__srv1__lookup"])
+    with pytest.raises(HTTPException):
+        inf._refuse_unused_mcp_image(image, ["web_search"])
 
 
 def test_gguf_loop_gates_and_forwards_the_image_like_the_other_loops():
