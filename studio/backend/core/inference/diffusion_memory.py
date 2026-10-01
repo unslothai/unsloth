@@ -1645,6 +1645,100 @@ def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
     return max(sizes) if sizes else None
 
 
+# Kill switch for refine_balanced_plan_for_components: "0" restores balanced = group offload with every companion
+# resident whatever the budget.
+BALANCED_FIT_CHECK_ENV = "UNSLOTH_DIFFUSION_BALANCED_FIT_CHECK"
+
+
+def _balanced_fit_check_enabled() -> bool:
+    return str(os.environ.get(BALANCED_FIT_CHECK_ENV, "")).strip().lower() not in ("0", "off", "false", "no")
+
+
+def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
+    """Fit-check an explicit ``memory_mode=balanced`` plan against the LOADED companions.
+
+    The planner maps balanced to group offload with every companion resident and never checks the budget, so a
+    companion set larger than the card loads and then OOMs at the first generate (Qwen-Image-2.1 int8 at 16 / 12 /
+    8 GB: the 9 GiB fp8 text encoder stays resident). Checked here, after the load, because the pre-load companion
+    estimate can be the dense size of a text encoder that loads quantised (priced 16.7 GB, loads 9.0 GB): judging
+    on it would move a balanced load that fits (24 GB) to a slower tier.
+
+    Same floors as the planner (resident companions + runtime headroom + base overhead), walked down the streamed
+    tiers only, never back to a resident denoiser: companions resident if they fit (unchanged), else the text
+    encoders streamed too, else whole-module offload, which ``refine_memory_plan_for_components`` then turns into
+    granular streaming when a loaded component exceeds the budget. A torchao denoiser cannot take whole-module
+    offload's per-forward ``Module.to()``, so it goes straight to granular streaming instead."""
+    if not _balanced_fit_check_enabled():
+        return plan
+    if getattr(plan, "requested_mode", None) != MEMORY_MODE_BALANCED:
+        return plan
+    if plan.offload_policy != OFFLOAD_GROUP or not bool(getattr(plan, "stream_transformer", True)):
+        return plan
+    estimates = dict(plan.estimates)
+    budget = estimates.get("safe_device_budget_mib")
+    if budget is None:
+        return plan
+    try:
+        import torch
+
+        components = getattr(pipe, "components", {})
+        if not isinstance(components, dict):
+            return plan
+        streamed = _streamable_components(pipe, torch)
+        mib = 1024 * 1024
+        resident = 0
+        encoders = 0
+        for name, component in components.items():
+            if not isinstance(component, torch.nn.Module):
+                continue
+            if name in streamed and streamed[name][1] == "block_level":
+                continue  # the denoisers already stream under group offload
+            size = (_module_storage_bytes(component, set()) + mib - 1) // mib
+            resident += size
+            if name in streamed:
+                encoders += size
+        overhead = int(estimates.get("runtime_headroom_mib") or 0) + int(
+            estimates.get("base_overhead_mib") or 0
+        )
+    except Exception:  # noqa: BLE001 - a sizing aid; keep the plan the user asked for
+        return plan
+
+    estimates["balanced_resident_companions_mib"] = resident
+    if resident + overhead <= int(budget):
+        return plan
+    if encoders > 0 and bool(getattr(plan, "stream_text_encoders", False)) is False:
+        if (resident - encoders) + overhead <= int(budget):
+            return replace(
+                plan,
+                stream_text_encoders = True,
+                estimates = estimates,
+                reasons = plan.reasons
+                + (
+                    f"balanced: the loaded companions ({resident} MiB) do not fit the {int(budget)} MiB budget "
+                    "beside the runtime headroom; streaming the text encoders too (they run once, before step 0)",
+                ),
+            )
+    torchao = _pipe_denoisers_hold_torchao(pipe)
+    return replace(
+        plan,
+        offload_policy = OFFLOAD_STREAMING if torchao else OFFLOAD_MODEL,
+        stream_text_encoders = False,
+        vae_tiling = True,
+        vae_slicing = True,
+        estimates = estimates,
+        reasons = plan.reasons
+        + (
+            f"balanced: the loaded companions ({resident} MiB) do not fit the {int(budget)} MiB budget even with "
+            "the text encoders streamed; "
+            + (
+                "streaming transformer blocks and text-encoder layers"
+                if torchao
+                else "whole-module offload of every component"
+            ),
+        ),
+    )
+
+
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Replace whole-module offload when a loaded component cannot fit on the device.
 

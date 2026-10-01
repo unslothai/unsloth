@@ -125,6 +125,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     release_pinned_host_memory,
+    refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -6779,7 +6780,10 @@ class DiffusionBackend:
                     # Whole-module offload still onloads one complete component for its forward. Refine it from the
                     # loaded, possibly quantized weights so an oversized text encoder uses leaf streaming instead of
                     # failing during prompt encoding.
-                    refined_plan = refine_memory_plan_for_components(pipe, plan)
+                    # An explicit balanced request is fit-checked against the loaded companions first (it never was).
+                    refined_plan = refine_memory_plan_for_components(
+                        pipe, refine_balanced_plan_for_components(pipe, plan)
+                    )
                     if refined_plan.offload_policy != plan.offload_policy:
                         logger.info(
                             "diffusion.memory: refined policy %s -> %s (%s)",
