@@ -542,6 +542,10 @@ function singlePagePdf(
     `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     ...extra,
   ];
+  return pdfBytes(objects);
+}
+
+function pdfBytes(objects: string[]) {
   let body = "%PDF-1.4\n";
   const offsets = objects.map((object, index) => {
     const offset = body.length;
@@ -622,7 +626,7 @@ test("a filled pdf form keeps the values typed into its fields", async () => {
           blank,
           blank,
           `<< /Type /Annot /Subtype /Widget /FT /Tx /F 2 /T (internal) /V (hidden) /Rect [0 0 1 1] /P 3 0 R >>`,
-          `<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (status) /Opt [[(1) (Single)] [(2) (Married)]] /V (2) /Rect [60 150 190 170] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (status) /TU (Marital\\nstatus) /Opt [[(1) (Single)] [(2) (Married)]] /V (2) /Rect [60 150 190 170] /P 3 0 R >>`,
           `<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 8192 /T (pin) /V (4321) /Rect [60 175 190 195] /P 3 0 R >>`,
         ],
         "/Annots [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] ",
@@ -648,13 +652,49 @@ test("a filled pdf form keeps the values typed into its fields", async () => {
 
   assert.equal(
     await extractPdfAttachmentText(filled),
-    "Name:\nname: Oscar Papa Quebec\nagree: Yes\nstatus: Married",
+    "Name:\nname: Oscar Papa Quebec\nagree: Yes\nMarital status: Married",
   );
   const fieldsOnlyText = await extractPdfAttachmentText(fieldsOnly);
   assert.equal(fieldsOnlyText, "name: Romeo Sierra");
   assert.equal(
     getPdfAttachmentTextError(fieldsOnly.name, fieldsOnlyText, false),
     null,
+  );
+});
+
+test("a multi-page pdf form keeps each page's values with that page", async () => {
+  const stream = (content: string) =>
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  const page = (contents: number, annots: string) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 10 0 R >> >> /Contents ${contents} 0 R /Annots [${annots}] >>`;
+  const option = (exportName: string, tooltip: string, x: number, on: boolean) =>
+    `<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TU (${tooltip}) /AS /${on ? exportName : "Off"} /AP << /N << /${exportName} 12 0 R /Off 12 0 R >> >> /Rect [${x} 20 ${x + 10} 30] /P 3 0 R >>`;
+  const form = new File(
+    [
+      pdfBytes([
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 9 0 R 13 0 R 14 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        page(5, "7 0 R 8 0 R"),
+        page(11, "9 0 R 13 0 R 14 0 R"),
+        stream("BT /F1 12 Tf 20 100 Td (Filing status) Tj ET"),
+        "<< /FT /Btn /Ff 49152 /T (form1[0].c1_1[0]) /V /S /Kids [7 0 R 8 0 R] >>",
+        option("S", "Single", 20, true),
+        option("M", "Married", 60, false),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (form1[0].f2_01[0]) /TU (Date\\nsigned) /V (2026-09-30) /Rect [60 95 190 115] /P 4 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream("BT /F1 12 Tf 20 100 Td (Signature) Tj ET"),
+        stream(""),
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 2097152 /T (languages) /Opt [(English) (French) (German)] /V [(English) (German)] /Rect [60 40 190 80] /P 4 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (lights) /V (Off) /Rect [60 10 190 30] /P 4 0 R >>",
+      ]),
+    ],
+    "form.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(form),
+    "Filing status\nform1[0].c1_1[0]: S\n\nSignature\nDate signed: 2026-09-30\nlanguages: English, German\nlights: Off",
   );
 });
 

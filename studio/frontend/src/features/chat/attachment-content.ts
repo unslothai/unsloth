@@ -954,10 +954,11 @@ export function getPdfAttachmentTextError(
 
 function pdfFormFieldLines(
   annotations: {
-    subtype?: string;
     fieldType?: string;
     fieldName?: string;
     fieldValue?: unknown;
+    alternativeText?: string;
+    radioButton?: boolean;
     hidden?: boolean;
     password?: boolean;
     options?: { exportValue?: unknown; displayValue?: unknown }[];
@@ -965,10 +966,11 @@ function pdfFormFieldLines(
 ): string[] {
   const fields = new Map<string, string>();
   for (const {
-    subtype,
     fieldType,
     fieldName,
     fieldValue,
+    alternativeText,
+    radioButton,
     hidden,
     password,
     options,
@@ -978,16 +980,22 @@ function pdfFormFieldLines(
       .filter((part) => typeof part === "string")
       .map((part) => {
         const shown = options?.find((option) => option.exportValue === part);
-        return typeof shown?.displayValue === "string" ? shown.displayValue : part;
+        return typeof shown?.displayValue === "string"
+          ? shown.displayValue
+          : part;
       })
       .join(", ");
     const unchecked = fieldType === "Btn" && value === "Off";
-    const unseen = hidden || password;
-    if (subtype === "Widget" && fieldName && value.trim() && !unchecked && !unseen) {
-      fields.set(fieldName, value);
+    if (!fieldName || !value.trim() || unchecked || hidden || password) {
+      continue;
     }
+    // The tooltip (/TU) is the human label behind codes like f1_01[0]; a radio
+    // widget's tooltip names one option, not the group's selected value.
+    const tooltip = radioButton ? "" : alternativeText;
+    const label = tooltip?.replace(/\s+/g, " ").trim() || fieldName;
+    fields.set(fieldName, `${label}: ${value}`);
   }
-  return [...fields].map(([name, value]) => `${name}: ${value}`);
+  return [...fields.values()];
 }
 
 export async function extractPdfAttachmentText(file: File): Promise<string> {
@@ -1000,13 +1008,17 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
-    // getAnnotations re-reads the text of each page with a link, so only forms pay
+    // getAnnotations re-reads the text under each link, so only forms call it
     const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
     const pages = await Promise.all(
       text.map(async (pageText, index) => {
-        const page = hasFields ? await pdf.getPage(index + 1) : null;
-        const annotations = await page?.getAnnotations().catch(() => []);
-        const fields = pdfFormFieldLines(annotations ?? []);
+        const annotations = hasFields
+          ? await pdf
+              .getPage(index + 1)
+              .then((page) => page.getAnnotations())
+              .catch(() => [])
+          : [];
+        const fields = pdfFormFieldLines(annotations);
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
