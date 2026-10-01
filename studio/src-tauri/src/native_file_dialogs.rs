@@ -7,7 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, Webview};
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -351,7 +351,7 @@ fn read_selected_training_config(
 
 #[tauri::command]
 pub async fn save_native_file(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<String>, String> {
@@ -391,7 +391,7 @@ pub async fn save_native_file(
 /// the chooser first and writes the response chunk by chunk, leaving nothing resident.
 #[tauri::command]
 pub async fn save_native_file_from_url(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
     url: String,
     file_name: String,
@@ -720,7 +720,7 @@ fn display_path(path: &Path) -> String {
 /// from a generic failure.
 #[tauri::command]
 pub async fn download_logs_to_downloads(
-    window: WebviewWindow,
+    window: Webview,
     state: State<'_, crate::process::BackendState>,
     diagnostics: State<'_, crate::diagnostics::DiagnosticsState>,
     url: String,
@@ -804,7 +804,7 @@ pub async fn read_native_chat_import_chunk(
 
 #[tauri::command]
 pub async fn pick_native_chat_import(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
     registry: State<'_, ChatImportRegistry>,
 ) -> Result<Option<NativeChatImport>, String> {
@@ -827,7 +827,7 @@ pub async fn pick_native_chat_import(
 
 #[tauri::command]
 pub async fn pick_native_training_config(
-    window: WebviewWindow,
+    window: Webview,
     app: AppHandle,
 ) -> Result<Option<NativeImportedFile>, String> {
     crate::native_intents::ensure_main_window(&window)?;

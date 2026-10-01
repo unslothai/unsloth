@@ -37,7 +37,8 @@ pub(crate) fn permission_origin(url: &tauri::Url) -> Option<String> {
 /// Never grants access: DEFAULT restores the unanswered state, so consent still comes from
 /// the prompt the next request raises.
 #[tauri::command]
-pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result<(), String> {
+pub async fn reset_microphone_permission(window: tauri::Webview) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&window)?;
     let url = window.url().map_err(|error| error.to_string())?;
     let origin =
         permission_origin(&url).ok_or_else(|| format!("no origin to reset in window URL {url}"))?;
