@@ -226,30 +226,35 @@ function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: 
   return { ready: !enabled || ready === file, release };
 }
 
+type PdfWorker = {
+  worker: InstanceType<typeof pdfjs.PDFWorker>;
+  loaded: Set<{ destroy(): Promise<void> }>;
+};
+
 /**
  * One worker per document. unpdf sets globalThis.pdfjsWorker to its own PDF.js build, which PDF.js
  * then adopts and fails on (version mismatch). Passing a worker skips that lookup.
  */
-function usePdfWorker(enabled: boolean): InstanceType<typeof pdfjs.PDFWorker> | null {
-  const [worker, setWorker] = useState<InstanceType<typeof pdfjs.PDFWorker> | null>(null);
+function usePdfWorker(enabled: boolean): PdfWorker | null {
+  const [state, setState] = useState<PdfWorker | null>(null);
   useEffect(() => {
     // Queued thumbnails and failed loads hold no worker.
     if (!enabled) return;
     const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
-    const pdfWorker = pdfjs.PDFWorker.create({ port });
+    const next: PdfWorker = { worker: pdfjs.PDFWorker.create({ port }), loaded: new Set() };
     // External resource owned by this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setWorker(pdfWorker);
+    setState(next);
     return () => {
-      setWorker(null);
-      // Deferred so the Document tears down its loading task first.
-      window.setTimeout(() => {
-        pdfWorker.destroy();
+      setState(null);
+      // PDF.js frees a document's fonts only once the worker answers its Terminate.
+      void Promise.allSettled([...next.loaded].map((doc) => doc.destroy())).then(() => {
+        next.worker.destroy();
         port.terminate();
-      }, 0);
+      });
     };
   }, [enabled]);
-  return worker;
+  return state;
 }
 
 export default function PdfView({
@@ -270,8 +275,8 @@ export default function PdfView({
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
   const slot = useParseSlot(firstPageOnly, file);
-  const worker = usePdfWorker(slot.ready && failed !== file);
-  const options = useMemo(() => (worker ? { ...PDF_OPTIONS, worker } : null), [worker]);
+  const pdfWorker = usePdfWorker(slot.ready && failed !== file);
+  const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -283,6 +288,7 @@ export default function PdfView({
         file={file}
         options={options}
         onLoadSuccess={(document) => {
+          pdfWorker?.loaded.add(document);
           slot.release();
           setPdf(document);
           setPages(document.numPages);
