@@ -299,3 +299,201 @@ def h3_held_host_bytes(*modules: Any) -> dict[str, int]:
         except Exception:  # noqa: BLE001
             continue
     return {"pinned": pinned, "pageable": pageable}
+
+
+H3_COMPILE_BELOW_HOOKS_ENV = "UNSLOTH_H3_COMPILE_BELOW_HOOKS"
+
+
+def _is_original_forward(fn: Any, module: Any) -> bool:
+    return getattr(fn, "__self__", None) is module and getattr(fn, "__func__", None) is getattr(
+        type(module), "forward", None
+    )
+
+
+def compile_blocks_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
+    """Move a streamed denoiser's regional compile BELOW its group-offload hooks.
+
+    ``Module.compile`` compiles ``_call_impl``, so dynamo traced diffusers' hook ``new_forward`` and every
+    ``pre_forward`` / ``post_forward`` around the block. Their Python state became guards: whether the block's group is
+    resident (its onload is a no-op), whether a prefetch target exists (``next_group`` is None until the first forward
+    has traced the execution order), and the graph break at the disabled ``onload_`` left a resume frame whose inputs
+    (``___stack0``) lost the unbacked ``temb`` / dynamic text-length marking. Measured on a 24 GB budget: 40 graphs on the
+    first render, 10 more on the second (a 9.4 s first AND second step), and again whenever the resident set changed.
+
+    Compiling the block's own ``forward`` (the innermost function the hook chain calls) leaves the hooks eager: the same
+    copies are issued, nothing about them is guarded, and the block graph is the one a resident denoiser compiles.
+    Uses the settings ``_compile_repeated_blocks`` compiled with and the DiT's compile guard. Returns the blocks moved.
+    ``UNSLOTH_H3_COMPILE_BELOW_HOOKS=0`` keeps the old placement."""
+    if str(os.environ.get(H3_COMPILE_BELOW_HOOKS_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return 0
+    kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
+    if not isinstance(kwargs, dict):
+        return 0
+    import torch
+
+    guard = getattr(transformer, "_unsloth_compile_guard", None)
+    moved = 0
+    for module in list(transformer.modules()):
+        if getattr(module, "_compiled_call_impl", None) is None or _group_hook(module) is None:
+            continue
+        registry = getattr(module, "_diffusers_hook", None)
+        fn_refs = list(getattr(registry, "_fn_refs", None) or ())
+        target = next((ref for ref in fn_refs if _is_original_forward(getattr(ref, "forward", None), module)), None)
+        if target is None:
+            continue
+        original = target.forward
+        compiled = torch.compile(original, **kwargs)
+        if guard is not None and callable(getattr(guard, "wrap", None)):
+            target.forward = guard.wrap(compiled, original, transformer)
+            guard.restores.append(lambda ref = target, fn = original: setattr(ref, "forward", fn))
+        else:
+            target.forward = compiled
+        module._compiled_call_impl = None
+        moved += 1
+    if moved and logger is not None:
+        logger.info(
+            "video.h3_compile: %d streamed denoiser blocks compile below their offload hooks", moved
+        )
+    return moved
+
+
+H3_TOP_GROUP_PIN_ENV = "UNSLOTH_H3_TOP_GROUP_PIN"
+
+
+def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
+    """Give a block-streamed denoiser's top-level group a pinned host copy and the blocks' copy stream.
+
+    diffusers builds the top-level group (token refiner, embedders, adaLN tables, output projections: 0.81 GB of the
+    int8 H3 denoiser) WITHOUT a stream, so whenever it is not resident every forward uploads it from pageable memory
+    and its offload ``.to("cpu")``s every tensor back into fresh pageable buffers. Profiled at a 12 GB budget: 53
+    device-to-pageable copies per step, 0.37 s of copy-back plus 0.08 s of pageable upload per 1.5 s step, with the
+    GPU waiting on both. With a pinned copy the upload is a blocking copy from pinned memory (so the forward never
+    reads a half-copied weight) and the offload only re-points each tensor at its host copy. torchao weights are
+    pinned and restored by diffusers' own torchao paths, which is why #12389's top-level pin (plain tensors only) does
+    not cover this checkpoint. ``UNSLOTH_H3_TOP_GROUP_PIN=0`` keeps diffusers' group."""
+    if str(os.environ.get(H3_TOP_GROUP_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return False
+    top, blocks = h3_offload_groups(transformer)
+    stream = next((getattr(g, "stream", None) for g in blocks if getattr(g, "stream", None) is not None), None)
+    why = None
+    if top is None:
+        why = "no top-level group"
+    elif stream is None:
+        why = "the blocks have no copy stream"
+    elif getattr(top, "stream", None) is not None:
+        why = "the top-level group already streams"
+    elif getattr(top, "offload_to_disk_path", None) or not callable(getattr(top, "_init_cpu_param_dict", None)):
+        why = "disk offload / unknown diffusers group"
+    elif getattr(top, "_unsloth_pinned_top", False) or is_resident(top):
+        # The instance onload_ / offload_ wrappers (diffusion_prequant's inference-mode guard) call the class
+        # methods, which read stream / cpu_param_dict, so they are not a reason to stop; these two are.
+        why = "another path already pinned or holds it"
+    if why is not None:
+        if logger is not None:
+            logger.info("video.h3_top_group: left as diffusers built it (%s)", why)
+        return False
+    saved = (top.stream, top.low_cpu_mem_usage, top.record_stream, top.non_blocking, top.cpu_param_dict)
+    try:
+        from .diffusion_pinned_arena import pinned_arena_for_group_offload
+
+        top.stream = stream
+        top.low_cpu_mem_usage = False
+        top.record_stream = True
+        # Blocking: nothing prefetches the top-level group, so the forward must not start before its copy lands.
+        top.non_blocking = False
+        with pinned_arena_for_group_offload():
+            top.cpu_param_dict = top._init_cpu_param_dict()
+    except Exception as exc:  # noqa: BLE001 -- keep diffusers' group as it was
+        top.stream, top.low_cpu_mem_usage, top.record_stream, top.non_blocking, top.cpu_param_dict = saved
+        if logger is not None:
+            logger.warning("video.h3_top_group: pinned copy refused, keeping the pageable group: %s", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "video.h3_top_group: the streamed denoiser's top-level group (%.2f GB) onloads from a pinned copy",
+            group_payload_bytes(top) / 1e9,
+        )
+    return True
+
+
+H3_VAE_PINNED_SWAP_ENV = "UNSLOTH_H3_VAE_PINNED_SWAP"
+
+
+def install_pinned_swap(module: Any, *, logger: Any = None, label: str = "component") -> bool:
+    """Make a ComponentsManager-rotated module move between host and device by RE-POINTING at a pinned host copy.
+
+    The rotation moves a component with ``module.to(device)`` and parks it with ``module.to("cpu")``: an upload from
+    pageable memory, then a device-to-host copy into freshly allocated pageable memory, for weights a decode never
+    changes. Once the conditioner and the denoiser stream, the rotation holds only MiniMax-H3's two VAEs, and they
+    evict each other inside every render: measured at a 24 GB budget the video decode took 3.0 s and the audio decode
+    3.0 s, against 1.08 s and 0.05 s on a card where both stay resident.
+
+    Pins the module's CPU weights in place (``pin_module_in_place``: the pageable copy is replaced, so host RAM does
+    not grow), then overrides ``to`` on the instance: a device move uploads each weight from its pinned copy without
+    blocking the host, a CPU move re-points each weight at its pinned copy (no copy at all). Anything else (a dtype
+    change, a weight whose dtype / shape no longer matches its pinned copy, a tensor added after the install) takes
+    the stock ``nn.Module.to`` path. Returns True when installed. ``UNSLOTH_H3_VAE_PINNED_SWAP=0`` keeps stock moves."""
+    if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if module is None or getattr(module, "_unsloth_pinned_swap", None) is not None:
+        return False
+    import torch
+
+    from .video_minimax_h3_te import h3_te_pin_allowed, pin_module_in_place
+
+    if not torch.cuda.is_available() or not h3_te_pin_allowed():
+        return False
+    tensors = list(module.parameters()) + list(module.buffers())
+    if not tensors or any(t.device.type != "cpu" for t in tensors):
+        # Only from a parked state: every weight is on the host and its host copy is the pinned one.
+        return False
+    if any(type(t.data) is not torch.Tensor for t in tensors):
+        return False
+    try:
+        pin_module_in_place(module, repoint = True)
+    except Exception as exc:  # noqa: BLE001 -- stock moves
+        if logger is not None:
+            logger.warning("video.h3_pinned_swap: %s not pinned (%s)", label, exc)
+        return False
+    host: dict[int, Any] = {}
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if tensor.device.type == "cpu" and tensor.is_pinned():
+            host[id(tensor)] = tensor.data
+    stock_to = module.to
+
+    def _swap_to(*args: Any, **kwargs: Any) -> Any:
+        try:
+            device, dtype, _non_blocking, memory_format = torch._C._nn._parse_to(*args, **kwargs)
+        except Exception:  # noqa: BLE001
+            return stock_to(*args, **kwargs)
+        if device is None or dtype is not None or memory_format is not None:
+            return stock_to(*args, **kwargs)
+        device = torch.device(device)
+        fallback = False
+        for tensor in list(module.parameters()) + list(module.buffers()):
+            pinned = host.get(id(tensor))
+            if (
+                pinned is None
+                or pinned.dtype != tensor.dtype
+                or pinned.shape != tensor.shape
+            ):
+                fallback = True
+                continue
+            if device.type == "cpu":
+                tensor.data = pinned
+            elif tensor.device != device:
+                tensor.data = pinned.to(device, non_blocking = True)
+        if fallback:
+            # Whatever did not match moves the stock way; the matched ones are already where they belong.
+            return stock_to(*args, **kwargs)
+        return module
+
+    module.to = _swap_to
+    module._unsloth_pinned_swap = host
+    if logger is not None:
+        logger.info(
+            "video.h3_pinned_swap: %s moves by re-pointing at a pinned host copy (%.2f GB)",
+            label,
+            sum(t.numel() * t.element_size() for t in host.values()) / 1e9,
+        )
+    return True

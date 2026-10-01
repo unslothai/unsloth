@@ -556,7 +556,11 @@ def _round_up(value: int, multiple: int) -> int:
 
 
 def pin_module_in_place(
-    module: Any, *, arena_bytes: int = _PIN_ARENA_BYTES, _arena_factory: Any = None
+    module: Any,
+    *,
+    arena_bytes: int = _PIN_ARENA_BYTES,
+    _arena_factory: Any = None,
+    repoint: bool = False,
 ) -> int:
     """Move every CPU parameter / buffer of ``module`` into pinned host arenas, in place.
 
@@ -605,13 +609,18 @@ def pin_module_in_place(
         offset = slot[1]
         view = slot[0][offset : offset + nbytes].view(tensor.dtype).view(tensor.shape)
         view.copy_(tensor.detach())
-        replacement = (
-            torch.nn.Parameter(view, requires_grad = tensor.requires_grad)
-            if isinstance(tensor, torch.nn.Parameter)
-            else view
-        )
-        for table, name, _is_param in owners:
-            table[name] = replacement
+        if repoint:
+            # Keeps every tensor object (code that captured one still sees it); only right when the old storage is
+            # not a view kept alive by a shared base, e.g. weights the loader already copied or cast.
+            tensor.data = view
+        else:
+            replacement = (
+                torch.nn.Parameter(view, requires_grad = tensor.requires_grad)
+                if isinstance(tensor, torch.nn.Parameter)
+                else view
+            )
+            for table, name, _is_param in owners:
+                table[name] = replacement
         slot[1] = offset + need
         pinned += nbytes
     return pinned
