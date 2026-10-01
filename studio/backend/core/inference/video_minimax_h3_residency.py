@@ -380,7 +380,6 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
     from .video_minimax_h3_te import h3_te_pin_allowed
 
     top, blocks = h3_offload_groups(transformer)
-    # Honours the pin-nothing override, the host budget and the Windows / WSL cap the lazily pinned blocks need.
     if not h3_te_pin_allowed(group_payload_bytes(top) if top is not None else 0):
         if logger is not None:
             logger.info(
