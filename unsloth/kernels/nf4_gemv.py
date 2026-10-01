@@ -162,7 +162,6 @@ def _word_aligned(W):
     return (W.storage_offset() * W.element_size()) % 4 == 0
 
 
-# Compute capabilities with their own large-weight config on Triton 3.7 (see _gemv_config).
 _NARROW_CAPS = ((7, 5), (8, 9))
 
 
@@ -182,8 +181,7 @@ def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, for
         return True, (N,), 1, block_k, 1
     if force is None:
         if capability in _NARROW_CAPS and N * K > 1 << 25 and K >= 4096:
-            # T4 and L4 on Triton 3.7: the Llama 8B MLP weights run 3% to 9% faster at BLOCK_K 1024
-            # and 2 warps (L4 4096x14336 would otherwise trail bitsandbytes); A100 and B200 do not.
+            # T4 / L4: 3% to 9% faster on 8B MLP shapes; slower on A100 and B200.
             return False, (-(-N // 4),), 4, max(blocksize, 1024), 2
         return False, (-(-N // 4),), 4, block_k, 4
     # Forced byte kernel (tests): the pre-3.7 byte config.

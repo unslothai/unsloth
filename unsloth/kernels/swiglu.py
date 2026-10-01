@@ -104,8 +104,7 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDE
 
 
 def _DWf_DW_dfg_traced(DW, e, g):
-    # The kernel's math as torch ops: Inductor fuses it into one kernel that reuses e and g's
-    # memory, where the in-place kernel would first copy e and g (saved activations).
+    # Traced: Inductor fuses this in place; the in-place kernel would make it copy e and g first.
     e_float = e.float()
     se = torch.sigmoid(e_float)
     f = (se * e_float).to(DW.dtype)

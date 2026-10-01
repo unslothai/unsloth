@@ -1426,9 +1426,7 @@ def fast_linear_forward(
     return out
 
 
-# Traced, x.addmm_(a, b) becomes an out-of-place addmm that first copies x; as a custom op that
-# mutates x, Inductor runs it in place. The op has no derivative, so only with grad disabled
-# (inside an autograd.Function's forward or backward).
+# Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
 _HAS_ADDMM_OP = hasattr(torch.library, "custom_op")
 if _HAS_ADDMM_OP:
 
@@ -1446,7 +1444,6 @@ def addmm_(
     alpha = 1.0,
     beta = 1.0,
 ):
-    """out.addmm_(A, B, alpha = alpha, beta = beta), in place when traced too."""
     if (
         _HAS_ADDMM_OP
         and torch.compiler.is_compiling()
