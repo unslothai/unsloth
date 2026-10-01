@@ -10,7 +10,6 @@ export function mergedFormatNeedsLlmCompressor(formatValue: string): boolean {
   return fmt?.backend === "compressed";
 }
 
-/** Pause export when FP8/FP4 compressed-tensors needs llm-compressor. */
 export async function confirmLlmCompressorInstallIfNeeded(
   selectedFormatValues: string[],
 ): Promise<{ ok: boolean; installMissingDependencies: boolean }> {
@@ -19,7 +18,13 @@ export async function confirmLlmCompressorInstallIfNeeded(
     return { ok: true, installMissingDependencies: false };
   }
 
-  const probe = await fetchLlmCompressorProbe();
+  let probe;
+  try {
+    probe = await fetchLlmCompressorProbe();
+  } catch {
+    // An unreachable probe must not swallow the click: the export then fails with the install command.
+    return { ok: true, installMissingDependencies: false };
+  }
   if (probe.ready) {
     return { ok: true, installMissingDependencies: false };
   }

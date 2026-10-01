@@ -410,10 +410,8 @@ async def export_merged_model(
 
 @router.get("/llm-compressor-probe", response_model = LlmCompressorExportProbeResponse)
 async def probe_llm_compressor_export(current_subject: str = Depends(get_current_subject)):
-    """Return whether compressed-tensors export needs a consented llm-compressor install."""
-    del current_subject  # auth gate only
+    del current_subject
     from utils.llm_compressor_export import probe_llm_compressor_for_compressed_export
-
     return LlmCompressorExportProbeResponse(
         **probe_llm_compressor_for_compressed_export(),
     )

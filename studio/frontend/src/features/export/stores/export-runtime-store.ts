@@ -159,7 +159,6 @@ export interface RunExportParams {
   token?: string;
   privateRepo: boolean;
   baseModelId?: string | null;
-  /** User consented to install llm-compressor / provision the shadow for compressed export. */
   installMissingDependencies?: boolean;
   summary: ExportRunSummary;
 }

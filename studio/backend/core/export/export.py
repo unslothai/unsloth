@@ -1147,6 +1147,15 @@ class ExportBackend:
                     and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
                     else {}
                 )
+                # Only a consented export carries the flag, so callers without it keep their signature.
+                consent_kw = (
+                    {"install_missing_dependencies": True}
+                    if install_missing_dependencies
+                    and _supports_kwarg(
+                        self.current_model.save_pretrained_merged, "install_missing_dependencies"
+                    )
+                    else {}
+                )
                 if _IS_MLX:
                     self.current_model.save_pretrained_merged(
                         save_directory,
@@ -1159,7 +1168,7 @@ class ExportBackend:
                         save_directory,
                         self.current_tokenizer,
                         save_method = save_method,
-                        install_missing_dependencies = install_missing_dependencies,
+                        **consent_kw,
                         **merged_token_kw,
                     )
 
@@ -1260,7 +1269,15 @@ class ExportBackend:
                             save_method = hub_save_method,
                             token = hf_token,
                             private = private,
-                            install_missing_dependencies = install_missing_dependencies,
+                            **(
+                                {"install_missing_dependencies": True}
+                                if install_missing_dependencies
+                                and _supports_kwarg(
+                                    self.current_model.push_to_hub_merged,
+                                    "install_missing_dependencies",
+                                )
+                                else {}
+                            ),
                         )
                 logger.info(f"Model pushed successfully to {repo_id}")
 

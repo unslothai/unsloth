@@ -15,7 +15,6 @@ import { PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useLlmCompressorConsentStore } from "../stores/llm-compressor-consent-store";
 
-/** Consent dialog before Studio installs llm-compressor for FP8/FP4 export. */
 export function LlmCompressorConsentDialog() {
   const open = useLlmCompressorConsentStore((s) => s.open);
   const probe = useLlmCompressorConsentStore((s) => s.probe);

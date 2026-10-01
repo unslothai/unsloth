@@ -178,8 +178,8 @@ class ExportMergedModelRequest(ExportCommonOptions):
     )
     install_missing_dependencies: bool = Field(
         False,
-        description = "When true, Studio may install llm-compressor (workspace) or provision the "
-        "llm-compressor-main shadow after explicit user consent for compressed-tensors export.",
+        description = "User consent to install llm-compressor (or its shadow runtime) for "
+        "compressed-tensors export.",
     )
 
 
@@ -259,8 +259,6 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
 
 
 class LlmCompressorExportProbeResponse(BaseModel):
-    """Whether FP8/FP4 compressed export can run without installing dependencies."""
-
     ready: bool
     needs_consent: bool
     consent_kind: Optional[Literal["shadow", "workspace"]] = None

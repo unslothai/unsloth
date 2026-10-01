@@ -1637,7 +1637,6 @@ def _llm_compressor_autoinstall_disabled() -> bool:
 
 
 def llm_compressor_manual_install_command() -> str:
-    """Return a suggested manual install command for the active interpreter."""
     return f"uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'"
 
 
@@ -1663,18 +1662,7 @@ def _llm_compressor_missing_error(*, autoinstall_disabled: bool) -> str:
 
 
 def install_llm_compressor(install_missing_dependencies: bool = False):
-    """Import llm-compressor for FP8/FP4 export, optionally installing it first.
-
-    By default this does **not** mutate the active environment: if llm-compressor is missing it
-    raises with :func:`llm_compressor_manual_install_command`. Pass
-    ``install_missing_dependencies=True`` to run a version-pinned pip/uv install (pinning the
-    current torch + transformers so they are not upgraded).
-
-    Set ``UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1`` to forbid installation even when
-    ``install_missing_dependencies=True`` (locked-down / air-gapped setups).
-
-    Returns (oneshot, QuantizationModifier).
-    """
+    """Import llm-compressor for FP8/FP4 export. A missing copy raises with the manual install command unless install_missing_dependencies=True, which installs a version-pinned copy pinning the current torch + transformers; UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids that too. Returns (oneshot, QuantizationModifier)."""
     try:
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
@@ -2377,8 +2365,8 @@ def unsloth_save_pretrained_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
         16bit merge at `save_directory` and writes the quantized checkpoint to
-        `save_directory + "-<fmt>"`. Requires llm-compressor; pass
-        ``install_missing_dependencies=True`` to install the pinned package on demand.
+        `save_directory + "-<fmt>"`. A missing llm-compressor is installed only with
+        `install_missing_dependencies=True`.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -2421,7 +2409,6 @@ def unsloth_save_pretrained_merged(
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
             install_missing_dependencies = install_missing_dependencies,
-            # Forward standard save kwargs to the 16bit merge.
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -2516,7 +2503,7 @@ def unsloth_push_to_hub_merged(
         Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
-        Pass ``install_missing_dependencies=True`` to install llm-compressor on demand.
+        A missing llm-compressor is installed only with `install_missing_dependencies=True`.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -2550,7 +2537,6 @@ def unsloth_push_to_hub_merged(
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
             install_missing_dependencies = install_missing_dependencies,
-            # Forward standard save kwargs to the 16bit merge.
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -5801,7 +5787,7 @@ def unsloth_generic_save_pretrained_merged(
         `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
-        Pass ``install_missing_dependencies=True`` to install llm-compressor on demand.
+        A missing llm-compressor is installed only with `install_missing_dependencies=True`.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -5845,7 +5831,6 @@ def unsloth_generic_save_pretrained_merged(
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
             install_missing_dependencies = install_missing_dependencies,
-            # Forward standard save kwargs to the 16bit merge.
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -5938,7 +5923,7 @@ def unsloth_generic_push_to_hub_merged(
         Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
-        Pass ``install_missing_dependencies=True`` to install llm-compressor on demand.
+        A missing llm-compressor is installed only with `install_missing_dependencies=True`.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -5973,7 +5958,6 @@ def unsloth_generic_push_to_hub_merged(
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
             install_missing_dependencies = install_missing_dependencies,
-            # Forward standard save kwargs to the 16bit merge.
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -6506,9 +6490,7 @@ def _unsloth_save_compressed_tensors(
     _shadow_pythonpath = _compressed_quantize_pythonpath()
     if _shadow_pythonpath is None:
         install_llm_compressor(install_missing_dependencies = install_missing_dependencies)
-        # llm-compressor cannot run under a newer transformers than its ceiling: the quantization
-        # subprocess would die with a cryptic ImportError (TORCH_INIT_FUNCTIONS) only AFTER the costly
-        # 16bit merge. Detect and fail fast with an actionable message instead.
+        # llm-compressor cannot run under a newer transformers than its ceiling: the subprocess dies on a cryptic TORCH_INIT_FUNCTIONS ImportError only AFTER the costly merge.
         _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
         if _exceeds:
             raise RuntimeError(
