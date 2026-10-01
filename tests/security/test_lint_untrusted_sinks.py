@@ -1685,3 +1685,212 @@ def test_an_alias_of_an_imported_callable_is_followed(tmp_path):
     )
     findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_package_re_export_is_followed_to_its_defining_module(tmp_path):
+    """`from pkg import parse`, where `pkg/__init__.py` re-exports `.parser.parse`.
+
+    Resolution stopped at the package `__init__.py` and handed back a qualname that file
+    does not define, so the real helper was never analysed and taint stopped at the
+    package API, which is how most of this tree imports its own helpers.
+    """
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("from .parser import parse\n", encoding = "utf-8")
+    (package / "parser.py").write_text(
+        "import json\ndef parse(blob):\n    return json.loads(blob)['module']\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import importlib\nfrom pkg import parse\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(parse(blob))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([package / "__init__.py", package / "parser.py", consumer], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_inherited_self_call_resolves_through_the_base(tmp_path):
+    """`self.parse(...)` on a method the child inherits rather than overrides.
+
+    Only the explicit `super().parse(...)` form was followed, so a base method returning
+    a parsed value fed the child's sink with nothing reported.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Base:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['module']\n"
+        "class Child(Base):\n"
+        "    def load(self, blob):\n"
+        "        return importlib.import_module(self.parse(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_attribute_written_through_cls_is_tracked(tmp_path):
+    """Classmethods use `cls`, and the attribute key accepted only `self`.
+
+    So one classmethod storing a parsed value and another executing it both got an empty
+    key, and the executable value was reported as clean.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    command = None\n"
+        "    @classmethod\n"
+        "    def store(cls, blob):\n"
+        "        cls.command = json.loads(blob)['command']\n"
+        "    @classmethod\n"
+        "    def execute(cls):\n"
+        "        return subprocess.run(cls.command)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_parameter_inherits_taint_from_its_default(tmp_path):
+    """`def execute(argv = CONFIG["argv"])` runs the default when the caller omits it.
+
+    A parameter was tainted only by an explicit caller or by its name, so the omitted
+    argument executed a parsed global while the parameter itself stayed clean.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "from pathlib import Path\n"
+        "CONFIG = json.loads(Path('downloaded.json').read_text())\n"
+        "def execute(argv = CONFIG['argv']):\n"
+        "    return subprocess.run(argv)\n"
+        "def load():\n"
+        "    return execute()\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_async_for_target_is_tainted(tmp_path):
+    """The async loop fell through to generic traversal, leaving its target clean."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "async def parse(blob):\n"
+        "    for name in json.loads(blob)['modules']:\n"
+        "        yield name\n"
+        "async def load(blob):\n"
+        "    async for name in parse(blob):\n"
+        "        importlib.import_module('x.' + name)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_deepcopy_by_keyword_is_not_a_sanitiser(tmp_path):
+    """`copy.deepcopy` takes its input as `x=`, and only positions were checked."""
+    findings = _scan(
+        tmp_path,
+        "import copy, importlib, json\n"
+        "def load(blob):\n"
+        "    cfg = copy.deepcopy(x = json.loads(blob))\n"
+        "    return importlib.import_module(cfg['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_next_preserves_a_generators_taint(tmp_path):
+    """`next(parse(blob))` is how a generator's first value is taken.
+
+    The return summary the yield handling produces was dropped again at the consumer,
+    because `next` was not among the operations that pass their input through.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def parse(blob):\n"
+        "    yield json.loads(blob)['module']\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(next(parse(blob)))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_nested_functions_locals_stay_out_of_the_enclosing_scope(tmp_path):
+    """A nested helper's assignments used to taint the enclosing function's names.
+
+    The nested body is indexed and analysed under its own qualname, so keeping its writes
+    produced a finding on an outer name that only ever held a fixed value. A gate that
+    reports those is a gate that gets switched off.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    def helper():\n"
+        "        command = json.loads(blob)['command']\n"
+        "        return len(command)\n"
+        "    helper()\n"
+        "    command = ['ls', '-l']\n"
+        "    return subprocess.run(command)\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)
+
+
+def test_a_closure_reading_a_tainted_enclosing_local_still_reports(tmp_path):
+    """Scoping the nested writes must not stop the nested body being scanned at all.
+
+    The read of an enclosing tainted local inside a closure is a real flow, so this is
+    the case that pins the nested body is still walked rather than skipped.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = json.loads(blob)['command']\n"
+        "    def helper():\n"
+        "        return subprocess.run(command)\n"
+        "    return helper()\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_classmethod_keeps_its_implicit_receiver(tmp_path):
+    """`Runner.execute(command)` on a classmethod: Python still supplies `cls`.
+
+    The unbound-call fix read that spelling as an explicit receiver, so the tainted
+    argument bound to `cls` and the subprocess call inside the classmethod was missed.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    @classmethod\n"
+        "    def execute(cls, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    return Runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_local_reconstructed_from_a_second_class_resolves_both(tmp_path):
+    """`runner = Safe()` then `runner = Dirty()` is valid sequential code.
+
+    Keeping only the first constructor resolved calls to the wrong class, so the sink in
+    the one that actually runs received tainted data with nothing reported.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Safe:\n"
+        "    def execute(self, command):\n"
+        "        return len(command)\n"
+        "class Dirty:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Safe()\n"
+        "    runner = Dirty()\n"
+        "    return runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
