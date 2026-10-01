@@ -3,7 +3,7 @@
 
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { fileNameFromUrl } from "./address";
+import { fileNameFromUrl, withBaseUrl } from "./address";
 import { fetchBrowserPage } from "./api";
 import { useBrowserHistoryStore } from "./history-store";
 
@@ -29,7 +29,7 @@ export async function saveLinkAs(url: string): Promise<void> {
   }
   const name = fileNameFromUrl(page.url);
   await saveBrowserDownload({
-    blob: new Blob([page.html], { type: "text/html" }),
+    blob: new Blob([withBaseUrl(page.html, page.base)], { type: "text/html" }),
     name: /\.html?$/i.test(name) ? name : `${name}.html`,
     contentType: "text/html",
     url,

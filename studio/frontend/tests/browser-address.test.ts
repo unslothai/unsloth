@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fileNameFromUrl, resolveAddress, unwrapRedirect } from "../src/features/browser/address.ts";
+import { fileNameFromUrl, resolveAddress, unwrapRedirect, withBaseUrl } from "../src/features/browser/address.ts";
 
 test("the address bar takes URLs as typed and hosts as https", () => {
   assert.equal(resolveAddress("https://unsloth.ai/docs", "duckduckgo"), "https://unsloth.ai/docs");
@@ -50,4 +50,13 @@ test("a search engine's redirect hop is only followed to another web page", () =
   }
   const lookalike = "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F";
   assert.equal(unwrapRedirect(lookalike), lookalike);
+});
+
+test("a saved page gets its base URL back", () => {
+  assert.equal(
+    withBaseUrl("<!doctype html><html><head><title>x</title>", "https://a.example/d/?q=1&r=\"2\""),
+    '<!doctype html><html><head><base href="https://a.example/d/?q=1&amp;r=&quot;2&quot;"><title>x</title>',
+  );
+  assert.equal(withBaseUrl("<!DOCTYPE html><p>x", "https://a.example/"), '<!DOCTYPE html><base href="https://a.example/"><p>x');
+  assert.equal(withBaseUrl("<p>x", "https://a.example/"), '<base href="https://a.example/"><p>x');
 });

@@ -866,6 +866,14 @@ function FileToolbar({
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
+  // The preview is a frame the annotation layer can't select in, so marks go on the source.
+  useEffect(() => {
+    if (annotating && htmlPreview) useBrowserStore.getState().setAnnotating(null);
+  }, [annotating, htmlPreview]);
+  const toggleAnnotating = () => {
+    if (!annotating && htmlPreview) setView({ mode: "source" });
+    useBrowserStore.getState().setAnnotating(annotating ? null : tab.id);
+  };
   const copyContents = () => {
     if (!blob) return;
     void copyToClipboardFrom(() => blob.text()).then((ok) => {
@@ -1055,7 +1063,7 @@ function FileToolbar({
           // stages a prompt naming the file instead.
           onClick={() =>
             canAnnotate
-              ? useBrowserStore.getState().setAnnotating(annotating ? null : tab.id)
+              ? toggleAnnotating()
               : requestEdits?.(
                   t("browser.file.requestEditsPrompt", { name: entry.name }),
                 )

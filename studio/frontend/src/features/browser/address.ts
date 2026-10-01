@@ -84,3 +84,13 @@ export function hostOf(url: string): string {
     return url;
   }
 }
+
+/** A fetched page with its base URL put back, so a saved copy's relative links still resolve. */
+export function withBaseUrl(html: string, base: string): string {
+  const tag = `<base href="${base.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">`;
+  // After <head>, else after the doctype so the copy keeps standards mode.
+  const anchor = /<head\b[^>]*>/i.exec(html) ?? /<!doctype\b[^>]*>/i.exec(html);
+  if (!anchor) return tag + html;
+  const at = anchor.index + anchor[0].length;
+  return html.slice(0, at) + tag + html.slice(at);
+}

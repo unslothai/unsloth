@@ -217,31 +217,22 @@ export function AnnotateLayer({
 
   const exit = () => setAnnotating(null);
 
-  const save = () => {
-    if (!pending) return;
+  /** The annotations with the open comment applied; an emptied comment removes its mark. */
+  const committed = (): Annotation[] => {
+    if (!pending) return items;
     const request = draft.trim();
     if (pending.id === null) {
-      if (request) {
-        setItems((current) => [
-          ...current,
-          {
-            id: nextId.current++,
-            ranges: pending.ranges,
-            quote: pending.quote,
-            request,
-          },
-        ]);
-      }
-    } else {
-      // An emptied comment removes its mark.
-      setItems((current) =>
-        request
-          ? current.map((item) =>
-              item.id === pending.id ? { ...item, request } : item,
-            )
-          : current.filter((item) => item.id !== pending.id),
-      );
+      if (!request) return items;
+      return [...items, { id: nextId.current++, ranges: pending.ranges, quote: pending.quote, request }];
     }
+    return request
+      ? items.map((item) => (item.id === pending.id ? { ...item, request } : item))
+      : items.filter((item) => item.id !== pending.id);
+  };
+
+  const save = () => {
+    if (!pending) return;
+    setItems(committed());
     setPending(null);
     setDraft("");
   };
@@ -249,10 +240,12 @@ export function AnnotateLayer({
   saveRef.current = save;
 
   const send = () => {
-    if (items.length === 0) return;
+    // Includes a comment still being typed.
+    const outgoing = committed();
+    if (outgoing.length === 0) return;
     sendAnnotations?.({
       file: fileName,
-      items: items.map(({ quote, request }) => ({ quote, request })),
+      items: outgoing.map(({ quote, request }) => ({ quote, request })),
     });
     exit();
   };
