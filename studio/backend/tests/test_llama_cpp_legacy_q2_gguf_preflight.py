@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-teardown refusal for Prism legacy Q2_0 GGUFs (#11259 / #11264).
-
-The metadata probe is covered in ``test_gguf_metadata``; this file proves ``load_model``
-runs it on the reported ``*-dspark-Q4_1.gguf`` path before Phase 1 tears down the resident
-chat model.
-"""
+"""load_model refuses Prism legacy Q2_0 GGUFs before tearing down the resident model (#11259)."""
 
 from __future__ import annotations
 
@@ -19,8 +14,6 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 import sys as _sys
 from pathlib import Path as _Path
 
-# The fixture writer lives beside this file; tests/ is a package, so put it on the path the
-# way the other sibling-helper imports here do.
 if str(_Path(__file__).resolve().parent) not in _sys.path:
     _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 

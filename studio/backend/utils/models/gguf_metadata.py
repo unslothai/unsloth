@@ -1145,9 +1145,7 @@ def is_gguf_embedding_model(
     return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
-# Mainline llama.cpp Q2_0 layout (group 64). Prism ML's older Bonsai / ternary uploads used a
-# different Q2_0 packing; tensor data offsets in those GGUFs no longer match what gguf.cpp
-# computes, which surfaces as gguf_init_from_reader offset errors (#11259, ggml-org/llama.cpp#26337).
+# (block size, bytes per block) per ggml type, as gguf.cpp sizes tensors (#11259, ggml-org/llama.cpp#26337).
 _GGML_TYPE_Q2_0 = 42
 _GGML_TYPE_LAYOUT: Dict[int, Tuple[int, int]] = {
     0: (1, 4),  # F32
@@ -1207,7 +1205,6 @@ def _ggml_tensor_nbytes(
     if any(n <= 0 for n in ne):
         return 0
     if ne[0] % blck_size:
-        # ggml cannot lay out a row that splits a block.
         return None
     nb = [0, 0, 0, 0]
     nb[0] = type_size
@@ -1244,9 +1241,8 @@ def prism_legacy_q2_gguf_user_message(*, tensor_name: Optional[str] = None) -> s
 
 
 def _parse_gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
-    """Return the first tensor name whose offset disagrees with mainline layout, when Q2_0 is
-    present and the offset is exactly what Prism's legacy Q2_0 packing puts there. Any other
-    mismatch is damage, not legacy packing, and gets no verdict."""
+    """First tensor whose offset breaks the mainline layout but matches Prism's legacy Q2_0 one;
+    any other mismatch is damage and gets None."""
     alignment = 32
     saw_q2_0 = False
     try:
@@ -1322,7 +1318,6 @@ def _parse_gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
                     return None
                 running += _ggml_pad(nbytes, alignment)
                 legacy_nbytes = _ggml_tensor_nbytes(ne, ggml_type, legacy_q2 = True)
-                # A row the legacy block cannot divide rules that layout out for this file.
                 running_legacy = (
                     running_legacy + _ggml_pad(legacy_nbytes, alignment)
                     if legacy_nbytes is not None and running_legacy >= 0

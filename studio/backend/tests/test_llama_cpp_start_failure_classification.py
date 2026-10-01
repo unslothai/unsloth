@@ -38,8 +38,6 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# The fixture writer lives beside this file; tests/ is a package, so put it on the path the
-# way the other sibling-helper imports here do.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 

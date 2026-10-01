@@ -21070,9 +21070,7 @@ class LlamaCppBackend:
 
         # llama.cpp prints the four bytes it found with %c, so a binary header arrives as
         # unprintable characters; the generic fallback then blamed the user's memory (#8566).
-        # Prism ML Bonsai / legacy ternary GGUFs use an older Q2_0 packing; llama.cpp
-        # then reports a tensor offset mismatch (often on dspark.fc.weight) and the
-        # generic fallback wrongly blames memory or file validity (#11259).
+        # Prism's legacy Q2_0 packing trips this too; only the on-disk probe may name it (#11259).
         tensor_offset_mismatch = re.search(
             r"gguf_init_from_reader: tensor '([^']+)' has offset \d+, expected \d+",
             output or "",
@@ -23779,14 +23777,10 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     raise ValueError(_early_non_chat)
-                # A Hub load whose file is already on disk is judged from its header too. A
-                # first download has nothing to read yet; its start failure is classified
-                # with the same message.
+                # A first download has nothing on disk yet; its start failure is classified instead.
                 _legacy_q2_probe = _preflight_model_path
                 if not _legacy_q2_probe:
                     try:
-                        # Local only: the header and tensor table sit at the front of the
-                        # file, so a copy still being verified reads the same layout.
                         _legacy_q2_probe = cached_gguf_for_load(
                             hf_repo, hf_variant, verify_sizes = False, hf_token = hf_token
                         )
