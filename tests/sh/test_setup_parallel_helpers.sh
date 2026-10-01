@@ -71,7 +71,6 @@ fi
 
 rm -f "$_FUNC_FILE"
 
-# ── under set -e a failed job still joins the rest and reports its label ──
 _SETE_FILE=$(mktemp)
 for _fn in setup_fail _setup_parallel_reset _setup_parallel_run _setup_bg_fail _setup_parallel_wait; do
     sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_SETE_FILE"
@@ -98,7 +97,6 @@ else
 fi
 rm -f "$_SETE_FILE"
 
-# ── gitignore hide/restore scoped to npm run build ──
 _GI_FILE=$(mktemp)
 sed -n '/^_setup_hide_star_gitignores_from()/,/^}/p' "$SETUP_SH" > "$_GI_FILE"
 sed -n '/^_setup_restore_star_gitignores()/,/^}/p' "$SETUP_SH" >> "$_GI_FILE"
@@ -140,7 +138,6 @@ fi
 rm -rf "$_GI_ROOT"
 rm -f "$_GI_FILE"
 
-# ── abort kills the background frontend job ──
 _ABORT_FILE=$(mktemp)
 sed -n '/^_setup_restore_twbuild_gitignores_from()/,/^}/p' "$SETUP_SH" > "$_ABORT_FILE"
 sed -n '/^_setup_pid_tree()/,/^}/p' "$SETUP_SH" >> "$_ABORT_FILE"
@@ -185,7 +182,6 @@ else
 fi
 rm -f "$_ABORT_FILE"
 
-# ── frontend reap fails fast in parent when bg job already exited ──
 _REAP_FILE=$(mktemp)
 sed -n '/^_setup_frontend_reap_if_exited()/,/^}/p' "$SETUP_SH" >> "$_REAP_FILE"
 # shellcheck disable=SC1090
@@ -212,7 +208,6 @@ else
 fi
 rm -f "$_REAP_FILE"
 
-# ── a background failure reaches Desktop as one specific [TAURI:ERROR] ──
 _MARK_FILE=$(mktemp)
 for _fn in setup_fail _setup_bg_fail _setup_abort_frontend_job _setup_frontend_reap_if_exited; do
     sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_MARK_FILE"
@@ -237,7 +232,6 @@ else
 fi
 rm -f "$_MARK_FILE"
 
-# ── helpers the footer calls are defined outside every top-level if (llama-only, no-OXC runs) ──
 _nested_defs=$(awk '
     /^if / {depth++}
     /^fi( |$)/ {depth--}
@@ -252,7 +246,6 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# ── a set -e exit after launch stops the background job tree ──
 _EXIT_FILE=$(mktemp)
 for _fn in _setup_restore_twbuild_gitignores_from _setup_pid_tree _setup_abort_frontend_job _setup_launch_frontend_build_and_oxc; do
     sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_EXIT_FILE"

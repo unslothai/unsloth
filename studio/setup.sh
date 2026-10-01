@@ -785,7 +785,6 @@ _setup_frontend_build_and_oxc() {
         substep "building frontend..."
         cd "$SCRIPT_DIR/frontend"
 
-        # Captured so _suggest_npm_registry can spot a registry block.
         _FRONTEND_INSTALL_LOG=$(mktemp)
         _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
         _bun_install_ok=false
@@ -796,7 +795,6 @@ _setup_frontend_build_and_oxc() {
             if _try_bun_install; then
                 _bun_install_ok=true
             else
-                # Likely a corrupt bun cache: clear it and retry once.
                 echo "   Clearing bun cache and retrying..."
                 run_maybe_quiet bun pm cache rm || true
                 if _try_bun_install; then
@@ -837,7 +835,6 @@ _setup_frontend_build_and_oxc() {
         cd "$SCRIPT_DIR"
     fi
 
-    # oxc-validator runtime; NODE_SOURCE=skip means no suitable Node to install with.
     if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
         cd "$_OXC_DIR"
         _OXC_INSTALL_LOG=$(mktemp)
@@ -909,8 +906,7 @@ _setup_abort_frontend_job() {
     _SETUP_FRONTEND_BG_PID=""
     [ -n "$pid" ] || return 0
     kill -0 "$pid" 2>/dev/null || return 0
-    # Leaves first: a bash waiting on npm acts on SIGTERM only once npm exits, then its EXIT
-    # trap restores the gitignores.
+    # Leaves first: a bash waiting on npm acts on SIGTERM only after npm exits.
     tree=$(_setup_pid_tree "$pid")
     for p in $tree; do kill -TERM "$p" 2>/dev/null || true; done
     while [ "$n" -lt 20 ]; do
@@ -2774,9 +2770,8 @@ _setup_uv_sha256() {
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
-# archive behind plus a staging file inside a directory on PATH. The pinned install owns these
-# four for its duration, so its cleanup also stops the background frontend job, whose EXIT trap
-# it replaces, and hands EXIT back on the way out.
+# archive behind plus a staging file inside a directory on PATH. Its cleanup also stops the
+# frontend job, whose EXIT trap the pinned install borrows.
 _setup_uv_cleanup_temporaries() {
     [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
     [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
