@@ -641,7 +641,6 @@ def _inventory_physical_identity(raw_path: str) -> str:
     return gguf.local_path_physical_identity(raw_path)
 
 
-# stat defines this only on Windows builds.
 _IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 
