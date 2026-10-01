@@ -1841,6 +1841,11 @@ export const en = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual",
+      scrollToBottomButton: "Scroll to bottom button",
+      scrollToBottomButtonDescription:
+        "Show a button to jump back to the latest message after you scroll up.",
+      scrollToBottomButtonKeywords:
+        "scroll bottom jump latest newest arrow down button floating hide show",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",

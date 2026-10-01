@@ -1857,6 +1857,11 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
+      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
+      scrollToBottomButtonDescription:
+        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
+      scrollToBottomButtonKeywords:
+        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",

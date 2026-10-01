@@ -1874,6 +1874,11 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
+      scrollToBottomButton: "Botón para ir al final",
+      scrollToBottomButtonDescription:
+        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
+      scrollToBottomButtonKeywords:
+        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",

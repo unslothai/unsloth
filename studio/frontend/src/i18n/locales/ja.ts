@@ -1830,6 +1830,11 @@ export const ja = {
       autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
+      scrollToBottomButton: "一番下へスクロールボタン",
+      scrollToBottomButtonDescription:
+        "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
+      scrollToBottomButtonKeywords:
+        "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",

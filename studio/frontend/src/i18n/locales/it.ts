@@ -1843,6 +1843,11 @@ export const it = {
       autoScrollManual: "Manuale",
       autoScrollKeywords:
         "scorrimento scorrere automatico seguire fondo saltare streaming generazione vista bloccare scroll autoscroll follow",
+      scrollToBottomButton: "Pulsante per scorrere in fondo",
+      scrollToBottomButtonDescription:
+        "Mostra un pulsante per tornare all'ultimo messaggio dopo aver scorso verso l'alto.",
+      scrollToBottomButtonKeywords:
+        "scorrere fondo saltare ultimo freccia pulsante nascondere scroll bottom button",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",

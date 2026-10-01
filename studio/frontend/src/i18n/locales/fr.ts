@@ -1880,6 +1880,11 @@ export const fr = {
       autoScrollManual: "Manuel",
       autoScrollKeywords:
         "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
+      scrollToBottomButton: "Bouton « Défiler vers le bas »",
+      scrollToBottomButtonDescription:
+        "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
+      scrollToBottomButtonKeywords:
+        "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
