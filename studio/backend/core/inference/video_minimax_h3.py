@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,6 +142,50 @@ H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB = 85.0
 H3_DIFFUSERS_HOST_RAM_HEADROOM_GB = 5.9
 
 
+# Kill switch for the held-memory accounting below; "0" restores MemAvailable + whole RSS.
+H3_HOST_GUARD_HELD_ENV = "UNSLOTH_H3_HOST_GUARD_HELD"
+
+
+def _proc_status_kb(fields: tuple[str, ...]) -> Optional[dict[str, int]]:
+    """``/proc/self/status`` fields in kB, or None off Linux / when unreadable."""
+    try:
+        with open("/proc/self/status", encoding = "utf-8") as handle:
+            found = {}
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key in fields:
+                    found[key] = int(value.split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return found if len(found) == len(fields) else None
+
+
+def h3_process_held_host_bytes() -> int:
+    """Host bytes this process holds that a render can reuse: anonymous + shared resident pages.
+
+    The loaded pipeline's weights live here -- pageable components as anonymous memory, the streamed
+    denoiser's pinned copy (cudaHostAlloc) as shared memory -- so the next render needs them again
+    without asking the system for more. File-backed resident pages (an mmap'd checkpoint not yet
+    copied) are left out: the kernel already reports them as reclaimable page cache in
+    MemAvailable, and adding them again counted the same bytes twice. Off Linux this is the whole
+    RSS, the reading the guard always used."""
+    import psutil
+
+    fields = _proc_status_kb(("RssAnon", "RssShmem"))
+    if fields is None or str(os.environ.get(H3_HOST_GUARD_HELD_ENV, "1")).strip() == "0":
+        return int(psutil.Process().memory_info().rss)
+    return (fields["RssAnon"] + fields["RssShmem"]) * 1024
+
+
+def h3_host_capacity_bytes() -> int:
+    """Host memory an H3 render can use: what the system can still hand out plus what this process
+    already holds and will reuse. The render's floor is the process TOTAL at its peak, so the memory the
+    loaded pipeline holds must be counted as available to it, never demanded a second time."""
+    import psutil
+
+    return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
+
+
 def estimate_h3_diffusers_host_ram_gb(
     available_vram_gb: float,
     *,
@@ -162,7 +207,11 @@ def estimate_h3_diffusers_host_ram_gb(
     A pinned denoiser is still counted here. It lives on the device during the generation, but it
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
     would have fitted rather than admitting one that will not.
-    A streamed denoiser counts twice (pinned staging copy; measured 80.2 GB peak vs 64.5 GB single count)."""
+    ``transformer_streamed`` means the streamed denoiser keeps a pageable source beside its pinned staging copy
+    and counts twice (measured 80.2 GB peak vs 64.5 GB single count). A load whose pinned copy went through
+    the slab arena (``diffusion_pinned_arena``) holds one copy and passes False: measured at 960x544x124 on a
+    48 GB tier, peak RSS 66.8 GB on the first render (10.8 GB of it clean mmap'd page cache) and 58.3 GB on
+    the repeat, against this function's 64.5 GB."""
     # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
     if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
@@ -171,6 +220,34 @@ def estimate_h3_diffusers_host_ram_gb(
     if transformer_streamed:
         transformer *= 2
     return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+
+
+def h3_host_ram_shortfall(
+    available_vram_gb: float,
+    *,
+    text_encoder_gb: Optional[float] = None,
+    transformer_gb: Optional[float] = None,
+    transformer_streamed: bool = False,
+) -> Optional[str]:
+    """The refusal for a generation whose host-RAM floor exceeds what this host can give it, else None.
+
+    The floor is the process total at the render's peak, so it is compared against the memory the system
+    can still hand out PLUS what the loaded pipeline already holds (``h3_host_capacity_bytes``): a repeat
+    render reuses those bytes and must not be asked for them again as new free RAM."""
+    required_host_gb = estimate_h3_diffusers_host_ram_gb(
+        available_vram_gb,
+        text_encoder_gb = text_encoder_gb,
+        transformer_gb = transformer_gb,
+        transformer_streamed = transformer_streamed,
+    )
+    host_capacity_gb = h3_host_capacity_bytes() / 1_000_000_000
+    if host_capacity_gb + 0.5 < required_host_gb:
+        return (
+            f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
+            f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
+            "available. Load the GGUF artifact instead."
+        )
+    return None
 
 
 # torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
