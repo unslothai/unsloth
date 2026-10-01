@@ -2973,6 +2973,10 @@ def test_top_level_group_counts_against_the_running_pin_total(monkeypatch):
         )
     ]
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 8)
+    # What is under test is the running-total accounting, not page locking: a plain host copy
+    # stands in for pin_memory, which raises on a host with no CUDA device (the CPU CI runners).
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self.clone())
     # 8 MiB budget, 8 MiB of encoders already pinned: the 1 MiB top group no longer fits
     assert mem._pin_top_level_group(module, None, [8]) is False
     assert group.onload_ == "diffusers"
