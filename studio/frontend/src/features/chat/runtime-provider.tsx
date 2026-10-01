@@ -3,6 +3,8 @@
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
+import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
+import { listMcpServers } from "./api/mcp-servers-api";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -93,6 +95,7 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  externalModelSupportsStudioTools,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
@@ -311,9 +314,36 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+const MCP_TOOL_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
+
+const MCP_LOOKUP_FAILED =
+  "Could not read your MCP servers, so the image was not attached. Try again.";
+
+/** Whether images go to mapped MCP tool fields instead of the model; null when the server list could not be read. */
+async function mcpToolOnlyEnabled(): Promise<boolean | null> {
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  const toolsSupported = parseExternalModelId(checkpoint)
+    ? externalModelSupportsStudioTools(checkpoint)
+    : state.supportsTools ||
+      !chatModelLoaded({
+        checkpoint,
+        modelLoading: state.modelLoading,
+        isExternalModel: false,
+        residentCheckpoint: state.residentCheckpoint,
+      });
+  if (!toolsSupported || !state.mcpEnabledForChat) return false;
+  try {
+    return mcpImageMappingsEnabled(await listMcpServers());
+  } catch {
+    return null;
+  }
+}
+
 class VisionImageAdapter implements AttachmentAdapter {
   accept = CHAT_IMAGE_ACCEPT;
   private readonly converted = new Map<string, Promise<File | null>>();
+  private readonly toolOnlyIds = new Set<string>();
 
   async *add({
     file: picked,
@@ -357,9 +387,33 @@ class VisionImageAdapter implements AttachmentAdapter {
           visionDisabledByUser: state.loadedVisionDisabledByUser,
           mmprojFallbackReason: state.mmprojFallbackReason,
         });
-    if (unavailableReason) {
+    const mcpToolOnlyState = await mcpToolOnlyEnabled();
+    // Fail closed: a configured mapping may be what this read missed.
+    if (mcpToolOnlyState === null) {
+      toast.error(MCP_LOOKUP_FAILED);
+      throw new Error(MCP_LOOKUP_FAILED);
+    }
+    const mcpToolOnly = mcpToolOnlyState;
+    if (unavailableReason && !mcpToolOnly) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
+    }
+    if (
+      mcpToolOnly &&
+      (picked.size > 10 * 1024 * 1024 ||
+        (!MCP_TOOL_IMAGE_MIMES.includes(picked.type) &&
+          convertedImageType(picked) === null))
+    ) {
+      const reason =
+        "Images for MCP tools must be PNG, JPEG or WebP and at most 10 MB.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+
+    if (mcpToolOnly && this.toolOnlyIds.size > 0) {
+      const reason = "Only one image per message can go to MCP tools.";
+      toast.error(reason);
+      throw new Error(reason);
     }
 
     const maxSize = 20 * 1024 * 1024;
@@ -372,8 +426,10 @@ class VisionImageAdapter implements AttachmentAdapter {
       name: picked.name,
       contentType: picked.type,
       file: picked,
+      ...(mcpToolOnly ? { mcpToolOnly: true } : {}),
       status: { type: "requires-action", reason: "composer-send" },
-    } satisfies PendingAttachment;
+    } satisfies PendingAttachment & { mcpToolOnly?: boolean };
+    if (mcpToolOnly) this.toolOnlyIds.add(attachment.id);
     if (convertedImageType(picked) === null) {
       yield attachment;
       return;
@@ -395,7 +451,15 @@ class VisionImageAdapter implements AttachmentAdapter {
         return;
       }
       toast.error(error instanceof Error ? error.message : String(error));
+      this.toolOnlyIds.delete(attachment.id);
       throw error;
+    }
+    if (mcpToolOnly && file.size > 10 * 1024 * 1024) {
+      const reason =
+        "The converted image is over the 10 MB limit for MCP tools.";
+      this.toolOnlyIds.delete(attachment.id);
+      toast.error(reason);
+      throw new Error(reason);
     }
     // Removed while converting: yielding again would put it back.
     if (!this.converted.has(attachment.id)) {
@@ -407,14 +471,34 @@ class VisionImageAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const conversion = this.converted.get(attachment.id);
     this.converted.delete(attachment.id);
+    this.toolOnlyIds.delete(attachment.id);
     const file = conversion ? await conversion : attachment.file;
+    const current = await mcpToolOnlyEnabled();
+    if (current !== isMcpToolOnly(attachment)) {
+      // Otherwise the image reaches neither the tool nor the model, or the model unasked.
+      const reason =
+        current === null
+          ? MCP_LOOKUP_FAILED
+          : "MCP image settings changed since this image was attached. Remove it and attach it again.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    // Flagged on the part too: modelVisibleMessage drops it from what the model receives.
+    const toolOnly = isMcpToolOnly(attachment) ? { mcpToolOnly: true } : {};
     return {
       id: attachment.id,
       type: "image",
+      ...toolOnly,
       name: file?.name ?? attachment.name,
       contentType: file?.type ?? attachment.contentType,
       content: file
-        ? [{ type: "image", image: await this.fileToBase64DataURL(file) }]
+        ? [
+            {
+              type: "image",
+              image: await this.fileToBase64DataURL(file),
+              ...toolOnly,
+            },
+          ]
         : [],
       status: { type: "complete" },
     };
@@ -422,6 +506,7 @@ class VisionImageAdapter implements AttachmentAdapter {
 
   async remove(attachment: { id: string }): Promise<void> {
     this.converted.delete(attachment.id);
+    this.toolOnlyIds.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {

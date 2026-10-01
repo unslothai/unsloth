@@ -39,13 +39,15 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useSettingsDialogStore } from "@/features/settings";
+import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
 
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
   type ProviderAuthStatus,
-  type ProviderApiType,
+  type ConnectionApiType,
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
@@ -67,8 +69,10 @@ import {
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+  connectionApiFields,
   getExternalProviderApiKey,
   isCustomProviderType,
+  isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
@@ -132,6 +136,12 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
         "Ensure the vLLM server is running and models are loaded, then reload — or enter model IDs manually below.",
     },
   };
+
+const SYSTEM_ONE_EMPTY_CATALOG_HINT = {
+  title: "No decision models found on this server.",
+  description:
+    "Type the model name in the box below. For another Unsloth server, type default.",
+};
 
 function emptyCatalogHint(providerType: string): {
   title: string;
@@ -253,13 +263,14 @@ export function ChatProvidersSettings({
   // first sync cannot pull them back into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
+  const t = useT();
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
 
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
-  const [apiType, setApiType] = useState<ProviderApiType>("chat_completions");
+  const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -293,11 +304,15 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const decisionsOnly = isDecisionConnection({
+    providerType,
+    decisionsOnly: apiType === "systemone",
+  });
   // a connection being created has no stored type yet, so only the UI type can decide
   const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
-  );
+  ) && !decisionsOnly;
   // llama.cpp hides the key field. Ollama and vLLM show an optional key: Ollama cloud and
   // secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
@@ -305,6 +320,7 @@ export function ChatProvidersSettings({
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
+    !decisionsOnly &&
     providerModelSupportsStudioTools(
       toExternalBackendProviderType(providerType),
       null,
@@ -419,7 +435,11 @@ export function ChatProvidersSettings({
     // cloud providers and local OpenAI-compat presets stay empty until "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds([]);
+    setSelectedModelIds(
+      isDecisionConnection({ providerType })
+        ? entry.default_models.slice(0, 1)
+        : [],
+    );
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -544,6 +564,9 @@ export function ChatProvidersSettings({
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
     }
+    if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
+      setSelectedModelIds(entry.default_models.slice(0, 1));
+    }
     autoOpenedAddFormRef.current = true;
     setPage("form");
   }
@@ -609,9 +632,12 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    return parseOptionalBaseUrl(trimmed, {
+    const baseUrl = parseOptionalBaseUrl(trimmed, {
       appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
     });
+    return apiType === "systemone"
+      ? (baseUrl?.replace(/\/systemone$/, "") ?? null)
+      : baseUrl;
   }
 
   function parseMaxOutputTokens(input: string): number | null {
@@ -719,7 +745,10 @@ export function ChatProvidersSettings({
         prev.filter((id) => modelIds.includes(id)),
       );
       if (modelIds.length === 0) {
-        const hint = emptyCatalogHint(providerType);
+        const hint =
+          providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"
+            ? SYSTEM_ONE_EMPTY_CATALOG_HINT
+            : emptyCatalogHint(providerType);
         toast.info(hint.title, { description: hint.description });
       } else {
         toast.success(
@@ -773,7 +802,7 @@ export function ChatProvidersSettings({
         providerType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
-        apiType: created.api_type ?? "chat_completions",
+        ...connectionApiFields(created.api_type),
         models,
         availableModels: available,
         hasApiKey: created.has_api_key,
@@ -900,7 +929,7 @@ export function ChatProvidersSettings({
         backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
-        apiType: created.api_type ?? "chat_completions",
+        ...connectionApiFields(created.api_type),
         models: modelsToSave,
         availableModels: manualOnly
           ? []
@@ -927,7 +956,20 @@ export function ChatProvidersSettings({
       resetForm();
       autoOpenedAddFormRef.current = true;
       setPage("list");
-      toast.success("Connection added.");
+      toast.success(
+        "Connection added.",
+        isDecisionConnection(provider)
+          ? {
+              action: {
+                label: "Use it for the Decision API",
+                onClick: () =>
+                  useSettingsDialogStore.getState().openDialog("api-keys", {
+                    scrollTarget: "api-keys-decision-api",
+                  }),
+              },
+            }
+          : undefined,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to add connection: ${message}`);
@@ -1061,7 +1103,7 @@ export function ChatProvidersSettings({
         backendProviderType: updated.provider_type,
         name: updated.display_name,
         baseUrl: updated.base_url ?? "",
-        apiType: updated.api_type ?? "chat_completions",
+        ...connectionApiFields(updated.api_type),
         models: keepSavedModels
           ? (updated.models?.length ? updated.models : existing.models)
           : modelsToSave,
@@ -1179,7 +1221,9 @@ export function ChatProvidersSettings({
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
     modelFieldsAtOpenRef.current = null;
-    setApiType(provider.apiType ?? "chat_completions");
+    setApiType(
+      provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
+    );
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
@@ -1339,9 +1383,10 @@ export function ChatProvidersSettings({
         providerId: provider.id,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
-        apiType: provider.apiType,
+        apiType: provider.decisionsOnly ? "systemone" : provider.apiType,
         modelId:
-          provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
+          provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
+          isDecisionConnection(provider)
             ? (provider.models[0] ?? null)
             : null,
       });
@@ -1589,7 +1634,7 @@ export function ChatProvidersSettings({
                   </div>
                   <Select
                     value={apiType}
-                    onValueChange={(value) => setApiType(value as ProviderApiType)}
+                    onValueChange={(value) => setApiType(value as ConnectionApiType)}
                   >
                     <SelectTrigger id="provider-api-type" className="h-9 w-full text-sm">
                       <SelectValue />
@@ -1597,6 +1642,7 @@ export function ChatProvidersSettings({
                     <SelectContent>
                       <SelectItem value="chat_completions">OpenAI Chat Completions</SelectItem>
                       <SelectItem value="responses">OpenAI Responses</SelectItem>
+                      <SelectItem value="systemone">System One (decisions)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1612,7 +1658,9 @@ export function ChatProvidersSettings({
                       Base URL
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
-                      OpenAI-compatible endpoint.
+                      {decisionsOnly
+                        ? "Up to the version, such as /v1. Studio adds /systemone."
+                        : "OpenAI-compatible endpoint."}
                     </p>
                   </div>
                   <Input
@@ -1913,7 +1961,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -2002,7 +2050,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -2104,7 +2152,7 @@ export function ChatProvidersSettings({
       <header className="flex min-w-0 flex-col gap-1 pr-8">
         <h1 className="text-xl font-semibold font-heading">Connections</h1>
         <p className="text-xs text-muted-foreground">
-          Manage model connections for chat.
+          Manage model connections for chat and the Decision API.
         </p>
       </header>
 
@@ -2190,6 +2238,11 @@ export function ChatProvidersSettings({
                             {provider.models.length}{" "}
                             {provider.models.length === 1 ? "model" : "models"}
                           </span>
+                          {isDecisionConnection(provider) ? (
+                            <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                              {t("settings.apiKeys.decisionApi.title")}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-0.5 truncate text-xs text-muted-foreground">
                           <span>{providerLabel}</span>
