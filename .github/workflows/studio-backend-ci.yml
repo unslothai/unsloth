@@ -746,6 +746,9 @@ jobs:
           # resolving it cannot bump transformers past the ceiling. It is an extra, not a core
           # dependency, and tests/test_st_modules_json_trust_gate.py skips without it, so
           # installing it here is what makes that gate run in this shard instead of skipping.
+          # version-compat-ci's zoo-imports job runs the same file against the pinned
+          # transformers matrix; this shard adds the core dependency set, where discovery
+          # picks the file up and the importorskip would otherwise skip it for good.
           pip install 'transformers>=4.51,<5.5' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.

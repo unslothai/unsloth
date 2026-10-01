@@ -31,12 +31,13 @@ import pytest
 # without this the whole file errors with ModuleNotFoundError in the shard that installs
 # the core set only, rather than skipping.
 #
-# Skipping is not sufficient on its own. The only shard that collects this file is
-# "Repo tests (CPU, rest)", and version-compat-ci's zoo-imports job installs
-# sentence-transformers but runs two named tests/vllm_compat files, not this one, so an
-# importorskip by itself leaves the gate skipped in every job and unable to fail
-# anywhere. studio-backend-ci installs the package for that shard, which is what makes
-# these tests actually run.
+# Two jobs run this file, and for different reasons. version-compat-ci's zoo-imports job
+# names it on the pytest line and installs sentence-transformers for it, which is where
+# it runs under the CUDA spoof against the pinned transformers matrix. studio-backend-ci's
+# "Repo tests (CPU, auto-discovered)" shard collects it by discovery, where without a
+# sentence-transformers install the importorskip would leave it permanently skipped: that
+# branch also installs the package so the gate runs there too, on the core dependency set
+# rather than the version matrix.
 pytest.importorskip("sentence_transformers")
 
 from unsloth import FastSentenceTransformer  # noqa: E402
