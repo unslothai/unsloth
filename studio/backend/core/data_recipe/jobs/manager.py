@@ -319,7 +319,6 @@ class JobManager:
 
     @job_read(lambda self, *args, **kwargs: None)
     def get_current_job_id(self) -> str | None:
-        """Return current job_id (or None)."""
         with self._lock:
             return None if self._job is None else self._job.job_id
 
@@ -590,12 +589,8 @@ class JobManager:
                 return
             if et == EVENT_JOB_STARTED:
                 self._job.status = "active"
-                artifact_path = event.get("artifact_path")
-                if isinstance(artifact_path, str) and artifact_path.strip():
-                    self._job.artifact_path = artifact_path.strip()
-                execution_type = event.get("execution_type")
-                if isinstance(execution_type, str) and execution_type.strip():
-                    self._job.execution_type = execution_type.strip()
+                self._job.artifact_path = event.get("artifact_path") or self._job.artifact_path
+                self._job.execution_type = event.get("execution_type") or self._job.execution_type
             if et == EVENT_JOB_COMPLETED:
                 self._job.status = "completed"
                 self._job.finished_at = time.time()

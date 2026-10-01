@@ -98,8 +98,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     )
 
     try:
-        from data_designer.config.run_config import RunConfig
-
         rows = int(run.get("rows") or 1000)
         job_id = str(run.get("_job_id") or "").strip()
         if not job_id:
@@ -126,6 +124,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                 "execution_type": execution_type,
             }
         )
+
+        from data_designer.config.run_config import RunConfig
 
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))

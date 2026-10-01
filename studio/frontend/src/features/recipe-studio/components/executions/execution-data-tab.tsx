@@ -181,7 +181,7 @@ export function ExecutionDataTab({
           <p className="text-sm font-semibold">Dataset sample</p>
           {isExecutionInProgress(execution.status) && execution.dataset.length > 0 && (
             <p className="text-xs text-muted-foreground">
-              Live preview — new rows appear here as the run progresses.
+              Live preview: new rows appear as each batch finishes.
             </p>
           )}
         </div>
@@ -226,7 +226,9 @@ export function ExecutionDataTab({
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={currentDatasetPage <= 1}
+                disabled={
+                  isExecutionInProgress(execution.status) || currentDatasetPage <= 1
+                }
                 onClick={onPrevPage}
               >
                 Prev
@@ -235,7 +237,10 @@ export function ExecutionDataTab({
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={currentDatasetPage >= totalPages}
+                disabled={
+                  isExecutionInProgress(execution.status) ||
+                  currentDatasetPage >= totalPages
+                }
                 onClick={onNextPage}
               >
                 Next

@@ -247,7 +247,7 @@ export async function trackRecipeExecution({
             onUpsert(latestExecution);
           }
         } catch {
-          // Dataset pages can lag behind status while a run is still warming up.
+          // 404 until the first batch lands.
         }
       }
       if (!done) {
