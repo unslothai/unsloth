@@ -53,10 +53,17 @@ def test_unguarded_incompatible_family_still_promotes():
     assert _resolve_diffusion_compute_dtype(krea, torch.float16) is torch.float32
 
 
+def test_video_families_declare_only_native():
+    # The video loader resolves the dtype but installs no guard hooks, so a patching recipe there would render black.
+    for fam in _VIDEO_FAMILIES:
+        assert fam.fp16_guard in (None, "native"), fam.name
+
+
 def test_video_capability_flags():
-    assert guard.fp16_promotes_to_fp32(_video("wan2.2-ti2v-5b")) is False
-    # unmeasured video families keep the blanket promotion
-    for name in ("ltx-2", "minimax-h3"):
+    for name in ("wan2.2-ti2v-5b", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        assert guard.fp16_promotes_to_fp32(_video(name)) is False, name
+    # unmeasured families, and A14B (fp16 drifts from fp32 as far as bf16 does), keep the blanket promotion
+    for name in ("ltx-2", "minimax-h3", "wan2.2-t2v-a14b"):
         assert guard.fp16_promotes_to_fp32(_video(name)) is True, name
 
 
@@ -257,3 +264,28 @@ def test_real_diffusers_zimage_source_matches_recipe(monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(guard, "_SUPPORTED", {})
     assert guard._recipe_supported(detect_family("Tongyi-MAI/Z-Image-Turbo"), "rescale_post_norm") is True
+
+
+@needs_fp16
+def test_guard_holds_through_a_lora_injected_after_install():
+    """LoRA wrappers replace the Linear children after the guard is installed; the rescale lives on the parents, so the
+    adapted branch is scaled as a whole."""
+    peft = pytest.importorskip("peft")
+    targets = ["w1", "w2", "w3", "to_q", "to_k", "to_v", "to_out.0"]
+
+    def adapted(model):
+        cfg = peft.LoraConfig(r = 4, lora_alpha = 4, target_modules = targets, init_lora_weights = False)
+        torch.manual_seed(1)
+        return peft.inject_adapter_in_model(cfg, model)
+
+    x = torch.randn(2, 16, 64)
+    with torch.no_grad():
+        ref_model = adapted(_overflowing_model()).float()
+        ref = ref_model(x.float())
+        half = _overflowing_model().half()
+        assert guard.install_fp16_guard(half, "rescale_post_norm", torch.float16) == 2
+        half = adapted(half.float()).half()
+        fixed = half(x.half())
+    assert torch.isfinite(fixed).all()
+    err = (fixed.float() - ref).abs().max() / ref.abs().max()
+    assert err < 2e-2, float(err)

@@ -5293,6 +5293,9 @@ class VideoBackend:
         if fp16_promotes_to_fp32(fam) and dtype is torch.float16:
             dtype = torch.float32
             logger.warning("video.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)", fam.name)
+        elif fam.fp16_incompatible and dtype is torch.float16:
+            # Video families only declare "native" (no patch): the video loader installs no guard hooks.
+            logger.info("video.fp16_guard: family=%s recipe=%s (float16 kept)", fam.name, fam.fp16_guard)
         # Size tables below are bf16 (2-byte), so scale dense estimates when the promotion lands fp32 on an accelerator
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
