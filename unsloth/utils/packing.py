@@ -606,8 +606,7 @@ def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int])
 def cover_padded_cu_seqlens(
     seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: int
 ) -> Tuple[torch.Tensor, int]:
-    """(cu_seqlens, max_seqlen) for flash varlen, with the collator's trailing pad as its own
-    segment; rows past cu_seqlens[-1] are otherwise left uninitialized in the output."""
+    """Flash varlen leaves rows past cu_seqlens[-1] unwritten, so the pad tail gets a segment."""
     _, cu_seqlens, max_seqlen = seq_info
     device = cu_seqlens.device
     entry = _PADDED_CU_SEQLENS_CACHE.get(device)

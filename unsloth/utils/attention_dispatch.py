@@ -327,7 +327,7 @@ def run_attention(
         if will_backward:
             seq_info = context.seq_info
             total_q = context.bsz * context.q_len
-            # Count the collator's trailing pad segment too; one cached D2H read per step.
+            # Includes the collator's trailing pad segment.
             n_seqs = (
                 cover_padded_cu_seqlens(seq_info, total_q)[0].numel() - 1
                 if seq_info is not None
