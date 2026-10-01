@@ -5182,6 +5182,7 @@ class VideoBackend:
                 # would let an offline load fetch the four-file bundle.
                 local_files_only = local_files_only,
                 transformer_cache = transformer_cache,
+                speed_mode = speed_mode,
             )
             return self.status()
 

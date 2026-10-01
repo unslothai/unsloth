@@ -100,6 +100,9 @@ def _raw_install_record(root: Path) -> Optional[str]:
 
 # The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at all: with only half of it remembered, an unwritable record leaves a serverless install looking server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
 _INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
+# The same, for the pin an install was made for: an unwritable record still names the OLD pin, so without this
+# install_is_stale answers True after every successful upgrade and each load re-downloads the bundle.
+_INSTALLED_PIN_MEMO: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
 
 def installed_ships_server(root: Path) -> Optional[bool]:
@@ -133,7 +136,9 @@ def _write_install_record(
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
             json.dump(rec, f)
     except OSError as exc:
-        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
+        snapshot = _raw_install_record(root)
+        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, snapshot)
+        _INSTALLED_PIN_MEMO[str(root)] = (rec["requested_tag"], snapshot)
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
             f"remembering {klass} for this process only",
@@ -141,6 +146,7 @@ def _write_install_record(
         )
     else:
         _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
 
 
 def _repo() -> str:
@@ -164,6 +170,12 @@ def install_is_stale(root: Path) -> bool:
     want = _pinned_tag()
     if not want:
         return False
+    memo = _INSTALLED_PIN_MEMO.get(str(root))
+    if memo is not None:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
+            return memo[0] != want
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
     rec = read_install_record(root)
     requested = rec.get("requested_tag")
     if isinstance(requested, str) and requested:

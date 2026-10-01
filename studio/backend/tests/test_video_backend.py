@@ -3536,6 +3536,21 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
 
 
+def test_direct_h3_native_load_hands_speed_mode_to_the_sd_cpp_path(monkeypatch):
+    backend = VideoBackend()
+    calls = []
+    monkeypatch.setattr("core.inference.video._ensure_mp4_encoder_available", lambda: None)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: calls.append(kwargs))
+    backend.load_pipeline(
+        "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+        speed_mode = "max",
+    )
+    assert calls and calls[0]["speed_mode"] == "max"
+
+
 def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypatch, tmp_path):
     # asset_repos stops the delete-cached guard dropping the H3 companion repos mid-load, and the
     # preflight can spend minutes installing the sd-cli prebuilt. A delete admitted in that window

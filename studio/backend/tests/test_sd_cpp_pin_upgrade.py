@@ -86,6 +86,32 @@ def test_an_install_for_an_older_pin_is_upgraded_once(tmp_path, monkeypatch):
     assert len(installs) == 1
 
 
+def test_an_unwritable_record_does_not_redownload_on_every_load(tmp_path, monkeypatch):
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
+    import builtins
+
+    def _open(
+        path,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        if "w" in mode and Path(path).name == sdmod.INSTALL_RECORD:
+            raise PermissionError("record held by another writer")
+        return builtins.open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(sdmod, "open", _open, raising = False)
+    installs: list = []
+    monkeypatch.setattr(sdmod, "install", _recording_install(root, cli, server, installs))
+    for _ in range(3):
+        assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert len(installs) == 1
+    assert OLD in (root / sdmod.INSTALL_RECORD).read_text(encoding = "utf-8")
+
+
 def test_the_server_resolver_upgrades_an_old_pin_too(tmp_path, monkeypatch):
     bk, root, cli, server = _tree(
         tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
