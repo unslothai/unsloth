@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_layout;
+mod app_menu;
 mod commands;
+#[cfg(target_os = "linux")]
+mod debian_update;
 mod desktop_auth;
 mod desktop_backend_owner;
 mod desktop_update_policy;
@@ -12,6 +15,8 @@ mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_event_guard;
 #[cfg(target_os = "macos")]
 mod macos_tray;
 mod native_backend_lease;
@@ -37,7 +42,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -785,8 +790,9 @@ fn setup_logging() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
             let max_log_bytes = 5 * 1024 * 1024;
-            if let Ok(file) = RotatingLogFile::open(log_path, rotated_path, max_log_bytes) {
+            if let Ok(file) = RotatingLogFile::open(log_path.clone(), rotated_path, max_log_bytes) {
                 loggers.push(WriteLogger::new(LevelFilter::Info, Config::default(), file));
+                let _ = PANIC_LOG_PATH.set(log_path);
             }
         }
     }
@@ -794,6 +800,37 @@ fn setup_logging() {
     if !loggers.is_empty() {
         let _ = CombinedLogger::init(loggers);
     }
+}
+
+static PANIC_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Own file handle, not `log`: a panic raised inside the logger's lock would deadlock.
+fn log_panics() {
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = PANIC_LOG_PATH.get() {
+            // Symbolizing is slow, so only the first few panics get a backtrace.
+            let backtrace = if PANICS.fetch_add(1, Ordering::Relaxed) < 4 {
+                format!("\n{}", std::backtrace::Backtrace::force_capture())
+            } else {
+                String::new()
+            };
+            let now = time::OffsetDateTime::now_utc();
+            let thread = std::thread::current();
+            if let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) {
+                let _ = writeln!(
+                    file,
+                    "{:02}:{:02}:{:02} [ERROR] thread '{}' {info}{backtrace}",
+                    now.hour(),
+                    now.minute(),
+                    now.second(),
+                    thread.name().unwrap_or("<unnamed>"),
+                );
+            }
+        }
+        default_hook(info);
+    }));
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -983,6 +1020,23 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .title("Training in progress")
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Quit anyway".to_string(),
+            "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
+fn confirm_update_during_training(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Training is starting or still running. Updating now stops the \
+             run and loses progress since the last checkpoint.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Training in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
             "Keep training".to_string(),
         ))
         .blocking_show()
@@ -1608,10 +1662,13 @@ fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
     app_menu.append(&quit)?;
+    app_menu::setup_app_menus(app, &menu)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id() == APP_QUIT_MENU_ID {
             request_quit(app);
+        } else {
+            app_menu::handle_menu_event(app, event.id().as_ref());
         }
     });
     Ok(())
@@ -2048,6 +2105,17 @@ fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = debian_update::run_installer() {
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
@@ -2063,7 +2131,10 @@ fn main() {
     let _ = fix_path_env::fix();
 
     setup_logging();
+    log_panics();
     info!("Unsloth desktop app starting");
+    #[cfg(target_os = "macos")]
+    macos_event_guard::install();
 
     #[cfg(target_os = "linux")]
     if let Some((variables, reason)) = webkit_rendering_workaround {
@@ -2078,6 +2149,19 @@ fn main() {
 
     let mut context = tauri::generate_context!();
     extend_csp_with_hf_endpoints(&mut context);
+    // Restore while hidden, else the 760x560 setup size overwrites the saved layout.
+    let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
+        app_layout::should_restore_initial_window_state(
+            &dir.join(&context.config().identifier),
+            tauri_plugin_window_state::DEFAULT_FILENAME,
+        )
+    });
+    info!("Native saved app layout restore enabled: {restore_initial_layout}");
+    let mut window_state = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+    if !restore_initial_layout {
+        window_state = window_state.skip_initial_state("main");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2095,12 +2179,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-                .skip_initial_state("main")
-                .build(),
-        )
+        .plugin(window_state.build())
+        .manage(app_layout::NativeLayoutRestored(
+            std::sync::atomic::AtomicBool::new(restore_initial_layout),
+        ))
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
@@ -2113,11 +2195,13 @@ fn main() {
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu_actions,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
+            app_layout::take_native_layout_restored,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,
@@ -2126,9 +2210,11 @@ fn main() {
             commands::stop_server,
             commands::check_health,
             commands::check_backend_present,
+            commands::check_backend_is_gone,
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
+            commands::confirm_backend_update,
             commands::start_backend_update,
             commands::start_managed_repair,
             commands::native_path_leases_usable,

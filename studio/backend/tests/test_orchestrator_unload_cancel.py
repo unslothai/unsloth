@@ -6,6 +6,8 @@ hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker chec
 each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 
+import inspect
+import queue
 import threading
 import time
 
@@ -26,9 +28,26 @@ class _Unsloth:
         return None  # no Unsloth load in flight -> Unsloth fast path skipped
 
 
-def _bare_orchestrator():
+class _RecordOfStops:
+    """Stands in for the ledger; only whether the worker reads it matters here."""
+
+    def __init__(self, read_by_worker: bool):
+        self.stopped: list = []
+        self._read_by_worker = read_by_worker
+
+    def stop(self, request_id):
+        self.stopped.append(request_id)
+        return True
+
+    def read_by_worker(self) -> bool:
+        return self._read_by_worker
+
+
+def _bare_orchestrator(reads_stops = False):
     """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = _RecordOfStops(True) if reads_stops else None
+    o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._send_order_lock = threading.Lock()
     o._subprocess_shutdown_lock = threading.Lock()
@@ -43,8 +62,13 @@ def _bare_orchestrator():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = False
-    o._exclusive_tts_pending = False
+    o._worker_reserved_for = None
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
     o.active_model_name = "m"
     o.models = {"m": {}}
     o.loading_models = set()
@@ -112,7 +136,9 @@ def test_worker_closes_cancelled_generator_before_gen_done():
         cancel,
     )
 
-    assert [item["type"] for item in responses.items] == ["gen_done"]
+    assert [item["type"] for item in responses.items if item["type"] != "batch_state"] == [
+        "gen_done"
+    ]
 
 
 def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
@@ -171,7 +197,13 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
     monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
     shutdown = []
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
-    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send unload when wedged"))
+    monkeypatch.setattr(
+        o,
+        "_send_cmd",
+        lambda cmd: pytest.fail("must not send unload when wedged")
+        if cmd.get("type") == "unload"
+        else None,
+    )
 
     # A wedged worker never releases _gen_lock, even after the cancel.
     o._gen_lock.acquire()
@@ -205,7 +237,11 @@ def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
     monkeypatch.setattr(
-        o, "_send_cmd", lambda cmd: pytest.fail("must not send unload with a wedged dispatcher")
+        o,
+        "_send_cmd",
+        lambda cmd: pytest.fail("must not send unload with a wedged dispatcher")
+        if cmd.get("type") == "unload"
+        else None,
     )
     monkeypatch.setattr(
         o,
@@ -244,6 +280,310 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     assert "restarted" in msg
     with pytest.raises(StopIteration):
         next(gen)
+
+
+_GPU_TIMEOUT = (
+    "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+    "(00000002:kIOGPUCommandBufferCallbackErrorTimeout)"
+)
+
+
+def _watch_teardown(
+    o,
+    monkeypatch,
+    *,
+    dead = True,
+):
+    torn_down = []
+
+    def shutdown(timeout):
+        torn_down.append(timeout)
+        if dead:
+            o._proc = None
+        return dead
+
+    monkeypatch.setattr(o, "_shutdown_subprocess_locked", shutdown)
+    return torn_down
+
+
+def _queue_of(*responses):
+    filled = queue.Queue()
+    for resp in responses:
+        filled.put(resp)
+    return filled
+
+
+def _mailbox_for(worker, *responses):
+    filled = orch_mod._WorkerMailbox(worker)
+    for resp in responses:
+        filled.put(resp)
+    return filled
+
+
+class _LiveDispatcher:
+    def is_alive(self):
+        return True
+
+
+def test_a_foreign_fault_reaches_its_mailbox_before_the_worker_is_retired(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = []
+
+    def shutdown(timeout):
+        torn_down.append(timeout)
+        o._proc = None
+        o._reset_worker_scoped_state()  # as the real teardown does
+        return True
+
+    monkeypatch.setattr(o, "_shutdown_subprocess_locked", shutdown)
+    theirs = threading.Event()
+    o._request_cancel_events = {"theirs": theirs}
+    o._claim_worker(theirs)
+    compare_mailbox = queue.Queue()
+    o._mailboxes = {"theirs": compare_mailbox}
+    fault = {"type": "gen_error", "request_id": "theirs", "error": _GPU_TIMEOUT}
+    o._resp_queue = _queue_of(fault)
+
+    read_one, _drain, release = o._direct_reader("mine")
+    try:
+        assert read_one(timeout = 0.5) is None, "a foreign response is routed, not returned"
+    finally:
+        release()
+
+    assert compare_mailbox.get_nowait() == fault, "the request it belongs to must see the fault"
+    assert torn_down, "and the dead worker must still be retired"
+    assert o.active_model_name is None
+
+
+@pytest.mark.parametrize(
+    "already_waiting, fault",
+    [
+        (True, {"type": "gen_error", "request_id": "r1", "error": _GPU_TIMEOUT}),
+        (False, {"type": "audio_error", "request_id": "r1", "error": "SubmissionsIgnored"}),
+    ],
+    ids = ["already waiting", "routed a moment later"],
+)
+def test_a_direct_request_reading_past_a_live_dispatcher_still_retires(
+    already_waiting, fault, monkeypatch
+):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._dispatcher_thread = _LiveDispatcher()
+    read_one, _drain, release = o._direct_reader("r1")
+    mailbox = o._direct_mailboxes["r1"]
+    if already_waiting:
+        mailbox.put(fault)
+    else:
+        threading.Timer(0.05, mailbox.put, [fault]).start()
+
+    try:
+        assert read_one(timeout = 2.0) == fault
+    finally:
+        release()
+
+    assert torn_down
+    assert o.active_model_name is None
+
+
+def test_a_dispatched_stream_retires_on_the_fault_the_dispatcher_routed(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._resp_queue = queue.Queue()
+    monkeypatch.setattr(
+        o,
+        "_send_cmd",
+        lambda cmd: o._resp_queue.put(
+            {"type": "gen_error", "request_id": cmd["request_id"], "error": _GPU_TIMEOUT}
+        ),
+    )
+
+    try:
+        streamed = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    finally:
+        o._stop_dispatcher()
+
+    assert torn_down, "a dispatched request must retire the worker its fault killed"
+    assert o.active_model_name is None
+    assert any("GPU Timeout" in str(item) for item in streamed)
+
+
+@pytest.mark.parametrize(
+    "leaves_a_mailbox", [False, True], ids = ["no mailbox left", "a mailbox nobody reads"]
+)
+def test_a_routed_fault_retires_the_worker_without_waiting_on_a_consumer(
+    leaves_a_mailbox, monkeypatch
+):
+    o = _bare_orchestrator()
+    if leaves_a_mailbox:
+        o._mailboxes = {"gone": orch_mod._WorkerMailbox(o._proc)}
+    torn_down = _watch_teardown(o, monkeypatch)
+    observers = []
+    observe = o._observe_response
+    monkeypatch.setattr(
+        o,
+        "_observe_response",
+        lambda resp, worker: (observers.append(threading.current_thread()), observe(resp, worker))[
+            1
+        ],
+    )
+    o._resp_queue = queue.Queue()
+    o._resp_queue.put({"type": "gen_error", "request_id": "gone", "error": _GPU_TIMEOUT})
+    o._dispatcher_stop = threading.Event()
+    dispatcher = threading.Thread(target = o._dispatcher_loop, daemon = True)
+    dispatcher.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not torn_down and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        o._dispatcher_stop.set()
+        dispatcher.join(timeout = 5.0)
+
+    assert torn_down, "no consumer will read it, so routing is the last chance"
+    assert o.active_model_name is None
+    assert observers and dispatcher not in observers
+
+
+def test_a_cancelled_generation_still_retires_the_worker_it_poisoned(monkeypatch):
+    direct = _bare_orchestrator()
+    monkeypatch.setattr(direct, "_ensure_subprocess_alive", lambda: True)
+    direct_torn_down = _watch_teardown(direct, monkeypatch)
+    direct._resp_queue = _queue_of(
+        {"type": "token", "token": "a"}, {"type": "gen_error", "error": _GPU_TIMEOUT}
+    )
+    direct._drain_until_gen_done(timeout = 1.0)
+
+    dispatched = _bare_orchestrator()
+    dispatched_torn_down = _watch_teardown(dispatched, monkeypatch)
+    dispatched._drain_mailbox(
+        _mailbox_for(
+            dispatched._proc,
+            {"type": "token", "token": "a"},
+            {"type": "gen_error", "error": _GPU_TIMEOUT},
+        ),
+        timeout = 1.0,
+    )
+
+    assert direct_torn_down and dispatched_torn_down
+    assert direct.active_model_name is None and dispatched.active_model_name is None
+
+
+def test_an_ordinary_generation_error_leaves_the_worker_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._resp_queue = _queue_of(
+        {"type": "gen_error", "request_id": "r1", "error": "context too long"}
+    )
+
+    assert o._read_resp(timeout = 0.01)["error"] == "context too long"
+    assert not torn_down
+    assert o.active_model_name == "m"
+
+
+def test_a_worker_that_outlives_the_kill_keeps_the_model_it_is_still_holding(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch, dead = False)
+    o._resp_queue = _queue_of({"type": "gen_error", "error": _GPU_TIMEOUT})
+
+    o._read_resp(timeout = 0.01)
+
+    assert torn_down
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
+
+
+class _SwappedDuringRead(queue.Queue):
+    def __init__(self, orchestrator, replacement, resp):
+        super().__init__()
+        self._orchestrator = orchestrator
+        self._replacement = replacement
+        self._resp = resp
+
+    def get(self, timeout = None):
+        self._orchestrator._proc = self._replacement
+        return self._resp
+
+
+def test_a_fault_read_across_a_replacement_leaves_the_replacement_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    replacement = object()
+    o._resp_queue = _SwappedDuringRead(o, replacement, {"type": "gen_error", "error": _GPU_TIMEOUT})
+
+    assert o._read_resp(timeout = 0.01)["error"] == _GPU_TIMEOUT
+
+    assert not torn_down, "the fault predates the replacement"
+    assert o._proc is replacement
+    assert o.active_model_name == "m"
+
+
+def test_the_direct_read_takes_the_handle_before_the_queue(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    replacement = object()
+    abandoned = _queue_of({"type": "gen_error", "error": _GPU_TIMEOUT})
+
+    def reload_as_the_queue_is_taken(_self):
+        o._proc = replacement
+        return abandoned
+
+    monkeypatch.setattr(
+        type(o), "_resp_queue", property(reload_as_the_queue_is_taken), raising = False
+    )
+
+    o._read_resp(timeout = 0.01)
+
+    assert not torn_down, "the fault came off the queue the predecessor left behind"
+    assert o.active_model_name == "m"
+
+
+def test_a_fault_in_a_mailbox_that_outlived_its_worker_leaves_the_replacement_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    mailbox = _mailbox_for(o._proc, {"type": "gen_error", "error": _GPU_TIMEOUT})
+    replacement = object()
+    o._proc = replacement  # a reload between reads
+
+    assert o._read_mailbox(mailbox, 0.01)["error"] == _GPU_TIMEOUT
+
+    assert not torn_down, "the fault was the old worker's; the replacement never produced it"
+    assert o._proc is replacement
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
+
+
+def test_a_fault_from_a_replaced_worker_leaves_the_replacement_alone(monkeypatch):
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    replacement = object()
+
+    def reload():
+        o._proc = replacement
+        o._subprocess_shutdown_lock.release()
+
+    o._subprocess_shutdown_lock.acquire()
+    threading.Timer(0.05, reload).start()
+
+    o._observe_response({"type": "gen_error", "error": _GPU_TIMEOUT}, o._proc)
+
+    assert not torn_down, "the fault belonged to a worker that is already gone"
+    assert o._proc is replacement
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
+
+
+def test_a_fault_with_no_worker_behind_it_clears_nothing(monkeypatch):
+    """``None is not None`` is False, so the check alone would let an absent worker through."""
+    o = _bare_orchestrator()
+    torn_down = _watch_teardown(o, monkeypatch)
+    o._proc = None
+
+    o._read_mailbox(_mailbox_for(None, {"type": "gen_error", "error": _GPU_TIMEOUT}), 0.01)
+
+    assert not torn_down
+    assert o.active_model_name == "m"
+    assert o.models == {"m": {}}
 
 
 def test_unload_pending_clears_after_unload(monkeypatch):
@@ -434,7 +774,13 @@ def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
-    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send when wedged"))
+    monkeypatch.setattr(
+        o,
+        "_send_cmd",
+        lambda cmd: pytest.fail("must not send when wedged")
+        if cmd.get("type") == "unload"
+        else None,
+    )
 
     # A wedged worker never releases _gen_lock; unload tears the subprocess down. The
     # real teardown nulls _drain_event, so emulate that so the finally exercises its guard.
@@ -452,6 +798,20 @@ def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
 # ----------------------------------------------------------------------------
 
 
+def _announcing_lock(lock, reached):
+    """The held lock, saying so when someone starts waiting for it."""
+
+    class _Announcing:
+        def __enter__(self):
+            reached.set()
+            return lock.__enter__()
+
+        def __exit__(self, *exc):
+            return lock.__exit__(*exc)
+
+    return _Announcing()
+
+
 def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     # A request passes the pre-lock active-model check, then blocks on _gen_lock while
     # an unload clears/swaps the model. Even if _unload_pending was already reset (the
@@ -464,13 +824,11 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     )
 
     reached_lock = threading.Event()
-    # _wait_dispatcher_idle runs after the pre-lock check and before acquiring the lock;
-    # signalling here means the generator captured the model and is about to block.
-    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
-
     o.active_model_name = "m"
     o._unload_pending = False
-    o._gen_lock.acquire()  # stand in for an in-flight unload holding the lock
+    held = o._gen_lock
+    held.acquire()  # stand in for an in-flight unload holding the lock
+    o._gen_lock = _announcing_lock(held, reached_lock)
 
     out: list = []
 
@@ -482,7 +840,7 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     assert reached_lock.wait(timeout = 5)
     # Unload finished: model swapped, pending already cleared. Release the lock.
     o.active_model_name = "other"
-    o._gen_lock.release()
+    held.release()
     t.join(timeout = 5)
 
     assert out and any("unloaded" in chunk.lower() for chunk in out)
@@ -496,11 +854,11 @@ def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
         o, "_send_cmd", lambda cmd: pytest.fail("must not generate after the model was unloaded")
     )
     reached_lock = threading.Event()
-    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
-
     o.active_model_name = "m"
     o._unload_pending = False
-    o._gen_lock.acquire()
+    held = o._gen_lock
+    held.acquire()
+    o._gen_lock = _announcing_lock(held, reached_lock)
 
     out: list = []
     t = threading.Thread(
@@ -509,7 +867,7 @@ def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
     t.start()
     assert reached_lock.wait(timeout = 5)
     o.active_model_name = None
-    o._gen_lock.release()
+    held.release()
     t.join(timeout = 5)
 
     assert out and any("unloaded" in chunk.lower() for chunk in out)
@@ -1137,6 +1495,25 @@ def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
         )
 
 
+def test_a_codec_missing_on_modelscope_stays_with_the_load_that_hit_it():
+    import asyncio
+    import routes.inference as inference_route
+    from unittest import mock
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    from hub.utils.hf_errors import not_on_modelscope
+
+    llama = LlamaCppBackend()
+    llama._codec_failure.message, llama._llama_update_in_progress = "x", True  # refused after reset
+    pytest.raises(RuntimeError, llama.load_model, intent = GgufLoadIntent(model_identifier = "o/m"))
+    assert llama.codec_failure() is None
+    llama._healthy, failures = True, []
+    llama.init_audio_codec = mock.Mock(side_effect = OSError(not_on_modelscope("o/c")))
+    llama.load_model = lambda **_: llama._apply_detected_audio("snac")
+    run = inference_route._run_gguf_load_attempt(llama, object(), threading.Event(), failures)
+    assert asyncio.run(run) is False and failures == [not_on_modelscope("o/c")]
+    assert llama.codec_failure() is None  # set on the loading thread only
+
+
 def test_stale_unload_does_not_hide_an_update_refusal():
     import asyncio
     import routes.inference as inference_route
@@ -1159,13 +1536,11 @@ def test_stale_unload_does_not_hide_an_update_refusal():
 
 # ----------------------------------------------------------------------------
 # A dispatched (compare-mode) request that races an unload must not orphan its
-# mailbox after _wait_dispatcher_idle stops the dispatcher.
 # ----------------------------------------------------------------------------
 
 
 def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypatch):
     # The request passes the pre-work _unload_pending check, then an unload sets
-    # _unload_pending and _wait_dispatcher_idle stops the dispatcher (mailboxes empty)
     # before this request registers its mailbox. The recheck under _mailbox_lock must
     # make it bail, or the worker's skipped-generate reply has nothing to route it and
     # the compare stream hangs on an orphaned mailbox.
@@ -1178,7 +1553,6 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
 
     # Flip the unload flag after the pre-work check (626) but before mailbox
-    # registration -- exactly the window _wait_dispatcher_idle exploits.
     def flip(*a, **k):
         o._unload_pending = True
         return {"type": "generate", "request_id": "r1"}
@@ -1240,8 +1614,7 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
 
 def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(monkeypatch):
     # Same window, but the unload was a same-model reload so active_model_name is
-    # unchanged; the give-away is that the dispatcher was stopped. Registering a
-    # mailbox with no dispatcher to route the reply would hang the compare stream.
+    monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.05)
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1262,7 +1635,7 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
 
     out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
 
-    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert any("nothing is routing replies" in chunk.lower() for chunk in out), out
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
 
 
@@ -1915,9 +2288,9 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     def fake_start():
         started["v"] = True
         o._dispatcher_thread = _AliveDispatcher()
-        return True  # _start_dispatcher returns True for the caller that spawned it
+        return o._dispatcher_thread  # what _start_dispatcher hands the caller that spawned it
 
-    def fake_stop():
+    def fake_stop(thread = None):
         stopped["v"] = True
         o._dispatcher_thread = None
 
@@ -2118,6 +2491,7 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
 
     n = 32
     # A barrier aligns every thread on the check-then-spawn window: without the lifecycle
@@ -2139,10 +2513,9 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
         t.join(timeout = 5)
 
     try:
-        # _start_dispatcher returns True only for the caller that actually spawned a thread.
-        # Exactly one caller may win; every other must observe the dispatcher alive and bail.
-        assert results.count(True) == 1, f"expected exactly one spawn, got {results.count(True)}"
-        assert results.count(False) == n - 1
+        spawned = [result for result in results if result is not None]
+        assert len(spawned) == 1, f"expected exactly one spawn, got {len(spawned)}"
+        assert results.count(None) == n - 1
         # And exactly one live dispatcher thread exists -- no orphan racing resp_queue.
         live = [
             t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
@@ -2184,11 +2557,12 @@ def test_start_dispatcher_refuses_while_unload_pending():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = True
 
     started = o._start_dispatcher()
 
-    assert started is False, "must not start a dispatcher while an unload is pending"
+    assert started is None, "must not start a dispatcher while an unload is pending"
     assert o._dispatcher_thread is None, "no dispatcher thread may be created"
     live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
     assert live == [], "no dispatcher may exist to consume the unloaded reply"
@@ -2206,11 +2580,12 @@ def test_start_dispatcher_resumes_after_unload_clears():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = False
 
     try:
         assert (
-            o._start_dispatcher() is True
+            o._start_dispatcher() is o._dispatcher_thread is not None
         ), "a fresh dispatcher must start once no unload is pending"
         assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
     finally:
@@ -2236,6 +2611,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     o._request_cancel_events = {}
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = False
 
     start_queued = threading.Event()  # release the stop's join once the start is queued behind it
@@ -2256,7 +2632,6 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
 
     def unload_side():
         # unload_model's sequence: set _unload_pending under the lifecycle lock, then stop
-        # the idle dispatcher (also under the lock, via _wait_dispatcher_idle).
         with o._dispatcher_lifecycle_lock:
             o._unload_pending = True
         o._stop_dispatcher()
@@ -2283,7 +2658,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     u.join(timeout = 5)
     c.join(timeout = 5)
 
-    assert started_result.get("v") is False, "the queued start must refuse while unloading"
+    assert started_result.get("v") is None, "the queued start must refuse while unloading"
     assert o._dispatcher_thread is None, "the stop cleared it and the queued start spawned nothing"
     live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
     assert live == [], "no fresh dispatcher may be left to consume the unloaded reply"
@@ -2440,10 +2815,6 @@ def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
     # that chat's tokens and its gen_done as unaddressed, hanging it.
 
     o = _bare_orchestrator()
-    o._mailbox_lock = threading.Lock()
-    o._mailboxes = {}
-    o._direct_mailboxes = {}
-    o._request_cancel_events = {}
 
     read_one, _drain, release = o._direct_reader("direct-1")
     try:
@@ -2565,7 +2936,6 @@ def test_generation_stopped_while_queued_is_never_sent(monkeypatch):
     # gen_done without one) still held up its siblings.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda *a, **k: None)
     monkeypatch.setattr(
         o, "_send_cmd", lambda cmd: pytest.fail("must not send a generation already stopped")
     )
@@ -2634,6 +3004,74 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
         with inf._scoped_load_attempts_lock:
             inf._scoped_load_attempts.clear()
             inf._scoped_load_cancel_tombstones.clear()
+
+
+def test_a_cancelled_row_stream_shows_no_token_a_single_reply_would_have_dropped():
+    o = _bare_orchestrator()
+    cancel = threading.Event()
+    cancel.set()
+    events = [
+        {"type": "token", "request_id": "r1", "row": 0, "text": "buffered"},
+        {"type": "row_done", "request_id": "r1", "row": 0},
+        {"type": "row_done", "request_id": "r1", "row": 1},
+        {"type": "gen_done", "request_id": "r1"},
+    ]
+
+    seen = list(
+        o._consume_token_stream(
+            lambda timeout: events.pop(0) if events else None,
+            lambda: None,
+            crash_context = "generation",
+            request_id = "r1",
+            cancel_event = cancel,
+            mark_started = False,
+            rows = 2,
+        )
+    )
+
+    assert seen == [(0, None), (1, None)]
+
+
+def _real_send_order_lock():
+    """The send-order lock exactly as InferenceOrchestrator.__init__ makes it."""
+    source = inspect.getsource(InferenceOrchestrator.__init__)
+    line = next(one for one in source.splitlines() if "self._send_order_lock = " in one)
+    return eval(line.split("=", 1)[1].strip(), {"threading": threading})
+
+
+def test_a_recovering_caller_resets_the_worker_without_deadlocking_on_itself():
+    """The reset decides under the send-order lock and then sends under it."""
+    from types import SimpleNamespace
+
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend._send_order_lock = _real_send_order_lock()
+    backend._mailbox_lock = threading.Lock()
+    backend._request_cancel_events = {}
+    backend._cancel_event = threading.Event()
+    backend._proc = SimpleNamespace(is_alive = lambda: True)
+    sent = []
+    backend._send_cmd = sent.append
+    backend._teardown_going_out = backend._teardown_not_sent = lambda: None
+    backend._owns_worker = lambda event: True
+    done = threading.Event()
+
+    def reset():
+        backend.reset_generation_state(threading.Event())
+        done.set()
+
+    worker = threading.Thread(target = reset, daemon = True)
+    worker.start()
+    worker.join(timeout = 5)
+
+    assert done.is_set(), "the reset deadlocked on the lock it already held"
+    assert sent == [{"type": "reset"}]
+
+
+def test_the_idle_wait_is_bounded_when_no_timeout_is_asked_for():
+    default = (
+        inspect.signature(InferenceOrchestrator._wait_worker_idle).parameters["timeout"].default
+    )
+    assert isinstance(default, float) and default > 0, default
 
 
 def test_shutdown_cancels_loads_that_have_not_reached_the_backend():
@@ -3058,6 +3496,9 @@ def test_a_shutdown_that_begins_during_the_spawn_reaps_the_new_worker():
     class _Ctx:
         Queue = staticmethod(lambda: mock.Mock())
         Event = staticmethod(lambda: mock.Mock())
+        Lock = staticmethod(lambda: mock.Mock())
+        Array = staticmethod(lambda *a, **k: mock.Mock())
+        Value = staticmethod(lambda *a, **k: mock.Mock())
 
         @staticmethod
         def Process(**kw):
@@ -3427,7 +3868,9 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
     backend = Path(__file__).resolve().parent.parent
     guarded = {
         "core/export/orchestrator.py",
+        "core/inference/lemonade_server.py",
         "core/inference/llama_cpp.py",
+        "core/inference/npu_backend.py",
         "core/inference/orchestrator.py",
         "core/inference/sd_cpp_engine.py",
         "core/inference/sd_cpp_server.py",
@@ -3450,6 +3893,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_download_worker.py",
         "core/inference/tools.py",
         "core/training/diffusion_training_service.py",
+        "utils/diffusers_repair.py",
         "utils/prebuilt/update_flow.py",
         "utils/process_lifetime.py",
         "utils/torch_device_probe.py",
@@ -3484,3 +3928,64 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
             f"{rel} never rechecks the latch after adopting, so a spawn that raced it "
             "is left outside a sweep that has already finished"
         )
+
+
+def test_the_adapter_path_accepts_the_same_images_kwarg_as_the_locked_one():
+    """The tool loop hands both paths one common_kwargs. Without `images` on the
+    dispatched path an adapter-controlled vision chat raises TypeError before it
+    generates, and the markers left in the conversation have no pixels behind."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    dispatched = inspect.signature(InferenceOrchestrator._generate_dispatched).parameters
+    locked = inspect.signature(InferenceOrchestrator._generate_inner).parameters
+
+    assert "images" in locked
+    assert "images" in dispatched, (
+        "generate_with_adapter_control forwards **common_kwargs straight into "
+        "_generate_dispatched, so a missing `images` is an immediate TypeError"
+    )
+
+
+def test_the_adapter_path_forwards_images_to_the_worker_command():
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    body = inspect.getsource(InferenceOrchestrator._generate_dispatched)
+    assert (
+        "images_b64 = images" in body
+    ), "_build_generate_cmd carries the list to the worker as images_b64"
+
+
+def test_both_generation_paths_forward_the_image_ordinal():
+    """The dispatched path forwarded it and the locked one dropped it, so ordinary
+    non-adapter generation reached the worker with None. The marker top-up then put
+    the attachment's marker on the newest user turn rather than the turn that
+    supplied it, which changes which question appears to own the picture."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    for method in (
+        InferenceOrchestrator._generate_dispatched,
+        InferenceOrchestrator._generate_inner,
+    ):
+        assert "image_ordinal" in inspect.signature(method).parameters, method.__name__
+        assert "image_ordinal = image_ordinal" in inspect.getsource(method), (
+            f"{method.__name__} accepts the ordinal but does not put it on the " "worker command"
+        )
+
+
+def test_a_count_during_a_dispatched_generation_is_refused_at_once():
+    o = _bare_orchestrator(reads_stops = True)
+    o._mailboxes["running"] = queue.Queue()
+    sent = []
+    o._send_cmd = sent.append
+
+    with pytest.raises(RuntimeError, match = "generation is in progress"):
+        o.count_chat_tokens([{"role": "user", "content": "hi"}])
+
+    assert sent == [], "the count reached a worker that reads no command until the reply ends"
+    assert o._gen_lock.acquire(blocking = False), "the refusal kept the generation lock"

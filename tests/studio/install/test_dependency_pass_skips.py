@@ -428,6 +428,10 @@ def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) 
 
     monkeypatch.setattr(importlib.metadata, "distribution", _distribution(recorded))
     assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+    # uv records the URL without ".git"; before this matched, every pass rebuilt the checkout.
+    uv_shape = {**recorded, "url": "https://example.invalid/triton"}
+    monkeypatch.setattr(importlib.metadata, "distribution", _distribution(uv_shape))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
 
     for broken in (
         {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "main"}},
@@ -919,7 +923,7 @@ def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
 
 
 def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
-    versions = {"mlx": "0.32.2", "mlx-metal": "0.32.2", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.3", "mlx-metal": "0.32.3", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     # The closure of a stack that is not installed on this host is its own test below.
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
@@ -940,7 +944,7 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
 def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, tmp_path) -> None:
     """This step installs WITH dependencies, so it is what repairs an mlx-vlm whose own
     miniaudio or mlx-audio is gone. Versions alone would skip that repair."""
-    versions = {"mlx": "0.32.2", "mlx-metal": "0.32.2", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.3", "mlx-metal": "0.32.3", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: True)
     assert stack._mlx_stack_is_current() is False
@@ -1045,7 +1049,7 @@ def test_a_resident_codec_inside_the_window_needs_no_install(spec, installed, ex
 
 
 def test_the_pip_fallback_never_names_one_project_twice() -> None:
-    """pip refuses `mlx==0.32.2 mlx` outright with "Double requirement given", which
+    """pip refuses `mlx==0.32.3 mlx` outright with "Double requirement given", which
     would fail the very step the fallback exists to rescue."""
     cmd = stack._build_pip_cmd(
         (
@@ -1053,13 +1057,13 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "mlx",
             "--upgrade-package",
             "mlx-vlm",
-            "mlx==0.32.2",
-            "mlx-vlm>=0.4.4,<=0.7.1",
+            "mlx==0.32.3",
+            "mlx-vlm>=0.4.4,<=0.7.4",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.2" in cmd and "mlx-vlm>=0.4.4,<=0.7.1" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.4" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
@@ -1079,7 +1083,7 @@ def test_every_install_entry_point_is_counted() -> None:
     source = STACK_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     counted = {
-        "pip_install",
+        "_pip_install_once",
         "pip_install_try",
         "_uninstall_distribution",
         "_purge_recordless_distributions",
@@ -2307,3 +2311,14 @@ def test_a_temp_copy_that_cannot_be_unlinked_does_not_end_the_pass(audited, monk
     # The gate's own cleanup is the same shape, one step earlier: it must answer, not raise.
     stack._PASS_EVIDENCE = {"pass_inputs": {}, "step_results": {}}
     assert stack._requirements_satisfied(audited / "studio.txt", no_deps = False) is False
+
+
+def test_the_mlx_grammar_engine_is_pinned_skippable_and_never_fatal() -> None:
+    """An unpinned --upgrade re-ran on every update, and its SystemExit aborted the install."""
+    assert re.fullmatch(r"llguidance==\d+\.\d+\.\d+", stack._LLGUIDANCE_PIN)
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    step = source[source.index("# 11d.") : source.index("# 12. Patch metadata")]
+    assert "_exact_distribution_spec_is_installed(_LLGUIDANCE_PIN)" in step
+    assert "not _full_deps_requested() and" in step
+    assert "except SystemExit:" in step
+    assert "--upgrade" not in step

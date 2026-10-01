@@ -181,11 +181,50 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers_validate_rope_ignore_keys as _fix_validate_rope
+        _fix_validate_rope()
+        del _fix_validate_rope
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers_is_torch_fx_available as _fix_torch_fx
+        _fix_torch_fx()
+        del _fix_torch_fx
+    except Exception:
+        pass
+    try:
         # Same reason: this branch imports transformers itself further down, so a --no-deps floor miss would
         # surface here with the same wrong remedy.
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
         _check_tf_deps()
         del _check_tf_deps
+    except Exception:
+        pass
+    try:
+        # Same reason: remote code reaches transformers' get_class_in_module on this platform
+        # too, and the wrap is what restores the image helpers transformers 5 stopped
+        # re-exporting. Costs nothing until a checkpoint's own modeling file is loaded.
+        from .import_fixes import (
+            fix_transformers5_image_processing_reexports as _fix_image_reexports,
+        )
+        _fix_image_reexports()
+        del _fix_image_reexports
+    except Exception:
+        pass
+    try:
+        # Same reason: 4.x remote configs are built here too, and their validators read plain RoPE
+        # as rope_scaling None. is_torch_fx_available is left to unsloth_zoo.mlx.loader.
+        from .import_fixes import (
+            fix_transformers_remote_rope_scaling_none as _fix_remote_rope_scaling,
+        )
+        _fix_remote_rope_scaling()
+        del _fix_remote_rope_scaling
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers5_legacy_config_types as _fix_legacy_types
+        _fix_legacy_types()
+        del _fix_legacy_types
     except Exception:
         pass
     try:

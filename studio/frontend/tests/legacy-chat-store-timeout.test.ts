@@ -77,6 +77,7 @@ function loadStorage(options: {
       "./thread-record-write-coordinator": {
         ThreadRecordWriteCoordinator: StubWriteCoordinator,
       },
+      "../stores/fork-boundary-store": { setForkBoundary: () => {} },
     },
   );
 }

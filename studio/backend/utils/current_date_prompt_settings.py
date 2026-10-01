@@ -13,6 +13,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 CURRENT_DATE_PROMPT_SETTING_KEY = "include_current_date_in_prompt"
 # Lets callers recognise a prompt that already states a date, whoever put it there.
 CURRENT_DATE_PROMPT_PREFIX = "The current date is "
+# Leads the turn: a trailing sentence made small models answer about the date instead (PR #12096).
+CURRENT_DATE_UPDATE_PREFIX = "[Current date: "
+CURRENT_DATE_UPDATE_NOTE_RE = re.compile(
+    rf"^\s*{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\]\s*"
+)
 CURRENT_DATE_PROMPT_LINE_RE = re.compile(
     rf"(?m)^{re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.(?=\r?$)"
 )
@@ -106,3 +111,35 @@ def current_date_prompt_line(today: date | None = None, request: Any = None) -> 
         return ""
     resolved_date = today or _request_local_date(request)
     return f"{CURRENT_DATE_PROMPT_PREFIX}{resolved_date.isoformat()}."
+
+
+def conversation_start_date(thread_id: Any, request: Any = None) -> date | None:
+    """Local date the thread (or the root of its fork chain) was created, None when unknown."""
+    if not isinstance(thread_id, str) or not thread_id:
+        return None
+    try:
+        from storage.studio_db import get_chat_thread
+
+        thread = get_chat_thread(thread_id)
+        seen = {thread_id}
+        # a fork keeps its parent's history, so it keeps the parent's prompt prefix too.
+        while thread:
+            parent_id = thread.get("forkedFromThreadId")
+            if not parent_id or parent_id in seen:
+                break
+            seen.add(parent_id)
+            parent = get_chat_thread(parent_id)
+            if not parent:
+                break
+            thread = parent
+        created_ms = thread.get("createdAt") if thread else None
+        if isinstance(created_ms, bool) or not isinstance(created_ms, (int, float)):
+            return None
+        created = datetime.fromtimestamp(created_ms / 1000, timezone.utc)
+    except Exception:
+        return None
+    return _request_local_date(request, now = created)
+
+
+def strip_current_date_update_note(text: str) -> str:
+    return CURRENT_DATE_UPDATE_NOTE_RE.sub("", text)

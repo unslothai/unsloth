@@ -17,6 +17,7 @@ const QUEUED_SETTING_KEYS = [
   "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
+  "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
   "artifactsEnabled",
   "mcpEnabledForChat",
@@ -44,8 +45,6 @@ const QUEUED_SETTING_KEYS = [
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;

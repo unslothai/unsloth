@@ -7,10 +7,15 @@ import json
 import logging
 import os
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
-from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused
+from hub.utils.hf_tokens import (
+    cache_reads_authorized,
+    cached_read_refused,
+    recording_a_request_token_fetch,
+)
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -441,16 +446,42 @@ def read_default_chat_template(
             size = getattr(matched[0], "size", None)
             return not (isinstance(size, int) and size > MAX_TEMPLATE_METADATA_BYTES)
 
+        def _this_file_was_already_here(rel: str) -> bool:
+            """``_this_file_is_cached`` asks the same question and answers True when it cannot
+            tell, which is right for a gate and wrong here: not knowing must RECORD, since an
+            unrecorded credentialed fetch is what hands a private repo to a tokenless caller."""
+            try:
+                from huggingface_hub import try_to_load_from_cache
+                return isinstance(
+                    try_to_load_from_cache(
+                        repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
+                    ),
+                    str,
+                )
+            except Exception:  # noqa: BLE001 -- cannot tell, so record
+                return False
+
         def _download_text(rel: str) -> Optional[str]:
             if not _remote_worth_downloading(rel):
                 return None
             try:
-                path = hf_hub_download(
-                    resolved,
-                    rel,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
+                # Lands files in the hub cache under what may be a one-off token, but only when
+                # it really fetches: hf_hub_download returns a cached file without asking the
+                # Hub, and recording that withholds a repo the cache may have held anonymously.
+                # Around the call, not before: a half-dead download has still written, while a
+                # 404 leaves nothing and the context manager takes that record back.
+                recording = (
+                    recording_a_request_token_fetch(hf_token, resolved, "model")
+                    if not _this_file_was_already_here(rel)
+                    else nullcontext()
                 )
+                with recording:
+                    path = hf_hub_download(
+                        resolved,
+                        rel,
+                        token = hf_token,
+                        cache_dir = active_hf_hub_cache(),
+                    )
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None

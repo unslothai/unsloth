@@ -21,6 +21,7 @@ const {
   modelConfigTargetIsResident,
   modelConfigTargetMatchesSelection,
   requestModelConfigHandoff,
+  residentModelConfigTarget,
   useModelConfigHandoffStore,
 } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
@@ -253,6 +254,75 @@ test("an Ollama load identity mirrors its settings only when the API can reach i
       loaded: true,
     }),
     true,
+  );
+});
+
+test("non-GGUF weights mirror their settings, a LoRA adapter does not", () => {
+  const repo = "mlx-community/Qwen3.5-9B-MLX-8bit";
+  const snapshot =
+    "/hf/models--mlx-community--Qwen3.5-9B-MLX-8bit/snapshots/abc";
+  const cached = modelConfigTarget(repo, {
+    source: "hub",
+    isLora: false,
+    loadId: snapshot,
+    isDownloaded: true,
+    isGguf: false,
+  });
+  assert.equal(cached.isGguf, false);
+  assert.equal(cached.apiLoadable, true);
+  // A local folder row leaves isGguf unset rather than false.
+  const folder = "/Users/u/.lmstudio/models/mlx-community/Qwen3.5-4B-MLX-4bit";
+  assert.equal(
+    modelConfigTarget(folder, { source: "local", isLora: false }).apiLoadable,
+    true,
+  );
+  const adapter = "/Users/u/outputs/checkpoint-60";
+  assert.equal(
+    modelConfigTarget(adapter, { source: "lora", isLora: true }).apiLoadable,
+    false,
+  );
+});
+
+test("the resident settings key a cached non-GGUF repo by its repo id", () => {
+  const snapshot =
+    "/hf/models--mlx-community--Qwen3.5-9B-MLX-8bit/snapshots/abc";
+  const resident = (overrides: {
+    modelId?: string;
+    ggufVariant?: string | null;
+    isGguf?: boolean;
+    isLora?: boolean;
+  }) =>
+    residentModelConfigTarget({
+      modelId: snapshot,
+      ggufVariant: null,
+      isGguf: false,
+      isLora: false,
+      contextLength: null,
+      ...overrides,
+    });
+
+  const mlx = resident({});
+  assert.equal(mlx.id, snapshot);
+  assert.equal(mlx.configId, "mlx-community/Qwen3.5-9B-MLX-8bit");
+  assert.equal(mlx.apiLoadable, true);
+  // The backend folds a quant's two spellings itself, so a GGUF keeps its load path.
+  const gguf = resident({ isGguf: true, ggufVariant: "Q4_K_M" });
+  assert.equal(gguf.configId, undefined);
+  assert.equal(gguf.apiLoadable, true);
+  // A loose file drops its label, and every other entry point keys it by its path.
+  const file = resident({
+    modelId: `${snapshot}/model-Q4_K_M.gguf`,
+    isGguf: true,
+    ggufVariant: "Q4_K_M",
+  });
+  assert.equal(file.ggufVariant, null);
+  assert.equal(file.configId, undefined);
+  const folder = "/Users/u/.lmstudio/models/org/Model-MLX";
+  assert.equal(resident({ modelId: folder }).configId, undefined);
+  assert.equal(
+    resident({ modelId: "/Users/u/outputs/checkpoint-60", isLora: true })
+      .apiLoadable,
+    false,
   );
 });
 
