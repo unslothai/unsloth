@@ -32,11 +32,12 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Re-measured together on one machine and build: 5,813.8 KB raw / 1,730.2 KB transfer at d7795365c,
-  // plus the margin the previous raise chose (210.8 KB raw, 65.1 KB transfer). The growth since is
-  // chat attachment cards, chips and their layout (#12017), which the first chat screen renders.
-  transferBytes: 1_840_000,
-  rawBytes: 6_170_000,
+  // Re-measured together on one machine and build: 6,017.4 KB raw / 1,798.0 KB transfer for the browser
+  // panel (#12347) on main at 1b4981de8, plus the margin the previous raises chose (210.8 KB raw, 65.1 KB
+  // transfer). The growth is the browser toggle, link and file routing and their strings, which the first
+  // chat screen renders; the panel, its native views and the link menus load on use.
+  transferBytes: 1_908_000,
+  rawBytes: 6_378_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
