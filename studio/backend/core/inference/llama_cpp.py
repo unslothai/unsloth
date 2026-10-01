@@ -738,8 +738,7 @@ _LOG_VERBOSITY_FLAGS = frozenset(
 )
 # Past this, the active llama-server log keeps only warnings and errors.
 _LLAMA_LOG_FULL_BYTES = 64 * 1024 * 1024
-# llama.cpp's record prefix: uptime stamp (off with --no-log-timestamps), then the level,
-# either optionally coloured. Any other "<word> W " is text inside a multi-line record.
+# llama.cpp's prefix (stamp optional, colours allowed); a mid-line "x W " is record text.
 _ANSI = r"(?:\x1b\[[0-9;]*m)*"
 _LOG_LEVEL_TOKEN_RE = re.compile(rf"^{_ANSI}(?:\d+\.\d+\.\d+\.\d+{_ANSI} )?{_ANSI}([A-Z]) ")
 # The startup head is never trimmed: its load lines are read for the server's whole life.
@@ -17809,9 +17808,7 @@ class LlamaCppBackend:
                         health_probe_event = getattr(self, "_health_probe_event", None)
                         if health_probe_event is not None:
                             health_probe_event.set()
-                    # The INFO session log is what users send; load chatter stays in the tee.
-                    # Unprefixed lines on a levelled build continue the previous record (a
-                    # template or request dump), so they inherit its level, never their text's.
+                    # Unprefixed lines continue the previous record (e.g. a request dump).
                     level = _LOG_LEVEL_TOKEN_RE.match(line)
                     if level is not None:
                         levelled = True
