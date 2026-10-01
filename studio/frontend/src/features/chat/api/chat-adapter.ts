@@ -38,6 +38,7 @@ import {
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
   isServedByLlamaCpp,
+  resumesThought,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -5058,11 +5059,12 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      // Carry reasoning only to llama-server, the one backend that can resume it.
+      // Carry reasoning only to a backend that can resume it.
       const resumedThought =
         continuation &&
-        isServedByLlamaCpp({
+        resumesThought({
           loadedIsGguf: runtime.loadedIsGguf,
+          loadedIsMlx: runtime.loadedIsMlx,
           activeGgufVariant: runtime.activeGgufVariant,
           activeNativePathToken: runtime.activeNativePathToken,
           checkpoint: params.checkpoint,
@@ -5072,7 +5074,7 @@ export function createOpenAIStreamAdapter(
       if (continuation && !continuation.partial && !resumedThought) {
         toast.error("This response cannot be resumed", {
           description:
-            "It stopped mid-thought, and only GGUF models can resume a thought. Use Retry instead.",
+            "It stopped mid-thought, and only GGUF and MLX models can resume a thought. Use Retry instead.",
         });
         throw new Error("A response that stopped mid-thought cannot be resumed here.");
       }

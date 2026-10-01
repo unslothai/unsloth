@@ -22,6 +22,7 @@ const {
   isServedByMlx,
   loadedContextFields,
   residentIsServedByMlx,
+  resumesThought,
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -134,6 +135,18 @@ test("a load that reported a non-GGUF backend outranks a stale variant", () => {
   // A .gguf checkpoint before any load still reads as llama.cpp.
   assert.equal(isServedByLlamaCpp({ checkpoint: "/m/model.gguf" }), true);
   assert.equal(isServedByLlamaCpp({ checkpoint: "external::openai/gpt-4" }), false);
+});
+
+test("a thought resumes on llama-server and on a load MLX reports serving", () => {
+  assert.equal(resumesThought({ loadedIsGguf: true }), true);
+  assert.equal(resumesThought({ loadedIsGguf: false, loadedIsMlx: true }), true);
+  // Transformers, an unloaded pick, and an external provider cannot.
+  assert.equal(resumesThought({ loadedIsGguf: false, loadedIsMlx: false }), false);
+  assert.equal(resumesThought({ loadedIsMlx: null }), false);
+  assert.equal(
+    resumesThought({ loadedIsMlx: true, checkpoint: "external::openai/gpt-4" }),
+    false,
+  );
 });
 
 test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
