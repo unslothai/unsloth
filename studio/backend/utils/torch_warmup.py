@@ -413,6 +413,9 @@ def _clear_finished_warm_locked() -> None:
 
 
 DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
+# 0 keeps the prewarm to diffusers + diffusers.hooks (the model classes then import on the first load).
+DIFFUSERS_PREWARM_MODELS_ENV_VAR = "UNSLOTH_STUDIO_DIFFUSERS_PREWARM_MODELS"
+_DIFFUSERS_PREWARM_MODEL_MODULES = ("diffusers.models.transformers",)
 
 # The catalog's own task identifiers, which _build_index compares with ==. Anything else
 # (a friendly "image"/"video") silently builds an empty index and reads as "no models here",
@@ -567,6 +570,19 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
                 # `from diffusers.hooks import ...` rebuilds from them (#7580).
                 purge_partial_import("diffusers.hooks")
                 return False
+
+        # The model classes too: a load's first family check imports diffusers.models.transformers (every DiT module,
+        # peft, the loaders), 1.5-3.7 s of the first image load on a B200 host. Its own scope for the same lock-order
+        # reason as above, and optional: a failure here leaves the parent import in place and the load imports it.
+        if os.environ.get(DIFFUSERS_PREWARM_MODELS_ENV_VAR, "").strip().lower() not in ("0", "false", "no", "off"):
+            for module_name in _DIFFUSERS_PREWARM_MODEL_MODULES:
+                with _ModuleLockManager(module_name):
+                    try:
+                        importlib.import_module(module_name)
+                    except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+                        logger.debug("diffusers model prewarm of %s skipped: %r", module_name, exc)
+                        purge_partial_import(module_name)
+                        break
 
         # Outside both locks: it imports nothing under diffusers. diffusers hard-codes
         # diffusers hard-codes _tqdm_active = True and honours no env var, so without this
