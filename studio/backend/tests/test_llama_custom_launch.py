@@ -621,6 +621,29 @@ def test_custom_gpu_launch_masks_rocm_arch_gate_survivors(launch, monkeypatch):
     assert env["CUDA_VISIBLE_DEVICES"] in {"0,2", "0,1"}
 
 
+def test_masked_start_failure_names_llama_server_reason_and_visible_devices(launch, monkeypatch):
+    def spawn(cmd, env, *, child_gpu_physical_ids):
+        launch.backend._process = SimpleNamespace(poll = lambda: 1)
+        launch.backend._stdout_lines = [
+            "srv  llama_server: initializing ...",
+            'error while handling argument "--device": invalid device: ROCm1',
+            "usage:",
+        ]
+        return True
+
+    monkeypatch.setattr(launch.backend, "_arch_gate_survivors", lambda p: [1])
+    monkeypatch.setattr(launch.backend, "_start_llama_process", spawn)
+    monkeypatch.setattr(launch.backend, "_wait_for_health", lambda **_: False)
+    launch.backend._health_wait_cancelled = False
+    intent = replace(launch.intent, llama_cpp_config = source("[*]\nnp=1\nngl=99"))
+    with pytest.raises(CustomConfigError) as raised:
+        launch.backend.load_model(intent)
+    message = str(raised.value)
+    assert "no tuning fallback" in message
+    assert "invalid device: ROCm1" in message
+    assert message.endswith("numbered from 0: ROCm0")
+
+
 @pytest.mark.parametrize(
     "line,disabled",
     [("cache-prompt=false", True), ("no-cache-prompt=true", True), ("cache-prompt=true", False)],

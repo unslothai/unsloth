@@ -23695,9 +23695,22 @@ class LlamaCppBackend:
                     self._kill_process()
                     if was_cancelled:
                         return False
-                    raise CustomConfigError(
-                        "llama-server could not start with the selected custom configuration; no tuning fallback was attempted"
+                    # llama-server's own reason (an INI typo, an unknown device) is otherwise only in the log.
+                    reason = next(
+                        (
+                            line.strip()
+                            for line in reversed(self._stdout_lines[-50:])
+                            if "error" in line.lower()
+                        ),
+                        "",
                     )
+                    message = "llama-server could not start with the selected custom configuration; no tuning fallback was attempted"
+                    if reason:
+                        message += f". llama-server said: {reason}"
+                    if survivors and "device" in reason.lower():
+                        names = ", ".join(f"ROCm{i}" for i in range(len(survivors)))
+                        message += f". Only the supported GPUs are visible to custom mode, numbered from 0: {names}"
+                    raise CustomConfigError(message)
                 props = self._query_server_props()
                 settings = (props or {}).get("default_generation_settings") or {}
                 actual_ctx = settings.get("n_ctx")
