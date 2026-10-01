@@ -64,29 +64,8 @@ fi
 # Consistent column layout: 2-space indent, 15-char label (fits llama-quantize), then value.
 # Usage: step <label> <message> [color]   (color defaults to C_OK)
 # Usage: substep <message> [color]         (color defaults to C_DIM)
-_SETUP_STDIO_LOCK_FILE=""
-_setup_stdio_lock_init() {
-    [ -n "${_SETUP_STDIO_LOCK_FILE:-}" ] && return 0
-    _SETUP_STDIO_LOCK_FILE=$(mktemp) || _SETUP_STDIO_LOCK_FILE="${TMPDIR:-/tmp}/unsloth-setup-lock-$$"
-    : >"$_SETUP_STDIO_LOCK_FILE" 2>/dev/null || true
-}
-
-_step_printf() {
-    # Serialize lines from the parallel frontend and T5 sidecar jobs.
-    if [ -n "${_SETUP_STDIO_LOCK_FILE:-}" ] && command -v flock >/dev/null 2>&1; then
-        (
-            flock -w 600 200 || true
-            # shellcheck disable=SC2059
-            printf "$@"
-        ) 200>>"$_SETUP_STDIO_LOCK_FILE"
-    else
-        # shellcheck disable=SC2059
-        printf "$@"
-    fi
-}
-
-step()    { _step_printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
-substep() { _step_printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
+step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
+substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 setup_fail() {
     local exit_code=$1
@@ -718,11 +697,18 @@ _setup_parallel_run() {
     _SETUP_PARALLEL_LABELS+=("$label")
 }
 
+# A failed job already printed its own [TAURI:ERROR]; Desktop keeps the last one, so add none.
+_setup_bg_fail() {
+    step "error" "$2 failed (exit code $1)" "$C_ERR" >&2
+    _setup_abort_frontend_job
+    exit "$1"
+}
+
 _setup_parallel_wait() {
     local fail=0 i pid label wait_status=0
     [ "${#_SETUP_PARALLEL_PIDS[@]}" -gt 0 ] || return 0
+    # Join every job before reaping the frontend, so an abort leaves no installer writing.
     for i in "${!_SETUP_PARALLEL_PIDS[@]}"; do
-        _setup_frontend_reap_if_exited
         pid="${_SETUP_PARALLEL_PIDS[$i]}"
         label="${_SETUP_PARALLEL_LABELS[$i]}"
         # Capture status before testing: `if ! wait` clobbers $? under bash.
@@ -736,7 +722,7 @@ _setup_parallel_wait() {
     _setup_frontend_reap_if_exited
     _setup_parallel_reset
     if [ "$fail" -ne 0 ]; then
-        setup_fail 1 "One or more parallel setup tasks failed"
+        _setup_bg_fail 1 "A parallel setup task"
     fi
 }
 
@@ -2530,7 +2516,7 @@ _setup_frontend_reap_if_exited() {
     wait "$pid" || wait_status=$?
     _SETUP_FRONTEND_BG_PID=""
     if [ "$wait_status" -ne 0 ]; then
-        setup_fail "$wait_status" "Frontend build or OXC install failed (exit code $wait_status)"
+        _setup_bg_fail "$wait_status" "Frontend build or OXC install"
     fi
 }
 
@@ -2541,7 +2527,7 @@ _setup_frontend_join() {
     wait "$pid" || wait_status=$?
     _SETUP_FRONTEND_BG_PID=""
     if [ "$wait_status" -ne 0 ]; then
-        setup_fail "$wait_status" "Frontend build or OXC install failed (exit code $wait_status)"
+        _setup_bg_fail "$wait_status" "Frontend build or OXC install"
     fi
 }
 
@@ -2571,7 +2557,6 @@ _setup_abort_frontend_job() {
 }
 
 _setup_launch_frontend_build_and_oxc() {
-    _setup_stdio_lock_init
     _setup_frontend_build_and_oxc &
     _SETUP_FRONTEND_BG_PID=$!
 }
@@ -3873,7 +3858,6 @@ if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
 fi
 
 _setup_frontend_reap_if_exited
-_setup_stdio_lock_init
 _SETUP_PARALLEL_T5=false
 _setup_parallel_reset
 if [ "$_NEED_T5_530" = true ]; then

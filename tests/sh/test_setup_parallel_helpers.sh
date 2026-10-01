@@ -12,7 +12,6 @@ sed -n '/^_setup_parallel_reset()/,/^}/p' "$SETUP_SH" > "$_FUNC_FILE"
 sed -n '/^_setup_parallel_run()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
 sed -n '/^_setup_parallel_wait()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
 sed -n '/^_setup_frontend_reap_if_exited()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
-sed -n '/^setup_fail()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
 
 if [ ! -s "$_FUNC_FILE" ]; then
     echo "FAIL: could not extract parallel helpers from $SETUP_SH"
@@ -25,7 +24,7 @@ fi
 step() { :; }
 substep() { :; }
 
-setup_fail() {
+_setup_bg_fail() {
     return 1
 }
 
@@ -68,14 +67,6 @@ if _setup_parallel_wait; then
 else
     echo "  FAIL: two successful jobs"
     FAIL=$((FAIL + 1))
-fi
-
-if grep -q '_setup_parallel_wait_fail_open' "$SETUP_SH"; then
-    echo "  FAIL: unused _setup_parallel_wait_fail_open is still defined"
-    FAIL=$((FAIL + 1))
-else
-    echo "  PASS: unused _setup_parallel_wait_fail_open is gone"
-    PASS=$((PASS + 1))
 fi
 
 rm -f "$_FUNC_FILE"
@@ -149,7 +140,7 @@ sed -n '/^_setup_frontend_reap_if_exited()/,/^}/p' "$SETUP_SH" >> "$_REAP_FILE"
 # shellcheck disable=SC1090
 . "$_REAP_FILE"
 _SETUP_FAIL_CALLED=0
-setup_fail() {
+_setup_bg_fail() {
     _SETUP_FAIL_CALLED=1
     return 1
 }
@@ -161,14 +152,39 @@ if _setup_frontend_reap_if_exited; then
     FAIL=$((FAIL + 1))
 else
     if [ "$_SETUP_FAIL_CALLED" -eq 1 ]; then
-        echo "  PASS: reap calls setup_fail when frontend job failed"
+        echo "  PASS: reap fails when frontend job failed"
         PASS=$((PASS + 1))
     else
-        echo "  FAIL: reap did not call setup_fail"
+        echo "  FAIL: reap did not fail"
         FAIL=$((FAIL + 1))
     fi
 fi
 rm -f "$_REAP_FILE"
+
+# ── a background failure reaches Desktop as one specific [TAURI:ERROR] ──
+_MARK_FILE=$(mktemp)
+for _fn in setup_fail _setup_bg_fail _setup_abort_frontend_job _setup_frontend_reap_if_exited; do
+    sed -n "/^$_fn()/,/^}/p" "$SETUP_SH" >> "$_MARK_FILE"
+done
+_MARK_OUT=$(
+    UNSLOTH_TAURI_UPDATE=1 bash -c '
+        C_ERR=; step() { :; }; _setup_restore_twbuild_gitignores_from() { :; }
+        . "$1"
+        ( setup_fail 7 "OXC validator dependency installation failed" ) &
+        _SETUP_FRONTEND_BG_PID=$!
+        while kill -0 "$_SETUP_FRONTEND_BG_PID" 2>/dev/null; do sleep 0.05; done
+        _setup_frontend_reap_if_exited
+    ' _ "$_MARK_FILE" 2>/dev/null
+) && _mark_rc=0 || _mark_rc=$?
+if [ "$_mark_rc" -eq 7 ] && [ "$(printf '%s\n' "$_MARK_OUT" | grep -c '^\[TAURI:ERROR\]')" -eq 1 ] \
+    && printf '%s\n' "$_MARK_OUT" | grep -q '^\[TAURI:ERROR\] OXC validator'; then
+    echo "  PASS: one specific TAURI error marker, exit code kept"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: TAURI markers (rc=$_mark_rc): $_MARK_OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$_MARK_FILE"
 
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
