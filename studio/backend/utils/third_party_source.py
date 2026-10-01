@@ -107,6 +107,18 @@ _DEEPSEEK_OCR_MODULES = (
     "modeling_deepseekocr.py",
     "modeling_deepseekv2.py",
 )
+# sha256 of each module at the pinned revision, the same guarantee the git-based sources
+# get from source_tree_digest. The revision alone only fixes what is fetched; these fix
+# what is imported, so a cached file edited in place is rebuilt rather than run. They are
+# constants in this file deliberately: a manifest written beside the install would be
+# writable by whoever could edit the install. 181 KB, 0.6 ms to verify.
+_DEEPSEEK_OCR_DIGESTS = {
+    "configuration_deepseek_v2.py": "6ab21f29a4722e26fa28c8e0d4277591689a598df17cf6c712330e8f62b3fc7c",
+    "conversation.py": "ec7b6ce89bcda643de1f43269ffa66a7b2e65dc3ed30e427958f776546b4ba03",
+    "deepencoder.py": "0ae2fb6d1e5ae8cf100fc32f854830acd08c821a0a1f23a94a76588c222ddcf2",
+    "modeling_deepseekocr.py": "31e3d52972534415cb6507a40ff7cd859a3ddd3419ace6900d659fba0e09321b",
+    "modeling_deepseekv2.py": "bab8c5c67236453f3311ef2c6629a3606e608e6cc818c8a5923e7877ec65db7f",
+}
 
 _DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
 SNAC_REPOSITORY = "hubertsiuzdak/snac_24khz"
@@ -871,7 +883,13 @@ def _deepseek_ocr_runtime() -> Path:
 
 
 def _deepseek_ocr_installed(runtime: Path) -> bool:
-    """Whether the pinned package is present and is made of real files.
+    """Whether the pinned package is present and is byte for byte what was pinned.
+
+    Names and file types are not enough. A cached module edited in place keeps its name,
+    so a predicate that checked only presence would accept it, skip the download and
+    import the altered bytes, which is the revision pin defeated at the last step. Each
+    module is therefore checked against `_DEEPSEEK_OCR_DIGESTS` and the generated
+    `__init__.py` against being empty.
 
     Symlinks are rejected rather than followed, matching the rest of this module: a
     link is a way to point an "installed" package at bytes outside the verified tree.
@@ -885,6 +903,15 @@ def _deepseek_ocr_installed(runtime: Path) -> bool:
         member = package / name
         if member.is_symlink() or not member.is_file():
             return False
+    try:
+        if (package / "__init__.py").read_bytes() != b"":
+            return False
+        for name, expected in _DEEPSEEK_OCR_DIGESTS.items():
+            digest = hashlib.sha256((package / name).read_bytes()).hexdigest()
+            if digest != expected:
+                return False
+    except OSError:
+        return False
     return True
 
 
@@ -951,6 +978,18 @@ def ensure_deepseek_ocr_source(hf_token: HfTokenArg = None) -> Path:
                 if missing:
                     raise RuntimeError(
                         "The pinned DeepSeek-OCR revision is missing " + ", ".join(sorted(missing))
+                    )
+                # Before the install is published, so bytes that do not match what was
+                # pinned are never moved into place for a later call to accept.
+                unexpected = sorted(
+                    name
+                    for name, expected in _DEEPSEEK_OCR_DIGESTS.items()
+                    if hashlib.sha256((package / name).read_bytes()).hexdigest() != expected
+                )
+                if unexpected:
+                    raise RuntimeError(
+                        "The fetched DeepSeek-OCR source does not match the pinned digests: "
+                        + ", ".join(unexpected)
                     )
                 _purge_package_bytecode(package)
                 _replace_owned_directory(staging, runtime)

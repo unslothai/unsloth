@@ -3,21 +3,26 @@
 
 """The DeepSeek OCR modelling code is fetched from the Hub, so it must be pinned.
 
-Two properties, both of which the previous version of this path lacked:
+Three properties, none of which the previous version of this path had:
 
 - the fetch names a revision, so the code that runs is the code that was reviewed
   rather than whatever the branch points at when a user starts a training run,
+- the bytes are checked against committed digests before they are imported, so the
+  revision pin is not undone by a cached file edited in place,
 - the import comes from that fetch. The old code decided "already available" with a
   bare `from deepseek_ocr.modeling_deepseekocr import ...`, which any directory named
   `deepseek_ocr` anywhere on `sys.path` satisfied. That directory was imported, which
   runs its code, and the real download was then skipped.
 
-No network: the fetch is stubbed and the pinned source is a local fixture. What is
-exercised for real is which directory the import resolves to.
+No network: the fetch is stubbed and the pinned source is a local fixture, with the
+digest map pointed at the fixture's own bytes. What is exercised for real is which
+directory the import resolves to and what the install predicate accepts.
 """
 
+import hashlib
 import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -27,9 +32,13 @@ from utils.third_party_source import (
     _DEEPSEEK_OCR_PACKAGE,
     _DEEPSEEK_OCR_REPOSITORY,
     _DEEPSEEK_OCR_REVISION,
+    _deepseek_ocr_installed,
     ensure_deepseek_ocr_source,
     import_deepseek_ocr_module,
 )
+
+
+BODY = "VALUE = 'pinned'\n"
 
 
 @pytest.fixture(autouse = True)
@@ -41,14 +50,37 @@ def _studio_home(tmp_path, monkeypatch):
         del sys.modules[name]
 
 
-def _write_package(root, body = "VALUE = 'pinned'\n"):
+@pytest.fixture
+def pinned_digests(monkeypatch):
+    """Point the committed digest map at the fixture bodies these tests write."""
+    digest = hashlib.sha256(BODY.encode("utf-8")).hexdigest()
+    monkeypatch.setattr(
+        third_party_source,
+        "_DEEPSEEK_OCR_DIGESTS",
+        {name: digest for name in _DEEPSEEK_OCR_MODULES},
+    )
+
+
+def _write_package(root):
     """A complete pinned package, as a successful install would leave it."""
-    package = root / _DEEPSEEK_OCR_PACKAGE
+    package = Path(root) / _DEEPSEEK_OCR_PACKAGE
     package.mkdir(parents = True, exist_ok = True)
     (package / "__init__.py").write_text("", encoding = "utf-8")
     for name in _DEEPSEEK_OCR_MODULES:
-        (package / name).write_text(body, encoding = "utf-8")
+        (package / name).write_text(BODY, encoding = "utf-8")
     return package
+
+
+def _fake_download(
+    repo_id = None,
+    *args,
+    **kwargs,
+):
+    package = Path(kwargs["local_dir"])
+    package.mkdir(parents = True, exist_ok = True)
+    for name in _DEEPSEEK_OCR_MODULES:
+        (package / name).write_text(BODY, encoding = "utf-8")
+    return str(package)
 
 
 def test_the_pinned_revision_is_a_full_commit_sha():
@@ -56,26 +88,25 @@ def test_the_pinned_revision_is_a_full_commit_sha():
     assert re.fullmatch(r"[0-9a-f]{40}", _DEEPSEEK_OCR_REVISION)
 
 
-def test_the_fetch_names_the_revision_and_only_python(tmp_path, monkeypatch):
+def test_every_pinned_module_has_a_digest():
+    """A module without one would be fetched and imported unverified."""
+    assert set(third_party_source._DEEPSEEK_OCR_DIGESTS) == set(_DEEPSEEK_OCR_MODULES)
+    for digest in third_party_source._DEEPSEEK_OCR_DIGESTS.values():
+        assert re.fullmatch(r"[0-9a-f]{64}", digest)
+
+
+def test_the_fetch_names_the_revision_and_only_python(tmp_path, monkeypatch, pinned_digests):
     calls = []
 
-    def fake_snapshot_download(
+    def recording_download(
         repo_id = None,
         *args,
         **kwargs,
     ):
         calls.append((repo_id, kwargs))
-        _write_package(tmp_path / "unused")
-        destination = kwargs["local_dir"]
-        from pathlib import Path
+        return _fake_download(repo_id, *args, **kwargs)
 
-        package = Path(destination)
-        package.mkdir(parents = True, exist_ok = True)
-        for name in _DEEPSEEK_OCR_MODULES:
-            (package / name).write_text("VALUE = 'pinned'\n", encoding = "utf-8")
-        return str(package)
-
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download, raising = True)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", recording_download)
 
     source = ensure_deepseek_ocr_source()
 
@@ -90,59 +121,88 @@ def test_the_fetch_names_the_revision_and_only_python(tmp_path, monkeypatch):
     assert _DEEPSEEK_OCR_REVISION in str(source)
 
 
-def test_a_complete_install_is_reused_without_fetching(tmp_path, monkeypatch):
+def test_a_complete_install_is_reused_without_fetching(monkeypatch, pinned_digests):
     """Idempotent, and the second run is free."""
 
     def refuse(*args, **kwargs):
         raise AssertionError("a complete install must not fetch again")
 
-    first_source = None
-
-    def fake_snapshot_download(
-        repo_id = None,
-        *args,
-        **kwargs,
-    ):
-        from pathlib import Path
-
-        package = Path(kwargs["local_dir"])
-        package.mkdir(parents = True, exist_ok = True)
-        for name in _DEEPSEEK_OCR_MODULES:
-            (package / name).write_text("VALUE = 'pinned'\n", encoding = "utf-8")
-        return str(package)
-
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _fake_download)
     first_source = ensure_deepseek_ocr_source()
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", refuse)
     assert ensure_deepseek_ocr_source() == first_source
 
 
-def test_a_partial_install_is_rebuilt(tmp_path, monkeypatch):
+def test_a_partial_install_is_rebuilt(monkeypatch, pinned_digests):
     """A half-written tree is not a valid install, so it is replaced, not imported."""
     fetched = []
 
-    def fake_snapshot_download(
+    def counting_download(
         repo_id = None,
         *args,
         **kwargs,
     ):
-        from pathlib import Path
-
         fetched.append(repo_id)
-        package = Path(kwargs["local_dir"])
-        package.mkdir(parents = True, exist_ok = True)
-        for name in _DEEPSEEK_OCR_MODULES:
-            (package / name).write_text("VALUE = 'pinned'\n", encoding = "utf-8")
-        return str(package)
+        return _fake_download(repo_id, *args, **kwargs)
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", counting_download)
     source = ensure_deepseek_ocr_source()
     (source / _DEEPSEEK_OCR_PACKAGE / _DEEPSEEK_OCR_MODULES[0]).unlink()
 
     ensure_deepseek_ocr_source()
 
     assert len(fetched) == 2
+
+
+def test_a_cached_module_edited_in_place_is_rebuilt(monkeypatch, pinned_digests):
+    """The case names and file types cannot see.
+
+    An edited file keeps its name, so presence alone would accept it, skip the download
+    and import the altered bytes, which is the revision pin defeated at the last step.
+    """
+    fetched = []
+
+    def counting_download(
+        repo_id = None,
+        *args,
+        **kwargs,
+    ):
+        fetched.append(repo_id)
+        return _fake_download(repo_id, *args, **kwargs)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", counting_download)
+    source = ensure_deepseek_ocr_source()
+
+    tampered = source / _DEEPSEEK_OCR_PACKAGE / _DEEPSEEK_OCR_MODULES[0]
+    tampered.write_text(BODY + "import os\nos.environ['X'] = '1'\n", encoding = "utf-8")
+
+    assert _deepseek_ocr_installed(source) is False
+    ensure_deepseek_ocr_source()
+    assert len(fetched) == 2
+    assert tampered.read_text(encoding = "utf-8") == BODY
+
+
+def test_a_fetch_that_does_not_match_the_digests_is_not_installed(monkeypatch, pinned_digests):
+    """A wrong fetch raises instead of being published for a later call to accept."""
+
+    def wrong_download(
+        repo_id = None,
+        *args,
+        **kwargs,
+    ):
+        package = Path(kwargs["local_dir"])
+        package.mkdir(parents = True, exist_ok = True)
+        for name in _DEEPSEEK_OCR_MODULES:
+            (package / name).write_text("VALUE = 'not what was pinned'\n", encoding = "utf-8")
+        return str(package)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", wrong_download)
+
+    with pytest.raises(RuntimeError, match = "does not match the pinned digests"):
+        ensure_deepseek_ocr_source()
+
+    assert not _deepseek_ocr_installed(third_party_source._deepseek_ocr_runtime())
 
 
 def test_a_foreign_package_on_sys_path_is_not_what_gets_imported(tmp_path, monkeypatch):
