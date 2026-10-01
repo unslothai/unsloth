@@ -631,6 +631,23 @@ class TestDateChangeNote:
             {"role": "user", "content": "hi"},
         ]
 
+    def test_without_a_system_prompt_the_first_turn_keeps_the_start_date(self):
+        self.today = "2026-08-16"
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
+        ]
+        out = self.inference._append_current_date_note(
+            history, object(), thread_id = "t", system_prompt = ""
+        )
+        assert out[0]["content"] == "[Current date: 2026-08-15]\n\nfirst"
+        assert out[2]["content"] == "[Current date: 2026-08-16]\n\nsecond"
+        only = self.inference._append_current_date_note(
+            history[:1], object(), thread_id = "t", system_prompt = ""
+        )
+        assert only == [{"role": "user", "content": "[Current date: 2026-08-16]\n\nfirst"}]
+
     def test_note_is_not_added_twice(self):
         self.today = "2026-08-16"
         once = self.inference._append_current_date_note(
