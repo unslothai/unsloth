@@ -84,3 +84,11 @@ def test_a_spec_less_stub_reads_as_not_installed():
 @pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
 def test_offline_mode_leaves_the_flag_unset_even_when_installed(var):
     assert "HF_HUB_ENABLE_HF_TRANSFER" not in _resolve({var: "1"}, _installed)
+
+
+@pytest.mark.parametrize("value", ["0", "1"])
+def test_an_explicit_value_is_kept_even_when_installed(value):
+    assert (
+        _resolve({"HF_HUB_ENABLE_HF_TRANSFER": value}, _installed)["HF_HUB_ENABLE_HF_TRANSFER"]
+        == value
+    )
