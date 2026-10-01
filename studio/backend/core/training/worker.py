@@ -5133,6 +5133,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
+                # Carry the consent decision into the modules.json module scan: a repo-declared
+                # module class outside sentence_transformers.* imports third-party code, so it
+                # loads only when the user opted in and the scan above cleared the repo.
+                trust_remote_code = config.get("trust_remote_code", False),
             )
         except Exception as error:
             if not model_local_only:
@@ -5161,6 +5165,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
+                # Carry the consent decision into the modules.json module scan: a repo-declared
+                # module class outside sentence_transformers.* imports third-party code, so it
+                # loads only when the user opted in and the scan above cleared the repo.
+                trust_remote_code = config.get("trust_remote_code", False),
             )
     except Exception as e:
         event_queue.put(
