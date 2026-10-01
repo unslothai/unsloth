@@ -1228,15 +1228,89 @@ pub async fn browser_view_clear_data<R: Runtime>(
             page
         }
     };
-    let result = page
-        .clear_all_browsing_data()
-        .map_err(|error| error.to_string());
-    // The clear finishes asynchronously: give it a moment before reporting it done.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let result = clear_profile(&page).await;
     if hidden {
         let _ = page.close();
     }
     result
+}
+
+const CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Clear a page's profile, resolving once the engine reports it done: wry's own call starts the
+/// clear and returns before it finishes.
+async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let (done, finished) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let done = Mutex::new(Some(done));
+        let finish: ClearFinish = std::sync::Arc::new(move |result| {
+            if let Some(done) = done.lock().unwrap().take() {
+                let _ = done.send(result);
+            }
+        });
+        page.with_webview(move |platform| platform_clear(platform, finish))
+            .map_err(|error| error.to_string())?;
+        match tokio::time::timeout(CLEAR_TIMEOUT, finished).await {
+            Ok(Ok(result)) => result,
+            _ => Err("Clearing browsing data didn't finish".into()),
+        }
+    }
+    // No native pages on Linux; this only clears the hidden one's profile.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        page.clear_all_browsing_data()
+            .map_err(|error| error.to_string())?;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+type ClearFinish = std::sync::Arc<dyn Fn(Result<(), String>) + Send + Sync>;
+
+#[cfg(target_os = "macos")]
+fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish) {
+    use objc2_foundation::NSDate;
+    use objc2_web_kit::{WKWebView, WKWebsiteDataStore};
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return finish(Err("Not on the main thread".into()));
+    };
+    unsafe {
+        let view = &*(platform.inner() as *const WKWebView);
+        let store = view.configuration().websiteDataStore();
+        let types = WKWebsiteDataStore::allWebsiteDataTypes(mtm);
+        let date = NSDate::dateWithTimeIntervalSince1970(0.0);
+        let handler = block2::RcBlock::new(move || finish(Ok(())));
+        store.removeDataOfTypes_modifiedSince_completionHandler(&types, &date, &handler);
+    }
+}
+
+#[cfg(windows)]
+fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish) {
+    use webview2_com::ClearBrowsingDataCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile2, ICoreWebView2_13};
+    use windows_core::Interface;
+    let callback = finish.clone();
+    let started = unsafe {
+        platform
+            .controller()
+            .CoreWebView2()
+            .and_then(|webview| webview.cast::<ICoreWebView2_13>())
+            .and_then(|webview| webview.Profile())
+            .and_then(|profile| profile.cast::<ICoreWebView2Profile2>())
+            .and_then(|profile| {
+                profile.ClearBrowsingDataAll(&ClearBrowsingDataCompletedHandler::create(Box::new(
+                    move |result| {
+                        callback(result.map_err(|error| error.to_string()));
+                        Ok(())
+                    },
+                )))
+            })
+    };
+    if let Err(error) = started {
+        finish(Err(error.to_string()));
+    }
 }
 
 #[cfg(test)]
