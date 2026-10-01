@@ -112,6 +112,11 @@ class Confinement:
     def wrap(self, argv: list[str]) -> list[str]:
         return [*self.wrapper, *argv] if self.wrapper else argv
 
+    @property
+    def confines(self) -> bool:
+        """Whether this confines anything; ``unconfined-by-owner`` is a placeholder and must not skip the generic sandbox."""
+        return self.preexec is not None or bool(self.wrapper)
+
 
 def unconfined_tools_allowed() -> bool:
     return (os.environ.get(_OVERRIDE_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
@@ -353,7 +358,15 @@ def _landlock_preexec(
         raise OSError(ctypes.get_errno(), "landlock_create_ruleset failed")
     try:
         for path, access in rules:
-            parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            try:
+                parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            except FileNotFoundError:
+                # The rules come from a directory walk, and a path can go between that walk and
+                # this open: a cache purge, a model delete, an account delete. Landlock denies by
+                # default, so dropping a grant only ever narrows the child, while raising here
+                # kills the whole tool call as "Exception occurred in preexec_fn", which names
+                # neither the path nor the reason.
+                continue
             try:
                 beneath = _PathBeneathAttr(access & handled, parent_fd)
                 rc = libc.syscall(

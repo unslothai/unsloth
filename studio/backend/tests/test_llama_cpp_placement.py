@@ -110,6 +110,32 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     return backend, gguf
 
 
+# A synthetic compute buffer for the slot-reduction planner fixtures, per micro-batch
+# token: a fixed base, plus a fixed cost for every slot past the first.
+SLOT_COMPUTE_BASE_BYTES_PER_TOKEN = 92 * 1024
+SLOT_COMPUTE_EXTRA_SLOT_BYTES_PER_TOKEN = 1116 * 1024
+
+
+def _install_slot_scaled_compute(backend):
+    """Use a synthetic per-slot cost to exercise slot reduction on dense fixtures."""
+
+    def compute(
+        *,
+        n_ubatch = None,
+        n_parallel = 1,
+        **_kwargs,
+    ):
+        ub = max(1, int(backend._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
+        extra_slots = max(0, int(n_parallel) - 1)
+        return ub * (
+            SLOT_COMPUTE_BASE_BYTES_PER_TOKEN
+            + extra_slots * SLOT_COMPUTE_EXTRA_SLOT_BYTES_PER_TOKEN
+        )
+
+    backend._estimate_compute_buffer_bytes = compute
+    return backend
+
+
 def _backend_non_vulkan(
     *args,
     vulkan = False,
@@ -119,7 +145,12 @@ def _backend_non_vulkan(
     return _backend(*args, vulkan = vulkan, **kwargs)
 
 
-def _launch(backend, gguf, **load_kwargs):
+def _launch(
+    backend,
+    gguf,
+    model_identifier = "test",
+    **load_kwargs,
+):
     captured = {}
 
     def fake_popen(cmd, **kwargs):
@@ -144,7 +175,7 @@ def _launch(backend, gguf, **load_kwargs):
         assert backend.load_model(
             GgufLoadIntent(
                 gguf_path = str(gguf),
-                model_identifier = "test",
+                model_identifier = model_identifier,
                 **load_kwargs,
             )
         )
@@ -650,11 +681,7 @@ def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
 
 
 def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
-    """A Hybrid Mamba target on one 24 GB card with the MTP-overhead math live.
-
-    The drafter's own KV is stubbed away so the only moving term is the target's
-    recurrent rollback state, which is what the reserve has to keep charging.
-    """
+    """Hybrid Mamba on a 24 GB card, with only target rollback state affecting MTP cost."""
     gb = 1024**3
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
     sidecar = tmp_path / "dflash-model-Q8_0.gguf"
@@ -664,6 +691,7 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
     backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
     backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
     backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     backend._select_gpus = lambda *args, **kwargs: ([0], False)
     backend._select_gpus_split_aware = lambda *args, **kwargs: ([0], False)
 
@@ -742,9 +770,9 @@ def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
 
 def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     # -ngld 0 moves the drafter's weights and KV to host memory, but the rollback
-    # snapshots live in the TARGET context, so they stay on the GPU. Releasing the
-    # whole reserve here undercounts them and the fit can pick a placement that
-    # spills.
+    # snapshots and verification output rows live in the TARGET context, so they stay
+    # on the GPU. Releasing the whole reserve here undercounts them and the fit can
+    # pick a placement that spills.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     charged = _recorded_mtp_reserve_std(
@@ -756,9 +784,9 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     )
 
     # After the launch: the GGUF dims land when the load reads the metadata.
-    expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
-    assert expected > 0
-    assert set(charged) == {expected}
+    rollback = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
+    assert rollback > 0
+    assert set(charged) == {rollback + backend._spec_verify_rows_bytes(4, 2)}
 
 
 def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
@@ -783,6 +811,7 @@ def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
     for slots in (1, 2, 4):
         assert fn(8192, _np = slots, _n_ubatch = 512) == (
             backend._mamba_recurrent_state_bytes(n_parallel = slots) * 2
+            + backend._spec_verify_rows_bytes(slots, 2)
         )
     # Per-slot state, not per-token: context does not move it.
     assert fn(2048, _np = 4, _n_ubatch = 512) == fn(131072, _np = 4, _n_ubatch = 512)
@@ -1125,10 +1154,10 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
 
 def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
     """-ngld 0 puts the drafter in host memory, and a separate sidecar displaces
-    the embedded head that mtp_overhead_fn was sized from, so nothing speculative
-    is GPU-resident. The flat fraction already stands down here; the byte-accurate
-    callback did not, so the fit went on charging GPU bytes for a drafter that
-    allocates none, cutting the context or taking --fit for them.
+    the embedded head that mtp_overhead_fn was sized from, so only the target's
+    verification rows stay GPU-resident. The flat fraction already stands down here;
+    the byte-accurate callback did not, so the fit went on charging GPU bytes for a
+    drafter that allocates none, cutting the context or taking --fit for them.
     """
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._nextn_predict_layers = 1
@@ -1156,7 +1185,8 @@ def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
     )
 
     assert charged, "the fit never ran, so this proves nothing"
-    assert set(charged) == {0}
+    # One slot at the three-token DSpark depth.
+    assert set(charged) == {backend._spec_verify_rows_bytes(1, 3)}
 
 
 def test_an_mla_model_keeps_the_reason_that_actually_dropped_its_drafter(tmp_path):
@@ -1372,6 +1402,155 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
     # a drafter that is not launching.
     assert cmd[cmd.index("-c") + 1] == "8192"
     assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def _replayed_context_mtp_backend(tmp_path: Path):
+    gb = 1024**3
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 45_914, 46_080), (1, 8_032, 8_176)]
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 262_144
+
+    backend._read_gguf_metadata = read_metadata
+    backend._get_gguf_size_bytes = lambda _path: 31 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 106_000
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 20_000
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def _launched_ctx(result) -> int:
+    return int(result["cmd"][result["cmd"].index("-c") + 1])
+
+
+def _replayed_auto_context(tmp_path: Path) -> int:
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    assert auto["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    return _launched_ctx(auto)
+
+
+def test_forcing_the_drafter_refits_a_context_replayed_from_auto(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert _launched_ctx(fresh) < replayed
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert result["cmd"][result["cmd"].index("--spec-type") + 1] == "draft-mtp"
+    assert backend._requested_n_ctx == _launched_ctx(result)
+
+
+def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path):
+    def slot_bound_backend():
+        backend, gguf = _replayed_context_mtp_backend(tmp_path)
+        backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 45_914, 46_080)]
+        backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 45_914)]
+        backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 16_000
+        backend._estimate_mtp_overhead_bytes = (
+            lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: n_ctx * 5_000
+            + int(_np or n_parallel or 4) * 3 * 1024**3
+        )
+        caps = backend.probe_server_capabilities()
+        backend.probe_server_capabilities = lambda _binary = None: {
+            **caps,
+            "supports_kv_unified": True,
+        }
+        return backend, gguf
+
+    backend, gguf = slot_bound_backend()
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    backend, gguf = slot_bound_backend()
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = slot_bound_backend()
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = _launched_ctx(auto),
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert fresh["cmd"][fresh["cmd"].index("--parallel") + 1] != "4"
+    assert _launched_ctx(fresh) > 8192
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert (
+        result["cmd"][result["cmd"].index("--parallel") + 1]
+        == (fresh["cmd"][fresh["cmd"].index("--parallel") + 1])
+    )
+
+
+def test_a_drafter_forced_through_extra_args_also_refits(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "auto",
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    assert _launched_ctx(result) == _launched_ctx(fresh) < replayed
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_forcing_the_drafter_keeps_a_ctx_size_passed_through_extra_args(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+        extra_args = ["-c", str(replayed)],
+    )
+
+    assert _launched_ctx(result) == replayed
+
+
+def test_forcing_the_drafter_keeps_a_typed_context(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(backend, gguf, n_ctx = replayed, n_parallel = 4, speculative_type = "mtp")
+
+    assert _launched_ctx(result) == replayed
+    assert backend._requested_n_ctx == replayed
 
 
 def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_path):
@@ -3588,3 +3767,96 @@ def test_a_drafter_carrying_its_own_embeddings_still_reaches_the_command(tmp_pat
     assert cmd[cmd.index("--model-draft") + 1] == str(drafter)
     assert backend.mtp_draft_path == str(drafter)
     assert backend.mtp_draft_suppressed_path is None
+
+
+def _recording_compute_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    build = 10909,
+):
+    """A dense backend on one 24 GB card whose compute terms are the real estimator,
+    recording what the loader asks of them."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+
+    def read(_path):
+        backend._architecture = "qwen3"
+        backend._vocab_size = 151936
+        backend._embedding_length = 4096
+        backend._feed_forward_length = 12288
+        backend._n_layers = 36
+        backend._n_heads = 32
+        backend._n_kv_heads = 8
+        backend._kv_key_length = 128
+        backend._kv_value_length = 128
+        backend._context_length = 40960
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 4 * 1024**3
+    del backend._can_estimate_kv  # the real one, now that the dims are set
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_flash_attn": True,
+        "flash_attn_takes_value": True,
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: build)
+    )
+    calls = {"ctx": [], "flat": [], "kv": []}
+    real_ctx = backend._compute_buffer_ctx_bytes
+    real_flat = backend._estimate_compute_buffer_bytes
+    real_kv = backend._estimate_kv_cache_bytes
+
+    def ctx(*args, **kwargs):
+        calls["ctx"].append(kwargs.get("flash_attn", True))
+        return real_ctx(*args, **kwargs)
+
+    def flat(**kwargs):
+        calls["flat"].append(backend._reserves_micro_batch_outputs)
+        return real_flat(**kwargs)
+
+    def kv(*args, **kwargs):
+        calls["kv"].append(kwargs.get("flash_attn", True))
+        return real_kv(*args, **kwargs)
+
+    backend._compute_buffer_ctx_bytes = ctx
+    backend._estimate_compute_buffer_bytes = flat
+    backend._estimate_kv_cache_bytes = kv
+    return backend, gguf, calls
+
+
+@pytest.mark.parametrize(
+    "extra_args,expected",
+    [([], True), (["--flash-attn", "off"], False), (["-fa", "off", "--flash-attn", "on"], True)],
+)
+def test_the_loader_prices_the_attention_mode_it_launches(
+    tmp_path, monkeypatch, extra_args, expected
+):
+    """Compute AND KV follow the launch's attention mode, off one resolved state.
+
+    The KV cache used to be pinned to flash attention off whatever the argv said, which
+    priced a load that was not going to happen (#9697, #10489). The reserve it stood in for
+    is narrower now: ``_reserved_flash_attn_state`` only holds the reading down where a
+    no-flash respawn cannot be re-placed, which is neither of the cases here.
+    """
+    backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch)
+
+    assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4, extra_args = extra_args)["cmd"]
+
+    assert calls["ctx"], "the fit never priced the context term"
+    assert set(calls["ctx"]) == {expected}
+    assert calls["kv"], "the fit never priced the KV cache"
+    assert set(calls["kv"]) == {expected}, (
+        f"the KV cache was priced with flash_attn {sorted(set(map(str, calls['kv'])))} "
+        f"while the compute buffers were priced {expected}: one load, two answers"
+    )
+
+
+@pytest.mark.parametrize("build,expected", [(9415, True), (10909, False), (None, False)])
+def test_the_loader_prices_the_output_rows_of_its_build(tmp_path, monkeypatch, build, expected):
+    backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch, build = build)
+
+    assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4)["cmd"]
+
+    assert calls["flat"], "the fit never priced the flat compute buffer"
+    assert set(calls["flat"]) == {expected}

@@ -26,6 +26,7 @@ import {
   useDownloadManagerStore,
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
+import { presentedProgress } from "./download-presentation";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -115,12 +116,15 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     job.state === "complete" ||
     job.state === "cancelled" ||
     job.state === "error";
+  const progress = presentedProgress(job);
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
-          {job.repoId}
-          <span className="text-muted-foreground">{variantSuffix(job)}</span>
+          {job.presentation?.label ?? job.repoId}
+          <span className="text-muted-foreground">
+            {job.presentation ? ` · ${job.repoId}` : variantSuffix(job)}
+          </span>
         </span>
         {job.state === "complete" && (
           <HugeiconsIcon
@@ -149,7 +153,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               }
               className={cn(
                 "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
-                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
+                "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
               )}
             >
               <HugeiconsIcon
@@ -164,13 +168,14 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
+      {job.presentation ? (
+        <div className="truncate text-ui-10p5 text-muted-foreground">
+          {job.presentation.filename}
+        </div>
+      ) : null}
       {active ? (
         <DownloadProgressBar
-          progress={{
-            expectedBytes: job.expectedBytes,
-            downloadedBytes: job.downloadedBytes,
-            fraction: job.fraction,
-          }}
+          progress={progress}
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
@@ -231,7 +236,7 @@ export function DownloadManagerPanel({
               <HugeiconsIcon
                 icon={Download01Icon}
                 strokeWidth={1.75}
-                className="size-[18px]"
+                className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
               {activeCount > 0 && (
                 <span className="hub-download-fab-badge">{activeCount}</span>
@@ -244,7 +249,7 @@ export function DownloadManagerPanel({
         </Tooltip>
       ) : (
         <div className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
+          <div className="flex items-center gap-2 border-b border-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-edge-gain,1)),transparent)] py-2 pl-4 pr-3">
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
             </span>
@@ -252,7 +257,7 @@ export function DownloadManagerPanel({
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}

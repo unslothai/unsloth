@@ -331,3 +331,319 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert text.count("SECTION") == 1  # not repeated on each spanned row
     assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
+
+
+_DOCX_XMLNS = (
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:v="urn:schemas-microsoft-com:vml"'
+)
+
+
+def _docx_from_xml(tmp_path, *fragments):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    section = document.element.body[-1]
+    for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{''.join(fragments)}</w:body>")):
+        section.addprevious(element)
+    path = tmp_path / "xml.docx"
+    document.save(str(path))
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def _r(text):
+    return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def test_docx_reads_tracked_insertions_not_deletions(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("The fee is ")
+        + '<w:del w:id="1" w:author="a"><w:r><w:delText>ten</w:delText><w:tab/></w:r></w:del>'
+        + f'<w:ins w:id="2" w:author="a">{_r("twelve")}</w:ins>'
+        + f'<w:moveFrom w:id="3" w:author="a">{_r(" moved away")}</w:moveFrom>'
+        + _r(" euros.")
+        + "</w:p>",
+    )
+    assert text == "The fee is twelve euros."
+
+
+def test_docx_reads_content_controls_fields_and_smart_tags(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('Client: ')}<w:sdt><w:sdtPr/><w:sdtContent>{_r('Acme Corp')}</w:sdtContent></w:sdt></w:p>",
+        f"<w:sdt><w:sdtPr/><w:sdtContent><w:p>{_r('Block control')}</w:p></w:sdtContent></w:sdt>",
+        f'<w:p><w:fldSimple w:instr=" DOCPROPERTY Company ">{_r("Field result")}</w:fldSimple></w:p>',
+        f'<w:p><w:smartTag w:uri="urn:x" w:element="place">{_r("Smart tag")}</w:smartTag></w:p>',
+        f'<w:customXml w:element="clause"><w:p>{_r("Custom XML")}</w:p></w:customXml>',
+    )
+    assert text == "Client: Acme Corp\nBlock control\nField result\nSmart tag\nCustom XML"
+
+
+def test_docx_table_cells_read_content_controls_and_insertions(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Owner')}</w:p></w:tc>"
+        f"<w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p>{_r('Ada')}</w:p></w:sdtContent></w:sdt></w:tc>"
+        f'<w:tc><w:p><w:ins w:id="1" w:author="a">{_r("Engineer")}</w:ins></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Owner | Ada | Engineer"
+
+
+def test_docx_reads_text_box_once_after_its_paragraph(tmp_path):
+    # Word writes a text box twice: the DrawingML shape and a VML fallback copy.
+    box = f"<w:txbxContent><w:p>{_r('Callout')}</w:p></w:txbxContent>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Host line")
+        + "<w:r><mc:AlternateContent>"
+        + f'<mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx>{box}</wps:txbx></wps:wsp></w:drawing></mc:Choice>'
+        + f"<mc:Fallback><w:pict><v:shape><v:textbox>{box}</v:textbox></v:shape></w:pict></mc:Fallback>"
+        + "</mc:AlternateContent></w:r></w:p>",
+    )
+    assert text == "Host line\nCallout"
+
+
+def test_docx_drops_text_box_inside_tracked_deletion_or_move(tmp_path):
+    def box(text):
+        shape = f"<w:txbxContent><w:p>{_r(text)}</w:p></w:txbxContent>"
+        return f"<w:r><w:pict><v:shape><v:textbox>{shape}</v:textbox></v:shape></w:pict></w:r>"
+
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Kept")
+        + f'<w:del w:id="1" w:author="a">{box("Deleted box")}</w:del>'
+        + f'<w:moveFrom w:id="2" w:author="a">{box("Moved-away box")}</w:moveFrom>'
+        + "</w:p>",
+    )
+    assert text == "Kept"
+
+
+def test_docx_reads_ruby_base_without_its_guide(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p><w:r><w:ruby><w:rubyPr/><w:rt>{_r('kanji')}</w:rt><w:rubyBase>{_r('漢字')}</w:rubyBase></w:ruby></w:r></w:p>",
+    )
+    assert text == "漢字"
+
+
+def test_docx_reads_one_branch_of_alternate_content(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p><mc:AlternateContent>"
+        f'<mc:Choice Requires="w14">{_r("Preferred")}</mc:Choice>'
+        f"<mc:Fallback>{_r('Fallback')}</mc:Fallback>"
+        "</mc:AlternateContent></w:p>",
+    )
+    assert text == "Preferred"
+
+
+def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Name"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    tr.remove(tc)
+    tr.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:tc><w:p><w:r><w:t>CELL-WRAPPED</w:t></w:r></w:p></w:tc>"
+            "</w:sdtContent></w:sdt>"
+        )
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:sdt><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-A</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>ROW-B</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:sdtContent></w:sdt></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "wrapped.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "Name | CELL-WRAPPED" in text
+    assert "ROW-A | ROW-B" in text
+
+
+def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+
+    def sdt(props, inner):
+        return parse_xml(
+            f"<w:sdt {ns}><w:sdtPr>{props}</w:sdtPr><w:sdtContent>{inner}</w:sdtContent></w:sdt>"
+        )
+
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>BLOCK-PROMPT</w:t></w:r></w:p>"),
+    )
+    p = document.add_paragraph("Name: ")._p
+    p.append(sdt("<w:showingPlcHdr/>", "<w:r><w:t>Click or tap here to enter text.</w:t></w:r>"))
+    p = document.add_paragraph("Client: ")._p
+    p.append(sdt('<w:showingPlcHdr w:val="0"/>', "<w:r><w:t>ACME</w:t></w:r>"))
+    p = document.add_paragraph("Ref ")._p
+    p.append(
+        parse_xml(
+            f'<w:fldSimple {ns} w:instr=" MERGEFIELD Name "><w:r><w:t>FIELD</w:t></w:r></w:fldSimple>'
+        )
+    )
+    p.append(parse_xml(f'<w:dir {ns} w:val="rtl"><w:r><w:t> RTL</w:t></w:r></w:dir>'))
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Owner"
+    table.cell(0, 1)._tc.append(
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p>")
+    )
+    path = tmp_path / "placeholders.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text and "Click or tap" not in text
+    assert "Client: ACME" in text
+    assert "Ref FIELD RTL" in text
+    assert "Owner | " in text
+
+
+def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 3)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 2).text = "END"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    idx = tr.index(tc)
+    tr.remove(tc)
+    tr.insert(
+        idx,
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>"
+            "<w:tc><w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt>"
+        ),
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-PROMPT</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "placeholder_cells.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text
+    assert "Name |  | END" in text
+
+
+def _parse_html(tmp_path, body):
+    from core.rag import parsers
+
+    path = tmp_path / "page.html"
+    path.write_text(f"<html><body>{body}</body></html>", encoding = "utf-8")
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def test_html_keeps_inline_elements_in_their_line(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<p>The <b>quick</b> brown fox jumps over the <a href="#">lazy</a> dog.</p>'
+        "<p>It is un<b>believ</b>able.</p>",
+    )
+    assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
+
+
+def test_html_adjacent_buttons_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path, "<p>Click <button>Accept</button><button>Decline</button> to go on.</p>"
+    )
+    assert text == "Click Accept Decline to go on."
+
+
+def test_html_block_elements_start_new_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<h1>Install <em>guide</em></h1><ul><li>One</li><li>Two <i>items</i></li></ul>"
+        "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
+    )
+    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a\ncell b"
+
+
+def test_html_legend_and_options_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<fieldset><legend>Size</legend>Pick one</fieldset>"
+        "<select><option>Small</option><option>Large</option></select>",
+    )
+    assert text == "Size\nPick one\nSmall\nLarge"
+
+
+def test_html_keeps_text_after_the_last_block(tmp_path):
+    text = _parse_html(tmp_path, "<p>First</p>Trailing <b>text</b>")
+    assert text == "First\nTrailing text"
+
+
+def test_html_pre_keeps_its_layout(tmp_path):
+    text = _parse_html(tmp_path, "<p>Code:</p><pre>def f():\n    return 1</pre>")
+    assert text == "Code:\ndef f():\n    return 1"
+
+
+def test_html_textarea_keeps_its_layout_and_svg_labels_stay_apart(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<textarea>line one\n    indented</textarea>"
+        '<svg><text x="0">Revenue</text><text x="0" y="20">Cost</text></svg>',
+    )
+    assert text == "line one\n    indented\nRevenue\nCost"
+
+
+def test_html_positioned_svg_tspans_are_separate_labels(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<svg><text><tspan x="0" y="0">Revenue</tspan><tspan x="0" dy="20">Cost</tspan>'
+        "</text><text>Bold<tspan>er</tspan></text></svg>",
+    )
+    assert text == "Revenue\nCost\nBolder"
+
+
+def test_html_skips_script_style_and_template(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<p>Visible</p><script>var x = 1;</script><style>p { color: red }</style>"
+        "<template><p>Inert until cloned</p></template>",
+    )
+    assert text == "Visible"
+
+
+def test_html_keeps_declarative_shadow_root_text(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<my-card><template shadowrootmode="open"><p>Shadow text</p>'
+        "<template><p>inert</p></template></template></my-card><p>After</p>",
+    )
+    assert text == "Shadow text\nAfter"
+
+
+def test_html_template_blocks_do_not_split_visible_text(tmp_path):
+    text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
+    assert text == "Hello world"

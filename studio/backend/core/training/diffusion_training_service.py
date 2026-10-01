@@ -29,6 +29,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import contextlib
 import json
 import math
@@ -605,6 +606,7 @@ class DiffusionTrainingService:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
 
+    @_invalidates_gpu_memory("diffusion training start")
     @owned_job()
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.
@@ -689,6 +691,7 @@ class DiffusionTrainingService:
             self._pump.start()
             return job_id
 
+    @_invalidates_gpu_memory("diffusion training stop")
     @job_control
     def stop(self, save: bool = True) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves
@@ -720,6 +723,30 @@ class DiffusionTrainingService:
             )
             self._state["updated_at"] = time.time()
             return True
+
+    def stop_for_shutdown(self, timeout: float) -> bool:
+        from utils.account_context import run_as
+
+        with self._lock:
+            proc = self._proc
+            pump = self._pump
+            account = self._result_account
+
+        def settled():
+            # The pump writes the run record after the child exits, so wait for it too.
+            return (proc is None or not proc.is_alive()) and (pump is None or not pump.is_alive())
+
+        if settled():
+            return True
+        if proc is not None and proc.is_alive():
+            # The signal path runs as the owner, which job_control refuses for a managed account's run.
+            run_as(account, self.stop, save = True)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if settled():
+                return True
+            time.sleep(0.25)
+        return False
 
     @job_read(
         lambda self: {

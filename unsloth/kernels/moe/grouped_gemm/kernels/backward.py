@@ -105,7 +105,8 @@ def _grouped_gemm_dX_kernel(
         m_end = m_start + m_size
 
         if m_size > 0:
-            n_start = expert_idx * N
+            # int64: expert_idx * N * K passes 2^31 once the weight holds 2^31 elements.
+            n_start = expert_idx.to(tl.int64) * N
             num_m_tiles = tl.cdiv(m_size, BLOCK_SIZE_M)
             num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
             num_tiles_per_expert = num_m_tiles * num_k_tiles
@@ -137,7 +138,8 @@ def _grouped_gemm_dX_kernel(
                         gather_indices_ptr + indices_to_gather,
                         mask = indices_to_gather < TOTAL_TOKENS,
                     )
-                    expert_token_offsets = expert_token_idx[:, None]
+                    expert_token_offsets = expert_token_idx.to(tl.int64)[:, None]
+                    indices_to_gather_64 = indices_to_gather.to(tl.int64)
 
                     row_mask = gather_offsets < m_size
                     row_mask = row_mask[:, None]
@@ -146,18 +148,18 @@ def _grouped_gemm_dX_kernel(
 
                     if PERMUTE_X:
                         # Permuted on load in the forward pass (typically the first grouped GEMM in the MoE MLP), so load contiguous and permute on store.
-                        load_a_idx = indices_to_gather[:, None] * N
+                        load_a_idx = indices_to_gather_64[:, None] * N
                         store_idx = expert_token_offsets * K
                     else:
                         # Permuted on store in the forward pass (typically the second grouped GEMM), so permute on load and store contiguous.
                         load_a_idx = expert_token_offsets * N
-                        store_idx = indices_to_gather[:, None] * K
+                        store_idx = indices_to_gather_64[:, None] * K
                 else:
                     # Offsets relative to the CURRENT expert; m_start then advances to this expert's start token.
                     offs_am = tile_m_idx * BLOCK_SIZE_M + m_block_range
 
                     # [M, N] @ [N, K] -> [M, K], so A strides by N and B by K, plus m_start for A's expert start token and n_start for B's slice of the [E, N, K] weight matrix.
-                    row_offsets_a = m_start + offs_am[:, None]
+                    row_offsets_a = (m_start + offs_am[:, None]).to(tl.int64)
                     load_a_idx = row_offsets_a * N
                     store_idx = row_offsets_a * K
                     row_mask = offs_am[:, None] < m_size
@@ -330,7 +332,7 @@ def _grouped_gemm_dW_kernel(
             m_end = m_start + m_size
 
             # Offset by n_start: the result goes into this expert's slice of the global [E, N, K] weight matrix.
-            n_start = expert_idx * N
+            n_start = expert_idx.to(tl.int64) * N
             store_row_offs = n_start + n_offset + block_range_n
 
             if m_size > 0:
@@ -354,7 +356,7 @@ def _grouped_gemm_dW_kernel(
 
                     if m_block_size > 0:
                         m_global_offset = m_start + tile_m_idx
-                        m_offsets = m_global_offset + block_range_m
+                        m_offsets = (m_global_offset + block_range_m).to(tl.int64)
 
                         if PERMUTE_X or PERMUTE_Y:
                             gather_offsets = tile_m_idx + block_range_m
@@ -367,7 +369,7 @@ def _grouped_gemm_dW_kernel(
                                 gather_indices_ptr + indices_to_gather,
                                 mask = indices_to_gather < TOTAL_TOKENS,
                             )
-                            expert_token_offsets = expert_token_idx[:, None]
+                            expert_token_offsets = expert_token_idx.to(tl.int64)[:, None]
 
                             row_load_mask = gather_offsets < m_size
 
@@ -378,7 +380,7 @@ def _grouped_gemm_dW_kernel(
                                 )  # Permute on load: token to expert order, /TOPK for the original count.
                                 dY_row_load_idx = m_offsets[:, None] * N
                             else:
-                                x_row_load_idx = indices_to_gather[:, None] * K
+                                x_row_load_idx = indices_to_gather.to(tl.int64)[:, None] * K
                                 dY_row_load_idx = expert_token_offsets * N
 
                         else:
