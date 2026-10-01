@@ -140,6 +140,28 @@ def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
     assert any(name.endswith(".extracted.txt") for name in _block_files(seed_route))
 
 
+def test_unstructured_docx_upload_extracts_plain_text(monkeypatch, tmp_path):
+    pytest.importorskip("mammoth")
+    docx = pytest.importorskip("docx")
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    document = docx.Document()
+    document.add_heading("Refunds", 1)
+    document.add_paragraph("Within 30 days (see section 4.2) - email support@example.com!")
+    document.add_paragraph("Prices: $5.99 + tax. Use file_name.py")
+    source = tmp_path / "policy.docx"
+    document.save(source)
+
+    result = _run_upload(seed_route, "policy.docx", source.read_bytes())
+
+    assert result.status == "ok"
+    extracted = seed_route.UNSTRUCTURED_UPLOAD_ROOT / "block" / f"{result.file_id}.extracted.txt"
+    assert extracted.read_text(encoding = "utf-8").strip() == (
+        "Refunds\n\n"
+        "Within 30 days (see section 4.2) - email support@example.com!\n\n"
+        "Prices: $5.99 + tax. Use file_name.py"
+    )
+
+
 @pytest.mark.parametrize(
     "exc",
     [

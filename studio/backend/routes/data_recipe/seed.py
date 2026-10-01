@@ -1219,7 +1219,7 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     elif ext == ".docx":
         import mammoth
         with open(str(file_path), "rb") as f:
-            result = mammoth.convert_to_markdown(f)
+            result = mammoth.extract_raw_text(f)
             raw = result.value
     else:
         raise ValueError(f"Unsupported file type: {ext}")
