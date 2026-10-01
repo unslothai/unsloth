@@ -18,6 +18,9 @@ from ._ssl_constants import (
     _truststore_SSLContext_super_class,
 )
 
+# Unsloth patch: only these backends switch OpenSSL verification off during a wrap.
+_HOLDS_POLICY = platform.system() in ("Windows", "Darwin")
+
 if platform.system() == "Windows":
     from ._windows import _configure_context, _verify_peercerts_impl
 elif platform.system() == "Darwin":
@@ -96,7 +99,7 @@ class SSLContext(_truststore_SSLContext_super_class):  # type: ignore[misc]
         self._unverified_depth = 0
         self._unverified_exit: typing.Any = None
         self._policy: tuple[bool, ssl.VerifyMode] | None = None
-        _POLICY_OWNERS[self._ctx] = self
+        _POLICY_OWNERS[self._ctx] = weakref.ref(self)
 
         class TruststoreSSLObject(ssl.SSLObject):
             # This object exists because wrap_bio() doesn't
@@ -162,10 +165,12 @@ class SSLContext(_truststore_SSLContext_super_class):  # type: ignore[misc]
     def _verification_window(self) -> typing.Iterator[None]:
         with self._ctx_lock:
             if self._unverified_depth == 0:
-                self._policy = (self._ctx.check_hostname, self._ctx.verify_mode)
+                policy = (self._ctx.check_hostname, self._ctx.verify_mode)
                 configured = _configure_context(self._ctx)
                 configured.__enter__()
                 self._unverified_exit = configured.__exit__
+                if _HOLDS_POLICY:
+                    self._policy = policy
             self._unverified_depth += 1
         try:
             yield
@@ -175,15 +180,16 @@ class SSLContext(_truststore_SSLContext_super_class):  # type: ignore[misc]
                 if self._unverified_depth == 0:
                     exit_configured, self._unverified_exit = self._unverified_exit, None
                     exit_configured(None, None, None)
-                    check_hostname, verify_mode = self._policy  # type: ignore[misc]
-                    self._policy = None
-                    # Re-apply what callers set while the window was open.
-                    if verify_mode == ssl.CERT_NONE:
-                        self._ctx.check_hostname = check_hostname
-                        _set_ssl_context_verify_mode(self._ctx, verify_mode)
-                    else:
-                        _set_ssl_context_verify_mode(self._ctx, verify_mode)
-                        self._ctx.check_hostname = check_hostname
+                    if self._policy is not None:
+                        # Re-apply what callers set while the window was open.
+                        check_hostname, verify_mode = self._policy
+                        self._policy = None
+                        if verify_mode == ssl.CERT_NONE:
+                            self._ctx.check_hostname = check_hostname
+                            _set_ssl_context_verify_mode(self._ctx, verify_mode)
+                        else:
+                            _set_ssl_context_verify_mode(self._ctx, verify_mode)
+                            self._ctx.check_hostname = check_hostname
 
     def _verification_policy(self) -> tuple[bool, ssl.VerifyMode]:
         with self._ctx_lock:
@@ -259,7 +265,11 @@ class SSLContext(_truststore_SSLContext_super_class):  # type: ignore[misc]
     def check_hostname(self, value: bool) -> None:
         with self._ctx_lock:
             if self._policy is not None:
-                self._policy = (value, self._policy[1])
+                # Same rule as ssl.SSLContext: enabling it upgrades CERT_NONE to CERT_REQUIRED.
+                verify_mode = self._policy[1]
+                if value and verify_mode == ssl.CERT_NONE:
+                    verify_mode = ssl.CERT_REQUIRED
+                self._policy = (bool(value), verify_mode)
             else:
                 self._ctx.check_hostname = value
 
@@ -343,6 +353,11 @@ class SSLContext(_truststore_SSLContext_super_class):  # type: ignore[misc]
     def verify_mode(self, value: ssl.VerifyMode) -> None:
         with self._ctx_lock:
             if self._policy is not None:
+                value = ssl.VerifyMode(value)
+                if value == ssl.CERT_NONE and self._policy[0]:
+                    raise ValueError(
+                        "Cannot set verify_mode to CERT_NONE when check_hostname is enabled."
+                    )
                 self._policy = (self._policy[0], value)
             else:
                 _original_super_SSLContext.verify_mode.__set__(  # type: ignore[attr-defined]
@@ -385,7 +400,8 @@ def _verify_peercerts(
 
     cert_bytes = _get_unverified_chain_bytes(sslobj)
     context = sock_or_sslobj.context
-    owner = _POLICY_OWNERS.get(context)
+    owner_ref = _POLICY_OWNERS.get(context)
+    owner = owner_ref() if owner_ref is not None else None
     if owner is not None:
         context = _PolicyView(context, *owner._verification_policy())
     _verify_peercerts_impl(context, cert_bytes, server_hostname=server_hostname)
@@ -393,7 +409,7 @@ def _verify_peercerts(
 
 # Unsloth patch (truststore issue #209): the context a socket reports is the shared one, whose
 # flags may belong to another thread's in-flight wrap. Verify against the owner's policy.
-_POLICY_OWNERS: "weakref.WeakKeyDictionary[ssl.SSLContext, SSLContext]" = (
+_POLICY_OWNERS: "weakref.WeakKeyDictionary[ssl.SSLContext, weakref.ref[SSLContext]]" = (
     weakref.WeakKeyDictionary()
 )
 

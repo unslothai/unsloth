@@ -47,6 +47,7 @@ def truststore(monkeypatch):
             api._original_super_SSLContext.verify_mode.__set__(ctx, verify_mode)
 
     monkeypatch.setattr(api, "_configure_context", flipping)
+    monkeypatch.setattr(api, "_HOLDS_POLICY", True)
     yield module, api
     for key in [k for k in sys.modules if k.startswith(name)]:
         sys.modules.pop(key, None)
@@ -144,6 +145,66 @@ def test_a_policy_set_during_a_wrap_applies_when_it_closes(truststore, monkeypat
 
     ctx, _ = _overlap(module, api, monkeypatch, during_b = relax)
     assert (ctx._ctx.verify_mode, ctx._ctx.check_hostname) == (ssl.CERT_NONE, False)
+
+
+def test_contexts_are_still_freed(truststore):
+    import gc
+    import weakref
+
+    module, api = truststore
+    refs = []
+    for _ in range(20):
+        ctx = module.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        refs.append(weakref.ref(ctx._ctx))
+        del ctx
+    gc.collect()
+    assert not [r for r in refs if r() is not None]
+    assert len(api._POLICY_OWNERS) == 0
+
+
+def test_setters_inside_a_window_follow_the_ssl_module_rules(truststore):
+    module, api = truststore
+    ctx = module.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with ctx._verification_window():
+        ctx.check_hostname = True
+        assert (ctx.check_hostname, ctx.verify_mode) == (True, ssl.CERT_REQUIRED)
+        with pytest.raises(ValueError):
+            ctx.verify_mode = ssl.CERT_NONE
+    assert (ctx._ctx.check_hostname, ctx._ctx.verify_mode) == (True, ssl.CERT_REQUIRED)
+
+
+def test_a_failed_window_holds_no_policy(truststore, monkeypatch):
+    module, api = truststore
+
+    @contextlib.contextmanager
+    def broken(ctx):
+        raise OSError("bad CA file")
+        yield
+
+    monkeypatch.setattr(api, "_configure_context", broken)
+    ctx = module.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    with pytest.raises(OSError):
+        with ctx._verification_window():
+            pass
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    assert (ctx._ctx.check_hostname, ctx._ctx.verify_mode) == (False, ssl.CERT_NONE)
+
+
+def test_backends_that_never_flip_flags_write_settings_through(truststore, monkeypatch):
+    # Linux: OpenSSL enforces the live context, so a setting must reach it immediately.
+    module, api = truststore
+    monkeypatch.setattr(api, "_HOLDS_POLICY", False)
+    monkeypatch.setattr(api, "_configure_context", lambda ctx: contextlib.nullcontext())
+    ctx = module.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with ctx._verification_window():
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.check_hostname = True
+        assert (ctx._ctx.check_hostname, ctx._ctx.verify_mode) == (True, ssl.CERT_REQUIRED)
 
 
 # Self-signed leaf for CN=unsloth-test.invalid; no OS store trusts it.

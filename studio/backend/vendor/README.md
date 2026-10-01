@@ -47,8 +47,9 @@ handshake is in flight and verify against the OS store afterwards. Two overlappi
 context could save and restore each other's temporary `CERT_NONE`, leaving the context unverified,
 and the OS verification read the same shared flags and skipped itself. The patch keeps one window
 per context with a reference count, holds the caller's `check_hostname` / `verify_mode` aside while
-it is open (the public getters and setters use those), and verifies against them. Handshakes still
-run in parallel. `truststore_manifest.json` records the upstream hash under `patches`;
+it is open on macOS and Windows (the public getters and setters use those, with the same rules as
+`ssl.SSLContext`), and verifies against them. On Linux the flags are never flipped, so settings
+still go straight to the context. Handshakes still run in parallel. `truststore_manifest.json` records the upstream hash under `patches`;
 `tests/test_truststore_concurrent_policy.py` pins the behaviour. Drop the patch once a release
 fixes the issue.
 
