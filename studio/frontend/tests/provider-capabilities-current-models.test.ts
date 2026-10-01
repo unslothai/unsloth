@@ -482,12 +482,17 @@ test("the Claude sampling panel offers only what the backend sends Anthropic", (
     "claude-sonnet-5",
     "claude-fable-5",
     "claude-mythos-preview",
+    " Claude-Opus-4.7-20260414 ",
   ]) {
     const caps = getProviderCapabilities("anthropic", undefined, id);
     assert.equal(caps?.temperature, false, id);
     assert.equal(caps?.topP, false, id);
     assert.equal(caps?.topK, false, id);
   }
+  assert.equal(
+    getProviderCapabilities("custom", "chat_completions", "claude-opus-4-7")?.temperature,
+    true,
+  );
 });
 
 // #11557: claiming a sandbox the backend registry lacks sends `code_execution` to a connection that runs nothing.

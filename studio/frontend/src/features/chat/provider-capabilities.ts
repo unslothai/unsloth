@@ -743,7 +743,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
-// Mirrors _anthropic_sampling_params_removed in external_provider.py.
+// Mirrors _anthropic_sampling_params_removed in external_provider.py; a backend test checks they agree.
 const ANTHROPIC_SAMPLING_REMOVED_MODEL =
   /^claude-(?:mythos-preview(?:-|$)|[a-z]+-(?:[5-9]|\d{2,})(?:[-.]|$)|opus-4[-.](?:0?[7-9]|[1-9]\d)(?:[-.]|$))/;
 
