@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """`import unsloth` must not force HF_HUB_ENABLE_HF_TRANSFER=1: huggingface_hub < 1.0 then refuses
 every download when hf_transfer is missing, and Studio's explicit "0" (Xet fallback) was overwritten."""
 

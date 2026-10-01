@@ -162,7 +162,7 @@ runs:
           psutil packaging tqdm safetensors datasets \
           'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
           ipython hf_transfer
-        # hf_transfer: unsloth/zoo set HF_HUB_ENABLE_HF_TRANSFER=1 and install --no-deps; hub 0.x raises without it.
+        # hf_transfer: declared by unsloth and unsloth_zoo, both installed --no-deps; keeps the hub 0.x lane on the user path.
         # transformers + trl from the matrix combo.
         pip install "$RESOLVED_TRANSFORMERS_SPEC"
         pip install "$RESOLVED_TRL_SPEC"
