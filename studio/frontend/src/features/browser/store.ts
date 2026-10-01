@@ -41,11 +41,9 @@ export type FileViewMode = "preview" | "source";
 
 export type FileViewState = {
   mode: FileViewMode;
-  /** The HTML console under the page. */
   consoleOpen: boolean;
   /** Errors the HTML page reported, for the console button's badge. */
   errorCount: number;
-  /** Long lines wrap in the source and text views. */
   wrap: boolean;
 };
 
@@ -62,7 +60,6 @@ export type BrowserTab = {
   /** Address from pushState, shown instead of the loaded URL. */
   displayUrl: string | null;
   loading: boolean;
-  /** Bumped by reload to refetch. */
   reloadKey: number;
   /** What the tab was opened for; opening it again focuses the tab. */
   openKey: string | null;
@@ -456,7 +453,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     updateTab: (tabId, patch) =>
       set((state) => {
         const tab = state.tabs.find((candidate) => candidate.id === tabId);
-        // Skip no-op updates.
         const keys = Object.keys(patch) as (keyof typeof patch)[];
         if (!tab || keys.every((key) => tab[key] === patch[key])) return state;
         return { tabs: patchTab(state.tabs, tabId, (current) => ({ ...current, ...patch })) };

@@ -71,7 +71,6 @@ pub fn new_browser_views() -> BrowserViews {
     tag = "kind"
 )]
 enum BrowserEvent {
-    /// A load started or finished.
     Load {
         tab_id: String,
         url: String,
@@ -93,7 +92,6 @@ enum BrowserEvent {
         /// The page's icon URL; the panel fetches it through the backend.
         icon: Option<String>,
     },
-    /// The page asked for a new window (target=_blank, window.open).
     NewTab {
         tab_id: String,
         url: String,
@@ -390,7 +388,6 @@ fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, Stri
     app.get_webview(&label).ok_or_else(|| "no such tab".into())
 }
 
-/// Ask the page for its history buttons' state.
 fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     let Some(tab_id) = tab_of(webview.label()).map(str::to_string) else {
         return;
@@ -995,7 +992,6 @@ pub async fn browser_view_show<R: Runtime>(
     Ok(())
 }
 
-/// Load an address in a tab's page.
 #[tauri::command]
 pub fn browser_view_navigate<R: Runtime>(
     webview: Webview<R>,
@@ -1009,7 +1005,6 @@ pub fn browser_view_navigate<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
-/// Back, forward, reload or stop.
 #[tauri::command]
 pub fn browser_view_action<R: Runtime>(
     webview: Webview<R>,
@@ -1096,7 +1091,6 @@ pub fn browser_view_close<R: Runtime>(
     Ok(())
 }
 
-/// Clear the pages' own cookies, storage and cache.
 #[tauri::command]
 pub async fn browser_view_clear_data<R: Runtime>(webview: Webview<R>) -> Result<(), String> {
     require_main(&webview)?;
