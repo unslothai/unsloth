@@ -164,6 +164,23 @@ def test_images_returned_by_an_image_call_never_reach_the_model(mapped_server, m
     assert out.endswith("[Images the tool returned were withheld from the model.]")
 
 
+def test_a_mapping_revoked_before_dispatch_blocks_the_send(mapped_server, monkeypatch):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    args = {"image": ATTACHED_IMAGE}
+    approved = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["image"]
+    checks = []
+
+    def fake_call(**kwargs):
+        # The mapping is removed while the call waits for its session, before config_check runs.
+        mcp_servers_db.update_server("srv1", {"image_input_mappings_json": "[]"})
+        checks.append(kwargs["config_check"]())
+        return "sent"
+
+    monkeypatch.setattr(tools_mod, "call_tool_sync", fake_call)
+    tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
+    assert checks == [False]
+
+
 def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {"image": ATTACHED_IMAGE}

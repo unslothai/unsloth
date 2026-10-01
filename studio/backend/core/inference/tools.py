@@ -13957,6 +13957,13 @@ def execute_tool(
                 return "Error: the MCP server changed after the image was approved. Call the tool again."
             arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
 
+        def _image_still_approved(row: dict) -> bool:
+            # Checked again at dispatch: a call can wait behind a stdio session lock after the re-read above.
+            if not carries_image:
+                return True
+            current = image_mapping(row, tool or _mcp_cached_tool(row, tool_name))
+            return bool(current) and _mcp_image_recipient(row, current) == mcp_image.recipient
+
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
             # closed its sessions. use_oauth belongs here with the rest: a row switched to OAuth after we read it must
@@ -13969,6 +13976,7 @@ def execute_tool(
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and _image_still_approved(row)
             )
 
         result = call_tool_sync(
