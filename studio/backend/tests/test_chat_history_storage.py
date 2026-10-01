@@ -728,6 +728,57 @@ def test_list_chat_messages_for_threads_chunks_over_900_ids(tmp_path, monkeypatc
     assert {m["threadId"] for m in out} == {f"t-{i}" for i in range(n)}
 
 
+def test_chat_thread_modified_at_stamps_only_real_edits(tmp_path, monkeypatch):
+    """Rename, move and archive stamp modified_at; a no-op patch or other field does not."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("t"))
+    assert studio_db.get_chat_thread("t")["modifiedAt"] is None
+
+    studio_db.update_chat_thread("t", {"title": "Test Chat"})
+    studio_db.update_chat_thread("t", {"archived": False, "modelId": "other"})
+    assert studio_db.get_chat_thread("t")["modifiedAt"] is None
+
+    renamed = studio_db.update_chat_thread("t", {"title": "Renamed"})
+    assert renamed["modifiedAt"] is not None
+
+    with sqlite3.connect(studio_db_path()) as conn:
+        conn.execute("UPDATE chat_threads SET modified_at = 1 WHERE id = 't'")
+    archived = studio_db.update_chat_thread("t", {"archived": True})
+    assert archived["modifiedAt"] > 1
+
+
+def test_count_chat_messages_for_threads_follows_the_newest_branch(tmp_path, monkeypatch):
+    """Counts user/assistant rows; a branched thread counts only its newest path."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    for tid in ("flat", "branched", "empty"):
+        studio_db.upsert_chat_thread(_thread(tid))
+
+    def msg(tid, mid, parent, role, at):
+        studio_db.upsert_chat_message(
+            {
+                "id": mid,
+                "threadId": tid,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": "x"}],
+                "createdAt": at,
+            }
+        )
+
+    msg("flat", "f1", None, "user", 1)
+    msg("flat", "f2", None, "assistant", 2)
+    msg("flat", "f3", None, "system", 3)
+    # b1 -> b2 (old reply) and b1 -> b3 (regenerated, newest) -> b4
+    msg("branched", "b1", None, "user", 10)
+    msg("branched", "b2", "b1", "assistant", 11)
+    msg("branched", "b3", "b1", "assistant", 12)
+    msg("branched", "b4", "b3", "user", 13)
+
+    counts = studio_db.count_chat_messages_for_threads(["flat", "branched", "empty", "missing"])
+    assert counts == {"flat": 2, "branched": 3, "empty": 0, "missing": 0}
+    assert studio_db.count_chat_messages_for_threads([]) == {}
+
+
 # ---------------------------------------------------------------------------
 # Legacy Dexie import ledger
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tests/studio/playwright_mac_tab_capabilities.py"
 APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
+APP_SIDEBAR = REPO / "studio/frontend/src/components/app-sidebar.tsx"
 
 BASE = "http://127.0.0.1:18893"
 # A settled reply: no hardware_detecting at all.
@@ -71,9 +72,17 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 class FakeLocator:
-    def __init__(self, present: bool) -> None:
+    def __init__(
+        self,
+        present: bool,
+        visible: bool = True,
+    ) -> None:
         self._present = present
+        self._visible = present and visible
         self.clicked = False
+
+    def is_visible(self) -> bool:
+        return self._visible
 
     def count(self) -> int:
         return 1 if self._present else 0
@@ -102,9 +111,13 @@ class FakePage:
         rows: dict,
         *,
         row_missing: bool = False,
+        sections: frozenset = frozenset(),
+        hidden_sections: frozenset = frozenset(),
     ) -> None:
         self.rows = rows
         self.row_missing = row_missing
+        self.sections = sections
+        self.hidden_sections = hidden_sections
         self.url = f"{BASE}/chat"
         self.routed: list[str] = []
         self.unrouted: list[str] = []
@@ -160,6 +173,13 @@ class FakePage:
         self.screenshots.append(str(path))
 
     def locator(self, selector: str):
+        section = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
+        if section:
+            key = section.group(1)
+            return FakeLocator(
+                key in self.sections or key in self.hidden_sections,
+                visible = key not in self.hidden_sections,
+            )
         rid = selector.split("nav-row-")[1].rstrip('"]')
         return FakeLocator(self.rows.get(rid) is not None)
 
@@ -375,6 +395,64 @@ def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, mon
 
     assert mod._failed == []
     assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_the_projects_section_stands_in_for_its_row(tmp_path, monkeypatch):
+    """Since #12016 a fresh install shows the Projects section and the pinned Projects row
+    yields to it. The section proves the sidebar rendered, so its row's absence is not a miss."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, sections = frozenset({"projects"}))
+
+    mod.drive_tabs(page)
+
+    assert mod._failed == []
+    assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_a_missing_row_whose_section_is_also_missing_still_fails(tmp_path, monkeypatch):
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows)
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_a_mounted_but_hidden_section_does_not_stand_in(tmp_path, monkeypatch):
+    """The icon rail keeps the Projects section mounted and hides it in CSS, and that is when the
+    Projects row must come back. A hidden section proves nothing about the row."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, hidden_sections = frozenset({"projects"}))
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_every_stand_in_names_a_pinned_row_and_a_section_the_sidebar_renders():
+    """A stand-in selector the sidebar never renders would let a missing row pass as absent by design."""
+    stand_ins = _module_constant("ROW_STAND_INS")
+    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    assert "data-sidebar-section={key}" in sidebar, "sections no longer carry data-sidebar-section"
+    assert "projectsSectionShowing" in sidebar, "the Projects row no longer yields to its section"
+    for row_id, selector in stand_ins.items():
+        assert row_id in _module_constant("INLINE_ROW_IDS"), row_id
+        key = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
+        assert key, selector
+        assert re.search(
+            rf'_SECTION_KEY = "{key.group(1)}"',
+            REPO.joinpath(
+                "studio/frontend/src/features/chat/stores/sidebar-organization-store.ts"
+            ).read_text(encoding = "utf-8"),
+        ), f"no sidebar section is keyed {key.group(1)!r}"
 
 
 # --------------------------------------------------------------------------------

@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import structlog
 from loggers import get_logger
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from hub.utils.hf_tokens import HfTokenArg
 from storage.studio_db import get_connection
 from utils.training_runs import (
@@ -143,6 +144,90 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     return None
 
 
+def parse_adapter_features(
+    adapter_path: str, probe_weights: bool = True
+) -> Optional[Dict[str, Optional[bool]]]:
+    """Adapter feature flags (PEFT or MLX config) for the export UI; None without a config.
+
+    ``full_state`` is tri-state: no config marker proves absence (PEFT saves embedding state only
+    as weight keys), so a negative needs the weight-header probe and stays None without it.
+    """
+    cfg_path = os.path.join(adapter_path, "adapter_config.json")
+    try:
+        with open(cfg_path, "r", encoding = "utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+
+    def _flag(value):
+        return isinstance(value, bool) and value
+
+    def _filled(value):
+        return isinstance(value, (dict, list)) and len(value) > 0
+
+    full_state: Optional[bool] = _filled(cfg.get("full_state_modules")) or _filled(
+        cfg.get("modules_to_save")
+    )
+    if not full_state:
+        full_state = None
+        if probe_weights:
+            for weights, is_adapter_key in (
+                (
+                    os.path.join(adapter_path, "adapter_model.safetensors"),
+                    lambda key: ".lora_" in key,
+                ),
+                (
+                    os.path.join(adapter_path, "adapters.safetensors"),
+                    lambda key: key.endswith((".lora_a", ".lora_b", ".m")),
+                ),
+            ):
+                if not os.path.exists(weights):
+                    continue
+                try:
+                    from safetensors import safe_open
+                    with safe_open(weights, framework = "numpy") as f:
+                        full_state = any(not is_adapter_key(key) for key in f.keys())
+                except Exception:
+                    full_state = None
+                break
+    return {
+        "dora": _flag(cfg.get("use_dora")) or str(cfg.get("fine_tune_type", "")).lower() == "dora",
+        "full_state": full_state,
+        "moe_target_parameters": _filled(cfg.get("target_parameters")),
+        "non_uniform": _filled(cfg.get("rank_pattern"))
+        or _filled(cfg.get("alpha_pattern"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_ranks"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_scales")),
+    }
+
+
+# Both probe every outputs folder, so an unreadable one is skipped, not fatal to the scan.
+def _has_own_model(path: Path) -> bool:
+    try:
+        return own_entry(path / "config.json") or own_entry(path / "adapter_config.json")
+    except OSError:
+        return False
+
+
+def _checkpoint_dirs(run_dir: Path) -> List[Path]:
+    try:
+        return sorted(
+            (
+                sub
+                for sub in run_dir.iterdir()
+                if sub.is_dir()
+                and sub.name.startswith("checkpoint-")
+                and within_account(sub)
+                and _has_own_model(sub)
+            ),
+            key = _checkpoint_sort_key,
+        )
+    except OSError:
+        return []
+
+
 def scan_checkpoints(
     outputs_dir: str | None = None,
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
@@ -151,8 +236,8 @@ def scan_checkpoints(
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
         metadata keys (optional): base_model, peft_type, lora_rank.
-        First checkpoint entry is the main adapter; its loss mirrors the latest
-        (highest-step) intermediate checkpoint. Numbered checkpoints are sorted
+        First entry is the main adapter (loss mirrors the highest-step checkpoint)
+        only when the run has a final save. Numbered checkpoints are sorted
         by numeric step descending; non-numbered checkpoint-* dirs keep the
         previous lexicographic directory order.
     """
@@ -172,11 +257,15 @@ def scan_checkpoints(
             if not within_account(item):
                 continue
 
-            config_file = item / "config.json"
-            adapter_config = item / "adapter_config.json"
-
-            if not (own_entry(config_file) or own_entry(adapter_config)):
+            has_root_model = _has_own_model(item)
+            valid_checkpoints = _checkpoint_dirs(item)
+            # A cancelled or crashed run has no final save but can still have checkpoints.
+            if not has_root_model and not valid_checkpoints:
                 continue
+
+            meta_dir = item if has_root_model else valid_checkpoints[0]
+            config_file = meta_dir / "config.json"
+            adapter_config = meta_dir / "adapter_config.json"
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
@@ -186,6 +275,9 @@ def scan_checkpoints(
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
+                    metadata["adapter_features"] = parse_adapter_features(
+                        str(meta_dir), probe_weights = False
+                    )
                 elif own_entry(config_file):
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
@@ -218,39 +310,12 @@ def scan_checkpoints(
                     else:
                         metadata["base_model"] = name_part
 
-            # Valid training run.
-            checkpoints = []
-
-            # Main adapter placeholder — loss filled from the last checkpoint below.
-            checkpoints.append((item.name, str(item), None))
-
-            # Scan for intermediate checkpoints (checkpoint-N subdirs).
-            valid_checkpoints = []
-            for sub in item.iterdir():
-                if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
-                    continue
-                if not within_account(sub):
-                    continue
-                sub_config = sub / "config.json"
-                sub_adapter = sub / "adapter_config.json"
-                if own_entry(sub_config) or own_entry(sub_adapter):
-                    valid_checkpoints.append(sub)
-
-            intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
-                loss = _read_checkpoint_loss(sub)
-                intermediate_checkpoints.append((sub.name, str(sub), loss))
-
-            checkpoints.extend(intermediate_checkpoints)
-
-            # Assign the latest checkpoint's loss to the main adapter entry.
-            if intermediate_checkpoints:
-                last_checkpoint_loss = intermediate_checkpoints[0][2]
-                checkpoints[0] = (
-                    checkpoints[0][0],
-                    checkpoints[0][1],
-                    last_checkpoint_loss,
-                )
+            checkpoints = [
+                (sub.name, str(sub), _read_checkpoint_loss(sub)) for sub in valid_checkpoints
+            ]
+            if has_root_model:
+                latest_loss = checkpoints[0][2] if checkpoints else None
+                checkpoints.insert(0, (item.name, str(item), latest_loss))
 
             models.append((item.name, checkpoints, metadata))
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
