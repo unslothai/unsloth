@@ -32813,15 +32813,19 @@ class LlamaCppBackend:
             fh.write(f"[studio] attempt end reason={reason} exit_code={exit_code}\n")
         except Exception:
             pass
-        logger.info(
-            f"attempt log closed reason={reason} exit_code={exit_code} "
-            f"path={getattr(self, '_llama_log_path', None)}"
-        )
         try:
             fh.close()
         except Exception:
             pass
         self._llama_log_fh = None
+        try:
+            logger.info(
+                f"attempt log closed reason={reason} exit_code={exit_code} "
+                f"path={getattr(self, '_llama_log_path', None)}"
+            )
+        except Exception:
+            # The logger raises once stdout is closed; teardown must not.
+            pass
 
     def _begin_server_lifecycle(self) -> None:
         """Clear shutdown state so a restarted server can launch again.
@@ -32913,6 +32917,7 @@ class LlamaCppBackend:
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
         _descendants, _descendants_known = self._collect_descendants(_pid)
+        _exited_first = getattr(self._process, "poll", lambda: None)() is not None
         if teardown:
             # Before the signal, and as the process itself: the reference stays set
             # across the waits below, and only identity says which child a teardown
@@ -33036,7 +33041,9 @@ class LlamaCppBackend:
             if stdout_thread is not None:
                 stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-            self._close_attempt_log(reason = "killed", exit_code = _exit_code)
+            self._close_attempt_log(
+                reason = "exited" if _exited_first else "killed", exit_code = _exit_code
+            )
 
     @staticmethod
     def _server_pidfile_path() -> Optional[Path]:
