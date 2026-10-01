@@ -16,6 +16,12 @@ def cell_text(value):
     """
     if value is None:
         return ""
+    if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
+        # SQuAD-style `answers` span: train the first answer, as _extract_column_value does.
+        answer = value["text"]
+        if isinstance(answer, list):
+            answer = answer[0] if answer else None
+        return cell_text(answer)
     if isinstance(value, str):
         return value
     if isinstance(value, float) and value != value:

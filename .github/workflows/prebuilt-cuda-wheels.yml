@@ -766,9 +766,9 @@ jobs:
         run: |
           set -euo pipefail
           # A draft release has no tag yet, so it is found by listing, not by tag lookup.
-          # shellcheck disable=SC2016  # $tag is a jq variable, not a shell one
+          # gh's --jq takes no --arg; env.TAG reads the step env instead.
           existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
-            --jq --arg tag "$TAG" '.[] | select(.tagName == $tag) | .tagName')"
+            --jq '.[] | select(.tagName == env.TAG) | .tagName')"
           if [ -z "$existing" ]; then
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
@@ -794,9 +794,8 @@ jobs:
         run: |
           set -euo pipefail
           # Listed rather than looked up by tag: a draft release has no tag object yet.
-          # shellcheck disable=SC2016  # $tag is a jq variable, not a shell one
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq --arg tag "$TAG" '.[] | select(.tag_name == $tag) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "sha256:unknown" | sub("^sha256:"; ""))  \(.name)"' \
+            --jq '.[] | select(.tag_name == env.TAG) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "sha256:unknown" | sub("^sha256:"; ""))  \(.name)"' \
             > published.txt
           sort -k2 -o published.txt published.txt
           cat published.txt

@@ -24,6 +24,9 @@ export interface LibraryItem {
   fileUrl: string;
   threadId: string | null;
   threadTitle: string | null;
+  pairId?: string | null;
+  projectId?: string | null;
+  runId?: string | null;
   textOnly: boolean;
   favorite: boolean;
   folderId: string | null;
