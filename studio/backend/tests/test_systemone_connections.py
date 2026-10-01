@@ -177,7 +177,10 @@ def test_a_remote_decision_api_cannot_switch_to_a_local_model_without_torch(stud
     client = _client()
     studio[systemone_settings.ENABLED_KEY] = False
     name = _connection()
-    assert client.put("/api/settings/systemone", json = {"enabled": True, "model": name}).status_code == 200
+    assert (
+        client.put("/api/settings/systemone", json = {"enabled": True, "model": name}).status_code
+        == 200
+    )
     for route in ("validate", ""):
         refused = client.request(
             "POST" if route else "PUT",
