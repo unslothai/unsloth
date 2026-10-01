@@ -250,6 +250,36 @@ def h3_host_ram_shortfall(
     return None
 
 
+# Picker fit tiers for the Diffusers row (MiniMaxAI/MiniMax-H3), published on /api/system so the catalog's static
+# offloadFitTiers can only be WIDENED by the backend that actually runs the load. Units are the picker's: total VRAM of
+# the load device in GiB (nvidia-smi MiB / 1024) and AVAILABLE system RAM in GiB (psutil available / 1024**3), not the
+# decimal GB the estimators above use. Every tier streams the int8 denoiser, so each needs the quantised-streaming
+# capability the picker already reads.
+#
+# PLACEHOLDER values, to be replaced from the measured host / VRAM peaks:
+#   - 30 GiB / 60 GiB: streamed int8 denoiser with the rotating int8 conditioner, once the streamed denoiser no
+#     longer keeps a second (pinned) host copy. Base needs ~85 GB available (estimate_h3_diffusers_host_ram_gb with
+#     transformer_streamed), which the catalog's 30 / 80 tier encodes.
+#   - 11 GiB / 60 GiB: streamed int8 denoiser AND streamed int8 conditioner (12 GB cards).
+H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
+H3_DIFFUSERS_EXTRA_FIT_TIERS: tuple[dict, ...] = (
+    {"gpu_gb": 30.0, "system_ram_gb": 60.0, "requires_quantised_streaming": True},  # PLACEHOLDER
+    {"gpu_gb": 11.0, "system_ram_gb": 60.0, "requires_quantised_streaming": True},  # PLACEHOLDER
+)
+
+
+def h3_diffusers_fit_tiers() -> list[dict]:
+    """The extra picker tiers this backend admits for the H3 Diffusers row, or [] when
+    ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0`` turns them off (the picker then keeps the catalog's own
+    tiers, i.e. today's routing). Torch-free: read on the polled /api/system route."""
+    import os
+
+    flag = os.environ.get(H3_DIFFUSERS_FIT_TIERS_ENV, "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return []
+    return [dict(tier) for tier in H3_DIFFUSERS_EXTRA_FIT_TIERS]
+
+
 # torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
 # autocast's float32 promote list and bare parameters are read directly, so both must keep their source precision.
 _AUTOCAST_WEIGHT_MODULE_NAMES = ("Linear", "Conv1d", "Conv2d", "Conv3d")
