@@ -8260,8 +8260,8 @@ def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(fake_run
     assert calls[0]["model_dense_mib"] == int(
         (transformer_gb + text_encoder_gb * scale + vae_gb) * _MIB_PER_GB
     )
-    # The pipeline kind budgets one total, so companion_dense_mib stays None as before.
-    assert calls[0]["companion_dense_mib"] is None
+    assert calls[0]["companion_dense_mib"] == int((text_encoder_gb * scale + vae_gb) * _MIB_PER_GB)
+    assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * scale * _MIB_PER_GB)
 
 
 def test_plan_returns_to_bf16_when_the_pre_cast_encoder_does_not_inject(fake_runtime, monkeypatch):
@@ -11302,10 +11302,21 @@ def test_a_resident_video_int8_on_nvidia_keeps_torchao(fake_runtime, monkeypatch
     backend.unload()
 
 
-def test_video_auto_under_offload_on_nvidia_is_still_skipped(fake_runtime, monkeypatch):
+def test_video_auto_under_offload_on_nvidia_takes_the_torchao_free_int8(fake_runtime, monkeypatch):
     calls = _stub_nvidia_video_offload(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert [(call["mode"], call["offload"]) for call in calls] == [("int8", True)]
+    assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
+def test_video_auto_under_offload_on_nvidia_keeps_bf16_under_speed_off(fake_runtime, monkeypatch):
+    calls = _stub_nvidia_video_offload(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
     assert calls == []
     assert status["transformer_quant"] is None
     backend.unload()

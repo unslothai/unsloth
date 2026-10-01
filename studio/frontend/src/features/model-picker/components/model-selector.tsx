@@ -144,6 +144,9 @@ interface ModelSelectorProps {
   placeholder?: string;
 }
 
+// Space before the description or suffix, drawn inside its box so it truncates away with the text.
+const GAP_BEFORE = "before:inline-block before:w-2 before:content-['']";
+
 function ModelSelectorTrigger({
   currentModel,
   isLoaded,
@@ -229,8 +232,8 @@ function ModelSelectorTrigger({
         ) : null}
         {/* No vertical offset, so the caps line up with the project switcher. */}
         <span className="flex min-w-0 flex-1 items-baseline">
-          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
-              group, so even an over-long name leaves room for it. */}
+          {/* The name gives way last: the suffix (format and quant), then the description, shrink
+              away first. Their far larger shrink factor makes that order effectively strict. */}
           <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
@@ -250,8 +253,8 @@ function ModelSelectorTrigger({
             {currentModel?.description && (
               <span
                 className={cn(
-                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
-                  showCloudIndicator ? "" : "ml-2",
+                  "min-w-0 shrink-[1000] truncate text-xs leading-tight text-muted-foreground",
+                  !showCloudIndicator && GAP_BEFORE,
                 )}
               >
                 {currentModel.description}
@@ -261,8 +264,8 @@ function ModelSelectorTrigger({
           {currentModel?.descriptionSuffix && (
             <span
               className={cn(
-                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
-                !currentModel.description && !showCloudIndicator && "ml-2",
+                "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-none text-muted-foreground",
+                !currentModel.description && !showCloudIndicator && GAP_BEFORE,
               )}
             >
               {currentModel.description ? " - " : ""}
