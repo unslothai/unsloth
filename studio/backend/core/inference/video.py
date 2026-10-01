@@ -2287,6 +2287,45 @@ def _video_family_capabilities() -> tuple[tuple[str, ...], tuple[str, ...]]:
     )
 
 
+def _return_direct_loaded_modules(
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> None:
+    """Move what the LTX-2.3 direct load put on the card back to the host where ``plan`` no longer keeps it there.
+
+    The direct read is taken only for a plan that keeps the DiT resident (and the text encoder too when nothing
+    streams); a plan refined after the load (a component that outgrew the card) offloads from the host instead."""
+    try:
+        import torch
+        if not plan_keeps_transformer_resident(plan):
+            moved = ["pipeline"]
+            pipe.to("cpu")
+        elif getattr(plan, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and bool(
+            getattr(plan, "stream_text_encoders", False)
+        ):
+            moved = []
+            for name, comp in getattr(pipe, "components", {}).items():
+                if not name.startswith("text_encoder") or not isinstance(comp, torch.nn.Module):
+                    continue
+                if any(p.device.type != "cpu" for p in comp.parameters()):
+                    comp.to("cpu")
+                    moved.append(name)
+        else:
+            return
+        if moved and logger is not None:
+            logger.info(
+                "video.ltx23_direct_load: plan %s offloads %s; moved back to the host",
+                _video_plan_label(plan),
+                ", ".join(moved),
+            )
+    except Exception as exc:  # noqa: BLE001 - placement below still applies the plan
+        if logger is not None:
+            logger.warning(
+                "video.ltx23_direct_load: could not return modules to the host (%s)", exc
+            )
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -5644,6 +5683,8 @@ class VideoBackend:
             _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
         )
         denoiser_injected: dict[str, Any] = {}
+        # Set when the LTX-2.3 assembly read its weights straight onto the card (video_ltx2.direct_load_device).
+        ltx23_direct_loaded = False
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_pipe_kwargs
 
@@ -5719,7 +5760,7 @@ class VideoBackend:
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
-            from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
+            from .video_ltx2 import direct_load_device, is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
                 # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
@@ -5773,6 +5814,22 @@ class VideoBackend:
                     raise_on_unified_memory_shortfall(
                         plan, family = getattr(fam, "name", None), logger = logger
                     )
+                # A plan that keeps the DiT resident reads the checkpoint straight onto the card (placement then has
+                # nothing left to copy), and the Gemma3 encoder too when nothing streams. Judged on the bf16 plan as
+                # well: a single-file load never engages the runtime quant, so a quant-sized plan falls back to it.
+                ltx23_device = None
+                ltx23_te_device = None
+                if kind != "gguf" and all(
+                    plan_keeps_transformer_resident(p) for p in (plan, bf16_plan) if p is not None
+                ):
+                    ltx23_device = direct_load_device(target.torch_device)
+                    if all(
+                        getattr(p, "offload_policy", None) == OFFLOAD_NONE
+                        for p in (plan, bf16_plan)
+                        if p is not None
+                    ):
+                        ltx23_te_device = ltx23_device
+                ltx23_direct_loaded = ltx23_device is not None
                 # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(
@@ -5789,6 +5846,8 @@ class VideoBackend:
                     # _base_local_dir is None for 2.3 by design -- so every component below resolves the hub id.
                     local_files_only = local_files_only,
                     transformer_override = ltx23_override,
+                    device = ltx23_device,
+                    text_encoder_device = ltx23_te_device,
                 )
             else:
                 transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
@@ -6231,6 +6290,9 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError(shortfall)
+            if ltx23_direct_loaded:
+                # Read onto the card for a resident plan; a plan refined since then gets the host copy it expects.
+                _return_direct_loaded_modules(pipe, plan, logger)
             # the streamed modules pin after the load returns, overlapping the first encode and compile
             request_background_pins(pipe)
             offload_policy, vae_tiling = apply_memory_plan(
