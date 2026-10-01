@@ -457,3 +457,105 @@ def test_an_allowance_does_not_survive_a_change_around_the_call(tmp_path, monkey
     # Remove the guard. The call itself is untouched, so only the function differs.
     sample.write_text(weakened, encoding = "utf-8")
     assert L.main(["--paths", str(sample)]) == 1
+
+
+def test_a_relative_import_resolves_to_the_containing_package(tmp_path):
+    """`from .parser import parse` in `pkg.use` is `pkg.parser`, not `pkg.use.parser`.
+
+    Getting this wrong meant the module index could not find the sibling helper, so
+    taint returned by it never reached a sink in the caller: a whole class of
+    first-party call edges was missing.
+    """
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    (package / "parser.py").write_text(
+        "import json\n"
+        "def parse(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    (package / "use.py").write_text(
+        "import importlib\n"
+        "from .parser import parse\n"
+        "def load(path):\n"
+        "    return importlib.import_module('a.' + parse(path))\n",
+        encoding = "utf-8",
+    )
+
+    findings = L.scan([package], roots = [tmp_path])
+
+    assert "importlib.import_module" in {f["sink"] for f in findings if f["tier"] == "A"}
+
+
+def test_trust_remote_code_set_through_a_kwargs_subscript_is_reported(tmp_path):
+    """`kwargs["trust_remote_code"] = True` then `from_pretrained(**kwargs)`.
+
+    The keyword never appears at the call and the call checker cannot look inside an
+    expanded dict, so this spelling was reported nowhere at all.
+    """
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    kwargs = {}\n"
+        "    kwargs['trust_remote_code'] = True\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n",
+    )
+    assert "trust_remote_code = True (dict item)" in _sinks(findings)
+
+
+def test_a_long_assignment_chain_still_converges(tmp_path):
+    """The old bound of eight silently stopped while taint was still propagating."""
+    chain = "".join(f"    x{i} = x{i + 1}\n" for i in range(12))
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(path):\n"
+        "    importlib.import_module('a.' + x0)\n"
+        + chain
+        + "    x12 = json.loads(open(path + '/config.json').read())['model_type']\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_unconverged_body_fails_the_gate(tmp_path, monkeypatch):
+    """A partial answer must not be reported as a clean one.
+
+    The bound is a safety valve. If it expires while taint is still growing, the result
+    for that body is incomplete, and saying nothing would be the one failure mode this
+    script exists to avoid.
+    """
+    monkeypatch.setattr(L, "_LOCAL_BOUND", 2)
+    chain = "".join(f"    x{i} = x{i + 1}\n" for i in range(8))
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(path):\n"
+        "    importlib.import_module('a.' + x0)\n"
+        + chain
+        + "    x8 = json.loads(open(path + '/config.json').read())['model_type']\n",
+    )
+    assert "analysis did not converge" in _sinks(findings)
+
+
+def test_settled_local_taint_reaches_a_callee(tmp_path):
+    """Taint discovered while settling a body has to reach the functions it calls.
+
+    Settling only at reporting time meant the pending tainted parameter for `execute`
+    was written after the interprocedural fixpoint had finished, so nothing ever looked
+    inside `execute` again and the sink there was missed entirely.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command):\n"
+        "    subprocess.run(command)\n"
+        "def load(paths):\n"
+        "    command = ['echo']\n"
+        "    for path in paths:\n"
+        "        execute(command)\n"
+        "        command = json.loads(open(path + '/config.json').read())['cmd']\n",
+    )
+    assert "subprocess.run" in _sinks(findings)

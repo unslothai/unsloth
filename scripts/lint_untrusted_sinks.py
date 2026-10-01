@@ -405,6 +405,7 @@ class _FileFacts:
         self.tree = tree
         self.index = index
         self.module = index.files.get(path, "")
+        self.is_package = path.name == "__init__.py"
         # local alias -> dotted target, for both `import x.y as z` and `from x import y`
         self.imports: dict[str, str] = {}
         # qualname -> FunctionDef
@@ -448,13 +449,22 @@ class _FileFacts:
         walk(self.tree)
 
     def _absolute(self, node: ast.ImportFrom) -> str:
-        """`from . import x` only means anything relative to this file's own package."""
+        """Resolve a relative import against this file's containing package.
+
+        One dot means the package the module lives in, so for `pkg.use` it is `pkg` and
+        `from .parser import parse` is `pkg.parser.parse`. Keeping the current module in
+        the base made it `pkg.use.parser.parse`, which the module index cannot resolve,
+        so taint returned by a sibling helper never reached a sink in the caller. For an
+        `__init__.py` the module name already IS the package, so nothing is dropped.
+        """
         if not node.level:
             return node.module or ""
         segments = self.module.split(".") if self.module else []
-        # One dot is this module's package, so drop the module itself first.
-        drop = node.level
-        base = segments[: len(segments) - drop + 1] if len(segments) >= drop else []
+        package = segments if self.is_package else segments[:-1]
+        extra = node.level - 1
+        if extra > len(package):
+            return ""
+        base = package[: len(package) - extra]
         if node.module:
             base = base + node.module.split(".")
         return ".".join(base)
@@ -954,14 +964,20 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                 ):
                     record(node, "<dict>", "dict", _short(node))
         elif isinstance(node, ast.Assign):
+            if not (isinstance(node.value, ast.Constant) and node.value.value is True):
+                continue
             for target in node.targets:
-                if (
-                    isinstance(target, ast.Name)
-                    and target.id == "trust_remote_code"
-                    and isinstance(node.value, ast.Constant)
-                    and node.value.value is True
-                ):
+                if isinstance(target, ast.Name) and target.id == "trust_remote_code":
                     record(node, "<assign>", "assignment", _short(node))
+                # `kwargs["trust_remote_code"] = True` then `from_pretrained(**kwargs)`.
+                # The keyword never appears at the call, and the call checker cannot see
+                # inside an expanded dict, so this spelling was reported nowhere at all.
+                elif (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "trust_remote_code"
+                ):
+                    record(node, "<item>", "dict item", _short(node))
     return findings
 
 
@@ -1016,28 +1032,34 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, bool]) -> list[
     return findings
 
 
-def _collect(facts: _FileFacts, qualname: str, body, state: "_State") -> list[dict]:
-    """Findings for one body, after its own local taint has settled.
+_LOCAL_BOUND = 64
+
+
+def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
+    """Walk one body until its local taint stops growing. Returns (visitor, converged).
 
     One ordered traversal is not enough even for a flow-insensitive result, because
     `local_reasons` is built as the walk proceeds: a sink visited before a later tainted
     assignment to the same name would never be reconsidered. A loop that consumes `name`
     and then rebinds it from `json.loads` for the next iteration is a real executable
-    flow, and it was being missed. So the body is walked until its local taint stops
-    growing, and only the last walk's findings are kept.
+    flow.
+
+    The bound is a safety valve, not a cutoff to rely on: a chain of assignments longer
+    than the bound would still be growing when it expires. Whether it converged is
+    returned rather than swallowed, so the caller can fail the run instead of reporting
+    a partial answer as a clean one.
     """
-    nodes = list(body)
     reasons: dict[str, str] = {}
     visitor = None
-    for _ in range(8):
+    for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
         visitor.local_reasons.update(reasons)
         for child in nodes:
             visitor.visit(child)
         if visitor.local_reasons == reasons:
-            break
+            return visitor, True
         reasons = dict(visitor.local_reasons)
-    return visitor.findings if visitor is not None else []
+    return visitor, False
 
 
 def _python_files(targets: list[Path]) -> list[Path]:
@@ -1100,6 +1122,11 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             if seeded:
                 state.named_params[key] = seeded
 
+    # Bodies whose local taint was still growing when the safety bound expired. Reported
+    # rather than swallowed: a partial answer presented as a clean one is the failure
+    # mode this whole script exists to avoid.
+    unconverged: set[str] = set()
+
     # Fixpoint. Bounded: taint only ever grows, and the bound keeps a pathological tree
     # from running the lint job forever.
     for _ in range(12):
@@ -1112,10 +1139,17 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             # that helper's return summary exists, which the fixpoint produces.
             _module_level_taint(facts, state)
             for qualname, node in sorted(facts.functions.items()):
-                visitor = _TaintPass(facts, qualname, state)
-                for child in ast.iter_child_nodes(node):
-                    visitor.visit(child)
-                if visitor.returns_tainted:
+                # Settle the locals HERE, not only when reporting. The pending tainted
+                # parameters a settled body writes for its callees have to be merged by
+                # this loop and the callee re-analysed, otherwise a loop that calls
+                # execute(command) and then rebinds command from json.loads taints the
+                # parameter too late for anything to look inside execute again.
+                visitor, converged = _settle(
+                    facts, qualname, list(ast.iter_child_nodes(node)), state
+                )
+                if not converged:
+                    unconverged.add(f"{facts.relative}::{qualname}")
+                if visitor is not None and visitor.returns_tainted:
                     key = (path, qualname)
                     known = state.returns_tainted.get(key)
                     if not known or known == NAMED_PARAM_REASON:
@@ -1153,7 +1187,10 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     for path, facts in sorted(facts_by_path.items()):
         reached: dict[str, bool] = {}
         for qualname, node in sorted(facts.functions.items()):
-            found = _collect(facts, qualname, ast.iter_child_nodes(node), state)
+            visitor, converged = _settle(facts, qualname, list(ast.iter_child_nodes(node)), state)
+            if not converged:
+                unconverged.add(f"{facts.relative}::{qualname}")
+            found = visitor.findings if visitor is not None else []
             reached[qualname] = any(
                 f["sink"] in _IMPORT_SINKS and f["why"] in _DOWNLOADS for f in found
             )
@@ -1163,9 +1200,31 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             for child in ast.iter_child_nodes(facts.tree)
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         ]
-        findings.extend(_collect(facts, "<module>", body, state))
+        module_visitor, module_converged = _settle(facts, "<module>", body, state)
+        if not module_converged:
+            unconverged.add(f"{facts.relative}::<module>")
+        if module_visitor is not None:
+            findings.extend(module_visitor.findings)
         findings.extend(_remote_code_defaults(facts))
         findings.extend(_unpinned_code_fetches(facts, reached))
+
+    if unconverged:
+        for where in sorted(unconverged):
+            findings.append(
+                {
+                    "path": where.split("::")[0],
+                    "line": 0,
+                    "qualname": where.split("::")[-1],
+                    "sink": "analysis did not converge",
+                    "argument": f"local taint still growing after {_LOCAL_BOUND} passes",
+                    "why": "the result for this body is incomplete",
+                    "artefacts": [],
+                    "tier": "A",
+                    "hash": "unconverged",
+                    "context": "",
+                    "gated": True,
+                }
+            )
 
     deduplicated = {
         (f["path"], f["qualname"], f["sink"], f["hash"], f["line"]): f for f in findings
