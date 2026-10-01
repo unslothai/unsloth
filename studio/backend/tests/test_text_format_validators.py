@@ -61,3 +61,13 @@ def test_split_text_format_local_callable_validators_extracts_json_and_markdown_
 
     assert len(sanitized["columns"]) == 1
     assert [spec.format_kind for spec in specs] == ["json", "markdown"]
+
+
+def test_validate_markdown_text_accepts_unmatched_brackets_and_parens():
+    for text in ("1) first\n2) second", "Status (draft", "Smile :)", "see arr[0 here"):
+        assert _validate_markdown_text(text)["is_valid"] is True, text
+
+
+def test_validate_json_text_rejects_nan_and_accepts_native_values():
+    assert _validate_json_text("NaN")["is_valid"] is False
+    assert _validate_json_text({"a": True})["is_valid"] is True

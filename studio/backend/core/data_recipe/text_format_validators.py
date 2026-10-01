@@ -177,18 +177,7 @@ def _reject_json_constant(constant: str) -> float:
 def _validate_text_format(*, value: Any, format_kind: str) -> dict[str, Any]:
     if format_kind == "json":
         return _validate_json_text(value)
-    if format_kind == "markdown":
-        return _validate_markdown_text(value)
-    return {
-        "is_valid": False,
-        "error_count": 1,
-        "error_message": f"Unsupported format validator: {format_kind}",
-        "severity": None,
-        "code": None,
-        "labels": [],
-        "codeframe": None,
-        "warning_count": 0,
-    }
+    return _validate_markdown_text(value)
 
 
 def _validate_json_text(value: Any) -> dict[str, Any]:
@@ -209,32 +198,14 @@ def _validate_json_text(value: Any) -> dict[str, Any]:
     return _valid_result()
 
 
-def _markdown_segments_outside_fences(value: str) -> list[str]:
-    segments: list[str] = []
-    cursor = 0
-    in_fence = False
-    for match in _MARKDOWN_FENCE_RE.finditer(value):
-        if not in_fence:
-            segments.append(value[cursor : match.start()])
-        in_fence = not in_fence
-        cursor = match.end()
-    if not in_fence:
-        segments.append(value[cursor:])
-    return segments
-
-
+# Markdown accepts unmatched brackets and parentheses as text ("1) item", "Status (draft"),
+# so an unclosed code fence is the only structural break worth rejecting.
 def _validate_markdown_text(value: Any) -> dict[str, Any]:
     stripped = str(value).strip()
     if not stripped:
         return _invalid_result("Markdown value is empty.")
-    fence_count = len(_MARKDOWN_FENCE_RE.findall(stripped))
-    if fence_count % 2 != 0:
+    if len(_MARKDOWN_FENCE_RE.findall(stripped)) % 2 != 0:
         return _invalid_result("Markdown has an unclosed code fence.")
-    for segment in _markdown_segments_outside_fences(stripped):
-        if segment.count("[") != segment.count("]"):
-            return _invalid_result("Markdown has unbalanced link brackets.")
-        if segment.count("(") != segment.count(")"):
-            return _invalid_result("Markdown has unbalanced parentheses.")
     return _valid_result()
 
 
