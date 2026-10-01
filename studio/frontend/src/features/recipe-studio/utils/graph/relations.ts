@@ -43,6 +43,7 @@ export function isSemanticRelation(
   }
   return (
     source.kind === "validator" &&
+    !isTextFormatValidator(source) &&
     target.kind === "llm" &&
     target.llm_type === "code"
   );

@@ -79,36 +79,38 @@ for (const [label, source] of [
   });
 }
 
-test("a JSON check's result can feed a later AI step without retargeting the check", () => {
-  const source = makeLlmConfig("src", "text", []);
-  const validator = {
-    ...makeValidatorConfig("v1", "json", "json", []),
-    // biome-ignore lint/style/useNamingConvention: api schema
-    target_columns: [source.name],
-  };
-  const downstream = makeLlmConfig("down", "text", [source]);
-  const configs = {
-    [source.id]: source,
-    [validator.id]: validator,
-    [downstream.id]: downstream,
-  };
-  const result = applyRecipeConnection(
-    {
-      source: validator.id,
-      target: downstream.id,
-      sourceHandle: HANDLE_IDS.dataOut,
-      targetHandle: HANDLE_IDS.dataIn,
-    },
-    configs,
-    [],
-  );
-  assert.equal(result.edges.length, 1);
-  assert.equal(result.edges[0].source, validator.id);
-  assert.notEqual(result.edges[0].type, "semantic");
-  const next = result.configs?.[validator.id] ?? validator;
-  assert.ok(next.kind === "validator");
-  assert.deepEqual(next.target_columns, [source.name]);
-});
+for (const downstreamType of ["text", "code"] as const) {
+  test(`a JSON check's result can feed a later AI ${downstreamType} step without retargeting the check`, () => {
+    const source = makeLlmConfig("src", "text", []);
+    const validator = {
+      ...makeValidatorConfig("v1", "json", "json", []),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: [source.name],
+    };
+    const downstream = makeLlmConfig("down", downstreamType, [source]);
+    const configs = {
+      [source.id]: source,
+      [validator.id]: validator,
+      [downstream.id]: downstream,
+    };
+    const result = applyRecipeConnection(
+      {
+        source: validator.id,
+        target: downstream.id,
+        sourceHandle: HANDLE_IDS.dataOut,
+        targetHandle: HANDLE_IDS.dataIn,
+      },
+      configs,
+      [],
+    );
+    assert.equal(result.edges.length, 1);
+    assert.equal(result.edges[0].source, validator.id);
+    assert.notEqual(result.edges[0].type, "semantic");
+    const next = result.configs?.[validator.id] ?? validator;
+    assert.ok(next.kind === "validator");
+    assert.deepEqual(next.target_columns, [source.name]);
+  });
+}
 
 const { syncEdgesForConfigPatch } = await import(
   "../src/features/recipe-studio/stores/helpers/edge-sync.ts"
@@ -142,5 +144,8 @@ test("changing a JSON check's field keeps the edge to a step reading its result"
     "LR",
   );
   const pairs = next.map((edge) => `${edge.source}->${edge.target}`).sort();
-  assert.deepEqual(pairs, [`${second.id}->${validator.id}`, `${validator.id}->${downstream.id}`]);
+  assert.deepEqual(pairs, [
+    `${second.id}->${validator.id}`,
+    `${validator.id}->${downstream.id}`,
+  ]);
 });
