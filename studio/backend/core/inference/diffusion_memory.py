@@ -1002,6 +1002,28 @@ def plan_keeps_transformer_resident(plan: Any) -> bool:
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
 
 
+# Kill switch for prequant_seed_device: "0" restores loading a seeded pre-quantized denoiser onto the GPU on every plan.
+PREQUANT_SEED_ON_HOST_ENV = "UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST"
+
+
+def prequant_seed_device(plan: Any, device: str, scheme: Optional[str] = None) -> str:
+    """Where a pre-quantized denoiser seeded into pipeline assembly is materialised.
+
+    ``device`` when ``plan`` keeps the denoiser resident (placement is then a no-op). Otherwise the host: every
+    offload tier starts the denoiser on the CPU and pages it in, so loading it onto the GPU first only adds a
+    whole-denoiser spike before placement. On a card that barely fits that spike (Qwen-Image-2.1 int8, ~7 GiB, on
+    8 GB) the streaming hooks then fail to allocate their first block, and the load dies although the plan fit.
+    Same end state as the runtime-quantise path, which converts on the host under an offload plan. Only the
+    schemes measured under offload (``_TORCHAO_GROUP_OFFLOAD_MIN``: int8, fp8); any other keeps today's placement."""
+    if str(os.environ.get(PREQUANT_SEED_ON_HOST_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return device
+    if plan is None or plan_keeps_transformer_resident(plan):
+        return device
+    if str(scheme) not in _TORCHAO_GROUP_OFFLOAD_MIN:
+        return device
+    return "cpu"
+
+
 # Oldest torchao measured bit-exact under streamed group offload; 0.17 int8 (v1, no copy stream) ran 14x slower.
 _TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
 _TORCHAO_STREAM_SAFE_CLASSES = frozenset(("Int8Tensor", "Float8Tensor"))

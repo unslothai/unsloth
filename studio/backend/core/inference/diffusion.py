@@ -118,6 +118,7 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     plan_keeps_transformer_resident,
+    prequant_seed_device,
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
@@ -6131,6 +6132,11 @@ class DiffusionBackend:
                                         scheme = pipeline_seed_scheme,
                                         dtype = dtype,
                                         device = device,
+                                        # An offloading plan pages the denoiser in from the host: never land it on
+                                        # the GPU whole first (8 GB Qwen-Image-2.1 OOMed in the streaming hooks).
+                                        placement_device = prequant_seed_device(
+                                            plan, device, pipeline_seed_scheme
+                                        ),
                                         hf_token = hf_token,
                                         target = target,
                                         path_override = transformer_prequant_path,
