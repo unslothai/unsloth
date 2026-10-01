@@ -82,10 +82,8 @@ export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 // The GGUF route is deliberately absent. It streams the denoiser off disk, so its footprint does
 // not turn on this, and it keeps 1024.
 //
-// Only a quantised build the user PICKED shrinks the canvas. Auto precision takes the hosted int8
-// checkpoint on every card (48 GB and 80 GB included), so an auto-engaged scheme says nothing about
-// the card, and the load is planned for 1024 either way (offload tiers plus the generate-time
-// activation guard). An auto pick therefore keeps 1024, the canvas the family is tuned for.
+// Only a PICKED quant shrinks it: auto precision takes the hosted int8 on every card, so it says
+// nothing about VRAM.
 const QUANTISED_CANVAS: Array<{
   match: string;
   schemes: readonly string[];
@@ -105,7 +103,7 @@ export function resolutionFor(
   build: {
     modelKind?: string | null;
     transformerQuant?: string | null;
-    // status.resolved.transformer_quant.source; absent on older backends (treated as a pick).
+    // Absent on older backends: treated as a pick.
     transformerQuantSource?: string | null;
   },
 ): { width: number; height: number } {

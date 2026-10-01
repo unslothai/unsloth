@@ -124,7 +124,6 @@ test("failed image and video picks release their recipe hydration claims", () =>
 
 test("an auto-engaged Qwen-Image-2.1 quant keeps the 1024 canvas; a picked quant still shrinks it", () => {
   const repo = "Qwen/Qwen-Image-2.1";
-  // Auto precision takes the hosted int8 checkpoint on every card, so it says nothing about VRAM.
   assert.deepEqual(
     resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8", transformerQuantSource: "auto" }),
     { width: 1024, height: 1024 },
@@ -133,7 +132,6 @@ test("an auto-engaged Qwen-Image-2.1 quant keeps the 1024 canvas; a picked quant
     resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "fp8", transformerQuantSource: "auto" }),
     { width: 1024, height: 1024 },
   );
-  // An explicit pick (or an older backend without provenance) keeps the smaller quantised canvas.
   assert.deepEqual(
     resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8", transformerQuantSource: "explicit" }),
     { width: 512, height: 512 },
@@ -142,7 +140,6 @@ test("an auto-engaged Qwen-Image-2.1 quant keeps the 1024 canvas; a picked quant
     resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8" }),
     { width: 512, height: 512 },
   );
-  // GGUF and dense builds are unchanged.
   assert.deepEqual(
     resolutionFor(repo, { modelKind: "gguf", transformerQuant: "int8", transformerQuantSource: "explicit" }),
     { width: 1024, height: 1024 },
