@@ -3636,7 +3636,12 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
-_setup_frontend_reap_if_exited
+# An installed package runs this script from the tree the core reinstall replaces: npm must be done.
+if [ -f "$REPO_ROOT/pyproject.toml" ]; then
+    _setup_frontend_reap_if_exited
+else
+    _setup_frontend_join
+fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack

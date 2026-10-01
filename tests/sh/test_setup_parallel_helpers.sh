@@ -23,6 +23,8 @@ fi
 
 step() { :; }
 substep() { :; }
+# A zombie answers kill -0; under a PID 1 that never reaps it would read as still running.
+_alive() { kill -0 "$1" 2>/dev/null && [ "$(ps -o stat= -p "$1" 2>/dev/null | cut -c1)" != Z ]; }
 
 _setup_bg_fail() {
     return 1
@@ -171,7 +173,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 _setup_abort_frontend_job
 _orphans=""
-for _p in $_tree_pids; do kill -0 "$_p" 2>/dev/null && _orphans="$_orphans $_p"; done
+for _p in $_tree_pids; do _alive "$_p" && _orphans="$_orphans $_p"; done
 if [ -n "$_tree_pids" ] && [ -z "$_orphans" ]; then
     echo "  PASS: abort kills the job's grandchildren"
     PASS=$((PASS + 1))
@@ -267,7 +269,7 @@ bash -c '
     false
 ' _ "$_EXIT_FILE" "$_EXIT_PIDS" 2>/dev/null && _exit_rc=0 || _exit_rc=$?
 _exit_left=""
-for _p in $(cat "$_EXIT_PIDS"); do kill -0 "$_p" 2>/dev/null && _exit_left="$_exit_left $_p"; done
+for _p in $(cat "$_EXIT_PIDS"); do _alive "$_p" && _exit_left="$_exit_left $_p"; done
 if [ "$_exit_rc" -ne 0 ] && [ "$(wc -w < "$_EXIT_PIDS")" -eq 3 ] && [ -z "$_exit_left" ]; then
     echo "  PASS: set -e exit after launch stops the frontend job"
     PASS=$((PASS + 1))
@@ -277,6 +279,23 @@ else
     for _p in $_exit_left; do kill -KILL "$_p" 2>/dev/null || true; done
 fi
 rm -f "$_EXIT_FILE" "$_EXIT_PIDS"
+
+# An installed package (no pyproject.toml beside studio/) joins npm before the core reinstall.
+if awk '
+    /^if \[ -f "\$REPO_ROOT\/pyproject.toml" \]; then$/ {g=1; next}
+    g == 1 && /_setup_frontend_reap_if_exited/ {g=2; next}
+    g == 2 && /^else$/ {g=3; next}
+    g == 3 && /^    _setup_frontend_join$/ {g=4; next}
+    g == 4 && /^if \[ "\$_SKIP_PYTHON_DEPS" = false \]; then$/ {g=5; next}
+    g == 5 && /^    install_python_stack$/ {found=1; exit}
+    END {exit !found}
+' "$SETUP_SH"; then
+    echo "  PASS: installed-package runs join the frontend job before install_python_stack"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: installed-package runs can overlap npm with the core reinstall"
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
