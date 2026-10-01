@@ -7,9 +7,7 @@ from pathlib import Path
 
 import pytest
 
-# The shape patch_gradient_accumulation_fix rewrites: backward() runs on the undivided loss and
-# the division only reaches the returned value, so the gradients keep the wrong scale. It is what
-# transformers had before huggingface/transformers#35808 reordered the two.
+# Pre huggingface/transformers#35808 shape: backward() on the undivided loss.
 OLD_TRAINING_STEP = """\
 def _unsloth_training_step(self, model, inputs, num_items_in_batch = None):
     loss = self.compute_loss(model, inputs, num_items_in_batch = num_items_in_batch)
@@ -26,11 +24,7 @@ def _unsloth_training_step(self, model, inputs, num_items_in_batch = None):
 
 @pytest.fixture
 def rewrite():
-    """The `re.sub` inside patch_gradient_accumulation_fix, read straight out of _utils.py.
-
-    _utils.py cannot be imported here: it reaches for the accelerator at module scope. The
-    pattern and the replacement are plain string literals, so take those two and run them.
-    """
+    # Read via ast: importing _utils.py needs an accelerator.
     source = Path(__file__).resolve().parents[1] / "unsloth/models/_utils.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     calls = [
@@ -60,9 +54,6 @@ def test_rewrite_moves_the_backward_below_the_division(rewrite):
 
 
 def test_rewrite_keeps_the_source_parseable(rewrite):
-    # "\1" in a plain replacement string is the byte 0x01, not a group reference, so the captured
-    # indentation used to come back as control characters and the exec that follows raised
-    # SyntaxError instead of installing the patched training_step.
     rewritten = rewrite(OLD_TRAINING_STEP)
 
     assert not any(character in rewritten for character in "\x01\x02\x03")
