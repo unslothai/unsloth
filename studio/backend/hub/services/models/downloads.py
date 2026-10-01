@@ -697,8 +697,12 @@ async def get_gguf_download_progress_response(
                 frozenset(getattr(job_metadata, "progress_blob_hashes", ()) or ()),
             )
         if manifest is not None:
+            total = sum(max(0, int(file.size or 0)) for file in manifest.expected_files)
+            if not progress_variant.startswith(_SCOPE_PREFIX):
+                # Offline fallback: an older local revision's manifest must not shrink the caller's estimate.
+                total = max(total, expected_total)
             return (
-                sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
+                total,
                 frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
             )
         if verdict == "refused":

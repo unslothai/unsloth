@@ -204,3 +204,15 @@ def test_full_snapshot_retains_conservative_total(scoped_progress):
     )
     assert result["expected_bytes"] == 670
     assert result["complete_on_disk"] is False
+
+
+def test_offline_variant_manifest_does_not_shrink_hint(scoped_progress):
+    case = scoped_progress
+    case.metadata.scoped_files = ()
+    case.metadata.progress_blob_hashes = frozenset()
+    case.manifest(627, "model-Q6_K.gguf", "old")
+    (case.blobs / "old").write_bytes(b"o" * 627)
+    (case.snapshot / "model-Q6_K.gguf").write_bytes(b"o" * 627)
+    result = case.poll(670, "Q6_K")
+    assert result["expected_bytes"] == 670
+    assert result["complete_on_disk"] is False
