@@ -111,6 +111,7 @@ def test_user_text_in_a_trace_dump_stays_debug(monkeypatch):
             "0.29.142.020 D srv  params_from_: request: model loaded, it failed with an error",
             "and then model loaded",
             "an error on a continuation line",
+            "hello W private prompt",
             warning,
             "the warning's own continuation",
         ]

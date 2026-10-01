@@ -738,7 +738,9 @@ _LOG_VERBOSITY_FLAGS = frozenset(
 )
 # Past this, the active llama-server log keeps only warnings and errors.
 _LLAMA_LOG_FULL_BYTES = 64 * 1024 * 1024
-_LOG_LEVEL_TOKEN_RE = re.compile(r"^\S+ ([A-Z]) ")
+# llama.cpp's own record prefix (optional colour, then the uptime stamp): any other
+# "<word> W " is text inside a multi-line record, often a user prompt.
+_LOG_LEVEL_TOKEN_RE = re.compile(r"^(?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+\.\d+ ([A-Z]) ")
 # The startup head is never trimmed: its load lines are read for the server's whole life.
 _STDOUT_TRIM_AT = 20000
 _STDOUT_TAIL_KEEP = 5000
