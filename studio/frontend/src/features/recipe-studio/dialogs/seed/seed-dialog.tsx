@@ -1324,7 +1324,7 @@ export function SeedDialog({
               <div className="text-xs text-muted-foreground">
                 Loaded columns: {previewColumns.join(", ") || "None"}
               </div>
-              <div className="max-h-[calc(360px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden rounded-xl corner-squircle border border-border/60">
+              <div className="max-h-[calc(360px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden scroll-rounded rounded-xl corner-squircle border border-border/60">
                 <Table className="corner-squircle min-w-max">
                   <TableHeader>
                     <TableRow>

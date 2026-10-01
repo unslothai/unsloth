@@ -1112,8 +1112,11 @@ def load_prequantized_transformer(
     component: Optional[str] = None,
     local_files_only: bool = False,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
@@ -1228,7 +1231,7 @@ def load_prequantized_transformer(
         del state_dict
         del ckpt
 
-        transformer = transformer.to(device)
+        transformer = transformer.to(placement_device or device)
         if declares_rotation(metadata):
             try:
                 import torch
@@ -1237,7 +1240,12 @@ def load_prequantized_transformer(
                 dtype = getattr(
                     torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
                 )
-                warm_rotation_cache(transformer, on.device if on is not None else device, dtype)
+                # a host-placed module still computes on ``device``
+                warm_rotation_cache(
+                    transformer,
+                    on.device if on is not None and placement_device is None else device,
+                    dtype,
+                )
             except Exception:  # noqa: BLE001
                 pass
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
@@ -1275,7 +1283,7 @@ def load_prequantized_transformer(
                 "diffusion.prequant: loaded %s checkpoint (%s) onto %s",
                 scheme,
                 source.kind,
-                device,
+                placement_device or device,
             )
         return transformer
     except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
