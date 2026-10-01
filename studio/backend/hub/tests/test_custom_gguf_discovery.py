@@ -611,6 +611,23 @@ def test_two_symlink_aliases_to_one_model_stay_distinct(tmp_path):
     assert {row.load_id for row in rows} == {str(alias_a), str(alias_b)}
 
 
+@pytest.mark.skipif(os.name != "nt", reason = "directory junctions exist only on Windows")
+def test_two_junction_aliases_to_one_model_stay_distinct(tmp_path):
+    import _winapi
+
+    real_model = tmp_path / "outside" / "model"
+    _write_gguf(real_model / "model-Q4_K_M.gguf")
+    _write_gguf(real_model / "model-Q8_0.gguf")
+    root = tmp_path / "root"
+    root.mkdir()
+    alias_a = root / "alias-a"
+    alias_b = root / "alias-b"
+    _winapi.CreateJunction(str(real_model), str(alias_a))
+    _winapi.CreateJunction(str(real_model), str(alias_b))
+
+    assert {Path(row.path) for row in _custom_rows(root)} == {alias_a, alias_b}
+
+
 def test_two_symlinked_scan_roots_to_one_folder_list_the_model_once(tmp_path):
     real_root = tmp_path / "real"
     _write_gguf(real_root / "model" / "model-Q4_K_M.gguf")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -640,19 +641,24 @@ def _inventory_physical_identity(raw_path: str) -> str:
     return gguf.local_path_physical_identity(raw_path)
 
 
-def _local_model_path_is_symlink(raw_path: str) -> bool:
+# stat defines this only on Windows builds.
+_IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def _is_link_component(path: Path) -> bool:
+    # is_symlink() is False for a Windows junction (mklink /J needs no admin), so read the reparse tag too.
     try:
-        path = Path(raw_path)
-        if path.is_symlink():
-            return True
-        for parent in path.parents:
-            if parent.is_symlink():
-                return True
-            if parent == parent.parent:
-                break
-        return False
+        st = os.lstat(path)
     except OSError:
         return False
+    return stat.S_ISLNK(st.st_mode) or (
+        getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+    )
+
+
+def _local_model_path_is_symlink(raw_path: str) -> bool:
+    path = Path(raw_path)
+    return any(_is_link_component(p) for p in (path, *path.parents))
 
 
 def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelInfo) -> bool:
