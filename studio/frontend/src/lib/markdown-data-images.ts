@@ -65,6 +65,14 @@ const rehypeLiteralUnknownTags: Plugin<[string[]], Root> =
     };
   };
 
+export function withLiteralUnknownTags(): Pluggable[] {
+  const [, schema] = defaultRehypePlugins.sanitize as [Plugin<[SanitizeSchema]>, SanitizeSchema];
+  return [
+    [rehypeLiteralUnknownTags, schema.tagNames ?? []],
+    ...Object.values(defaultRehypePlugins),
+  ];
+}
+
 /** Keep data images, show disallowed tags as text, resolve sandbox paths before URL hardening. */
 export function withDataImageSupport(
   allowedTags: Record<string, string[]>,
