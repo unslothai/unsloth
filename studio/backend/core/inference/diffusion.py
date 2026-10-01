@@ -6812,6 +6812,10 @@ class DiffusionBackend:
                         )
                     plan = refined_plan
 
+                    from .diffusion_qwenimage21_vision import configure_vision_attention
+
+                    configure_vision_attention(pipe, family = fam.name, target = target, logger = logger)
+
                     # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the
                     # text-encoder forward. After the TE quant so the key reflects the encoders that run; ``base``
                     # keys the companion repo.
