@@ -422,13 +422,13 @@ def reusable_document_by_hash(
 ) -> dict | None:
     """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
     copied. Extension must match (parsers branch on it) and so must the embedding identity."""
-    # Iterate, not fetchall: the newest copy usually qualifies, and a folder of N copies would
-    # otherwise materialize every one of them on each of N lookups.
+    # rowid DESC walks idx_documents_hash backwards (no sort over every copy) and stops at the
+    # first eligible row; a live row's rowid only grows with insertion, so this is the newest.
     for row in conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
         "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=documents.scope) "
-        "ORDER BY created_at DESC",
+        "ORDER BY rowid DESC",
         (scope, sha256),
     ):
         doc = dict(row)
