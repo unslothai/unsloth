@@ -37,8 +37,12 @@ def _restore_process_flags():
     active_backend = _AttentionBackendRegistry._active_backend
 
     precision = torch.get_float32_matmul_precision()
-    knobs = ("coordinate_descent_tuning", "coordinate_descent_check_all_directions", "force_fuse_int_mm_with_mul",
-             "fx_graph_cache")
+    knobs = (
+        "coordinate_descent_tuning",
+        "coordinate_descent_check_all_directions",
+        "force_fuse_int_mm_with_mul",
+        "fx_graph_cache",
+    )
     saved = {k: getattr(inductor_config, k) for k in knobs if hasattr(inductor_config, k)}
     yield
     if torch.cuda.is_available():
@@ -71,7 +75,11 @@ def _tiny_model() -> torch.nn.Module:
     return model.eval()
 
 
-def _quantize(model: torch.nn.Module, rotate: bool = True, version: int = 1) -> torch.nn.Module:
+def _quantize(
+    model: torch.nn.Module,
+    rotate: bool = True,
+    version: int = 1,
+) -> torch.nn.Module:
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
     if rotate:
@@ -85,7 +93,9 @@ def _quantize(model: torch.nn.Module, rotate: bool = True, version: int = 1) -> 
         rotate_linears_(model, fqns, GROUP)
 
     def only_blocks(m, fqn):
-        return isinstance(m, torch.nn.Linear) and fqn.startswith(("transformer_blocks.", "token_refiner."))
+        return isinstance(m, torch.nn.Linear) and fqn.startswith(
+            ("transformer_blocks.", "token_refiner.")
+        )
 
     # version 1 = the v1 LinearActivationQuantizedTensor the hosted .pt pickles (resident path on torchao 0.17);
     # version 2 = Int8Tensor (torchao >= 0.18, and what the streamed path rebuilds v1 into).
@@ -93,7 +103,9 @@ def _quantize(model: torch.nn.Module, rotate: bool = True, version: int = 1) -> 
         config = Int8DynamicActivationInt8WeightConfig(version = version)
     except (TypeError, ValueError):
         # torchao < 0.15 has no ``version``; torchao >= 0.18 removed version 1
-        if version != 1 or not hasattr(Int8DynamicActivationInt8WeightConfig, "__dataclass_fields__"):
+        if version != 1 or not hasattr(
+            Int8DynamicActivationInt8WeightConfig, "__dataclass_fields__"
+        ):
             pytest.skip(f"this torchao cannot build int8 weights version {version}")
         try:
             config = Int8DynamicActivationInt8WeightConfig()
@@ -209,7 +221,10 @@ def test_strided_processor_matches_stock_bit_for_bit(quantized, fuse):
     n = A.install_strided_attention(quantized)
     assert n == 3 and A.strided_attention_count(quantized) == 3
     # the backend the dispatcher set survives the swap
-    assert A._backend_value(quantized.transformer_blocks[0].attn.processor._attention_backend) == "_native_math"
+    assert (
+        A._backend_value(quantized.transformer_blocks[0].attn.processor._attention_backend)
+        == "_native_math"
+    )
     assert _equal(_run(stock), _run(quantized))
 
 
@@ -278,7 +293,15 @@ def test_strided_processor_on_cuda_matches_the_stock_backend(backend):
 from core.inference import video_minimax_h3_qknorm as Q  # noqa: E402
 
 
-def _qk_inputs(device = "cpu", dtype = torch.bfloat16, seq = 37, heads = 3, dim = 128, rot = 96, strided = False):
+def _qk_inputs(
+    device = "cpu",
+    dtype = torch.bfloat16,
+    seq = 37,
+    heads = 3,
+    dim = 128,
+    rot = 96,
+    strided = False,
+):
     g = torch.Generator(device = device).manual_seed(3)
     if strided:
         qkv = torch.randn(1, seq, 3 * heads * dim, device = device, dtype = dtype, generator = g)
@@ -301,7 +324,9 @@ def test_qk_norm_rope_reference_is_the_stock_module_chain():
 
 def test_qk_norm_rope_op_off_cuda_is_the_stock_math():
     x, w, cos, sin = _qk_inputs()
-    assert torch.equal(Q.qk_norm_rope(x, w, cos, sin, 1e-5), Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5))
+    assert torch.equal(
+        Q.qk_norm_rope(x, w, cos, sin, 1e-5), Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
+    )
 
 
 def test_strided_processor_with_fused_qk_rope_matches_stock(quantized):
@@ -341,9 +366,9 @@ def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
     for ref in (eager, compiled):
         diff = (ours.float() - ref.float()).abs()
         assert int((ours != ref).sum()) <= max(2, budget)
-        assert float(diff.max()) <= float((ref.float().abs().max() * 2 ** -7))
+        assert float(diff.max()) <= float((ref.float().abs().max() * 2**-7))
     # negative control: a one-ulp-scale perturbation must be caught
-    bad = (ours.float() * (1 + 2 ** -7)).to(dtype)
+    bad = (ours.float() * (1 + 2**-7)).to(dtype)
     assert int((bad != eager).sum()) > ours.numel() // 2
 
 

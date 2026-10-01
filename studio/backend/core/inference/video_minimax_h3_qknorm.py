@@ -96,7 +96,9 @@ def _kernel() -> Any:
         base = s * stride_s + h * stride_h
         mask = row_ok[:, None]
         x = tl.load(x_ptr + base[:, None] + cols[None, :], mask = mask, other = 0.0).to(tl.float32)
-        xpart = tl.load(x_ptr + base[:, None] + partner[None, :], mask = mask, other = 0.0).to(tl.float32)
+        xpart = tl.load(x_ptr + base[:, None] + partner[None, :], mask = mask, other = 0.0).to(
+            tl.float32
+        )
         w = tl.load(w_ptr + cols).to(tl.float32)
         wpart = tl.load(w_ptr + partner).to(tl.float32)
         ms = tl.sum(x * x, axis = 1) / D
@@ -124,7 +126,6 @@ def _kernel() -> Any:
 def _triton_ok(x: Any) -> bool:
     try:
         import torch
-
         if not (x.is_cuda and torch.version.hip is None):
             return False
         import triton  # noqa: F401
@@ -144,7 +145,15 @@ _ROWS = 16
 _WARPS = 4
 
 
-def _launch(x: Any, weight: Any, cos: Any, sin: Any, eps: float, rows_per_program: int = 0, warps: int = 0) -> Any:
+def _launch(
+    x: Any,
+    weight: Any,
+    cos: Any,
+    sin: Any,
+    eps: float,
+    rows_per_program: int = 0,
+    warps: int = 0,
+) -> Any:
     import torch
 
     _, seq, heads, dim = x.shape

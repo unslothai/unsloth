@@ -56,7 +56,6 @@ def _enabled(env: str) -> bool:
 def _capability(device: Any = None) -> Optional[tuple[int, int]]:
     try:
         import torch
-
         if not torch.cuda.is_available() or torch.version.hip is not None:
             return None
         return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
@@ -64,7 +63,9 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
         return None
 
 
-def h3_attention_backend(selected: Optional[str], capability: Optional[tuple[int, int]] = None) -> Optional[str]:
+def h3_attention_backend(
+    selected: Optional[str], capability: Optional[tuple[int, int]] = None
+) -> Optional[str]:
     """The dispatcher backend H3 should run given what Studio's generic selection picked.
 
     Only the automatic cuDNN pick moves, and only to torch's flash SDPA on an arch where flash was measured faster
@@ -146,7 +147,12 @@ def strided_processor_class() -> Any:
             key = key.unflatten(-1, (attn.heads, -1))
             value = value.unflatten(-1, (attn.heads, -1))
 
-            if rotary_emb is not None and self._unsloth_qk_rope and _fusable_norm(attn.norm_q) and _fusable_norm(attn.norm_k):
+            if (
+                rotary_emb is not None
+                and self._unsloth_qk_rope
+                and _fusable_norm(attn.norm_q)
+                and _fusable_norm(attn.norm_k)
+            ):
                 # one read + one write per row for norm and rope together (video_minimax_h3_qknorm). Called through
                 # torch.ops (registered at install): dynamo traces into a Python wrapper around the op's builder and
                 # graph-breaks there, which split every compiled block in two (measured: 2x slower steps).
@@ -236,7 +242,11 @@ def strided_attention_count(transformer: Any) -> int:
         cls = strided_processor_class()
     except Exception:  # noqa: BLE001
         return 0
-    return sum(1 for m in _h3_attention_modules(transformer) if isinstance(getattr(m, "processor", None), cls))
+    return sum(
+        1
+        for m in _h3_attention_modules(transformer)
+        if isinstance(getattr(m, "processor", None), cls)
+    )
 
 
 def _per_token_int8(weight: Any) -> bool:
@@ -255,7 +265,6 @@ def _per_token_int8(weight: Any) -> bool:
         )
     if name == "Int8Tensor":
         from .diffusion_int8_fused import _plain_int8_weight
-
         return _plain_int8_weight(weight)
     return False
 
@@ -284,7 +293,10 @@ def _cat_rows(parts: list) -> Any:
     rows = [int(p.shape[0]) for p in parts]
     if any(type(p) is not type(t0) for p in parts):
         raise ValueError("projection weights differ in type")
-    if any(p.dim() != t0.dim() or tuple(p.shape[1:]) != tuple(t0.shape[1:]) or p.dtype != t0.dtype for p in parts):
+    if any(
+        p.dim() != t0.dim() or tuple(p.shape[1:]) != tuple(t0.shape[1:]) or p.dtype != t0.dtype
+        for p in parts
+    ):
         raise ValueError("projection weights differ in shape or dtype")
     if type(t0) is torch.Tensor:
         if t0.dim() == 0:
@@ -308,7 +320,9 @@ def _cat_rows(parts: list) -> Any:
 
     for p in parts[1:]:
         p_names, p_ctx = p.__tensor_flatten__()
-        if list(p_names) != list(names) or not _same_attr(normalised(p_ctx, tuple(p.shape)), normalised(ctx, own)):
+        if list(p_names) != list(names) or not _same_attr(
+            normalised(p_ctx, tuple(p.shape)), normalised(ctx, own)
+        ):
             raise ValueError("projection weights differ in quantization attributes")
     inner = {}
     for n in names:
@@ -340,7 +354,9 @@ def _fusable_parts(module: Any) -> Optional[tuple]:
     if any(getattr(p, "bias", None) is not None for p in parts):
         return None
     # Hooks (offload, prefetch, LoRA) are keyed to the three modules; a fused module would silently drop them.
-    if any(getattr(p, "_forward_pre_hooks", None) or getattr(p, "_forward_hooks", None) for p in parts):
+    if any(
+        getattr(p, "_forward_pre_hooks", None) or getattr(p, "_forward_hooks", None) for p in parts
+    ):
         return None
     if any(hasattr(p, "_hf_hook") or hasattr(p, "_diffusers_hook") for p in parts):
         return None
@@ -398,7 +414,9 @@ def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
         to_q, to_k, to_v, group = spec
         try:
             weight = _cat_rows([to_q.weight, to_k.weight, to_v.weight])
-            linear = nn.Linear(int(weight.shape[1]), int(weight.shape[0]), bias = False, device = "meta")
+            linear = nn.Linear(
+                int(weight.shape[1]), int(weight.shape[0]), bias = False, device = "meta"
+            )
             linear.weight = nn.Parameter(weight, requires_grad = False)
             if group is not None:
                 _install_rotation(linear, group)
@@ -419,7 +437,6 @@ def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
         # 58.7 -> 64.5 GB on an RTX PRO 6000). Hand them back.
         try:
             import torch
-
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001
@@ -431,4 +448,6 @@ def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
 
 def fused_qkv_count(transformer: Any) -> int:
     """How many H3 attention modules run one fused QKV projection (engagement census)."""
-    return sum(1 for m in _h3_attention_modules(transformer) if getattr(m, "fused_projections", False))
+    return sum(
+        1 for m in _h3_attention_modules(transformer) if getattr(m, "fused_projections", False)
+    )

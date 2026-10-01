@@ -7201,7 +7201,6 @@ class VideoBackend:
                 h3_attention_backend,
                 install_strided_attention,
             )
-
             h3_denoiser = getattr(pipe, denoiser_component, None)
             # One rotation + activation quant + int8 GEMM for q, k and v instead of three. Resident, hookless int8
             # denoiser only: a streamed one is owned by group-offload hooks keyed to the three projections, and the
@@ -7235,7 +7234,9 @@ class VideoBackend:
             )
             if attention_engaged in ("_native_cudnn", "_native_flash"):
                 try:
-                    if install_strided_attention(getattr(pipe, denoiser_component, None), logger = logger):
+                    if install_strided_attention(
+                        getattr(pipe, denoiser_component, None), logger = logger
+                    ):
                         h3_attn_levers += ("h3_strided_attn",)
                 except Exception as exc:  # noqa: BLE001 -- stock processor stays
                     logger.warning("video.h3_attn: strided attention skipped: %s", exc)
