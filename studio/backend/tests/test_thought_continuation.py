@@ -281,6 +281,85 @@ def test_the_tool_loop_resumes_the_thought_and_keeps_it_whole(monkeypatch):
     assert [m["role"] for m in second["messages"]].count("assistant") == 1
 
 
+def _replayed_turn(payload: dict) -> dict:
+    """The resumed assistant turn, replayed ahead of the user turn the loop appended."""
+    assert payload["messages"][-1]["role"] == "user"
+    turn = payload["messages"][-2]
+    assert turn["role"] == "assistant"
+    return turn
+
+
+@pytest.mark.parametrize("tail", [" worth checking.", ""])
+def test_a_no_op_tool_call_after_a_resumed_thought_replays_the_whole_thought(monkeypatch, tail):
+    """The nudge hides reasoning_content, so the thought travels as content, all of it."""
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                *([_sse({"reasoning_content": tail})] if tail else []),
+                # Not enabled for this request, so the call is a no-op and a nudge follows.
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_0",
+                                "type": "function",
+                                "function": {"name": "python", "arguments": '{"code": "1"}'},
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "2, 3 and 5."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [_QUESTION, dict(_CUT_MID_THOUGHT)],
+            tools = [_WEB_SEARCH_TOOL],
+            continue_final_message = True,
+            max_tool_iterations = 3,
+            auto_heal_tool_calls = False,
+        )
+    )
+
+    turn = _replayed_turn(payloads[1])
+    assert turn["content"] == f"{_THOUGHT}{tail}"
+    assert "reasoning_content" not in turn
+
+
+def test_a_resumed_thought_cut_by_length_notes_the_whole_thought(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": " 2, then 3, then"}), _finish("length"), _done()],
+            [_sse({"content": "2, 3 and 5."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [_QUESTION, dict(_CUT_MID_THOUGHT)],
+            tools = [_WEB_SEARCH_TOOL],
+            continue_final_message = True,
+            max_tool_iterations = 3,
+            auto_heal_tool_calls = False,
+        )
+    )
+
+    turn = _replayed_turn(payloads[1])
+    assert f"{_THOUGHT} 2, then 3, then" in turn["content"]
+    assert "reasoning_content" not in turn
+
+
 def test_a_merged_thought_joins_the_old_reasoning():
     conversation = [_QUESTION, dict(_CUT_MID_THOUGHT)]
     append_assistant_turn(

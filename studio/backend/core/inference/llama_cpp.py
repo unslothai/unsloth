@@ -37530,10 +37530,16 @@ class LlamaCppBackend:
                                 _cand_l,
                                 {
                                     "role": "assistant",
-                                    "content": _unfinished_thought_progress(reasoning_accum),
+                                    # A resumed thought streams only its tail; the note covers
+                                    # the whole thought, which replaces the hidden original.
+                                    "content": _unfinished_thought_progress(
+                                        _resumed_reasoning + reasoning_accum
+                                    ),
                                 },
                                 continue_final_message = continue_final_message,
                             )
+                            if _resumed_reasoning:
+                                _cand_l[-1].pop("reasoning_content", None)
                             _cand_l.append(
                                 {
                                     "role": "user",
@@ -38887,11 +38893,13 @@ class LlamaCppBackend:
                     # the field above so a whitespace-only split never appends an
                     # empty assistant message.
                     if not assistant_appended and (
-                        content_text or assistant_msg.get("reasoning_content")
+                        content_text or assistant_msg.get("reasoning_content") or _resumed_reasoning
                     ):
-                        if assistant_msg.get("reasoning_content"):
+                        if assistant_msg.get("reasoning_content") or _resumed_reasoning:
+                            # A resumed thought streams only its tail; fold in the whole
+                            # thought, since the nudge below hides the original's field.
                             assistant_msg["content"] = neutralize_control_markup(
-                                reasoning_accum,
+                                _resumed_reasoning + reasoning_accum,
                                 self.markup_profile,
                             )
                             _continued_partial = (
@@ -38903,12 +38911,14 @@ class LlamaCppBackend:
                                 assistant_msg["content"] = f"\n{assistant_msg['content']}"
                             if content_text:
                                 assistant_msg["content"] += f"\n{content_text}"
-                            del assistant_msg["reasoning_content"]
+                            assistant_msg.pop("reasoning_content", None)
                         append_assistant_turn(
                             conversation,
                             assistant_msg,
                             continue_final_message = _merge_into_partial,
                         )
+                        if _resumed_reasoning:
+                            conversation[-1].pop("reasoning_content", None)
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
                 if _final_over_cap:
