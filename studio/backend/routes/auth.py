@@ -453,8 +453,12 @@ def auth_status() -> AuthStatusResponse:
     )
 
 
-def _login_failure_detail() -> str:
+def _login_failure_detail(request: Request | None = None) -> str:
     """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted.
+
+    A browser on another machine is told where the command runs (#11388): "your terminal" is
+    the wrong box for it, and the hint must not suggest the host is reachable from there.
+    Loopback, and only loopback, is the person at the machine.
 
     PATH form only: this body is produced before any credential is verified and the browser-served
     default resolves CORS to ["*"], so an absolute path built from ``sys.executable`` would hand the
@@ -471,7 +475,19 @@ def _login_failure_detail() -> str:
             f"the account, by running this on the Unsloth Studio host {where}: {command} "
             "--username <name>"
         )
-    return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
+    if _client_is_loopback(request):
+        return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
+    return (
+        "Incorrect password. To reset it, run this on the machine Unsloth Studio is running on, "
+        f"{where}: {command}"
+    )
+
+
+def _client_is_loopback(request: Request | None) -> bool:
+    try:
+        return ipaddress.ip_address(_client_ip(request)).is_loopback
+    except ValueError:
+        return False
 
 
 @router.post("/login", response_model = Token)
@@ -487,7 +503,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body: behind a proxy/NAT it is misleading or an info leak.
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            detail = (f"Too many failed login attempts. Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
@@ -498,7 +514,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = _login_failure_detail(),
+            detail = _login_failure_detail(request),
         )
 
     if username == storage.DEFAULT_ADMIN_USERNAME:
@@ -513,7 +529,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = _login_failure_detail(),
+            detail = _login_failure_detail(request),
         )
 
     _clear_login_bucket(key)
@@ -574,7 +590,7 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            detail = (f"Too many failed login attempts. Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
