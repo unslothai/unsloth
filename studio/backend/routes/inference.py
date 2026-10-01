@@ -487,6 +487,20 @@ def _continue_final_message(payload, *, thought: bool = False) -> bool:
     return isinstance(reasoning, str) and bool(reasoning.strip())
 
 
+def _reject_unresumable_thought(payload, llama_backend, reject) -> None:
+    """An older llama-server would treat the thought as finished and answer after it."""
+    if (
+        _continue_final_message(payload, thought = True)
+        and not _continue_final_message(payload)
+        and not getattr(llama_backend, "_resumes_thoughts", True)
+    ):
+        raise reject(
+            400,
+            "This llama.cpp build cannot resume a response that stopped mid-thought. "
+            "Update Unsloth Studio for a newer llama.cpp, or use Retry.",
+        )
+
+
 def _reject_audio_output_continuation(payload) -> None:
     """Audio output re-speaks the newest user text, so there is no partial to resume
     from; refuse rather than return a fresh clip labelled as a continuation."""
@@ -27353,6 +27367,7 @@ async def produce_openai_chat_completions(
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
+        _reject_unresumable_thought(payload, llama_backend, _reject)
         if payload.audio_base64:
             # This path forwards the request verbatim, so the transcoded audio
             # never gets injected. (The agentic tool loop below does support
@@ -27518,17 +27533,7 @@ async def produce_openai_chat_completions(
         # has to hand it these: seeded empty it counted only the current run and let a
         # replayed eight sit beside a fresh eight.
         _gguf_replayed_image_parts: list = []
-        # An older llama-server would treat the thought as finished and answer after it.
-        if (
-            _continue_final_message(payload, thought = True)
-            and not _continue_final_message(payload)
-            and not getattr(llama_backend, "_resumes_thoughts", True)
-        ):
-            raise _reject(
-                400,
-                "This llama.cpp build cannot resume a response that stopped mid-thought. "
-                "Update Unsloth Studio for a newer llama.cpp, or use Retry.",
-            )
+        _reject_unresumable_thought(payload, llama_backend, _reject)
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
             llama_backend.is_vision,
@@ -40004,7 +40009,7 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
-    if _continue_final_message(payload):
+    if _continue_final_message(payload, thought = True):
         # llama-server rejects both flags set true.
         body["continue_final_message"] = True
         body["add_generation_prompt"] = False

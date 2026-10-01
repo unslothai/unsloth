@@ -547,3 +547,38 @@ def test_an_older_llama_server_still_resumes_an_answer(monkeypatch):
     )
     assert resp.status_code == 200, resp.text
     assert payloads[0]["continue_final_message"] is True
+
+
+def test_the_tool_passthrough_resumes_the_thought(monkeypatch):
+    """Client tools skip Studio's loop, and the forwarded body must still continue the thought."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_openai_passthrough_body
+
+    backend = _route_backend(monkeypatch, [], [], tools = True)
+    payload = ChatCompletionRequest(
+        messages = [_QUESTION, _CUT_MID_THOUGHT],
+        tools = [_WEB_SEARCH_TOOL],
+        continue_final_message = True,
+    )
+    body = _build_openai_passthrough_body(payload, llama_backend = backend)
+    assert body["continue_final_message"] is True
+    assert body["add_generation_prompt"] is False
+    assert body["messages"][-1]["reasoning_content"] == _THOUGHT
+
+
+def test_an_older_llama_server_refuses_a_thought_in_the_tool_passthrough(monkeypatch):
+    payloads: list[dict] = []
+    backend = _route_backend(monkeypatch, [], payloads, tools = True)
+    backend._resumes_thoughts = False
+    resp = _route_client(monkeypatch, backend).post(
+        "/v1/chat/completions",
+        json = {
+            "messages": [_QUESTION, _CUT_MID_THOUGHT],
+            "tools": [_WEB_SEARCH_TOOL],
+            "continue_final_message": True,
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "mid-thought" in resp.text
+    assert payloads == []
