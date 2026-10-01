@@ -67,7 +67,7 @@ def test_spec_matches_save_py(lce):
         if isinstance(n, ast.Assign)
         and any(getattr(t, "id", None) == "_LLM_COMPRESSOR_SPEC" for t in n.targets)
     )
-    assert lce._llm_compressor_spec() == expected
+    assert lce._LLM_COMPRESSOR_SPEC == expected
     assert expected in lce.probe_llm_compressor_for_compressed_export()["workspace_install_command"]
 
 

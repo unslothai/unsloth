@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.metadata
 import importlib.util
 import os
 import shutil
 import sys
-from pathlib import Path
 from typing import Any, Dict
 
 from utils.transformers_version import (
@@ -22,20 +20,9 @@ from utils.transformers_version import (
 )
 
 
-def _llm_compressor_spec() -> str:
-    # Read from unsloth/save.py without importing unsloth: this runs in the Studio parent, which must
-    # not pull torch / a GPU context in (see main.py).
-    try:
-        spec = importlib.util.find_spec("unsloth")
-        tree = ast.parse(Path(spec.origin).with_name("save.py").read_text(encoding = "utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", None) == "_LLM_COMPRESSOR_SPEC" for t in node.targets
-            ):
-                return ast.literal_eval(node.value)
-    except Exception:
-        pass
-    return "llmcompressor"
+# unsloth/save.py's _LLM_COMPRESSOR_SPEC (drift-tested). Not imported: this runs in the Studio
+# parent, which must not pull in unsloth / torch (see main.py).
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
 
 def _workspace_llmcompressor_ok(spec: str) -> bool:
@@ -49,7 +36,7 @@ def _workspace_llmcompressor_ok(spec: str) -> bool:
 
 def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
     """Mirror export.py's runtime choice (shadow first, else workspace) without installing anything."""
-    spec = _llm_compressor_spec()
+    spec = _LLM_COMPRESSOR_SPEC
     shadow_valid = _llmcompressor_shadow_is_valid()
     shadow_disabled = _llmcompressor_main_disabled()
     offline = _env_offline()

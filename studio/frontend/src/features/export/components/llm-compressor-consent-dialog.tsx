@@ -46,27 +46,27 @@ export function LlmCompressorConsentDialog() {
                 <AlertDialogDescription asChild>
                   <div className="space-y-2 text-sm text-muted-foreground">
                     {blocked ? (
-                      <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                      <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 [overflow-wrap:anywhere] dark:text-red-400">
                         {probe?.blocked_reason}
                       </p>
                     ) : (
                       <>
-                        <p>{summary}</p>
+                        <p className="[overflow-wrap:anywhere]">{summary}</p>
                         {probe?.consent_kind === "workspace" ? (
-                          <p className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+                          <p className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground break-all">
                             {probe.workspace_install_command}
                           </p>
                         ) : probe?.consent_kind === "shadow" ? (
                           <p className="text-xs">
                             Target:{" "}
-                            <span className="font-mono text-foreground">
+                            <span className="font-mono text-foreground break-all">
                               {probe.shadow_path}
                             </span>
                           </p>
                         ) : null}
                         <p className="text-xs">
                           Interpreter:{" "}
-                          <span className="font-mono text-foreground">
+                          <span className="font-mono text-foreground break-all">
                             {probe?.python_executable}
                           </span>
                         </p>
