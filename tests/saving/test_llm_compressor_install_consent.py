@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Static guards that FP8/FP4 export requires explicit consent before installing llm-compressor (#8904)."""
 
 from __future__ import annotations

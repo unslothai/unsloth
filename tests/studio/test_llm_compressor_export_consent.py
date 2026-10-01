@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Static guards for Studio llm-compressor export consent (#8904)."""
 
 from __future__ import annotations
