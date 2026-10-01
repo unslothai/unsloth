@@ -1035,7 +1035,7 @@ def prequant_seed_device(plan: Any, device: str, scheme: Optional[str] = None) -
 _TORCHAO_GROUP_OFFLOAD_MIN = {"int8": (0, 18), "fp8": (0, 17)}
 # torchao 0.17 already ships the pinnable ``Int8Tensor`` (0.18 only made it the int8 config's default): the hosted int8
 # checkpoints load as it on 0.17 too and stream bit-identically, and the v1 weights a 0.17 runtime quantise produces
-# are rebuilt as it before streaming (_torchao_group_offload_kwargs). A fresh install pins torch < 2.12, so torchao 0.17,
+# get the two pin ops they lack (install_torchao_v1_int8_pin_ops), streaming bit-identically too. A fresh install pins torch < 2.12, so torchao 0.17,
 # and without this the 0.18 floor gave every offloading install the fp8 transformer instead of int8.
 # UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17=0 restores the 0.18 floor.
 INT8_STREAM_TORCHAO17_ENV = "UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17"
@@ -1256,9 +1256,9 @@ def _torchao_group_offload_kwargs(
     install_group_offload_torchao_swap_retry()
     if not kwargs.get("use_stream"):
         return kwargs
-    if not classes <= _TORCHAO_STREAM_SAFE_CLASSES and "LinearActivationQuantizedTensor" in classes:
-        classes = _rebuild_v1_int8_for_stream(module, classes)
-    if classes <= _TORCHAO_STREAM_SAFE_CLASSES:
+    if classes <= _TORCHAO_STREAM_SAFE_CLASSES or (
+        classes <= _TORCHAO_V1_INT8_CLASSES and install_torchao_v1_int8_pin_ops()
+    ):
         if not kwargs.get("low_cpu_mem_usage"):
             return kwargs
         # Same override the planner's _torchao_stream_pinnable honoured, so the two cannot disagree.
@@ -1285,23 +1285,73 @@ def _torchao_group_offload_kwargs(
     return safe
 
 
-def _rebuild_v1_int8_for_stream(module: Any, classes: set) -> set:
-    """torchao <= 0.17 v1 int8 (``LinearActivationQuantizedTensor``) has no ``is_pinned``, so it could only stream with
-    synchronous copies (~14x slower). Rebuild it as the pinnable ``Int8Tensor`` (same int8 weights and scales; the
-    dynamic activation quant is 0.18's, so outputs move by int8 rounding, not bit-identical to the v1 kernel) before the
-    hooks are built. All or nothing; a weight that fails validation keeps v1 and the synchronous copies. Off with the
-    same switch as the 0.17 int8 stream."""
-    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
-        return classes
-    try:
-        from .prequant_legacy_int8 import convert_legacy_int8_weights
+# torchao <= 0.17's v1 int8 weight (a LinearActivationQuantizedTensor over an AffineQuantizedTensor): what 0.17's int8
+# config still produces by default. Only two ops keep it off the copy stream: ``is_pinned`` and ``pin_memory``.
+_TORCHAO_V1_INT8_CLASSES = frozenset(("LinearActivationQuantizedTensor", "AffineQuantizedTensor"))
+_V1_INT8_PIN_OPS_INSTALLED = False
 
-        if convert_legacy_int8_weights(module):
-            _freeze_torchao_weights(module)
-            return _torchao_weight_classes(module)
-    except Exception:  # noqa: BLE001 - keep the v1 weights and the synchronous fallback
-        pass
-    return classes
+
+def install_torchao_v1_int8_pin_ops() -> bool:
+    """Give torchao's v1 int8 classes ``is_pinned`` / ``pin_memory`` so group offload pins them up front and copies
+    them on its stream. Without these the streamed path refuses them and falls back to synchronous copies (measured
+    14x slower than resident). The pinned copy re-wraps the SAME int8 data, scale and zero point (the class's own
+    ``_apply_fn_to_data``), so outputs stay bit-identical to the resident module. Registered only where torchao still
+    ships the classes WITHOUT the ops (<= 0.17; 0.18 removed the classes). Off with
+    UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17=0."""
+    global _V1_INT8_PIN_OPS_INSTALLED
+    if _V1_INT8_PIN_OPS_INSTALLED:
+        return True
+    if str(os.environ.get(INT8_STREAM_TORCHAO17_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+        from torchao.dtypes.affine_quantized_tensor import AffineQuantizedTensor as AQT
+        from torchao.quantization.linear_activation_quantized_tensor import (
+            LinearActivationQuantizedTensor as LAQT,
+        )
+
+        aten = torch.ops.aten
+        pin_ops = [aten._pin_memory.default, aten.pin_memory.default]
+        for cls in (LAQT, AQT):
+            table = getattr(cls, "_ATEN_OP_TABLE", {}).get(cls, {})
+            if aten.is_pinned.default in table or aten._pin_memory.default in table:
+                return False  # this torchao implements them itself: never override its dispatch
+
+        def _payload(t: Any) -> list:
+            if isinstance(t, LAQT):
+                return _payload(t.original_weight_tensor)
+            if isinstance(t, AQT):
+                impl = t.tensor_impl
+                return [
+                    x
+                    for x in (getattr(impl, n, None) for n in ("int_data", "scale", "zero_point"))
+                    if x is not None
+                ]
+            return [t]
+
+        def _pinned(t: Any) -> Any:
+            if isinstance(t, LAQT):
+                return t._apply_fn_to_data(_pinned)
+            if isinstance(t, AQT):
+                return t._apply_fn_to_data(
+                    lambda impl: impl._apply_fn_to_data(lambda x: x.pin_memory())
+                )
+            return t.pin_memory()
+
+        for cls in (LAQT, AQT):
+
+            @cls.implements([aten.is_pinned.default])
+            def _is_pinned(func: Any, types: Any, args: Any, kwargs: Any) -> bool:
+                return all(bool(x.is_pinned()) for x in _payload(args[0]))
+
+            @cls.implements(pin_ops)
+            def _pin(func: Any, types: Any, args: Any, kwargs: Any) -> Any:
+                return _pinned(args[0])
+
+        _V1_INT8_PIN_OPS_INSTALLED = True
+        return True
+    except Exception:  # noqa: BLE001 - no v1 classes / no dispatch table: keep the synchronous fallback
+        return False
 
 
 def _freeze_torchao_weights(module: Any) -> None:

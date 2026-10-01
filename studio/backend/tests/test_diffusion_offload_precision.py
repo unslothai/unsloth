@@ -250,14 +250,18 @@ NO_STREAM = {"onload_device": "cuda", "use_stream": False}
         (("Int8Tensor",), True, 10**7, "pinned"),
         (("Float8Tensor",), True, 10**7, "pinned"),
         (("Int8Tensor",), True, None, "no stream"),
-        # torchao 0.17 default int8: no aten.is_pinned, so no copy stream
-        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream"),
+        # torchao 0.17 default int8: no aten.is_pinned of its own; streams once Studio registers the pin ops
+        (("LinearActivationQuantizedTensor",), False, 10**7, "as is"),
+        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream, no pin ops"),
     ],
 )
 def test_group_offload_kwargs_per_weight_class(
     monkeypatch, classes, low_cpu_mem_usage, pin_budget, expected
 ):
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: pin_budget)
+    # whether this host's torchao ships the v1 classes must not decide the table
+    pin_ops = expected != "no stream, no pin ops"
+    monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: pin_ops, raising = False)
     kwargs = {**STREAM_KW, "low_cpu_mem_usage": low_cpu_mem_usage}
     out = mem._torchao_group_offload_kwargs(_Module(*classes, plain = True), kwargs)
     if expected == "as is":
@@ -594,6 +598,8 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
         want = resident(x)
         for _ in range(3):
             assert torch.equal(offloaded(x), want)
+    if type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor":
+        return  # torchao <= 0.17 v1 int8 (pin-op shim): its onload is a plain re-wrap, which inference_mode allows
     with pytest.raises(Exception), torch.inference_mode():
         offloaded(x)
 

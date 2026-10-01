@@ -98,7 +98,7 @@ def test_fp8_and_other_schemes_unchanged():
     assert torchao_scheme_streams("nvfp4", torchao_version = AO18) is False
 
 
-# ---- apply time: a v1 int8 module is rebuilt before the stream, else it would copy synchronously
+# ---- apply time: a v1 int8 module (0.17's default int8 class) keeps the copy stream through the pin-op shim
 
 
 class _V1Weight:
@@ -128,51 +128,81 @@ class _Module:
 STREAM_KWARGS = {"use_stream": True, "non_blocking": True, "record_stream": True, "low_cpu_mem_usage": False}
 
 
-def _rebuild_to_int8(module):
-    module.weights = [_Int8Weight()]
-    return 1
-
-
 @pytest.fixture
 def _apply_env(monkeypatch):
     monkeypatch.setattr(mem, "install_group_offload_torchao_swap_retry", lambda: True)
     monkeypatch.setattr(mem, "_freeze_torchao_weights", lambda module: None)
 
 
-def test_v1_int8_is_rebuilt_and_keeps_the_copy_stream(monkeypatch, _apply_env):
-    import core.inference.prequant_legacy_int8 as legacy
-
-    monkeypatch.setattr(legacy, "convert_legacy_int8_weights", _rebuild_to_int8)
-    module = _Module(_V1Weight)
-    out = mem._torchao_group_offload_kwargs(module, dict(STREAM_KWARGS), [0])
-    assert type(module.weights[0]).__name__ == "Int8Tensor"
-    assert out["use_stream"] is True and out.get("record_stream") is True
+def test_v1_int8_keeps_the_copy_stream_once_its_pin_ops_exist(monkeypatch, _apply_env):
+    monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: True, raising = False)
+    out = mem._torchao_group_offload_kwargs(_Module(_V1Weight), dict(STREAM_KWARGS), [0])
+    assert out["use_stream"] is True and out.get("record_stream") is True and out.get("non_blocking") is True
 
 
-def test_v1_int8_kill_switch_keeps_v1_and_synchronous_copies(monkeypatch, _apply_env):
-    import core.inference.prequant_legacy_int8 as legacy
+def test_v1_int8_without_its_pin_ops_falls_back_to_synchronous(monkeypatch, _apply_env):
+    monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: False, raising = False)
+    out = mem._torchao_group_offload_kwargs(_Module(_V1Weight), dict(STREAM_KWARGS), [0])
+    assert out["use_stream"] is False
 
+
+def test_pin_op_shim_honours_the_kill_switch(monkeypatch):
     monkeypatch.setenv(ENV, "0")
-    monkeypatch.setattr(legacy, "convert_legacy_int8_weights", _rebuild_to_int8)
-    module = _Module(_V1Weight)
-    out = mem._torchao_group_offload_kwargs(module, dict(STREAM_KWARGS), [0])
-    assert type(module.weights[0]).__name__ == "LinearActivationQuantizedTensor"
-    assert out["use_stream"] is False
+    monkeypatch.setattr(mem, "_V1_INT8_PIN_OPS_INSTALLED", False, raising = False)
+    assert mem.install_torchao_v1_int8_pin_ops() is False
 
 
-def test_v1_int8_that_fails_validation_falls_back_to_synchronous(monkeypatch, _apply_env):
-    import core.inference.prequant_legacy_int8 as legacy
-
-    monkeypatch.setattr(legacy, "convert_legacy_int8_weights", lambda module: 0)
-    module = _Module(_V1Weight)
-    out = mem._torchao_group_offload_kwargs(module, dict(STREAM_KWARGS), [0])
-    assert out["use_stream"] is False
-
-
-def test_int8_tensor_module_is_untouched(monkeypatch, _apply_env):
-    import core.inference.prequant_legacy_int8 as legacy
-
-    calls = []
-    monkeypatch.setattr(legacy, "convert_legacy_int8_weights", lambda m: calls.append(m) or 0)
+def test_int8_tensor_module_keeps_the_stream(monkeypatch, _apply_env):
     out = mem._torchao_group_offload_kwargs(_Module(_Int8Weight), dict(STREAM_KWARGS), [0])
-    assert calls == [] and out["use_stream"] is True
+    assert out["use_stream"] is True
+
+
+def _v1_int8_stack():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA (pinned host memory)")
+    try:
+        from torchao.quantization.linear_activation_quantized_tensor import (  # noqa: F401
+            LinearActivationQuantizedTensor,
+        )
+    except Exception:  # noqa: BLE001
+        pytest.skip("this torchao has no v1 int8 classes (0.18+)")
+    return torch
+
+
+def test_v1_int8_streams_bit_identically_with_the_shim():
+    """Real torchao <= 0.17 + CUDA: the v1 weights pin, stream on the copy stream, and match resident exactly."""
+    import copy
+
+    torch = _v1_int8_stack()
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    assert mem.install_torchao_v1_int8_pin_ops() is True
+    torch.manual_seed(0)
+    blocks = torch.nn.Sequential(
+        *[torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.GELU(), torch.nn.Linear(512, 256)) for _ in range(3)]
+    ).to(torch.bfloat16)
+    offloaded = copy.deepcopy(blocks)
+    quantize_(offloaded, Int8DynamicActivationInt8WeightConfig())
+    offloaded.requires_grad_(False)
+    assert type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor"
+    resident = copy.deepcopy(offloaded).cuda()
+    kwargs = mem._torchao_group_offload_kwargs(
+        offloaded,
+        {
+            "onload_device": torch.device("cuda"),
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": 1,
+            **STREAM_KWARGS,
+        },
+        [0],
+    )
+    assert kwargs["use_stream"] is True
+    apply_group_offloading(offloaded, **kwargs)
+    x = torch.randn(2, 16, 256, dtype = torch.bfloat16, device = "cuda")
+    with torch.no_grad():
+        want = resident(x)
+        for _ in range(3):
+            assert torch.equal(offloaded(x), want)
