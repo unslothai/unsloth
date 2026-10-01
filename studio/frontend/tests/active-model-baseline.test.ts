@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { ActiveModelConfigState } from "../src/features/model-picker/hooks/use-active-model-config.ts";
+import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
+  const state = {
+    params: { checkpoint: "unsloth/Qwen3-0.6B-GGUF", maxSeqLength: 2048 },
+    loadedLlamaExtraArgs: null,
+    ...patch,
+  };
+  const { useActiveModelConfig } = loadWithStubs<{
+    useActiveModelConfig: () => ActiveModelConfigState;
+  }>(
+    new URL(
+      "../src/features/model-picker/hooks/use-active-model-config.ts",
+      import.meta.url,
+    ),
+    {
+      "@/features/chat": {
+        isExternalModelId: () => false,
+        useChatRuntimeStore: (select: (value: typeof state) => unknown) =>
+          select(state),
+      },
+      "@/config/env": { usePlatformStore: () => ({ deviceType: "cuda" }) },
+      react: { useMemo: (factory: () => unknown) => factory() },
+      "../model-config/per-model-config": {
+        isServedByLlamaCpp: () => gguf,
+        residentIsServedByMlx: () => false,
+      },
+    },
+  );
+  return useActiveModelConfig().config!;
+}
+
+function configsEqual(persistedMode: string) {
+  return loadWithStubs<{
+    perModelConfigsEqual: (a: PerModelConfig, b: PerModelConfig) => boolean;
+  }>(
+    new URL(
+      "../src/features/model-picker/model-config/apply-per-model-config.ts",
+      import.meta.url,
+    ),
+    {
+      "@/features/chat/stores/chat-runtime-store": {
+        normalizeSpeculativeType: (value: string | null | undefined) =>
+          value == null || value === "" ? null : value.toLowerCase(),
+        readPersistedSpeculativeType: () => persistedMode,
+      },
+      "@/features/chat/presets/preset-policy": {},
+      "./config-signature": { gpuFieldsSignature: () => "" },
+      "./per-model-config": {
+        normalizeMaxSeqLength: (value: number | null | undefined) =>
+          value ?? null,
+      },
+    },
+  ).perModelConfigsEqual;
+}
+
+const BASE: PerModelConfig = {
+  customContextLength: null,
+  maxSeqLength: null,
+  kvCacheDtype: null,
+  speculativeType: null,
+  specDraftNMax: null,
+  nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
+  nBatch: null,
+  nUbatch: null,
+  tensorParallel: false,
+  disableVision: false,
+  chatTemplateOverride: null,
+};
+
+test("the active GGUF baseline carries the arguments the server runs with", () => {
+  const config = useActiveConfigFor({ loadedLlamaExtraArgs: ["--no-warmup"] });
+  assert.deepEqual(config.llamaExtraArgs, ["--no-warmup"]);
+  assert.deepEqual(
+    useActiveConfigFor({ loadedLlamaExtraArgs: [] }).llamaExtraArgs,
+    [],
+  );
+});
+
+test("unreported or non-llama.cpp arguments stay absent so the stored row can hydrate", () => {
+  assert.equal("llamaExtraArgs" in useActiveConfigFor({}), false);
+  assert.equal(
+    "llamaExtraArgs" in
+      useActiveConfigFor({ loadedLlamaExtraArgs: ["--no-warmup"] }, false),
+    false,
+  );
+});
+
+test("a stored Auto (null) equals the mode the runtime resolved it to", () => {
+  const autoEqual = configsEqual("auto");
+  assert.ok(
+    autoEqual(BASE, { ...BASE, speculativeType: "auto" }),
+    "null follows the global Auto",
+  );
+  assert.ok(!autoEqual(BASE, { ...BASE, speculativeType: "off" }));
+  const offEqual = configsEqual("off");
+  assert.ok(offEqual(BASE, { ...BASE, speculativeType: "off" }));
+  assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "auto" }));
+  assert.ok(autoEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));
+});

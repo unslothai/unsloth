@@ -165,8 +165,8 @@ export function perModelConfigsEqual(
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
-    normalizeSpeculativeType(a.speculativeType) ===
-      normalizeSpeculativeType(b.speculativeType) &&
+    resolvedSpeculativeType(a.speculativeType) ===
+      resolvedSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
@@ -184,6 +184,11 @@ export function perModelConfigsEqual(
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+// A stored config keeps Auto as null (follow the global mode) while the runtime holds the mode it resolved.
+function resolvedSpeculativeType(value: string | null | undefined): string {
+  return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }
 
 /** Compare on the launched command, so "not loaded" and "cleared" are equal here. They differ
