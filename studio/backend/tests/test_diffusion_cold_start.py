@@ -450,3 +450,43 @@ def test_load_progress_keeps_scanning_while_downloading():
     for _ in range(3):
         assert D.DiffusionBackend.load_progress(fake)["phase"] == "downloading"
     assert len(scans) == 3 and loading.finalized_scan is None
+
+
+# ---------------------------------------------------------------------------------------------- boot-time probe
+
+
+@pytest.fixture
+def quant_probe(monkeypatch, probe_home):
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PROBE_PREWARM", raising = False)
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {}, raising = False)
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device, ordinal = None: "cuda:0")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    spawned = []
+
+    def child(card):
+        spawned.append(card)
+        return {"int8": True, "fp8": None}
+
+    monkeypatch.setattr(tq, "_child_probe_table", child)
+    return tq, spawned
+
+
+def test_boot_probe_fills_the_cache_once(quant_probe):
+    tq, spawned = quant_probe
+    assert tq.prewarm_probe_table() is True
+    assert spawned == ["cuda:0"]
+    assert tq._SMOKE_CACHE == {("int8", "cuda:0"): True}, "an allocator failure (None) was cached as a verdict"
+    assert tq.prewarm_probe_table() is False
+    assert spawned == ["cuda:0"]
+
+
+def test_boot_probe_skips_a_persisted_table_and_honours_its_switch(quant_probe, monkeypatch):
+    tq, spawned = quant_probe
+    probe_cache.store("cuda:0", {"int8": True})
+    assert tq.prewarm_probe_table() is False
+    probe_cache._cache_file().unlink()
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROBE_PREWARM", "0")
+    assert tq.prewarm_probe_table() is False
+    assert spawned == []

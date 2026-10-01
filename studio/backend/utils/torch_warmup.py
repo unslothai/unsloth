@@ -496,6 +496,22 @@ def _is_native_video_pick(pick) -> bool:
     return False
 
 
+def _prewarm_quant_probe() -> None:
+    """The quantised-load smoke probe (a 4-5 s child process), resolved and persisted here instead of at the start of
+    the first image load. Same gate as the diffusers prewarm; never fatal."""
+    try:
+        from core.inference.diffusion_transformer_quant import prewarm_probe_table  # noqa: PLC0415
+
+        started = time.perf_counter()
+        if prewarm_probe_table():
+            logger.info(
+                "quant smoke probe prewarmed in %.0fms; the first quantised load skips it",
+                (time.perf_counter() - started) * 1000,
+            )
+    except Exception as exc:  # noqa: BLE001 -- the load path probes again and reports
+        logger.debug("quant smoke probe prewarm skipped: %r", exc)
+
+
 def prewarm_diffusers_if_image_models_exist() -> bool:
     """Import diffusers off the first image load. True iff this call did the import.
 
@@ -598,6 +614,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             "diffusers prewarmed in %.0fms; the first image load skips that import",
             (time.perf_counter() - started) * 1000,
         )
+        _prewarm_quant_probe()
         return True
 
 

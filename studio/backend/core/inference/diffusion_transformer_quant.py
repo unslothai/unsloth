@@ -1418,6 +1418,44 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
     return _crashed_child_verdict(proc, device)
 
 
+def prewarm_probe_table(device: str = "cuda") -> bool:
+    """Resolve (and persist) this card's smoke-probe table off the load path; True iff a child probe ran.
+
+    The first quantised load of a fresh install otherwise starts with this 4-5 s child before anything else. Called
+    from the boot-time prewarm, so a user who takes a few seconds to pick a model never waits for it. Skips when the
+    table is already known in this process or on disk. A load arriving mid-probe waits on the same lock and reads the
+    verdicts this call stored. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0`` disables it."""
+    if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    try:
+        from . import diffusion_probe_cache
+
+        if not diffusion_probe_cache.enabled():
+            return False
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    card = _smoke_cache_device_key(device)
+    schemes = without_nvfp4(TQ_SCHEMES)
+    if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+        return False
+    if _persisted_probe_table(card) is not None:
+        return False
+    with _CHILD_PROBE_LOCK:
+        if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+            return False
+        table = _child_probe_table(card)
+        if table is None:
+            return False
+        for name, verdict in table.items():
+            if verdict is not None:
+                _SMOKE_CACHE[(name, card)] = verdict
+    return True
+
+
 def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
     """The verdicts a previous process's clean child probe recorded for this card and stack, or None."""
     try:
