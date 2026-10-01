@@ -35,34 +35,17 @@ test("scroll-rounded insets the track in Chromium and WebKit and clips in Firefo
         `${targets} \\{\\s*scrollbar-width: auto;\\s*scrollbar-color: auto;`,
     ),
   );
-  // Watched surfaces (dialogs, which carry a shadow the clip would cut) take it only while they
-  // overflow; everything else always does.
-  assert.ok(
-    css.includes(
-      "@supports (-moz-appearance: none) {\n\t:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {\n\t\tclip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));",
+  assert.match(
+    css,
+    new RegExp(
+      String.raw`@supports \(-moz-appearance: none\) \{\s*` +
+        `${targets} \\{\\s*clip-path: inset\\(-1px round calc\\(var\\(--scroll-radius, 0px\\) \\+ 1px\\)\\);`,
     ),
   );
+  // No watcher: every .scroll-rounded box takes the clip, dialogs included.
+  assert.doesNotMatch(css, /data-overflow-watched|data-overflowing/);
   // Phone-width dialogs go square, and the clip must follow.
   assert.ok(css.includes(String.raw`.scroll-rounded.max-sm\:rounded-none { --scroll-radius: 0px; }`));
-});
-
-test("dialogs flag their overflow so Firefox clips them only while they scroll", () => {
-  for (const file of ["components/ui/dialog.tsx", "components/ui/alert-dialog.tsx"]) {
-    const source = readSrc(file);
-    assert.match(source, /const contentRef = useScrollOverflowRef\(ref\);/, file);
-    assert.match(source, /ref=\{contentRef\}/, file);
-  }
-  const lib = readSrc("lib/scroll-overflow.ts");
-  assert.match(lib, /element\.setAttribute\("data-overflow-watched", ""\);/);
-  assert.match(lib, /element\.toggleAttribute\("data-overflowing", overflowing\);/);
-  // Any overflow counts: one pixel over already draws a scrollbar.
-  assert.match(
-    lib,
-    /element\.scrollHeight > element\.clientHeight \|\|\s*element\.scrollWidth > element\.clientWidth;/,
-  );
-  // Content growing inside a capped box leaves the box the same size, so the children are watched.
-  assert.match(lib, /for \(const child of element\.children\) sizes\.observe\(child\);/);
-  assert.match(lib, /children\.observe\(element, \{ childList: true \}\);/);
 });
 
 test("dialogs and inline rounded scrollers use it", () => {

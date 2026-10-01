@@ -10,7 +10,6 @@ import type * as React from "react";
 import { createContext, useContext } from "react";
 
 import { Button } from "@/components/ui/button";
-import { useScrollOverflowRef } from "@/lib/scroll-overflow";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -78,7 +77,6 @@ function DialogContent({
   overlayClassName,
   overlayPosition,
   onInteractOutside,
-  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -88,8 +86,6 @@ function DialogContent({
   overlayPosition?: "fixed" | "absolute";
 }) {
   const resolvedContainer = container ?? null;
-  // Firefox clips a scrolling dialog to its radius only while it overflows, keeping its shadow.
-  const contentRef = useScrollOverflowRef(ref);
   return (
     <DialogPortalContainerContext.Provider value={resolvedContainer}>
       <DialogPortal container={resolvedContainer ?? undefined}>
@@ -98,7 +94,6 @@ function DialogContent({
           position={overlayPosition ?? position}
         />
         <DialogPrimitive.Content
-          ref={contentRef}
           data-slot="dialog-content"
           className={cn(
             // max-h + scroll keeps tall dialogs reachable on short viewports; a call site
