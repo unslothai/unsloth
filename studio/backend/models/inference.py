@@ -4339,11 +4339,12 @@ class DiffusionGenerateRequest(BaseModel):
         "after init_image and in this order. The loaded family bounds the total including "
         "init_image (FLUX.2: 4, Qwen-Image-2.1: 10); more is refused, never truncated.",
     )
-    workflow: Optional[Literal["edit", "reference"]] = Field(
+    workflow: Optional[Literal["edit", "reference", "outpaint"]] = Field(
         None,
         description = "Explicit image-conditioned workflow. edit: follow the prompt as an "
         "instruction over init_image (and reference_images); reference: generate a new image "
-        "guided by them. Omitted keeps the workflow implied by the other fields.",
+        "guided by them; outpaint: runs as inpaint over the padded init_image + mask_image and "
+        "is recorded as outpaint. Omitted keeps the workflow implied by the other fields.",
     )
     reference_resolution: Optional[int] = Field(
         None,

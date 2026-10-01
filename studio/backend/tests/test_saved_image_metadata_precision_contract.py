@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.machinery
+import base64
 import io
 import json
 import sys
@@ -689,6 +690,7 @@ def recipe_e2e_client(monkeypatch, tmp_path):
 
             if not self.loaded:
                 raise RuntimeError("No diffusion model is loaded.")
+            self.last_workflow = kwargs.get("workflow")
             return {
                 "images": [Image.new("RGB", (512, 512), (40, 80, 120)) for _ in range(batch_size)],
                 "seed": seed if seed is not None else 4242,
@@ -704,7 +706,7 @@ def recipe_e2e_client(monkeypatch, tmp_path):
                 "transformer_cache": "fbcache",
                 "cpu_offload": True,
                 "baked_loras": [],
-                "workflow": "img2img",
+                "workflow": "inpaint" if kwargs.get("mask_image") else "img2img",
                 "reference_resolution": None,
                 "localized_edit": None,
             }
@@ -804,3 +806,38 @@ def test_png_recipe_stamps_schema_version(tmp_gallery):
     assert embedded["schema_version"] == RECIPE_SCHEMA_VERSION
     for key in _RUNTIME_BUILD_KEYS:
         assert key not in embedded
+
+
+def test_extend_is_recorded_as_outpaint_but_runs_as_inpaint(recipe_e2e_client):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    client, backend = recipe_e2e_client
+    load = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "z-image-Q4_K_M.gguf"}
+    assert client.post("/api/inference/images/load", json = load).status_code == 200
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+    png = base64.b64encode(buf.getvalue()).decode()
+    body = {
+        "prompt": "p",
+        "seed": 1,
+        "steps": 4,
+        "init_image": png,
+        "mask_image": png,
+        "strength": 1.0,
+    }
+
+    inpaint = client.post("/api/inference/images/generate", json = body)
+    assert inpaint.status_code == 200, inpaint.text
+    assert inpaint.json()["images"][0]["workflow"] == "inpaint"
+
+    extend = client.post("/api/inference/images/generate", json = {**body, "workflow": "outpaint"})
+    assert extend.status_code == 200, extend.text
+    assert backend.last_workflow is None
+    image_id = extend.json()["images"][0]["id"]
+    assert extend.json()["images"][0]["workflow"] == "outpaint"
+    png_resp = client.get(f"/api/inference/images/gallery/{image_id}/file")
+    assert (
+        json.loads(Image.open(io.BytesIO(png_resp.content)).text["unsloth"])["workflow"]
+        == "outpaint"
+    )

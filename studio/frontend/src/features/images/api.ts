@@ -176,7 +176,7 @@ export interface DiffusionGenerateRequest {
   allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
-  workflow?: "edit" | "reference";
+  workflow?: "edit" | "reference" | "outpaint";
   reference_resolution?: number;
   // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
   localized_edit?: { mode: LocalizedEditMode; image: string };

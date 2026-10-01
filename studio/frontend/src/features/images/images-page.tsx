@@ -4137,6 +4137,8 @@ export function ImagesPage({
         condInit = built.image;
         condMask = built.mask;
         condStrength = 1; // the new border is blank canvas: redraw it fully
+        // Runs as inpaint; the label only keeps the recipe saying Extend.
+        condFields = { workflow: "outpaint" };
       } else if (isUpscale) {
         // Hires fix: the backend enlarges the source and re-denoises at this low strength, gaining
         // detail without changing content.
