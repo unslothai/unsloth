@@ -89,6 +89,11 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from core.inference.api_monitor import ApiMonitor
+from core.inference.llama_admission import (
+    ADMISSION_QUEUE_TIMEOUT_ENV,
+    LlamaAdmissionConfig,
+    get_llama_admission_queue,
+)
 from models.inference import (
     ChatMessage,
     ResponsesCustomToolCallInputItem,
@@ -527,6 +532,17 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = False)
 
         assert chat_req.enable_thinking is False
+
+    def test_chat_template_kwargs_enable_thinking_requires_json_boolean(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": "false"},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.enable_thinking is None
 
     def test_reasoning_effort_high_enables_local_thinking(self):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
@@ -1689,6 +1705,37 @@ class TestResponsesNonStreamingAdapter:
         assert entry["prompt_tokens"] == 2
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
+
+    def test_monitor_records_client_disconnect_as_cancelled(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "par"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                }
+            )
+
+        async def is_disconnected():
+            return True
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        messages, request = _shared_setup_4()
+        request.is_disconnected = is_disconnected
+
+        asyncio.run(_responses_non_streaming(ResponsesRequest(input = "hi"), messages, request))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
 
     @staticmethod
     def _run_in_process_completion(
@@ -3044,14 +3091,14 @@ class TestCodexStyleRequestShapes:
         assert len(req.input) == 3
         assert isinstance(req.input[1], ResponsesUnknownInputItem)
 
-    def test_emitted_reasoning_item_replay_is_dropped_for_local_chat(self):
+    def test_emitted_reasoning_item_replays_as_reasoning_content(self):
         payload = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "reasoning",
                     "id": "rs_1",
-                    "summary": [],
+                    "summary": [{"type": "summary_text", "text": "summary"}],
                     "content": [{"type": "reasoning_text", "text": "plan"}],
                 },
                 {"role": "assistant", "content": "33"},
@@ -3062,7 +3109,90 @@ class TestCodexStyleRequestShapes:
         msgs = _normalise_responses_input(payload)
 
         assert [m.role for m in msgs] == ["user", "assistant", "user"]
-        assert all("plan" not in (m.content or "") for m in msgs if isinstance(m.content, str))
+        assert msgs[1].content == "33"
+        assert msgs[1].reasoning_content == "plan"
+
+    def test_codex_parallel_calls_replay_as_one_turn_with_reasoning(self):
+        payload = ResponsesRequest(
+            store = False,
+            input = [
+                {"type": "message", "role": "user", "content": "list files then read README"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "PLAN: ls and cat"}],
+                    "encrypted_content": None,
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "shell",
+                    "arguments": '{"cmd":"ls"}',
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "c2",
+                    "name": "shell",
+                    "arguments": '{"cmd":"cat"}',
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": "README"},
+                {"type": "function_call_output", "call_id": "c2", "output": "hello"},
+            ],
+            tools = [{"type": "function", "name": "shell", "parameters": {"type": "object"}}],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "tool", "tool"]
+        assert msgs[1].content is None
+        assert msgs[1].reasoning_content == "PLAN: ls and cat"
+        assert [c["id"] for c in msgs[1].tool_calls] == ["c1", "c2"]
+        body = _build_openai_passthrough_body(
+            _build_chat_request(payload, msgs, stream = True), backend_ctx = 4096
+        )
+        assert [m.get("reasoning_content") for m in body["messages"]] == [
+            None,
+            "PLAN: ls and cat",
+            None,
+            None,
+        ]
+
+    def test_each_turn_keeps_its_own_text_reasoning_and_calls(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "fix it"},
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "read first"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Reading."}],
+                },
+                {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "code"},
+                {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+                {"type": "custom_tool_call", "call_id": "c2", "name": "apply_patch", "input": "p"},
+                {"type": "custom_tool_call_output", "call_id": "c2", "output": "Done!"},
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "ok"}],
+                },
+                {"role": "user", "content": "thanks"},
+            ],
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "tool", "assistant", "tool", "user"]
+        assert (msgs[1].content, msgs[1].reasoning_content) == ("Reading.", "read first")
+        assert [c["id"] for c in msgs[1].tool_calls] == ["c1"]
+        assert (msgs[3].content, msgs[3].reasoning_content) == (None, None)
+        assert [c["id"] for c in msgs[3].tool_calls] == ["c2"]
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as
@@ -3677,3 +3807,117 @@ def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatc
     assert completed["response"]["status"] == "completed"
     assert completed["response"]["incomplete_details"] is None
     assert [item["status"] for item in completed["response"]["output"]] == ["completed"]
+
+
+_OVERFLOW_BODY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": "request (16608 tokens) exceeds the available context size (2048 tokens), try increasing it",
+            "type": "exceed_context_size_error",
+            "n_prompt_tokens": 16608,
+            "n_ctx": 2048,
+        }
+    }
+)
+
+
+def _failed_stream_error(
+    monkeypatch,
+    handler = None,
+    chunks = (),
+):
+    import routes.inference as inf_mod
+
+    real_async_client = httpx.AsyncClient
+    TestResponsesStreamAdapter._install_stream_mock(monkeypatch, list(chunks))
+    if handler is not None:
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: real_async_client(transport = httpx.MockTransport(handler)),
+        )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
+    return failed["response"]["error"]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "code"),
+    [
+        (400, _OVERFLOW_BODY, "context_length_exceeded"),
+        (500, '{"error":{"code":500,"message":"Context size has been exceeded."}}', "server_error"),
+    ],
+)
+def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, status, body, code):
+    error = _failed_stream_error(
+        monkeypatch, handler = lambda request: httpx.Response(status, content = body.encode())
+    )
+    assert error["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        (
+            "request (3868 tokens) exceeds the available context size (2048 tokens), try increasing it",
+            "context_length_exceeded",
+        ),
+        ("Context size has been exceeded.", "server_error"),
+    ],
+)
+def test_in_band_upstream_error_fails_the_stream_with_a_string_code(monkeypatch, message, code):
+    error = _failed_stream_error(monkeypatch, chunks = [{"error": {"code": 500, "message": message}}])
+    assert error["code"] == code
+
+
+def test_unreachable_upstream_fails_the_stream_with_server_error(monkeypatch):
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request = request)
+
+    assert _failed_stream_error(monkeypatch, handler = refuse)["code"] == "server_error"
+
+
+def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatch):
+    import routes.inference as inf_mod
+
+    async def fail_send(*_args, **_kwargs):
+        raise AssertionError("a request that never got a slot must not reach llama-server")
+
+    base_url = "http://llama.responses.admission-timeout.test"
+    monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.01")
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            base_url = base_url,
+            context_length = 4096,
+            effective_parallel_slots = 1,
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        queue = get_llama_admission_queue(base_url)
+        blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+        try:
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+        finally:
+            blocker.release()
+
+    [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
+    assert failed["response"]["error"]["code"] == "server_is_overloaded"

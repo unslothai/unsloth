@@ -5,6 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  finalizeAppWindowLayout,
+  measureWindowLayout,
+  observeDevicePixelRatio,
+  prepareSetupWindow,
+  shouldFinishWindowLayoutWait,
+} from "../src/app/window-layout-lifecycle.ts";
+import {
   DEFAULT_APP_WINDOW_SIZE_BOUNDS,
   MINIMUM_APP_WINDOW_SIZE,
   PREFERRED_SETUP_WINDOW_SIZE,
@@ -14,12 +21,6 @@ import {
   constrainWindowSize,
   fitWindowSize,
 } from "../src/app/window-layout.ts";
-import {
-  finalizeAppWindowLayout,
-  shouldFinishWindowLayoutWait,
-  measureWindowLayout,
-  observeDevicePixelRatio,
-} from "../src/app/window-layout-lifecycle.ts";
 
 // A work area is the panel minus the taskbar, in logical pixels.
 function workArea(
@@ -33,6 +34,50 @@ function workArea(
     height: (height - taskbar) / scaleFactor,
   };
 }
+
+test("repair setup unmaximizes before sizing or locking the window", async () => {
+  const events: string[] = [];
+  const done = Promise.resolve();
+  let maximized = true;
+  const completed = await prepareSetupWindow({
+    resetLayout: () => {
+      events.push("reset");
+      return done;
+    },
+    unmaximize: () => {
+      maximized = false;
+      events.push("unmaximize");
+      return done;
+    },
+    clearConstraints: () => {
+      events.push("clear");
+      return done;
+    },
+    enableResize: () => {
+      events.push("unlocked");
+      return done;
+    },
+    resizeForSetup: () => {
+      events.push("sized");
+      return Promise.resolve(true);
+    },
+    disableResize: () => {
+      events.push("fixed");
+      return done;
+    },
+    isCurrent: () => true,
+  });
+  assert.equal(completed, true);
+  assert.equal(maximized, false);
+  assert.deepEqual(events, [
+    "reset",
+    "unmaximize",
+    "clear",
+    "unlocked",
+    "sized",
+    "fixed",
+  ]);
+});
 
 test("waits for the first native restore event before settling", () => {
   assert.equal(shouldFinishWindowLayoutWait(false), false);
@@ -389,7 +434,7 @@ test("remeasures a restored window after show on its compact secondary", async (
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
 
-test("waits for restored geometry before enforcing its minimum", async () => {
+test("restored geometry settles before the window becomes visible", async () => {
   const events: string[] = [];
   let currentSize = { width: 760, height: 560 };
   const measured = {
@@ -406,6 +451,7 @@ test("waits for restored geometry before enforcing its minimum", async () => {
     measured,
     show: async () => {
       events.push("show");
+      assert.deepEqual(currentSize, { width: 1200, height: 800 });
       return true;
     },
     waitForSettled: async () => {
@@ -427,13 +473,57 @@ test("waits for restored geometry before enforcing its minimum", async () => {
   });
 
   assert.deepEqual(events, [
+    "settled",
+    "show",
+    "measure",
+    "constraints",
+    "enforce",
+  ]);
+  assert.deepEqual(currentSize, { width: 1200, height: 800 });
+});
+
+test("a natively restored window is shown without waiting, then settles", async () => {
+  const events: string[] = [];
+  const measured = {
+    bounds: {
+      minimum: { width: 900, height: 600 },
+      maximum: { width: 1920, height: 1040 },
+    },
+    monitor: null,
+    frameSize: { width: 0, height: 0 },
+  };
+
+  await finalizeAppWindowLayout({
+    restored: true,
+    nativeRestored: true,
+    measured,
+    show: async () => {
+      events.push("show");
+      return true;
+    },
+    waitForSettled: async () => {
+      events.push("settled");
+    },
+    measure: async () => {
+      events.push("measure");
+      return measured;
+    },
+    setMinimumConstraints: async () => {
+      events.push("constraints");
+    },
+    enforceBounds: async () => {
+      events.push("enforce");
+    },
+    isCurrent: () => true,
+  });
+
+  assert.deepEqual(events, [
     "show",
     "settled",
     "measure",
     "constraints",
     "enforce",
   ]);
-  assert.deepEqual(currentSize, { width: 1200, height: 800 });
 });
 
 test("preserves restored geometry while an autostart window stays hidden", async () => {
@@ -453,9 +543,6 @@ test("preserves restored geometry while an autostart window stays hidden", async
     show: async () => {
       events.push("show");
       return false;
-    },
-    waitForSettled: async () => {
-      events.push("settled");
     },
     measure: async () => {
       events.push("measure");

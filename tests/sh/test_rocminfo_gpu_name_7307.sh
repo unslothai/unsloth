@@ -13,6 +13,12 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
+    echo ""
+    sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_gfx_arch_slots()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -298,6 +304,140 @@ echo "=== no GPU agent ==="
 assert_eq "falls back to the first marketing name with no arch" \
     "|AMD Ryzen 7 5700U with Radeon Graphics" "$(printf '%s\n' "$APU" | _rocminfo_gpu_records)"
 assert_eq "empty input yields nothing" "" "$(printf '' | _rocminfo_gpu_records)"
+
+# Two amd-smi header shapes: `GPU: N` opens a keyed block with the arch later, `GPU[N] :
+# gfx...` is the whole record. Matching only the first left an rocminfo-less host with no
+# arch at all, so a gfx1200 box on ROCm 6.1 kept kernel-less wheels instead of rocm6.4.
+SMI_BRACKET="GPU[0]  : gfx1100
+GPU[1]  : gfx1100
+GPU[2]  : gfx1200"
+SMI_KEYED="GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 9070 XT
+        TARGET_GRAPHICS_VERSION: gfx1201"
+echo "=== amd-smi headers ==="
+assert_eq "the bracketed one-line form keeps its arch, one record per device" \
+    "gfx1100| gfx1100| gfx1200|" \
+    "$(printf '%s\n' "$SMI_BRACKET" | _amd_smi_gpu_records | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "the keyed form still pairs arch with name" \
+    "gfx1201|AMD Radeon RX 9070 XT" \
+    "$(printf '%s\n' "$SMI_KEYED" | _amd_smi_gpu_records)"
+assert_eq "a header with no arch stays empty rather than borrowing the next device's" \
+    "|" "$(printf 'GPU: 0\n    BDF: 0000:03:00.0\n' | _amd_smi_gpu_records)"
+
+# A mask indexes the arch list, so an unreadable adapter keeps its slot: dropping it shifts
+# every later device and hands the mask the next card's arch.
+echo "=== arch slots ==="
+assert_eq "an unreadable adapter keeps its ordinal instead of shifting the list" \
+    "unknown gfx1151" \
+    "$(printf '%s\n' "|Unknown adapter
+gfx1151|Radeon 8060S" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "and in the last slot, where command substitution used to eat it" \
+    "gfx1151 unknown" \
+    "$(printf '%s\n' "gfx1151|Radeon 8060S
+|Unknown adapter" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "no arch anywhere prints nothing, so the caller tries the next probe" \
+    "" "$(printf '%s\n' "|A
+|B" | _gfx_arch_slots)"
+assert_eq "a fully readable list is unchanged" "gfx1100 gfx1200" \
+    "$(printf '%s\n' "gfx1100|A
+gfx1200|B" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
+
+# Arch routing indexes with a HIP/ROCR ordinal, but amd-smi enumerates in discovery order,
+# so it has to translate first or say it cannot.
+HIP_MAP="GPU: 0
+    HIP_ID: 1
+GPU: 1
+    HIP_ID: 0"
+MIXED="gfx90a|AMD Instinct MI210
+gfx1200|AMD Radeon RX 9070"
+echo "=== amd-smi to HIP order ==="
+assert_eq "a full HIP_ID map reorders the records and says so" \
+    "hip gfx1200|AMD Radeon RX 9070 gfx90a|AMD Instinct MI210" \
+    "$(printf '%s\n' "$HIP_MAP" | _amd_smi_hip_order "$MIXED" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "no map at all keeps discovery order and says THAT" \
+    "discovery gfx90a|AMD Instinct MI210 gfx1200|AMD Radeon RX 9070" \
+    "$(printf '' | _amd_smi_hip_order "$MIXED" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "HIP_ID: N/A is not a map either" \
+    "discovery" \
+    "$(printf 'GPU: 0\n    HIP_ID: N/A\nGPU: 1\n    HIP_ID: N/A\n' \
+        | _amd_smi_hip_order "$MIXED" | head -n 1)"
+
+# GPU probing runs at install.sh top level, so a helper defined below its first call is not
+# in scope: the caller's `|| true` swallows the command-not-found and the probe answers
+# nothing. It shipped that way once. Pin the order, not the line numbers, which move.
+echo "=== helpers are defined before they are called ==="
+for _fn in _rocminfo_gpu_records _amd_smi_gpu_records _gfx_arch_slots _amd_smi_hip_order; do
+    _def=$(grep -n "^$_fn() {" "$INSTALL_SH" | head -n 1 | cut -d: -f1)
+    # Calls only, never the definition line and never a comment.
+    _first_use=$(grep -n "[|( ]$_fn\b" "$INSTALL_SH" \
+        | grep -v "^[0-9]*: *#" | head -n 1 | cut -d: -f1)
+    if [ -z "$_first_use" ]; then
+        echo "  FAIL: $_fn is defined but never called"; FAIL=$((FAIL + 1)); continue
+    fi
+    if [ "$_def" -lt "$_first_use" ]; then
+        echo "  PASS: $_fn defined at $_def, first called at $_first_use"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $_fn is called at $_first_use but not defined until $_def"
+        FAIL=$((FAIL + 1))
+    fi
+done
+
+echo "=== the ROCr layer and the HIP layer compose, they do not shadow ==="
+# rocminfo output is already the ROCr survivors; the HIP layer (HIP_VISIBLE_DEVICES or its
+# alias CUDA_VISIBLE_DEVICES) then selects among THOSE. ROCR=2,1 leaves gfx1200 then
+# gfx1100, so CUDA=1 names gfx1100. Mirrors _HIP_LAYER_MASKS in install_python_stack.py.
+_mask_case() {
+    # $1 = env assignments, $2 = expected arch
+    _got=$(env -u HIP_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES -u CUDA_VISIBLE_DEVICES \
+        sh -c "
+            $1
+            _gfx_probe=rocminfo
+            _gfx_all='gfx1200
+gfx1100'
+            $(sed -n '/# first-set-wins, mirroring _pick_visible_index/,/^            _idx=0$/p' "$INSTALL_SH")
+            if [ -n \"\$_vis\" ] && [ \"\$_vis\" != \"-1\" ]; then
+                _first=\${_vis%%,*}
+                case \"\$_first\" in ''|*[!0-9]*) _idx=0 ;; *) _idx=\$_first ;; esac
+            fi
+            printf '%s\\n' \"\$_gfx_all\" | awk -v idx=\"\$_idx\" 'NF { v[n++]=\$0 } END { if (idx<0||idx>=n) idx=0; if (n>0) print v[idx] }'
+        " 2>/dev/null)
+    if [ "$_got" = "$2" ]; then
+        echo "  PASS: [$1] -> $2"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: [$1] expected $2, got '$_got'"; FAIL=$((FAIL + 1))
+    fi
+}
+_mask_case "export ROCR_VISIBLE_DEVICES=2,1" "gfx1200"
+_mask_case "export ROCR_VISIBLE_DEVICES=2,1; export CUDA_VISIBLE_DEVICES=1" "gfx1100"
+_mask_case "export ROCR_VISIBLE_DEVICES=2,1; export HIP_VISIBLE_DEVICES=1" "gfx1100"
+_mask_case "export HIP_VISIBLE_DEVICES=0" "gfx1200"
+
+# `amd-smi list` on ROCm 6.x answers ids only (GPU, BDF, UUID, KFD_ID); the arch lives in
+# `static --asic`. A record with an empty arch column is not an answer and must not stop
+# that fallback, or an rocminfo-less host routes to the generic wheel.
+echo "=== amd-smi list without an arch falls through to static --asic ==="
+_smi_bin=$(mktemp -d)
+cat > "$_smi_bin/amd-smi" <<'EOF'
+#!/bin/sh
+case "${1:-} ${2:-}" in
+    "list ") printf 'GPU: 0\n    BDF: 0000:c3:00.0\n' ;;
+    "static --asic") printf 'GPU: 0\n    ASIC:\n        MARKET_NAME: AMD Radeon Graphics\n        TARGET_GRAPHICS_VERSION: gfx1151\n' ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$_smi_bin/amd-smi"
+_fallback=$(sed -n '/_gfx_records=$(amd-smi list 2>\/dev\/null | _amd_smi_gpu_records/,/_gfx_probe=amd-smi$/p' "$INSTALL_SH")
+[ -n "$_fallback" ] || { echo "FATAL: no amd-smi fallback found in $INSTALL_SH" >&2; exit 1; }
+{
+    sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_gfx_arch_slots()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH"
+    printf '%s\n' "_gfx_all=''; _gfx_probe=''; _gfx_space=hip" "$_fallback" fi 'printf "%s" "$_gfx_all"'
+} > "$_smi_bin/run.sh"
+assert_eq "an arch-less amd-smi list still reaches static --asic" "gfx1151" \
+    "$(PATH="$_smi_bin:$PATH" sh "$_smi_bin/run.sh" 2>/dev/null)"
+rm -rf "$_smi_bin"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -206,6 +206,10 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
+    o._stop_ledger = None
+    o._pending_teardowns = None
     cmd = o._build_generate_cmd(
         "req1",
         None,
@@ -215,6 +219,10 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
+    rf = {"response_format": {"type": "json_object"}, "reasoning_is_extracted": True}
+    with_rf = o._build_generate_cmd("req1", None, messages = [], max_new_tokens = 8, **rf)
+    assert {key: with_rf[key] for key in rf} == rf
+    assert "reasoning_is_extracted" not in cmd
 
 
 def test_worker_forwards_all_sampling_params_to_backend():
@@ -226,8 +234,14 @@ def test_worker_forwards_all_sampling_params_to_backend():
         def __init__(self):
             self.received = None
 
-        def generate_chat_response(self, **kwargs):
-            self.received = kwargs
+        def generate_chat_response(
+            self,
+            *,
+            response_format = None,
+            reasoning_is_extracted = None,
+            **kwargs,
+        ):
+            self.received = dict(kwargs, rf = response_format, rie = reasoning_is_extracted)
             return iter(())  # empty stream -> loop exits, gen_done is sent
 
     class _FakeQueue:
@@ -242,6 +256,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
         "request_id": "r",
         "messages": [{"role": "user", "content": "hi"}],
         "max_new_tokens": 128,
+        "response_format": {"type": "json_object"},
+        "reasoning_is_extracted": True,
         **_SAMPLING,
     }
     backend = _RecordingBackend()
@@ -250,6 +266,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+    assert backend.received["rf"] == {"type": "json_object"}
+    assert backend.received["rie"] is True
 
 
 def test_orchestrator_cmd_carries_the_tool_protocol_flag():
@@ -259,6 +277,8 @@ def test_orchestrator_cmd_carries_the_tool_protocol_flag():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     base = dict(messages = [{"role": "user", "content": "hi"}], tools = [])
     assert (
         o._build_generate_cmd("r", None, tool_protocol_active = True, **base)["tool_protocol_active"]
@@ -289,7 +309,7 @@ def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
 
     from core.inference import worker
 
-    src = inspect.getsource(worker._handle_generate)
+    src = inspect.getsource(worker._generation_kwargs)
     gated = src[src.index("for gated in (") : src.index("for gated in (") + 200]
     assert '"tool_protocol_active"' in gated, "the flag must be gated on _backend_declares"
 
@@ -323,9 +343,10 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
     from core.inference.mlx_inference import MLXInferenceBackend
 
     src = inspect.getsource(MLXInferenceBackend._generate_text)
-    after = src[src.index("preserves_think_close") :]
+    after = src[src.index("think_close_survives = (") :]
     predicate = after[: after.index("decoder_preserves_token")]
     assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+    assert "preserves_think_close = think_close_survives" in src
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
@@ -364,6 +385,8 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
     from core.inference.worker import _handle_generate
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     assert "video_base64" not in o._build_generate_cmd("r", None, messages = [])
     cmd = o._build_generate_cmd(
         "r", None, messages = [{"role": "user", "content": "hi"}], video_b64 = "AAAA"
@@ -423,12 +446,14 @@ def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
 
     built = []
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._unload_pending = False
-    o._exclusive_tts_pending = False
+    o._worker_reserved_for = None
     o.active_model_name = "m"
     o._ensure_subprocess_alive = lambda: True
-    o._wait_dispatcher_idle = lambda: None
+    o._wait_worker_idle = lambda *a, **k: True
     o._start_dispatcher = lambda: False
 
     def _build(*_args, **kwargs):

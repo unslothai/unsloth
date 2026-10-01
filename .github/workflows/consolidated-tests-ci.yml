@@ -53,10 +53,32 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
+      # non-Python file under either: the named tests, the inline scripts,
+      # core-cpu-setup and the editable install were checked against the import and
+      # literal-reference graph of every file there, and the only readers found are
+      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
+      # back in on the last line because test_python39_compatibility.py scans every
+      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
+      # Order matters: the last matching pattern wins.
       - 'studio/**'
+      - '!studio/frontend/**'
+      - '!studio/src-tauri/**'
+      - 'studio/**/*.py'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
+      # parses every .py file in the repo outside dot-directories and frontend/, so a
+      # Python file anywhere can change its verdict, not only the ones under the source
+      # trees above.
+      - '*.py'
+      - 'scripts/**/*.py'
+      - 'docker/**/*.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Both Core jobs `uses:` this action, so a change to it must run them.
       - '.github/actions/core-cpu-setup/**'
@@ -66,10 +88,32 @@ on:
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      # studio/** minus the frontend and the Tauri shell. Nothing these jobs run reads a
+      # non-Python file under either: the named tests, the inline scripts,
+      # core-cpu-setup and the editable install were checked against the import and
+      # literal-reference graph of every file there, and the only readers found are
+      # install.sh and install.ps1 (icons), which no Core step runs. Python files come
+      # back in on the last line because test_python39_compatibility.py scans every
+      # studio/**/*.py and test_callback_signature_drift.py every .py outside frontend/.
+      # Order matters: the last matching pattern wins.
       - 'studio/**'
+      - '!studio/frontend/**'
+      - '!studio/src-tauri/**'
+      - 'studio/**/*.py'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      # tests/test_callback_signature_drift.py (a hard gate in the consolidated job)
+      # parses every .py file in the repo outside dot-directories and frontend/, so a
+      # Python file anywhere can change its verdict, not only the ones under the source
+      # trees above.
+      - '*.py'
+      - 'scripts/**/*.py'
+      - 'docker/**/*.py'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Both Core jobs `uses:` this action, so a change to it must run them.
       - '.github/actions/core-cpu-setup/**'
@@ -87,7 +131,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -286,11 +330,13 @@ jobs:
             tests/saving/test_fix_sentencepiece_tokenizer_guard.py \
             tests/saving/test_compressed_export_schemes.py \
             tests/saving/test_export_api_surface.py \
+            tests/saving/test_openvino_export.py \
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
+            tests/saving/test_save_method_lora_routing.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
@@ -334,6 +380,14 @@ jobs:
         # without a corresponding zoo / unsloth-side workaround.
         run: |
           python -m pytest -v --tb=short tests/test_import_fixes_drift.py
+
+      - name: triton-absent import guard (HARD GATE)
+        # PyPI ships no Windows `triton` wheel, so the unconditional module-level import
+        # in _gpu_init.py killed `import unsloth` on a CPU-only Windows install. Named
+        # here because nothing else in the repo collects this file, so a deleted guard
+        # would leave CI green.
+        run: |
+          python -m pytest -v --tb=short tests/test_triton_optional_import.py
 
       - name: public-api surface drift detectors (9 tests, HARD GATE)
         # Companion to test_import_fixes_drift.py: that file catches
@@ -397,6 +451,10 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
+        # The drift guard is named explicitly (these jobs collect paths, not
+        # trees): it is the only leg with a transformers past the `>=4.51,<5.5`
+        # pin, and the wording it exists to survive landed in 5.10.
+        #
         # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
@@ -409,7 +467,8 @@ jobs:
             tests/utils/test_dataset_num_proc.py \
             tests/utils/test_train_on_responses_only_num_proc.py
           PYTHONPATH=studio/backend python -m pytest -v --tb=short \
-            studio/backend/tests/test_dataset_map_num_proc.py
+            studio/backend/tests/test_dataset_map_num_proc.py \
+            studio/backend/tests/test_compressed_tensors_signature_drift.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
@@ -423,11 +482,13 @@ jobs:
             tests/saving/test_fix_sentencepiece_tokenizer_guard.py \
             tests/saving/test_compressed_export_schemes.py \
             tests/saving/test_export_api_surface.py \
+            tests/saving/test_openvino_export.py \
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/saving/test_is_vlm_detection.py \
+            tests/saving/test_save_method_lora_routing.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \

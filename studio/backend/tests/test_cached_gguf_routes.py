@@ -1948,8 +1948,14 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         [_file("config.json", 1_000), _file("model.safetensors", 9_000)],
         tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
     )
+    snapshot = diffusion.repo_path / "snapshots" / "revision"
+    _saved_pipeline(snapshot, "ZImagePipeline")
+    (diffusion.repo_path / "refs").mkdir()
+    (diffusion.repo_path / "refs" / "main").write_text("revision")
+    diffusion.revisions[0].snapshot_path = snapshot
 
     _scanned_repos(monkeypatch, diffusion, checkpoint)
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
     by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
@@ -1957,6 +1963,11 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
         "unsloth/Llama-3.2-1B-Instruct": None,
     }
+    rows = {c["repo_id"]: c for c in result["cached"]}
+    assert rows["Tongyi-MAI/Z-Image-Turbo"]["artifact_kind"] == "diffusers_pipeline"
+    # A snapshot on refs/main loads by its Hub id, not a pinned path.
+    assert "load_id" not in rows["Tongyi-MAI/Z-Image-Turbo"]
+    assert rows["unsloth/Llama-3.2-1B-Instruct"].get("artifact_kind", "unknown") == "unknown"
 
 
 def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, tmp_path):
@@ -2165,6 +2176,7 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
                 "prefer_local_cache": True,
                 "offline": False,
                 "local_path": str(snapshot),
+                "include_cache_locations": False,
                 "hf_token": None,
             },
         )
@@ -2234,7 +2246,13 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
     _variants(offline = True)
 
     assert calls == [
-        {"prefer_local_cache": False, "offline": True, "local_path": None, "hf_token": None}
+        {
+            "prefer_local_cache": False,
+            "offline": True,
+            "local_path": None,
+            "include_cache_locations": False,
+            "hf_token": None,
+        }
     ]
 
 
@@ -2602,11 +2620,12 @@ def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
     assert calls == [("org/repo", "Q4_K_M", 20, "token")]
 
 
-def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
+@pytest.mark.parametrize("mlx_load", [False, True])
+def test_legacy_model_progress_delegates_to_shared_service(monkeypatch, mlx_load):
     calls = []
 
-    async def shared(repo_id, *, hf_token):
-        calls.append((repo_id, hf_token))
+    async def shared(repo_id, *, hf_token, mlx_load):
+        calls.append((repo_id, hf_token, mlx_load))
         return {"downloaded_bytes": 10, "expected_bytes": 20, "progress": 0.5}
 
     monkeypatch.setattr(
@@ -2619,11 +2638,12 @@ def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
             repo_id = "org/repo",
             hf_token = "token",
             current_subject = "test-user",
+            mlx_load = mlx_load,
         )
     )
 
     assert result["progress"] == 0.5
-    assert calls == [("org/repo", "token")]
+    assert calls == [("org/repo", "token", mlx_load)]
 
 
 def test_legacy_delete_delegates_to_shared_service(monkeypatch):
@@ -2966,6 +2986,57 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
     except HTTPException as e:
         assert e.status_code == 400
         assert "An Images model load is using this repo" in e.detail
+
+
+def test_delete_cached_refuses_repo_a_cancelled_diffusion_load_is_releasing(monkeypatch):
+    # An eject drops _loading at once so the load cancels promptly, but that thread keeps reading:
+    # through _prefetch_files it holds no lock and only checks the cancel event either side of the
+    # blocking Hub call. loading_repo_ids() is empty by then, so the drain list has to refuse.
+    from fastapi import HTTPException
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = lambda: (),
+            draining_repo_ids = lambda: ("unsloth/Qwen-Image-2512-GGUF",),
+        ),
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
+
+    try:
+        asyncio.run(deletion.delete_cached_model_response("unsloth/Qwen-Image-2512-GGUF"))
+        assert False, "expected HTTPException refusing the delete while the load unwinds"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "still releasing this repo" in e.detail
+
+
+def test_delete_cached_is_unaffected_by_a_backend_without_a_drain(monkeypatch):
+    # sd.cpp and the video backend expose no draining_repo_ids; the guard must not start refusing.
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
+
+    assert deletion._diffusion_blocks_delete("unsloth/Qwen-Image-2512-GGUF") is None
 
 
 def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
@@ -4144,6 +4215,7 @@ def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
         )
     )
     assert result.resolved_locally is True
+    assert result.dependencies_resolved is False
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
 
 
@@ -4907,7 +4979,8 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
 
 def _saved_pipeline(root: Path, class_name: str) -> Path:
     root.mkdir(parents = True, exist_ok = True)
-    (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", "Transformer2DModel"]}
+    (root / "model_index.json").write_text(json.dumps(manifest))
     for component in ("transformer", "vae", "text_encoder"):
         (root / component).mkdir(parents = True, exist_ok = True)
         (root / component / "config.json").write_text("{}")
@@ -6371,6 +6444,10 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
 
     assert row.get("task") is None
     assert row["diffusers"] is True
+    assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(snapshot)
+    response = models_route.CachedModelsResponse(cached = [row])
+    assert response.cached[0].artifact_kind == "diffusers_modular_pipeline"
 
 
 def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkeypatch, tmp_path):
