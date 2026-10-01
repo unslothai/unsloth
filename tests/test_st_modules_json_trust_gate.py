@@ -24,6 +24,7 @@ these tests observe whether an import happened at all.
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -574,15 +575,31 @@ def test_an_ordinary_embedder_fetches_no_module_configs(tmp_path, monkeypatch):
     assert requested == []
 
 
-def test_the_cached_absence_lookup_uses_the_cache_the_download_uses(tmp_path, monkeypatch):
-    """HUGGINGFACE_HUB_CACHE is the legacy constant and does not follow HF_HUB_CACHE, so
-    naming it searched a different cache from the one hf_hub_download writes."""
+def test_a_recorded_absence_answers_an_unreachable_hub(tmp_path, monkeypatch):
+    """Offline, a recorded "this repo has no modules.json" is the answer, not a refusal.
+
+    The cache is consulted from the unreachable handler now rather than before the
+    download. Consulting it first decided a security question from a local refs pointer,
+    which for a branch is stale, and reported no commit so the load went unpinned. It is
+    still what answers an unreachable hub, which is what keeps an offline load working.
+
+    It also has to read the cache hf_hub_download reads: HUGGINGFACE_HUB_CACHE is the
+    legacy constant and does not follow HF_HUB_CACHE, so naming one of our own searched a
+    different cache and a recorded absence there was missed.
+    """
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "active"))
     monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
     monkeypatch.setattr(
         FastSentenceTransformer,
         "_module_path",
         staticmethod(lambda *a, **k: None),
+    )
+    _simulate_pre_six(monkeypatch)
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
     )
 
     seen = {}
@@ -599,8 +616,9 @@ def test_the_cached_absence_lookup_uses_the_cache_the_download_uses(tmp_path, mo
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_try_to_load_from_cache)
 
-    FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
-
+    # Not a refusal, and nothing to pin: no commit was resolved and the recorded one is a
+    # stale local pointer.
+    assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == ""
     assert (
         seen["cache_dir"] is None
     ), "a cache of our own choosing is not the cache hf_hub_download reads"
@@ -1162,3 +1180,77 @@ def test_an_immutable_revision_resolves_to_itself(tmp_path, monkeypatch):
         )
         == commit
     )
+
+
+def test_a_confirmed_absent_modules_json_still_pins_the_load(tmp_path, monkeypatch):
+    """Absence is the thing being validated, so it has to be pinned like a presence.
+
+    A branch with no modules.json validated clean and reported no commit, so the load went
+    unpinned: a branch that gains one before the load brings in a module type nothing
+    checked. The hub answered the 404 against a revision just now, so resolving that
+    revision to its commit is sound, and it is one request on this path only.
+    """
+    from huggingface_hub.errors import EntryNotFoundError
+
+    commit = "f" * 40
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(EntryNotFoundError("no modules.json")),
+    )
+
+    asked = {}
+
+    class FakeApi:
+        def __init__(self, token = None):
+            asked["token"] = token
+
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+        ):
+            asked["repo_id"] = repo_id
+            asked["revision"] = revision
+            return types.SimpleNamespace(sha = commit)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types(
+            "acme/embedder", None, False, revision = "main"
+        )
+        == commit
+    )
+    assert asked["repo_id"] == "acme/embedder"
+    assert asked["revision"] == "main"
+
+
+def test_a_failed_commit_lookup_does_not_break_the_load(tmp_path, monkeypatch):
+    """The extra request is an improvement, not a dependency.
+
+    If it fails the result is the previous behaviour, an unpinned load, rather than an
+    exception out of a guard that had already decided there was nothing to check.
+    """
+    from huggingface_hub.errors import EntryNotFoundError
+
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(EntryNotFoundError("no modules.json")),
+    )
+
+    class BrokenApi:
+        def __init__(self, token = None):
+            pass
+
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+        ):
+            raise RuntimeError("hub down")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", BrokenApi)
+
+    assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == ""

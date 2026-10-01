@@ -1405,25 +1405,31 @@ class FastSentenceTransformer(FastModel):
         from huggingface_hub import try_to_load_from_cache
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
-        try:
-            # No default of our own: HUGGINGFACE_HUB_CACHE is the legacy constant and does
-            # not follow HF_HUB_CACHE, so naming it searched a different cache from the one
-            # hf_hub_download writes, and a recorded absence there was missed. Passing None
-            # lets the hub apply the same default it applies to the download below.
-            cached = try_to_load_from_cache(
-                model_name,
-                "modules.json",
-                cache_dir = cache_dir,
-                revision = revision,
-            )
-        except Exception:
-            cached = None
-        if isinstance(cached, str):
-            return cached
-        if cached is not None:
-            # The sentinel recording that the hub already answered "no such file".
-            return None
+        def _cached_answer():
+            """What the local cache already knows, or None if it knows nothing."""
+            try:
+                # No default of our own: HUGGINGFACE_HUB_CACHE is the legacy constant and
+                # does not follow HF_HUB_CACHE, so naming it searched a different cache
+                # from the one hf_hub_download writes, and a recorded absence there was
+                # missed. Passing None lets the hub apply the same default it applies to
+                # the download below.
+                return try_to_load_from_cache(
+                    model_name,
+                    "modules.json",
+                    cache_dir = cache_dir,
+                    revision = revision,
+                )
+            except Exception:
+                return None
 
+        # Deliberately not consulted before the download. A recorded absence is keyed to
+        # whatever commit the local refs file points at, which for a branch is a stale
+        # pointer, so answering "this repo has no modules.json" from it decided a security
+        # question against a snapshot nobody had checked was current, and reported no
+        # commit, which left the load unpinned. A branch that gains a modules.json between
+        # the two then loads an unchecked module type. The cache is still the answer when
+        # the hub cannot be reached, which is what the LocalEntryNotFoundError handler
+        # below uses it for, so an offline load behaves as it did.
         try:
             downloaded = hf_hub_download(
                 model_name,
@@ -1438,8 +1444,37 @@ class FastSentenceTransformer(FastModel):
         except LocalEntryNotFoundError as exception:
             # Checked before EntryNotFoundError, which it subclasses: not reachable is not the same
             # answer as not present, and catching it there read one as the other.
+            cached = _cached_answer()
+            if isinstance(cached, str):
+                if resolved is not None:
+                    resolved["revision"] = FastSentenceTransformer._snapshot_revision(cached)
+                return cached
+            if cached is not None:
+                # Unreachable, and the cache already recorded that this repo has no
+                # modules.json. Offline that is the whole answer and the load can only use
+                # the cache too, so this is not a refusal. No commit is reported, because
+                # none was resolved and the recorded one is a stale local pointer.
+                return None
             unverifiable = exception
         except EntryNotFoundError:
+            # The repo really has no modules.json at this revision, answered by the hub
+            # just now. Pin anyway: absence is the thing being validated, and a branch
+            # that gains one before the load would otherwise bring in an unchecked module
+            # type. One request, only on this path, and a failure degrades to not pinning
+            # rather than to a broken load.
+            if resolved is not None:
+                try:
+                    from huggingface_hub import HfApi
+                    sha = HfApi(token = token).model_info(model_name, revision = revision).sha
+                    if isinstance(sha, str) and len(sha) == 40:
+                        resolved["revision"] = sha.lower()
+                except Exception as error:
+                    logging.debug(
+                        "Unsloth: could not resolve the commit for %s (%s); the load will "
+                        "not be pinned.",
+                        model_name,
+                        error,
+                    )
             return None
         except Exception as exception:
             unverifiable = exception
