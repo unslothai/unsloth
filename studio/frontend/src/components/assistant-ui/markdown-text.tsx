@@ -260,8 +260,9 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         }}
         className={`max-w-full cursor-zoom-in rounded-lg ${failedNow && !sized ? "hidden" : ""} ${className ?? ""}`}
         {...dom}
-        onClick={() => {
-          if (failedNow || !resolved) return;
+        onClick={(event) => {
+          // A linked image is the link's: the click opens that, not the viewer.
+          if (failedNow || !resolved || event.currentTarget.closest("a")) return;
           const title = alt || "Image";
           openImageViewer([
             {
