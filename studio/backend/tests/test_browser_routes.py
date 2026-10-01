@@ -70,6 +70,9 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
     assert refresh == {"delay": 2.0, "url": "https://example.com/docs/next.html"}
     slow = '<meta http-equiv="refresh" content="600; url=/later">'
     assert browser_mod._prepare_page(slow, "https://example.com/")[2] is None
+    # Quoted "<" and ">" stay inside the tag.
+    quoted = '<meta http-equiv="Content-Security-Policy" content="a<b>c"><p>x</p>'
+    assert browser_mod._prepare_page(quoted, "https://example.com/")[0] == "<p>x</p>"
 
 
 def test_prepare_page_is_linear_on_unclosed_tags():

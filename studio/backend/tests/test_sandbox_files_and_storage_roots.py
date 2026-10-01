@@ -6492,7 +6492,7 @@ def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkey
         ("run.command", 415),
         ("page.html", 415),
         ("Tool.app", 415),
-        ("link.pdf", 404),
+        ("link.pdf", 403),
         ("../../secret.pdf", 404),
         ("missing.pdf", 404),
         ("outputs", 404),
@@ -6509,7 +6509,7 @@ def test_opening_refuses_scripts_links_and_escapes(tmp_path, monkeypatch, name, 
         (sandbox / script).write_text("x", encoding = "utf-8")
     with pytest.raises(HTTPException) as caught:
         _open(inference, name)
-    assert caught.value.status_code in (status, 403)
+    assert caught.value.status_code == status
     assert launched == []
 
 

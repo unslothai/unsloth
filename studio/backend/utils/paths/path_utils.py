@@ -517,7 +517,13 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         if not stat_module.S_ISREG(info.st_mode):
             raise FileNotFoundError(str(path))
         if root is not None:
-            real = _opened_path(handle) or os.path.realpath(path)
+            real = _opened_path(handle)
+            if real is None:
+                # By name, so it must still be the file that was opened (Windows junctions).
+                real = os.path.realpath(path)
+                same = os.stat(real)
+                if (same.st_dev, same.st_ino) != (info.st_dev, info.st_ino):
+                    raise FileNotFoundError(str(path))
             if not Path(real).is_relative_to(os.path.realpath(root)):
                 raise FileNotFoundError(str(path))
         staging = cache_root() / "open-staging"

@@ -837,6 +837,7 @@ const SingleContent = memo(function SingleContent({
           // The library's double-click reset would shut the panel without closing the artifact.
           disableDoubleClick
           onPointerDown={(event) => {
+            if (event.button !== 0) return;
             const unpin = pinBrowserPage(event.currentTarget);
             const release = () => {
               window.removeEventListener("pointerup", release);

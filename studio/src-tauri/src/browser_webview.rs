@@ -929,44 +929,37 @@ pub fn browser_view_show<R: Runtime>(
     require_main(&webview)?;
     let app = webview.app_handle().clone();
     let target = match (&tab_id, &bounds) {
-        (Some(tab_id), Some(bounds)) => {
-            let existing = app.get_webview(&label_for(tab_id)?);
-            let shown = match existing {
-                Some(view) => view,
-                None => {
-                    let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
-                    create_view(&webview, tab_id, url, bounds)?
-                }
-            };
-            let (position, size) = logical_rect(&webview, bounds);
-            shown
-                .set_bounds(Rect {
+        (Some(tab_id), Some(bounds)) => Some(match app.get_webview(&label_for(tab_id)?) {
+            Some(view) => {
+                let (position, size) = logical_rect(&webview, bounds);
+                view.set_bounds(Rect {
                     position: position.into(),
                     size: size.into(),
                 })
                 .map_err(|error| error.to_string())?;
-            Some(shown)
-        }
+                view
+            }
+            None => {
+                let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                create_view(&webview, tab_id, url, bounds)?
+            }
+        }),
         _ => None,
     };
     let shown = tab_id.filter(|_| target.is_some());
     // A resize only moves the shown view; showing it and hiding the rest is for a switch.
-    let switched = {
-        let mut inner = state.inner.lock().unwrap();
-        let switched = inner.shown != shown;
-        inner.shown = shown;
-        switched
-    };
-    if switched {
-        if let Some(view) = &target {
-            view.show().map_err(|error| error.to_string())?;
-        }
-        for view in browser_views(&app) {
-            if Some(view.label()) != target.as_ref().map(|view| view.label()) {
-                let _ = view.hide();
-            }
+    if state.inner.lock().unwrap().shown == shown {
+        return Ok(());
+    }
+    if let Some(view) = &target {
+        view.show().map_err(|error| error.to_string())?;
+    }
+    for view in browser_views(&app) {
+        if Some(view.label()) != target.as_ref().map(|view| view.label()) {
+            let _ = view.hide();
         }
     }
+    state.inner.lock().unwrap().shown = shown;
     Ok(())
 }
 

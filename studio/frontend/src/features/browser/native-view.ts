@@ -80,7 +80,7 @@ const icons = new Map<string, string>();
 const pages = new Map<string, { url: string; title: string; favicon: string | null }>();
 // Where a closed view's page had got to, so it reopens there rather than at the entry's address.
 const resume = new Map<string, { entry: number; url: string }>();
-let lastNewTab = 0;
+const lastNewTab = new Map<string, number>();
 // Bumped when the panel unmounts, so a call still in flight leaves the closed views alone.
 let generation = 0;
 
@@ -122,7 +122,7 @@ function onNativeEvent(event: NativeEvent): void {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url });
       page(tab.id).url = event.url;
-      resume.set(tab.id, { entry: entryKey(currentEntry(tab)), url: event.url });
+      remember(tab.id, event.url);
       if (!event.loading) history.recordVisit(event.url, tab.title);
       break;
     case "title":
@@ -133,7 +133,7 @@ function onNativeEvent(event: NativeEvent): void {
     case "url":
       store.updateTab(tab.id, { displayUrl: event.url });
       page(tab.id).url = event.url;
-      resume.set(tab.id, { entry: entryKey(currentEntry(tab)), url: event.url });
+      remember(tab.id, event.url);
       break;
     case "history": {
       const next = { back: event.canGoBack, forward: event.canGoForward };
@@ -153,8 +153,8 @@ function onNativeEvent(event: NativeEvent): void {
       break;
     }
     case "newTab":
-      if (Date.now() - lastNewTab < NEW_TAB_INTERVAL_MS) break;
-      lastNewTab = Date.now();
+      if (Date.now() - (lastNewTab.get(tab.id) ?? 0) < NEW_TAB_INTERVAL_MS) break;
+      lastNewTab.set(tab.id, Date.now());
       store.openUrl(event.url, { newTab: true });
       break;
     case "external":
@@ -174,6 +174,12 @@ function onNativeEvent(event: NativeEvent): void {
       }
       break;
   }
+}
+
+/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet. */
+function remember(tabId: string, url: string): void {
+  const entry = views.get(tabId);
+  if (entry !== undefined) resume.set(tabId, { entry, url });
 }
 
 function currentEntryUrl(tab: BrowserTab): string {
@@ -235,7 +241,13 @@ function covered(rect: DOMRect): boolean {
 
 /** The page's rect, short of the chat floating over a full-view browser. */
 function visibleRect(element: HTMLElement): DOMRect | null {
-  const rect = element.getBoundingClientRect();
+  let rect = element.getBoundingClientRect();
+  // A native view isn't clipped by the DOM: trim it to the page area (overflowed while pinned).
+  const area = element.closest("[data-browser-page]")?.parentElement?.getBoundingClientRect();
+  if (area) {
+    const left = Math.max(rect.left, area.left);
+    rect = new DOMRect(left, rect.top, Math.min(rect.right, area.right) - left, rect.height);
+  }
   if (rect.width < 2 || rect.height < 2) return null;
   let bottom = rect.bottom;
   for (const dock of document.querySelectorAll<HTMLElement>(".chat-full-view-dock, .chat-full-view-dock-minimized")) {
@@ -301,21 +313,28 @@ async function applyView(desired: Desired): Promise<void> {
   const loaded = views.get(tabId);
   const resumed = resume.get(tabId);
   const started = generation;
+  // The panel unmounted meanwhile: close what this call showed and leave the state alone.
+  const stale = () => {
+    if (started === generation) return false;
+    void call("browser_view_close", { tabId }).catch(() => undefined);
+    return true;
+  };
   try {
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
-    if (started !== generation) {
-      void call("browser_view_close", { tabId }).catch(() => undefined);
-      return;
-    }
+    if (stale()) return;
     // A new address for an existing view. Recorded once it went through, so Retry tries again.
-    if (existed && loaded !== entry) await call("browser_view_navigate", { tabId, url });
+    if (existed && loaded !== entry) {
+      await call("browser_view_navigate", { tabId, url });
+      if (stale()) return;
+    }
     views.set(tabId, entry);
     if ((zooms.get(tabId) ?? 1) !== zoom) {
       zooms.set(tabId, zoom);
       await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
     }
   } catch (cause) {
-    if (started !== generation) return;
+    if (stale()) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
       nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
@@ -324,30 +343,34 @@ async function applyView(desired: Desired): Promise<void> {
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
+// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
+// a backlog of stale bounds for the native view to replay.
+let running = false;
+let pending: { desired: Desired } | null = null;
+
+function pump(): void {
+  if (running || !pending) return;
+  const { desired } = pending;
+  pending = null;
+  running = true;
+  void applyView(desired)
+    .catch(() => undefined)
+    .finally(() => {
+      running = false;
+      pump();
+    });
+}
+
+function apply(desired: Desired): void {
+  pending = { desired };
+  pump();
+}
+
 /** Keeps the active tab's view over its placeholder, or hidden. Mounted with the panel. */
 export function startNativeViews(): () => void {
   listenOnce();
   let frame = 0;
   let sent = "";
-  // One call in flight; while it runs only the newest state waits, so a drag can't queue up a
-  // backlog of stale bounds for the native view to replay.
-  let running: Promise<void> | null = null;
-  let pending: { desired: Desired } | null = null;
-  const pump = () => {
-    if (running || !pending) return;
-    const { desired } = pending;
-    pending = null;
-    running = applyView(desired)
-      .catch(() => undefined)
-      .finally(() => {
-        running = null;
-        pump();
-      });
-  };
-  const apply = (desired: Desired) => {
-    pending = { desired };
-    pump();
-  };
   let resized: HTMLElement | null = null;
   const resizeObserver = new ResizeObserver(() => schedule());
 

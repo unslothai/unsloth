@@ -50,9 +50,11 @@ _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
 
-_BASE_TAG_RE = re.compile(r"<base\b[^<>]*>", re.IGNORECASE)
+# Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
+_TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
+_BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
-_META_TAG_RE = re.compile(r"<meta\b[^<>]*>", re.IGNORECASE)
+_META_TAG_RE = re.compile(r"<meta\b" + _TAG_BODY, re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
 _REFRESH_RE = re.compile(
