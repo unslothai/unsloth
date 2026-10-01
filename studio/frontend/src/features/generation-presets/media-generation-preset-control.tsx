@@ -127,8 +127,10 @@ export function MediaGenerationPresetControl({
         align="end"
         sideOffset={8}
         collisionPadding={12}
-        className="max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] gap-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border-border/70 p-0 shadow-xl"
+        className="max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] gap-0 overflow-hidden rounded-xl border-border/70 p-0 shadow-xl"
       >
+        {/* The list gives way on a short window, not the popover: a scrollbar on the rounded,
+            shadowed surface squares its corners. */}
         <div className="shrink-0 border-b border-border/60 px-4 py-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="font-heading text-sm font-medium">
@@ -142,7 +144,7 @@ export function MediaGenerationPresetControl({
           </div>
         </div>
 
-        <div className="max-h-48 shrink-0 overflow-y-auto p-2">
+        <div className="max-h-48 min-h-0 overflow-y-auto overscroll-contain p-2">
           {presets.map((preset, index) => {
             const isActive = preset.name === activePreset;
 

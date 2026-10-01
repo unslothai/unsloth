@@ -264,7 +264,7 @@ function ModelSelectorTrigger({
           {currentModel?.descriptionSuffix && (
             <span
               className={cn(
-                "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-none text-muted-foreground",
+                "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
                 !currentModel.description && !showCloudIndicator && GAP_BEFORE,
               )}
             >

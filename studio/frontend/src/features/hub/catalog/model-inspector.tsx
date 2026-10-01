@@ -705,6 +705,7 @@ export const ModelInspector = memo(function ModelInspector({
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
               mediaPage={mediaPage}
+              assetRuntime={mediaPage ?? (["text-to-speech", "text-to-audio"].includes(model.pipelineTag ?? model.task ?? "") ? "audio" : undefined)}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
