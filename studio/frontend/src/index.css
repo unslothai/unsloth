@@ -4872,18 +4872,49 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background-clip: padding-box;
 }
 
-/* Dialogs scroll their own rounded box, and a scrollbar running its full height covers the
-   right-hand corners. Start and end the track where the corners do. Same reset as above, since
-   the thin standard scrollbar has no track to inset. */
+/* Rounded boxes that scroll themselves: dialogs, and inline logs and lists. Their scrollbar runs
+   the box's full length, over the corners in Chromium and WebKit, and Firefox drops the radius on
+   that side altogether, background and ring included. --scroll-radius is the box's own radius,
+   set below from its rounded-* class; an arbitrary radius sets it alongside. */
+.scroll-rounded.rounded-sm { --scroll-radius: var(--radius-sm); }
+.scroll-rounded.rounded-md { --scroll-radius: var(--radius-md); }
+.scroll-rounded.rounded-lg { --scroll-radius: var(--radius-lg); }
+.scroll-rounded.rounded-xl { --scroll-radius: var(--radius-xl); }
+.scroll-rounded.rounded-2xl { --scroll-radius: var(--radius-2xl); }
+.scroll-rounded.rounded-3xl { --scroll-radius: var(--radius-3xl); }
+.scroll-rounded.rounded-4xl { --scroll-radius: var(--radius-4xl); }
+/* Model card READMEs: markdown, so their wide code blocks take it from here. */
+.hub-readme-prose pre { --scroll-radius: 12px; }
+
+/* Dialogs go square or 2xl on phones. */
+@media (width < 40rem) {
+	.scroll-rounded.max-sm\:rounded-none { --scroll-radius: 0px; }
+	.scroll-rounded.max-sm\:rounded-2xl { --scroll-radius: var(--radius-2xl); }
+}
+
+/* Chromium and WebKit: start and end the track where the corners do. Same reset as the prompt
+   box above, since the thin standard scrollbar has no track to inset. */
 @supports selector(::-webkit-scrollbar) {
-	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+	:is(.scroll-rounded, .hub-readme-prose pre) {
 		scrollbar-width: auto;
 		scrollbar-color: auto;
 	}
 }
 
-:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])::-webkit-scrollbar-track {
-	margin-block: var(--radius-4xl);
+:is(.scroll-rounded, .hub-readme-prose pre)::-webkit-scrollbar-track:vertical {
+	margin-block: var(--scroll-radius, 0px);
+}
+
+:is(.scroll-rounded, .hub-readme-prose pre)::-webkit-scrollbar-track:horizontal {
+	margin-inline: var(--scroll-radius, 0px);
+}
+
+/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1;
+   an outer shadow would be clipped, so surfaces with one scroll an inner viewport instead. */
+@supports (-moz-appearance: none) {
+	:is(.scroll-rounded, .hub-readme-prose pre) {
+		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
+	}
 }
 
 /* Attachment card page previews: drop the viewer's gray backdrop, padding and

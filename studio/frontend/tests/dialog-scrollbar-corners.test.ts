@@ -6,28 +6,68 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// Dialogs scroll their own rounded box. A scrollbar running its full height covered the right-hand
-// corners (Edit project, New project, MCP servers), so the track starts and ends where they do.
+// A rounded box that scrolls itself loses its corners once a scrollbar shows: Chromium and WebKit
+// draw the scrollbar over them, and Firefox drops the radius on that side altogether. Boxes with no
+// outer shadow take .scroll-rounded; shadowed surfaces scroll an inner viewport instead.
 
-test("dialog scrollbars stop short of the rounded corners", () => {
+test("scroll-rounded insets the track in Chromium and WebKit and clips in Firefox", () => {
   const css = readSrc("index.css");
-  const dialogs = String.raw`:is\(\[data-slot="dialog-content"\], \[data-slot="alert-dialog-content"\]\)`;
+  const targets = String.raw`:is\(\.scroll-rounded, \.hub-readme-prose pre\)`;
+  for (const radius of ["sm", "md", "lg", "xl", "2xl", "3xl", "4xl"]) {
+    assert.ok(
+      css.includes(`.scroll-rounded.rounded-${radius} { --scroll-radius: var(--radius-${radius}); }`),
+      radius,
+    );
+  }
   assert.match(
     css,
-    new RegExp(`${dialogs}::-webkit-scrollbar-track \\{\\s*margin-block: var\\(--radius-4xl\\);`),
+    new RegExp(`${targets}::-webkit-scrollbar-track:vertical \\{\\s*margin-block: var\\(--scroll-radius, 0px\\);`),
+  );
+  assert.match(
+    css,
+    new RegExp(`${targets}::-webkit-scrollbar-track:horizontal \\{\\s*margin-inline: var\\(--scroll-radius, 0px\\);`),
   );
   // The thin standard scrollbar has no track to inset, so Chromium is switched to the styled one.
   assert.match(
     css,
     new RegExp(
       String.raw`@supports selector\(::-webkit-scrollbar\) \{\s*` +
-        `${dialogs} \\{\\s*scrollbar-width: auto;\\s*scrollbar-color: auto;`,
+        `${targets} \\{\\s*scrollbar-width: auto;\\s*scrollbar-color: auto;`,
     ),
   );
-  // Both primitives scroll a box with that radius.
-  for (const file of ["components/ui/dialog.tsx", "components/ui/alert-dialog.tsx"]) {
-    const source = readSrc(file);
-    assert.match(source, /overflow-y-auto/, file);
-    assert.match(source, /rounded-4xl/, file);
+  assert.match(
+    css,
+    new RegExp(
+      String.raw`@supports \(-moz-appearance: none\) \{\s*` +
+        `${targets} \\{\\s*clip-path: inset\\(-1px round calc\\(var\\(--scroll-radius, 0px\\) \\+ 1px\\)\\);`,
+    ),
+  );
+  // Phone-width dialogs go square, and the clip must follow.
+  assert.ok(css.includes(String.raw`.scroll-rounded.max-sm\:rounded-none { --scroll-radius: 0px; }`));
+});
+
+test("dialogs and inline rounded scrollers use it", () => {
+  for (const [file, needle] of [
+    ["components/ui/dialog.tsx", "overflow-y-auto scroll-rounded rounded-4xl"],
+    ["components/ui/alert-dialog.tsx", "overflow-y-auto scroll-rounded rounded-4xl"],
+    ["features/settings/tabs/debugging-tab.tsx", "scroll-rounded rounded-xl"],
+    ["features/api-monitor/api-monitor-page.tsx", "scroll-rounded rounded-lg"],
+    ["features/export/components/export-run-panel.tsx", "scroll-rounded rounded-lg"],
+    ["features/chat/components/research-activity-panel.tsx", "scroll-rounded rounded-xl"],
+    ["features/rag/components/knowledge-base-dialog.tsx", "scroll-rounded rounded-md border"],
+    ["components/tauri/log-details.tsx", "scroll-rounded rounded-lg"],
+  ] as const) {
+    assert.ok(readSrc(file).includes(needle), `${file}: ${needle}`);
   }
+});
+
+test("shadowed menus scroll an inner viewport, not their rounded surface", () => {
+  const contextMenu = readSrc("components/ui/context-menu.tsx");
+  assert.equal(contextMenu.match(/data-slot="context-menu-viewport"/g)?.length, 2);
+  assert.doesNotMatch(contextMenu, /rounded-2xl p-1 shadow-2xl[^"]*overflow-y-auto/);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(thread, /aui-action-bar-more-content[^"]*flex flex-col overflow-hidden rounded-\[21px\]/);
+  const presets = readSrc("features/generation-presets/media-generation-preset-control.tsx");
+  assert.match(presets, /gap-0 overflow-hidden rounded-xl border-border\/70 p-0 shadow-xl/);
+  assert.match(presets, /max-h-48 min-h-0 overflow-y-auto overscroll-contain p-2/);
 });

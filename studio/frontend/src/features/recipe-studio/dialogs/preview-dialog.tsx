@@ -645,7 +645,7 @@ function RunDialogBody({
       </Collapsible>
 
       {errors.length > 0 && (
-        <div className="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-destructive/30 bg-destructive/5 p-4 shadow-border">
+        <div className="max-h-44 space-y-2 overflow-y-auto scroll-rounded rounded-2xl border border-destructive/30 bg-destructive/5 p-4 shadow-border">
           <div className="flex items-center gap-2">
             <HugeiconsIcon
               icon={AlertCircleIcon}
