@@ -21,6 +21,7 @@ Env knobs:
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 import threading
@@ -32,6 +33,7 @@ from core.inference.diffusion_families import (
     DiffusionFamily,
     family_pipeline_available,
     family_sd_cpp_supported,
+    pipeline_available_family_names,
 )
 from core.inference.sd_cpp_backend import (
     _card_lookup_inventory,
@@ -573,11 +575,17 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
         return False
 
 
+@functools.cache
+def _supported_family_capabilities() -> tuple[str, ...]:
+    return tuple(pipeline_available_family_names())
+
+
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     """Tag a backend status dict with the active engine + any fallback reason."""
     out = dict(status)
     out["engine"] = _active_engine_name
     out["fallback_reason"] = _fallback_reason
+    out["supported_families"] = list(_supported_family_capabilities())
     return out
 
 

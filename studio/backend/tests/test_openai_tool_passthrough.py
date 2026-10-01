@@ -4859,8 +4859,10 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         class ApiRequest(self._Request):
-            headers = {"authorization": "Bearer sk-unsloth-test"}
             state = SimpleNamespace(skip_api_monitor = True)
+
+            def __init__(self):
+                self.headers = {"authorization": "Bearer sk-unsloth-test"}
 
         monkeypatch.setattr(
             inf_mod,
@@ -6455,7 +6457,12 @@ class TestGgufVisionToolRouting:
         assert monitor.active_count() == 0
         assert get_llama_admission_queue("http://llama.disconnect.test").snapshot().active == 0
 
-    def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
+    def _drive_standard_gguf(
+        self,
+        monkeypatch,
+        date_line: str,
+        messages = None,
+    ) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
 
@@ -6484,7 +6491,8 @@ class TestGgufVisionToolRouting:
 
         payload = ChatCompletionRequest(
             model = "default",
-            messages = [
+            messages = messages
+            or [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -6510,6 +6518,22 @@ class TestGgufVisionToolRouting:
                 "content": "The current date is 2026-08-15.\n\noriginal system\n\ndeveloper rules",
             },
             {"role": "user", "content": "hi"},
+        ]
+
+    def test_standard_gguf_without_a_system_prompt_keeps_the_template_default(self, monkeypatch):
+        sent = self._drive_standard_gguf(
+            monkeypatch,
+            "The current date is 2026-08-15.",
+            messages = [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "second"},
+            ],
+        )
+        assert sent == [
+            {"role": "user", "content": "[Current date: 2026-08-15]\n\nfirst"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
         ]
 
     @pytest.mark.parametrize(

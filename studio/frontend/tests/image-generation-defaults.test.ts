@@ -5,7 +5,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { defaultsFor, resolutionFor } from "../src/features/images/image-generation-defaults.ts";
+import {
+  defaultsFor,
+  defaultsKeyFor,
+  residentDefaultsKey,
+  resolutionFor,
+} from "../src/features/images/image-generation-defaults.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -37,6 +42,25 @@ test("keeps the existing family defaults and fallback", () => {
   });
 });
 
+test("an explicit family keys defaults only for an opaque path, never flattening a named variant", () => {
+  const opaque = "/models/my-private-finetune";
+  const schnell = "black-forest-labs/FLUX.1-schnell";
+  const explicit = (value: string) => ({ value, source: "explicit" as const });
+  for (const [key, want] of [
+    [defaultsKeyFor(opaque, "qwen-image"), "qwen-image"],
+    [defaultsKeyFor(opaque, "auto"), opaque],
+    [defaultsKeyFor(schnell, "flux.1"), schnell],
+    [defaultsKeyFor("Tongyi-MAI/Z-Image-Turbo", "z-image"), "Tongyi-MAI/Z-Image-Turbo"],
+    [residentDefaultsKey(opaque, opaque, explicit("qwen-image")), "qwen-image"],
+    [residentDefaultsKey(opaque, null, { value: "qwen-image", source: "auto" }), opaque],
+    [residentDefaultsKey(schnell, schnell, explicit("flux.1")), schnell],
+  ]) {
+    assert.equal(key, want);
+  }
+  assert.deepEqual(defaultsFor("qwen-image"), { steps: 20, guidance: 4 });
+  assert.deepEqual(defaultsFor(schnell), { steps: 4, guidance: 0 });
+});
+
 test("routed image picks apply and transactionally roll back model defaults", () => {
   const source = readSrc("features/images/images-page.tsx");
   const routeStart = source.indexOf(
@@ -51,7 +75,7 @@ test("routed image picks apply and transactionally roll back model defaults", ()
   const routeBlock = source.slice(routeStart, routeEnd);
   assert.match(routeBlock, /imagePresets\.hydrated/);
   assert.match(routeBlock, /quantRevert\.current = revert/);
-  assert.match(routeBlock, /applyImageModelDefaults\(wanted\)/);
+  assert.match(routeBlock, /applyImageModelDefaults\(wanted, "auto"\)/);
   assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
 });
 

@@ -653,7 +653,13 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
     # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
-    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border",' in decoration
+    assert (
+        '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border dark:border-transparent",'
+        in decoration
+    )
+    # Dark draws no seam: a border lighter than both surfaces reads as a white line on Windows.
+    assert "dark:border-white" not in decoration
+    assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
     assert re.search(
         r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
