@@ -95,6 +95,19 @@ _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMPORT_LOCK = threading.RLock()
 
+# Published on the Hub rather than on PyPI, so the modelling code is fetched. Pinned to
+# a revision: without one the import executes whatever the branch points at today.
+_DEEPSEEK_OCR_REPOSITORY = "unsloth/DeepSeek-OCR"
+_DEEPSEEK_OCR_REVISION = "84cced885e9ae0de9f2307915a255ac04fd6e8ec"
+_DEEPSEEK_OCR_PACKAGE = "deepseek_ocr"
+_DEEPSEEK_OCR_MODULES = (
+    "configuration_deepseek_v2.py",
+    "conversation.py",
+    "deepencoder.py",
+    "modeling_deepseekocr.py",
+    "modeling_deepseekv2.py",
+)
+
 _DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
 SNAC_REPOSITORY = "hubertsiuzdak/snac_24khz"
 SPARK_TTS_REPOSITORY = "unsloth/Spark-TTS-0.5B"
@@ -845,6 +858,114 @@ def ensure_outetts_source() -> Path:
             backend_root / "core" / "training" / "inference" / "OuteTTS",
         ),
     )
+
+
+def _deepseek_ocr_runtime() -> Path:
+    return (
+        cache_root()
+        / "third-party-sources"
+        / "DeepSeek-OCR"
+        / _DEEPSEEK_OCR_REVISION
+        / "runtime-v1"
+    )
+
+
+def _deepseek_ocr_installed(runtime: Path) -> bool:
+    """Whether the pinned package is present and is made of real files.
+
+    Symlinks are rejected rather than followed, matching the rest of this module: a
+    link is a way to point an "installed" package at bytes outside the verified tree.
+    `local_dir` has written real files since huggingface_hub 0.23 and the floor here is
+    0.34, so this costs nothing.
+    """
+    package = runtime / _DEEPSEEK_OCR_PACKAGE
+    if package.is_symlink() or not package.is_dir():
+        return False
+    for name in ("__init__.py", *_DEEPSEEK_OCR_MODULES):
+        member = package / name
+        if member.is_symlink() or not member.is_file():
+            return False
+    return True
+
+
+def ensure_deepseek_ocr_source(hf_token: HfTokenArg = None) -> Path:
+    """Install the pinned DeepSeek-OCR modelling code and return its import root.
+
+    The modelling code for this model is published on the Hub rather than on PyPI, so
+    it has to be fetched to be used. Two things make that safe to import, and both were
+    missing where this used to live:
+
+    - a revision. `snapshot_download(repo)` with no revision resolves to whatever the
+      branch points at when it runs, so the code that executes is not the code that was
+      reviewed. The revision is pinned, which makes the fetch content addressed.
+    - a destination the fetch owns. It lands under `cache_root()`, keyed by revision,
+      not inside the backend source tree, so nothing else is on the import path as a
+      side effect of installing this.
+
+    Only `*.py` is fetched. The previous call pulled the whole repository, weights
+    included, to import five modules; the weights were never read from here because the
+    model itself loads from the user's own model id.
+
+    Idempotent: a complete install returns immediately with no network. A partial or
+    tampered one is rebuilt. Concurrent callers serialise on the same lock the other
+    pinned sources use.
+    """
+    runtime = _deepseek_ocr_runtime()
+    if _deepseek_ocr_installed(runtime):
+        return runtime.resolve()
+
+    parent = runtime.parent
+    parent.mkdir(parents = True, exist_ok = True)
+    try:
+        with FileLock(str(parent / ".install.lock"), timeout = 300):
+            if _deepseek_ocr_installed(runtime):
+                return runtime.resolve()
+
+            from huggingface_hub import snapshot_download
+
+            from utils.hf_cache_settings import active_hf_hub_cache
+            from utils.utils import hf_env_offline
+
+            if hf_env_offline():
+                raise RuntimeError(
+                    "The pinned DeepSeek-OCR source is not cached and Unsloth is offline"
+                )
+
+            workspace = Path(tempfile.mkdtemp(prefix = ".install-", dir = parent))
+            try:
+                staging = workspace / runtime.name
+                package = staging / _DEEPSEEK_OCR_PACKAGE
+                package.mkdir(parents = True)
+                snapshot_download(
+                    _DEEPSEEK_OCR_REPOSITORY,
+                    revision = _DEEPSEEK_OCR_REVISION,
+                    allow_patterns = ["*.py"],
+                    local_dir = str(package),
+                    cache_dir = active_hf_hub_cache(),
+                    token = hf_token,
+                )
+                # The repo is a model, not a package, so it ships no __init__.py. Same
+                # approach as the `generated_files` entry the git-based sources use.
+                (package / "__init__.py").write_text("", encoding = "utf-8")
+                missing = [name for name in _DEEPSEEK_OCR_MODULES if not (package / name).is_file()]
+                if missing:
+                    raise RuntimeError(
+                        "The pinned DeepSeek-OCR revision is missing " + ", ".join(sorted(missing))
+                    )
+                _purge_package_bytecode(package)
+                _replace_owned_directory(staging, runtime)
+            finally:
+                _remove_owned_path(workspace)
+    except Timeout as error:
+        raise RuntimeError("Timed out waiting for another DeepSeek-OCR installation") from error
+
+    if not _deepseek_ocr_installed(runtime):
+        raise RuntimeError("The installed DeepSeek-OCR source failed integrity validation")
+    return runtime.resolve()
+
+
+def import_deepseek_ocr_module(module_name: str, source: Path | str) -> ModuleType:
+    return import_pinned_module(module_name, package = _DEEPSEEK_OCR_PACKAGE, source = source)
 
 
 def _artifact_matches(path: Path, *, expected_size: int, expected_sha256: str) -> bool:
