@@ -11,6 +11,7 @@ from core.inference.video_families import (
     VIDEO_NOT_LOADED_MSG,
     default_video_generation_params,
     detect_video_family,
+    pipeline_available_video_families,
     resolve_video_base_repo,
     snap_num_frames,
     snap_video_size,
@@ -185,6 +186,20 @@ def test_supported_names():
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
+
+
+@pytest.mark.parametrize(
+    "device, blocked, hidden",
+    [(None, {"minimax-h3", "ltx-2"}, {"minimax-h3", "ltx-2"}), ("mps", set(), {"minimax-h3"})],
+)
+def test_pipeline_available_families_filter_the_override_selector(
+    monkeypatch, device, blocked, hidden
+):
+    monkeypatch.setattr(
+        "core.inference.diffusion_families.family_selectable", lambda fam: fam.name not in blocked
+    )
+    available = {fam.name for fam in pipeline_available_video_families(device = device)}
+    assert set(supported_video_family_names()) - available == hidden
 
 
 def test_minimax_h3_family_and_frame_lattice():

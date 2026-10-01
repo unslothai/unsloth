@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { queueParse } from "./parse-queue";
+import { usePdfWorker } from "./use-pdf-worker";
 import { useWidth } from "./use-width";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -226,54 +227,6 @@ function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: 
   return { ready: !enabled || ready === file, release };
 }
 
-type PdfWorker = InstanceType<typeof pdfjs.PDFWorker>;
-
-// One PDF.js worker shared by every viewer, not one per thumbnail.
-let sharedWorker: { worker: PdfWorker; port: Worker; users: number } | null = null;
-
-function acquirePdfWorker(): PdfWorker {
-  if (!sharedWorker) {
-    const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
-    sharedWorker = { worker: pdfjs.PDFWorker.create({ port }), port, users: 0 };
-  }
-  sharedWorker.users += 1;
-  return sharedWorker.worker;
-}
-
-function releasePdfWorker(worker: PdfWorker): void {
-  if (sharedWorker?.worker !== worker) return;
-  sharedWorker.users -= 1;
-  if (sharedWorker.users > 0) return;
-  const { port } = sharedWorker;
-  sharedWorker = null;
-  // Deferred so the last Document tears down its loading task first.
-  window.setTimeout(() => {
-    worker.destroy();
-    port.terminate();
-  }, 0);
-}
-
-/**
- * The shared worker, held while enabled. Passing it also stops PDF.js adopting unpdf's mismatched
- * globalThis.pdfjsWorker.
- */
-function usePdfWorker(enabled: boolean): PdfWorker | null {
-  const [worker, setWorker] = useState<PdfWorker | null>(null);
-  useEffect(() => {
-    // Queued thumbnails and failed loads hold no worker.
-    if (!enabled) return;
-    const pdfWorker = acquirePdfWorker();
-    // External resource owned by this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setWorker(pdfWorker);
-    return () => {
-      setWorker(null);
-      releasePdfWorker(pdfWorker);
-    };
-  }, [enabled]);
-  return worker;
-}
-
 export default function PdfView({
   file,
   scale,
@@ -292,8 +245,8 @@ export default function PdfView({
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
   const slot = useParseSlot(firstPageOnly, file);
-  const worker = usePdfWorker(slot.ready && failed !== file);
-  const options = useMemo(() => (worker ? { ...PDF_OPTIONS, worker } : null), [worker]);
+  const pdfWorker = usePdfWorker(slot.ready && failed !== file);
+  const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -305,6 +258,7 @@ export default function PdfView({
         file={file}
         options={options}
         onLoadSuccess={(document) => {
+          pdfWorker?.loaded.add(document);
           slot.release();
           setPdf(document);
           setPages(document.numPages);

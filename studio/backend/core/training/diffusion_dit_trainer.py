@@ -1198,8 +1198,18 @@ _LTX2_TARGETS = (
 _LTX2_TRAIN_FPS = 24.0
 
 
-def _ltx2_load_conditioners(cfg, device, weight_dtype):
+def _ltx2_pipeline_cls():
+    """``diffusers.LTX2Pipeline``, importable on the pinned transformers (see ltx2_import_compat)."""
+    from core.inference.ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+    ensure_ltx2_pipelines_importable()
     from diffusers import LTX2Pipeline
+
+    return LTX2Pipeline
+
+
+def _ltx2_load_conditioners(cfg, device, weight_dtype):
+    LTX2Pipeline = _ltx2_pipeline_cls()
 
     pipe, vae = _load_pipe_without_transformer(LTX2Pipeline, cfg, device)
     # The connectors are not a text_encoder attribute, so _encoders_to_device never reaches them.
@@ -1300,13 +1310,13 @@ def _ltx2_audio_token_count(config, num_pixel_frames: int, fps: float) -> int:
 
 def _ltx2_pack(latents, conf):
     """[B,C,F,H,W] -> [B, F*H*W, C] via the pipeline's own patchifier."""
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     return LTX2Pipeline._pack_latents(latents, conf.patch_size, conf.patch_size_t)
 
 
 def _ltx2_unpack(pred, f, h, w, conf):
     """The inverse of ``_ltx2_pack``, back to the 5-D shape ``target = noise - latents`` has."""
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     return LTX2Pipeline._unpack_latents(pred, f, h, w, conf.patch_size, conf.patch_size_t)
 
 
@@ -1363,7 +1373,7 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
 
 
 def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     LTX2Pipeline.save_lora_weights(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,

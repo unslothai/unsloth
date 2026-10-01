@@ -1547,20 +1547,13 @@ export const hi = {
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
         },
-        composerAttachments: {
-          label: "इनपुट बॉक्स में अटैचमेंट",
-          description:
-            "बड़े कार्ड जो इनपुट बॉक्स को बड़ा करते हैं, या टाइलों की एक कॉम्पैक्ट पंक्ति।",
-          cards: "बड़े कार्ड",
-          compact: "कॉम्पैक्ट टाइलें",
-        },
         sentAttachments: {
           label: "भेजे गए संदेशों में अटैचमेंट",
           description:
-            "हर फ़ाइल के प्रकार के साथ एक सूची, या छोटे चिप्स। छह से ज़्यादा फ़ाइलें होने पर ऑटो चिप्स पर स्विच हो जाता है।",
+            "मानक हर फ़ाइल को उसके प्रकार के साथ दिखाता है, कॉम्पैक्ट हर पंक्ति में ज़्यादा फ़ाइलें दिखाता है। छह से ज़्यादा फ़ाइलें होने पर ऑटो कॉम्पैक्ट पर स्विच हो जाता है।",
           auto: "ऑटो",
-          list: "सूची",
-          chips: "चिप्स",
+          list: "मानक",
+          chips: "कॉम्पैक्ट",
         },
         reset: "रीसेट करें",
         resetAll: "कस्टमाइज़ेशन रीसेट करें",
@@ -2021,9 +2014,6 @@ export const hi = {
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
         "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
-      projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
-      projectsSectionDescription:
-        "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       title: "चैट",
       description: "इस डिवाइस पर चैट के व्यवहार को अपनी पसंद के अनुसार बदलें।",
       modelSelection: {
@@ -2060,6 +2050,11 @@ export const hi = {
       autoScrollManual: "मैन्युअल",
       autoScrollKeywords:
         "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
+      scrollToBottomButton: "नीचे स्क्रॉल करने का बटन",
+      scrollToBottomButtonDescription:
+        "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
+      scrollToBottomButtonKeywords:
+        "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
@@ -2431,11 +2426,13 @@ export const hi = {
       revoking: "रद्द किया जा रहा है...",
       decisionApi: {
         title: "निर्णय API",
-        description: "लोकल Laya मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
+        description: "इस मशीन के मॉडल या कनेक्शन के किसी निर्णय मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
         enable: "अनुरोधों का जवाब दें",
         enableDescription: "/v1/systemone चलाता है। चालू करने पर मॉडल डाउनलोड होता है।",
+        enableRemoteDescription: "/v1/systemone चलाता है।",
         lockedByEnv: "{name} द्वारा सेट।",
         model: "मॉडल",
+        thisMachine: "यह मशीन",
         modelMultilingual: "बहुभाषी",
         modelEnglish: "अंग्रेज़ी",
         modelTypedDecisions: "टाइप्ड निर्णय",
@@ -2460,6 +2457,10 @@ export const hi = {
         downloadFailed: "डाउनलोड शुरू नहीं हो सका।",
         saveFailed: "निर्णय API की सेटिंग सेव नहीं हो सकी।",
         loadError: "निर्णय API की सेटिंग्स लोड नहीं हो सकीं।",
+        sendsTo: "अनुरोध {provider} को भेजे जाते हैं।",
+        connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
+        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
+        openConnections: "कनेक्शन खोलें",
       },
       usageNoModel:
         "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",

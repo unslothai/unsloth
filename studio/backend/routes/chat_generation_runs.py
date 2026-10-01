@@ -71,6 +71,7 @@ _EXTERNAL_ROUTING_FIELDS = {
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
+    "extra_audio_base64",
     "video_base64",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807

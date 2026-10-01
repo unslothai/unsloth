@@ -72,7 +72,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
-    "settings.appearance.custom.composerAttachments.label",
     "settings.appearance.custom.sentAttachments.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
@@ -126,6 +125,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
     "settings.chat.autoScroll",
+    "settings.chat.scrollToBottomButton",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
@@ -137,7 +137,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineReadAloud",
     "settings.chat.inlineEditResponse",
-    "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
   ],
   browser: [
@@ -385,4 +384,5 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
+  "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
 };

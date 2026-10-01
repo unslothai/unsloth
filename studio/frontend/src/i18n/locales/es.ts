@@ -1565,20 +1565,13 @@ export const es = {
           wide: "Amplio",
           full: "Ancho completo",
         },
-        composerAttachments: {
-          label: "Adjuntos en el cuadro de texto",
-          description:
-            "Tarjetas grandes que agrandan el cuadro de texto o una fila compacta de miniaturas.",
-          cards: "Tarjetas grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Adjuntos en los mensajes enviados",
           description:
-            "Una lista con el tipo de cada archivo o pequeñas etiquetas. Automático cambia a etiquetas con más de seis archivos.",
+            "Estándar muestra cada archivo con su tipo y Compacto cabe más en cada línea. Automático cambia a compacto con más de seis archivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Estándar",
+          chips: "Compacto",
         },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
@@ -2044,9 +2037,6 @@ export const es = {
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
-      projectsSection: "Mostrar la sección Proyectos",
-      projectsSectionDescription:
-        "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
       title: "Chat",
       description: "Personaliza cómo funciona el chat en este dispositivo.",
       modelSelection: {
@@ -2083,6 +2073,11 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
+      scrollToBottomButton: "Botón para ir al final",
+      scrollToBottomButtonDescription:
+        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
+      scrollToBottomButtonKeywords:
+        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -2460,11 +2455,13 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
-        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo Laya local. Funciona con el SDK de TypeSafe.",
+        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
+        enableRemoteDescription: "Atiende /v1/systemone.",
         lockedByEnv: "Definido por {name}.",
         model: "Modelo",
+        thisMachine: "Este equipo",
         modelMultilingual: "Multilingüe",
         modelEnglish: "Inglés",
         modelTypedDecisions: "Decisiones tipadas",
@@ -2489,6 +2486,10 @@ export const es = {
         downloadFailed: "No se pudo iniciar la descarga.",
         saveFailed: "No se pudo guardar el ajuste de la API de decisiones.",
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
+        sendsTo: "Las solicitudes se envían a {provider}.",
+        connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
+        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
+        openConnections: "Abrir Conexiones",
       },
       usageNoModel:
         "Carga o descarga un modelo para ver ejemplos ejecutables. Este servidor todavía no tiene ningún modelo que indicar.",

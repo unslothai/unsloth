@@ -173,6 +173,7 @@ import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
   buildExternalModelId,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 
@@ -4191,7 +4192,8 @@ export function ChatPage({
   );
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
-      [...externalProvidersForChat]
+      externalProvidersForChat
+        .filter((provider) => !isDecisionConnection(provider))
         .sort(
           (a, b) =>
             getExternalProviderDropdownRank(a.providerType) -
@@ -4533,7 +4535,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="pointer-events-auto flex items-center gap-1">
+          <div className="pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4542,7 +4544,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[calc(30px*var(--ui-space-scale,1))] rounded-[10px] text-muted-foreground"
+                className="!size-[calc(30px*var(--ui-space-scale,1))] shrink-0 rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -4657,7 +4659,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-1">
+          <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
             view.mode === "single" &&
             (contextUsage || contextWindowKnown) ? (
