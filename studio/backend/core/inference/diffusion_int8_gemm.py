@@ -15,7 +15,8 @@ bit-identical end to end: the consumer reductions (LayerNorm / RMSNorm Welford) 
 read bf16 and Inductor re-tiles them, a rounding-order change smaller than compiled-vs-eager (LPIPS-gated).
 
 Per-arch gate (measured on L4 / A100 / G4 Colab, torch 2.11, vs the compiled stock path): sm80 / sm89 / sm120 on,
-everything else stock until measured. sm75 (T4): Triton cannot lower the int8 dot; sm100 (B200): Triton int8 runs
+everything else stock until measured. Qwen-Image-2.1 1024px q_auto s/step: L4 0.90 -> 0.76, A100 0.248 -> 0.205,
+RTX PRO 6000 0.138 -> 0.119, LPIPS vs the stock path inside its own compiled-vs-eager spread. sm75 (T4): Triton cannot lower the int8 dot; sm100 (B200): Triton int8 runs
 ~2.5x slower than cuBLAS.
 ROCm (weight-only int8 there) and CPU never reach it.
 
