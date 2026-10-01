@@ -1350,6 +1350,10 @@ class FastSentenceTransformer(FastModel):
     ):
         """Validate only. for_inference and the fast encoder route return a stock
         SentenceTransformer without reaching _load_modules, and below 6.0 it has no gate."""
+        # The delegated loads honour SENTENCE_TRANSFORMERS_HOME, and hf_hub_download does not, so
+        # resolve it here too: otherwise _module_path looks in the wrong cache, swallows the miss,
+        # and the gate passes on a modules.json it never read.
+        cache_dir = cache_dir or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         modules_json_path = FastSentenceTransformer._module_path(
             model_name, token, cache_dir = cache_dir, revision = revision
         )

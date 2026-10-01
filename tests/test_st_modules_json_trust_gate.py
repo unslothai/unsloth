@@ -336,3 +336,34 @@ def test_that_validation_is_silent_when_there_is_no_modules_json(tmp_path):
     model.mkdir()
 
     FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_validation_reads_the_sentence_transformers_cache(tmp_path, monkeypatch):
+    """The delegated loads honour SENTENCE_TRANSFORMERS_HOME while hf_hub_download does not, so a
+    model cached only there must still be read rather than becoming a silent pass."""
+    st_home = tmp_path / "st_home"
+    snapshot = st_home / "models--acme--embedder" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "0_Sub", "type": f"{MARKER}.Thing"}]),
+        encoding = "utf-8",
+    )
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
+
+    seen = {}
+
+    def fake_module_path(
+        model_name,
+        token = None,
+        cache_dir = None,
+        revision = None,
+    ):
+        seen["cache_dir"] = cache_dir
+        return str(snapshot / "modules.json") if cache_dir == str(st_home) else None
+
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(fake_module_path))
+
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+    assert seen["cache_dir"] == str(st_home)
