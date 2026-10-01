@@ -2462,32 +2462,43 @@ with sync_playwright() as p:
     step("persisted monitor: reset the browser session and open a fresh page")
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
+    #
+    # Nothing here runs script in the OLD page. It is CPU-throttled and its auth was
+    # just revoked, so the app can be busy retrying, and page.evaluate waits for its
+    # event loop with no timeout of its own: this step wedged for its whole budget on
+    # Windows and on the Kaggle T4 runner with no line printed. Closing a page and
+    # clearing cookies are browser-side calls, and the storage writes go through the
+    # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
+    # announces itself first, so a wedge that remains names the call it sits in.
+    info("closing the stale page")
+    try:
+        page.close()
+    except Exception as exc:
+        info(f"WARN closing the stale page failed: {exc!r}")
+    info("clearing stale session cookies")
     try:
         ctx.clear_cookies()
     except Exception as exc:
         info(f"WARN clearing stale session cookies failed: {exc!r}")
-    robust_evaluate(
-        page,
-        """() => localStorage.setItem(
-            "unsloth_monitor_overlay",
-            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
-        )""",
-    )
-    try:
-        page.evaluate(
-            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
-            ".forEach((key) => localStorage.removeItem(key))"
-        )
-    except Exception as exc:
-        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    info("opening the fresh page")
     _fresh_page = new_throttled_page(ctx)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
     _fresh_page.on("console", _on_console)
-    try:
-        page.close()
-    except Exception:
-        pass
     page = _fresh_page
+    info("parking the fresh page on /api/health to write localStorage")
+    page.goto(f"{BASE}/api/health", wait_until = "domcontentloaded", timeout = 30_000)
+    robust_evaluate(
+        page,
+        """() => {
+            localStorage.setItem(
+                "unsloth_monitor_overlay",
+                JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
+            );
+            ["unsloth_auth_token", "unsloth_auth_refresh_token"].forEach(
+                (key) => localStorage.removeItem(key)
+            );
+        }""",
+    )
     login_system_request_count = len(system_requests)
 
     step("persisted monitor stays dormant on /login and resumes after auth", NO_STEP_CEILING)
