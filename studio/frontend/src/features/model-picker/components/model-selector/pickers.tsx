@@ -61,7 +61,6 @@ import {
   type HfModelResult,
   useHubModelSearch,
 } from "@/features/hub";
-import { isGgufVariantsListingOffline } from "@/features/hub/lib/network";
 import {
   classifyUnslothSupport,
   downloadManager,
@@ -1894,10 +1893,11 @@ function GgufVariantExpander({
       setResolvedLocally(false);
     });
 
-    // On Device with "Show all quantizations" off (or while offline) lists from disk only;
-    // remote discovery is for undownloaded quants while online and that setting is on.
-    const preferLocalCache =
-      onDevice && (!showAllQuantizations || isGgufVariantsListingOffline());
+    // On Device with "Show all quantizations" off shows only quants already on disk, so list
+    // them from the disk rather than the Hub. An offline Hub already gets the disk answer from
+    // listGgufVariants itself.
+    const preferLocalCache = onDevice && !showAllQuantizations;
+    // Chat rows name the repository; media and explicit local rows retain their folder scope.
     listGgufVariants(repoId, hfToken, {
       ...(localSource ? { localPath: localSource } : {}),
       ...(preferLocalCache ? { preferLocalCache: true } : {}),

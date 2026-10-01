@@ -755,16 +755,15 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
-    # On Device uses preferLocalCache when All quantizations is off or the Hub is unreachable,
-    # so offline and default on-device discovery stay disk-only without dropping undownloaded
-    # quants while online and that setting is on.
+    # On Device with All quantizations off lists from disk (#12415); with it on, the expander stays
+    # remote-first so undownloaded quants still show. Offline is folded in by listGgufVariants.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
         0
     ), "the expander drops the row's own cache directory"
-    assert "preferLocalCache: true" in call.group(0)
-    assert "isGgufVariantsListingOffline()" in call.group(0)
+    assert "...(preferLocalCache ? { preferLocalCache: true } : {})" in call.group(0)
+    assert "const preferLocalCache = onDevice && !showAllQuantizations;" in picker
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.

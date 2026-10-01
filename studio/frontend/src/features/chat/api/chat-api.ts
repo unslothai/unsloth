@@ -12,7 +12,7 @@ import {
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
-import { isGgufVariantsListingOffline } from "@/features/hub/lib/network";
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/igpu-carveout";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
@@ -1451,7 +1451,7 @@ export async function listGgufVariants(
   hfToken?: string,
   options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = ggufVariantsQuery(repoId, options, isGgufVariantsListingOffline());
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
   return runBoundedVariantsRequest(options?.signal, async (signal) => {
     const response = await authFetch(`/api/models/gguf-variants?${params}`, {
       headers: hubTokenHeader(hfToken),
