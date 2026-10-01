@@ -352,6 +352,7 @@ def test_dpo_trains_on_cpu(tmp_path):
 
 def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
     """Shrinking an explicit eval batch of 8 to the train batch of 2 split num_generations = 4 groups."""
+    _skip_if_unsloth_refuses_grpo()
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
