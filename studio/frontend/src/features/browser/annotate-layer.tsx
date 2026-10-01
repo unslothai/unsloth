@@ -129,8 +129,7 @@ function blocksIn(root: Element, area: DOMRect): Range[] {
       ? [{ element, range }]
       : [];
   });
-  // A block holding another that was found (a cell around its paragraph) gives way to it; a list
-  // item's range already stops before its nested list, so it keeps its own line.
+  // Drop blocks containing another hit (list items already stop before nested lists).
   return found
     .filter(
       ({ element, range }) =>
@@ -191,11 +190,8 @@ const sameRanges = (a: Range[] | null, b: Range[] | null) =>
       range.endOffset === b[index]?.endOffset,
   );
 
-/**
- * Request edits on an opened file, as ChatGPT does it: a comment bubble follows the pointer, hover
- * outlines what a click marks, a drag marks an area, each mark takes a comment, and Send hands them
- * all to the chat as one message.
- */
+/** Request edits on a file: click marks a block, drag marks an area, each takes a comment; Send
+ *  posts all as one chat message. */
 export function AnnotateLayer({
   page,
   fileName,
@@ -372,7 +368,7 @@ export function AnnotateLayer({
       const rect = areaFrom(event);
       press = null;
       setArea(null);
-      // A comment typed but not saved is kept, as moving on in ChatGPT keeps it.
+      // An unsaved comment is kept when moving on.
       saveRef.current();
       if (dragging && rect) mark(blocksIn(page, rect));
       else if (event.target instanceof Element && !ownUi(event.target))

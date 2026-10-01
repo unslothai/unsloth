@@ -122,8 +122,7 @@ function tabAddress(tab: BrowserTab | undefined): string {
 // Bidi controls can reverse the text after them, making one site's path read like another's.
 const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
-/** The address as shown when not editing: no scheme or bare trailing slash, and only the site and path
- *  unless the full URL is asked for. From the parsed URL: punycode host, no credentials. */
+/** Display address: no scheme/trailing slash, site+path unless full; punycode host, no credentials. */
 export function displayAddress(address: string, full: boolean): string {
   if (!/^https?:\/\//i.test(address)) return address;
   let shown: string;
@@ -1062,8 +1061,7 @@ function FileToolbar({
           type="button"
           aria-pressed={canAnnotate ? annotating : undefined}
           aria-label={t("browser.file.requestEdits")}
-          // Marks parts of the file to change, as ChatGPT does; without a chat to send them to, it
-          // stages a prompt naming the file instead.
+          // Without a chat to send marks to, stages a prompt naming the file.
           onClick={() =>
             canAnnotate
               ? toggleAnnotating()
@@ -1427,6 +1425,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
             </div>
           ) : null}
           <div
+            data-browser-page=""
             className={cn(
               "relative mx-auto h-full",
               deviceWidth &&

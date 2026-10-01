@@ -191,10 +191,7 @@ export function sandboxFileForSrc(src: string): string | null {
   return SANDBOX_INLINE_IMAGE_EXTS.has(ext) ? file : null;
 }
 
-/**
- * The sandbox file a model-written markdown link points at, of any type: `[report](outputs/report.csv)`.
- * Only a path whose last segment has an extension counts, so `[intro](#intro)` or a bare word stays a link.
- */
+/** Sandbox file a markdown link targets (`outputs/report.csv`); needs an extension, so `#intro` stays a link. */
 // A site without a scheme (`www.example.com`, `example.org/page`), not a sandbox path.
 const BARE_HOST_RE = /^(?:www\.[^/]+|[^/]+\.(?:com|org|net|edu|gov|io|ai|dev|app|co|me|info|xyz|uk|de|fr|jp|cn|ru|ca|au|in|us|eu))(?:[:/?#]|$)/i;
 
@@ -285,10 +282,7 @@ export function sandboxFilePath(sessionId: string, filename: string): string {
   return `${prefix}/${path}${query}`;
 }
 
-/**
- * The route URL for a markdown link to a file the chat's tools wrote, like `markdownSandboxImageSrc` for images:
- * a bare `outputs/report.csv` would otherwise be blocked as a relative link. Null when the href is no such file.
- */
+/** Route URL for a link to a tool-written file (a bare relative path would be blocked); null otherwise. */
 export function markdownSandboxLinkHref(
   href: string,
   ctx: { threadId: string | undefined; projectId: string | null | undefined },

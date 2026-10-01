@@ -15542,8 +15542,9 @@ def _is_bot_check(status: int, headers) -> bool:
         return True
     if headers.get("x-datadome") or headers.get("x-dd-b"):
         return True
+    # Rate limits and outages behind these CDNs carry the same Server header.
     server = (headers.get("Server") or "").lower()
-    return status in (403, 429, 503) and ("cloudflare" in server or "akamaighost" in server)
+    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
 
 
 def _fetch_url_raw(

@@ -66,10 +66,7 @@ const CONTENT_CLASS = "min-w-60 rounded-[20px] p-1.5";
 type TriggerProps = Omit<ComponentProps<typeof ContextMenuTrigger>, "asChild" | "children">;
 const SUB_CLASS = "min-w-52 rounded-[20px] p-1.5";
 
-/**
- * A context menu mounted on first right-click, which it then replays: every streamed link would
- * otherwise carry a Radix menu re-rendered per token.
- */
+/** Mounted on first right-click (then replayed), so streamed links don't re-render a Radix menu per token. */
 function LazyContextMenu({
   triggerProps,
   content,

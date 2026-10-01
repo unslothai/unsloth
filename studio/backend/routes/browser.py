@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-app browser for the chat panel: a page fetcher and the sandbox shell pages render in.
-
-Most sites refuse framing, so pages are fetched here with the SSRF-guarded web tool fetcher and
-written into ``/frame``, an opaque-origin sandbox with no access to Studio's storage or API. An
-injected script turns navigations into messages, so they come back through this fetcher.
+"""In-app browser: pages are fetched here (SSRF-guarded, since most sites refuse framing) and
+rendered in ``/frame``, an opaque-origin sandbox; an injected script routes navigations back here.
 """
 
 from __future__ import annotations
@@ -53,21 +50,19 @@ _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
 
-_BASE_TAG_RE = re.compile(r"<base\b[^>]*>", re.IGNORECASE)
+_BASE_TAG_RE = re.compile(r"<base\b[^<>]*>", re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
-_META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+_META_TAG_RE = re.compile(r"<meta\b[^<>]*>", re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
 _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
-_META_CHARSET_RE = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
+_META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
 
-# Pages load https resources from anywhere; the sandbox (no allow-same-origin) isolates them from Studio.
-# Forms are submitted by the injected script.
+# https only (http could hit local services; WebKit lacks local network protection). The sandbox
+# (no allow-same-origin) isolates pages; the injected script submits forms.
 _FRAME_CSP = (
-    # https only: plain http would let a page hit local services (llama.cpp, Jupyter, a router), and
-    # WebKit has no local network protection. http subresources are upgraded instead.
     "default-src https: data: blob:; "
     "script-src 'unsafe-inline' 'unsafe-eval' https: data: blob:; "
     "style-src 'unsafe-inline' https: data: blob:; "
@@ -87,11 +82,9 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
-# Shell a page is loaded into. It injects <base> and a script that turns navigations into messages
-# to the panel, since a real navigation would leave the proxy. The page lives in a srcdoc child, and
-# the shell then sets frame-src 'none' on itself: the child keeps its own copy of the policy (embeds
-# still load), but the child itself can no longer be navigated. That check uses the shell's policy,
-# not the embedder's (the desktop app allows every loopback port), and needs no Navigation API.
+# Page shell: injects <base> and a script turning navigations into panel messages. The page is a
+# srcdoc child; the shell then sets frame-src 'none' on itself so the child can't be navigated
+# (it keeps its own policy copy, so embeds still load), independent of the embedder's policy.
 _FRAME_HTML = r"""<!doctype html>
 <html>
   <head>
@@ -169,7 +162,7 @@ _FRAME_HTML = r"""<!doctype html>
           Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
         } catch {}
         const shellPathname = location.pathname;
-        // Report the latest changed address at most every 200 ms (some sites replaceState per scroll).
+        // Throttle to 200 ms: some sites replaceState per scroll.
         let reportedUrl = pageUrl;
         let urlTimer = 0;
         const reportUrl = () => {
@@ -317,9 +310,9 @@ _FRAME_HTML = r"""<!doctype html>
       const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
       const inject = (html, tags) => {
         const at = (match) => match.index + match[0].length;
-        const head = /<head\b[^>]*>/i.exec(html);
+        const head = /<head\b[^<>]*>/i.exec(html);
         if (head) return html.slice(0, at(head)) + tags + html.slice(at(head));
-        const root = /<html\b[^>]*>/i.exec(html) || /^\s*<!doctype[^>]*>/i.exec(html);
+        const root = /<html\b[^<>]*>/i.exec(html) || /^\s*<!doctype[^>]*>/i.exec(html);
         if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
         return "<head>" + tags + "</head>" + html;
       };
@@ -489,8 +482,7 @@ async def browser_fetch(
     http_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Fetch a page for the browser panel. HTML returns as JSON for the sandbox shell; anything
-    else (PDF, images, text) returns raw with its content type."""
+    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
     request.url = _normalize_url_scheme(request.url.strip())
     cancel_event = threading.Event()
     loop = asyncio.get_running_loop()
@@ -510,8 +502,7 @@ async def browser_fetch(
 
 @router.get("/frame", include_in_schema = False)
 async def browser_frame():
-    """Sandbox shell for pages. No auth, like the artifact frame: it is static, and the hosted page
-    can read its URL."""
+    """Sandbox shell. No auth (like the artifact frame): it is static and the page can see its URL."""
     return Response(
         content = _FRAME_HTML,
         media_type = "text/html; charset=utf-8",

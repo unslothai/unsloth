@@ -165,7 +165,7 @@ function PageButton({
   );
 }
 
-/** A new tab: tools, suggested sites and recent pages, as ChatGPT's browser lays them out. */
+/** A new tab: tools, suggested sites and recent pages. */
 export function NewTabPage({ tabId }: { tabId: string }) {
   const t = useT();
   const locale = useLocale();

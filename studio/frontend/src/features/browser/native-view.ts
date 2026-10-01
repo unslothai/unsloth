@@ -40,6 +40,8 @@ const MAX_VIEWS = 4;
 const DOCK_GAP = 8;
 // Catches moves that resize nothing.
 const RECHECK_MS = 300;
+// Pages can open tabs without a click here, so at most one per this long.
+const NEW_TAB_INTERVAL_MS = 1000;
 
 type NativeEvent =
   | { kind: "load"; tabId: string; url: string; loading: boolean }
@@ -76,6 +78,11 @@ const zooms = new Map<string, number>();
 const icons = new Map<string, string>();
 // What each view really shows, to return to after a refused address.
 const pages = new Map<string, { url: string; title: string; favicon: string | null }>();
+// Where a closed view's page had got to, so it reopens there rather than at the entry's address.
+const resume = new Map<string, { entry: number; url: string }>();
+let lastNewTab = 0;
+// Bumped when the panel unmounts, so a call still in flight leaves the closed views alone.
+let generation = 0;
 
 function page(tabId: string) {
   const shown = pages.get(tabId) ?? { url: "", title: "", favicon: null };
@@ -115,6 +122,7 @@ function onNativeEvent(event: NativeEvent): void {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url });
       page(tab.id).url = event.url;
+      resume.set(tab.id, { entry: entryKey(currentEntry(tab)), url: event.url });
       if (!event.loading) history.recordVisit(event.url, tab.title);
       break;
     case "title":
@@ -125,6 +133,7 @@ function onNativeEvent(event: NativeEvent): void {
     case "url":
       store.updateTab(tab.id, { displayUrl: event.url });
       page(tab.id).url = event.url;
+      resume.set(tab.id, { entry: entryKey(currentEntry(tab)), url: event.url });
       break;
     case "history": {
       const next = { back: event.canGoBack, forward: event.canGoForward };
@@ -144,6 +153,8 @@ function onNativeEvent(event: NativeEvent): void {
       break;
     }
     case "newTab":
+      if (Date.now() - lastNewTab < NEW_TAB_INTERVAL_MS) break;
+      lastNewTab = Date.now();
       store.openUrl(event.url, { newTab: true });
       break;
     case "external":
@@ -268,7 +279,10 @@ function pruneViews(shown: string | null): void {
   const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
   for (const tabId of [...views.keys()]) {
     const tab = tabs.get(tabId);
-    if (!tab || currentEntry(tab).kind !== "web") closeView(tabId);
+    if (!tab || currentEntry(tab).kind !== "web") {
+      closeView(tabId);
+      resume.delete(tabId);
+    }
   }
   while (views.size > MAX_VIEWS) {
     const oldest = recency.find((id) => id !== shown && views.has(id));
@@ -285,8 +299,14 @@ async function applyView(desired: Desired): Promise<void> {
   const { tabId, url, entry, zoom, bounds } = desired;
   const existed = views.has(tabId);
   const loaded = views.get(tabId);
+  const resumed = resume.get(tabId);
+  const started = generation;
   try {
-    await call("browser_view_show", { tabId, url, bounds });
+    await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
+    if (started !== generation) {
+      void call("browser_view_close", { tabId }).catch(() => undefined);
+      return;
+    }
     // A new address for an existing view. Recorded once it went through, so Retry tries again.
     if (existed && loaded !== entry) await call("browser_view_navigate", { tabId, url });
     views.set(tabId, entry);
@@ -295,6 +315,7 @@ async function applyView(desired: Desired): Promise<void> {
       await call("browser_view_zoom", { tabId, zoom });
     }
   } catch (cause) {
+    if (started !== generation) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
       nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
@@ -308,7 +329,25 @@ export function startNativeViews(): () => void {
   listenOnce();
   let frame = 0;
   let sent = "";
-  let queue: Promise<void> = Promise.resolve();
+  // One call in flight; while it runs only the newest state waits, so a drag can't queue up a
+  // backlog of stale bounds for the native view to replay.
+  let running: Promise<void> | null = null;
+  let pending: { desired: Desired } | null = null;
+  const pump = () => {
+    if (running || !pending) return;
+    const { desired } = pending;
+    pending = null;
+    running = applyView(desired)
+      .catch(() => undefined)
+      .finally(() => {
+        running = null;
+        pump();
+      });
+  };
+  const apply = (desired: Desired) => {
+    pending = { desired };
+    pump();
+  };
   let resized: HTMLElement | null = null;
   const resizeObserver = new ResizeObserver(() => schedule());
 
@@ -327,8 +366,7 @@ export function startNativeViews(): () => void {
     const key = JSON.stringify(desired);
     if (key === sent) return;
     sent = key;
-    // In order: a hide must not land after the show that followed it.
-    queue = queue.then(() => applyView(desired)).catch(() => undefined);
+    apply(desired);
   };
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(sync);
@@ -349,6 +387,9 @@ export function startNativeViews(): () => void {
     resizeObserver.disconnect();
     window.removeEventListener("resize", schedule);
     window.clearInterval(interval);
-    queue = queue.then(() => applyView(null)).catch(() => undefined);
+    // Closed, not just hidden: a hidden page would keep running scripts and playing media.
+    generation += 1;
+    pending = null;
+    for (const tabId of [...views.keys()]) closeView(tabId);
   };
 }

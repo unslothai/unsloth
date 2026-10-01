@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! The browser panel's web pages: a native child webview per tab, laid over the panel by the
-//! frontend, so bot checks, logins and web apps work as in a browser.
-//!
-//! Pages are untrusted:
-//! - Navigations (frames too) must be http(s) to a public host: local URLs reach the app's
-//!   commands, and loopback the backend. Every request goes through `browser_proxy`, which
-//!   refuses private addresses after DNS. macOS before 14 can't proxy a webview, so the panel
-//!   uses its proxied frame there instead.
-//! - No IPC: capabilities are bound to `main`, and these commands only answer it.
-//! - Pages use their own profile, never the app's, which holds Studio's sign-in.
-//! - Popups become tabs; downloads get the OS quarantine mark.
+//! Browser panel pages: one native child webview per tab. Pages are untrusted:
+//! - Navigations (frames too) must be http(s) to a public host; all requests go via
+//!   `browser_proxy`, which refuses private addresses after DNS. macOS < 14 can't proxy a
+//!   webview, so the panel uses its proxied frame there.
+//! - No IPC (capabilities bound to `main`); own profile, never the app's (holds sign-in).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,7 +15,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
     WebviewBuilder, WebviewUrl,
 };
 
@@ -131,9 +125,6 @@ pub struct ViewBounds {
     viewport_width: f64,
 }
 
-// ---------------------------------------------------------------------------------------------
-// Navigation policy
-
 /// Whether a page may navigate (or frame) this URL.
 pub(crate) fn navigation_allowed(url: &Url) -> bool {
     match url.scheme() {
@@ -169,8 +160,7 @@ pub(crate) fn ip_is_private(ip: IpAddr) -> bool {
     }
 }
 
-/// IPv4 ranges that aren't globally routable (IANA special-purpose, as the backend's
-/// `is_global`), plus multicast. Any of them can be routed to something local.
+/// Non-global IPv4 (IANA special-purpose, as backend `is_global`) plus multicast.
 const NON_GLOBAL_V4: &[(u32, u32)] = &[
     (0x0000_0000, 8),  // this network
     (0x0a00_0000, 8),  // private
@@ -195,8 +185,7 @@ fn ipv4_is_private(ip: Ipv4Addr) -> bool {
         .any(|&(network, prefix)| ip >> (32 - prefix) == network >> (32 - prefix))
 }
 
-/// Only global unicast (2000::/3) outside its special-purpose blocks; IPv4 inside a mapped or
-/// NAT64 address is checked as IPv4.
+/// Global unicast (2000::/3) minus special blocks; mapped/NAT64 IPv4 is checked as IPv4.
 fn ipv6_is_private(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return ipv4_is_private(v4);
@@ -241,8 +230,7 @@ const BLOCKED_HOST_PREFIXES: &[&str] = &[
     r"\[",
 ];
 
-/// WebKit content rules blocking requests to private hosts (any scheme, with or without
-/// credentials) and the app's own schemes.
+/// WebKit content rules blocking private hosts (any scheme/credentials) and app schemes.
 fn content_rules_json() -> String {
     let mut filters = Vec::new();
     for prefix in BLOCKED_HOST_PREFIXES {
@@ -359,9 +347,6 @@ mod content_rules {
         }
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Helpers
 
 fn label_for(tab_id: &str) -> Result<String, String> {
     let valid = !tab_id.is_empty()
@@ -531,8 +516,7 @@ fn macos_at_least(major: isize) -> bool {
     })
 }
 
-/// Pages' own profile, never the app's, connecting through `browser_proxy` (set on macOS when
-/// the page first loads, see `load_when_protected`).
+/// Pages' own profile, proxied via `browser_proxy` (macOS: set on first load).
 fn with_page_profile<R: Runtime>(
     builder: WebviewBuilder<R>,
     app: &AppHandle<R>,
@@ -549,8 +533,7 @@ fn with_page_profile<R: Runtime>(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // These replace wry's default arguments, so they repeat them. Chromium sends loopback
-        // past any proxy unless told not to.
+        // Replaces wry's defaults, so repeats them; Chromium bypasses the proxy for loopback otherwise.
         #[cfg(windows)]
         let builder = builder.additional_browser_args(&format!(
             "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
@@ -800,12 +783,10 @@ fn create_view<R: Runtime>(
     Ok(webview)
 }
 
-/// Load `url` once the page connects through the proxy and its requests to private hosts are
-/// blocked.
+/// Load `url` once the page is proxied and private hosts are blocked.
 #[cfg(target_os = "macos")]
 fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
-    // Off the main thread: `protect` can finish inside `with_webview`, which holds the lock
-    // `navigate` takes (and `run_on_main_thread` runs in place there).
+    // Off main thread: `protect` can finish inside `with_webview`, holding `navigate`'s lock.
     let page = webview.clone();
     let load = move || {
         tauri::async_runtime::spawn(async move {
@@ -839,8 +820,8 @@ mod page_proxy {
     type CreateHost = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut AnyObject;
     type CreateConnect = unsafe extern "C" fn(*mut AnyObject, *mut AnyObject) -> *mut AnyObject;
 
-    /// Point the view's data store at the proxy. The Network calls are macOS 14+, so they're
-    /// looked up at run time rather than linked, which would stop older macOS launching the app.
+    /// Point the data store at the proxy. Network calls (macOS 14+) are looked up at run time;
+    /// linking them would stop older macOS launching the app.
     pub fn route(view: &WKWebView, proxy: SocketAddr) -> bool {
         let (Ok(ip), Ok(port)) = (
             CString::new(proxy.ip().to_string()),
@@ -891,20 +872,25 @@ fn logical_rect<R: Runtime>(
     caller: &Webview<R>,
     bounds: &ViewBounds,
 ) -> (LogicalPosition<f64>, LogicalSize<f64>) {
-    let scale = caller
+    // Read once: each is a round trip to the window, and this runs on every resize frame.
+    let main = caller
         .bounds()
         .ok()
         .zip(caller.window().scale_factor().ok())
-        .map(|(rect, factor)| rect.size.to_logical::<f64>(factor).width)
+        .map(|(rect, factor)| {
+            (
+                rect.position.to_logical::<f64>(factor),
+                rect.size.to_logical::<f64>(factor).width,
+            )
+        });
+    let origin = main
+        .map(|(origin, _)| origin)
+        .unwrap_or(LogicalPosition::new(0.0, 0.0));
+    let scale = main
+        .map(|(_, width)| width)
         .filter(|width| *width > 0.0 && bounds.viewport_width > 0.0)
         .map(|width| width / bounds.viewport_width)
         .unwrap_or(1.0);
-    let origin = caller
-        .bounds()
-        .ok()
-        .zip(caller.window().scale_factor().ok())
-        .map(|(rect, factor)| rect.position.to_logical::<f64>(factor))
-        .unwrap_or(LogicalPosition::new(0.0, 0.0));
     (
         LogicalPosition::new(origin.x + bounds.x * scale, origin.y + bounds.y * scale),
         LogicalSize::new(
@@ -922,11 +908,7 @@ fn browser_views<R: Runtime>(app: &AppHandle<R>) -> Vec<Webview<R>> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Commands
-
-/// Whether pages open in native webviews: only where they can be routed through
-/// `browser_proxy` (macOS 14+ for a per-webview proxy).
+/// Whether pages open in native webviews (needs per-webview proxy: macOS 14+).
 #[tauri::command]
 pub fn browser_view_supported() -> bool {
     #[cfg(target_os = "macos")]
@@ -935,8 +917,7 @@ pub fn browser_view_supported() -> bool {
     true
 }
 
-/// Show a tab's page at `bounds` (created at `url` the first time) and hide the rest.
-/// `tab_id: None` hides all.
+/// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
 #[tauri::command]
 pub fn browser_view_show<R: Runtime>(
     webview: Webview<R>,
@@ -959,20 +940,33 @@ pub fn browser_view_show<R: Runtime>(
             };
             let (position, size) = logical_rect(&webview, bounds);
             shown
-                .set_position(position)
+                .set_bounds(Rect {
+                    position: position.into(),
+                    size: size.into(),
+                })
                 .map_err(|error| error.to_string())?;
-            shown.set_size(size).map_err(|error| error.to_string())?;
-            shown.show().map_err(|error| error.to_string())?;
-            Some(shown.label().to_string())
+            Some(shown)
         }
         _ => None,
     };
-    for view in browser_views(&app) {
-        if Some(view.label()) != target.as_deref() {
-            let _ = view.hide();
+    let shown = tab_id.filter(|_| target.is_some());
+    // A resize only moves the shown view; showing it and hiding the rest is for a switch.
+    let switched = {
+        let mut inner = state.inner.lock().unwrap();
+        let switched = inner.shown != shown;
+        inner.shown = shown;
+        switched
+    };
+    if switched {
+        if let Some(view) = &target {
+            view.show().map_err(|error| error.to_string())?;
+        }
+        for view in browser_views(&app) {
+            if Some(view.label()) != target.as_ref().map(|view| view.label()) {
+                let _ = view.hide();
+            }
         }
     }
-    state.inner.lock().unwrap().shown = tab_id.filter(|_| target.is_some());
     Ok(())
 }
 

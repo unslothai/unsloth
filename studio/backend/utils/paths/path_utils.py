@@ -481,13 +481,24 @@ def _prune_open_staging(root: Path) -> None:
             continue
 
 
-def _stage_for_open(path: Path) -> Path:
+def _opened_path(handle: int) -> Optional[str]:
+    """Where an open file really is, or None where the OS can't say."""
+    if sys.platform == "darwin":
+        import fcntl
+        return os.fsdecode(fcntl.fcntl(handle, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0"))
+    proc = f"/proc/self/fd/{handle}"
+    return os.readlink(proc) if os.path.islink(proc) else None
+
+
+def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
     """A name for *path*'s current file in a private directory, for the OS opener.
 
     Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
     it) between any check and the opener resolving the name. So the file is opened once without
     following links, and the inode that open returned is hard-linked (or, across filesystems,
     copied) into a fresh directory only Studio writes to. That name is what the OS opens.
+    O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
+    opened file really is against *root*.
     """
     import shutil
     import stat as stat_module
@@ -505,10 +516,14 @@ def _stage_for_open(path: Path) -> Path:
         info = os.fstat(handle)
         if not stat_module.S_ISREG(info.st_mode):
             raise FileNotFoundError(str(path))
-        root = cache_root() / "open-staging"
-        root.mkdir(parents = True, exist_ok = True)
-        _prune_open_staging(root)
-        target = Path(tempfile.mkdtemp(dir = root)) / path.name
+        if root is not None:
+            real = _opened_path(handle) or os.path.realpath(path)
+            if not Path(real).is_relative_to(os.path.realpath(root)):
+                raise FileNotFoundError(str(path))
+        staging = cache_root() / "open-staging"
+        staging.mkdir(parents = True, exist_ok = True)
+        _prune_open_staging(staging)
+        target = Path(tempfile.mkdtemp(dir = staging)) / path.name
         try:
             os.link(path, target, follow_symlinks = False)
             linked = os.lstat(target)
@@ -524,8 +539,8 @@ def _stage_for_open(path: Path) -> Path:
         os.close(handle)
 
 
-def open_in_default_app(path: Path) -> None:
-    """Open the regular file *path* with the OS default app (best effort per platform).
+def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
+    """Open the regular file *path* (inside *root*, if given) with the OS default app.
 
     Refuses (``PermissionError``) anything outside ``DEFAULT_APP_OPEN_EXTENSIONS`` and raises
     ``FileNotFoundError`` when *path* is not a regular file; a symlink is refused like a missing file.
@@ -542,7 +557,7 @@ def open_in_default_app(path: Path) -> None:
         raise FileNotFoundError(str(path)) from exc
     if not stat_module.S_ISREG(entry.st_mode):
         raise FileNotFoundError(str(path))
-    target = str(_stage_for_open(path))
+    target = str(_stage_for_open(path, root))
     if sys.platform == "darwin":
         subprocess.Popen(["open", target])
     elif os.name == "nt":

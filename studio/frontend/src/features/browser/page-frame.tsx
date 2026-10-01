@@ -31,8 +31,7 @@ const isUserAction = (message: FrameMessage) =>
 // Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
 const USER_ACTION_INTERVAL_MS = 1000;
 
-/** Whether the user just clicked or typed in the focused frame. Without the User Activation API,
- *  focus alone opens a tab here but never the system browser. */
+/** Recent user activation in the focused frame; without the API, focus opens a tab but never the system browser. */
 function userActive(frame: HTMLIFrameElement, message: FrameMessage): boolean {
   if (document.activeElement !== frame) return false;
   const active = navigator.userActivation?.isActive;

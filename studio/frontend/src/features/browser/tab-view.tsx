@@ -141,11 +141,12 @@ function PageError({
         {t(botCheck ? "browser.error.botCheckDescription" : "browser.error.description", { host: hostOf(url) })}
       </p>
       <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
-      <div className="mt-1 flex gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+      {/* A bot check needs a real browser, so that's the way forward; a retry rarely helps. */}
+      <div className={cn("mt-1 flex gap-2", botCheck && "flex-row-reverse")}>
+        <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
           {t("browser.error.retry")}
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => openExternalLink(url)}>
+        <Button type="button" variant={botCheck ? "default" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
           {t("browser.openExternal")}
         </Button>
       </div>

@@ -24,12 +24,8 @@ export function openExternalLink(url: string): void {
   }
 }
 
-/**
- * Open a URL in the in-app browser panel when it is available, else the system
- * browser (Tauri) or new tab (web). Handles anchor and mailto: links natively.
- * Returns true when the caller should preventDefault; false to let native
- * navigation proceed (relative, empty).
- */
+/** Open in the browser panel if available, else system browser / new tab. True = caller should
+ *  preventDefault; false lets native navigation proceed (relative, empty). */
 export function openLink(url: string): boolean {
   if (!url) return false;
 

@@ -5548,8 +5548,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	}
 }
 
-/* Browser full view: the chat floats over the page, bottom right, as ChatGPT's does. Unlayered, so
-   it wins over the panel's own utilities. */
+/* Browser full view: chat floats bottom right. Unlayered, so it beats the panel's utilities. */
 .chat-artifact-split[data-browser-full-view] > #chat-thread {
 	position: absolute;
 	right: calc(1rem * var(--ui-space-scale, 1));
@@ -5650,8 +5649,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 		0 8px 24px -6px rgb(0 0 0 / 0.55);
 }
 
-/* An opened file's controls float over the page, ChatGPT style. The page scrolls under them, so its
-   scroller starts below them; spreadsheets keep their sticky header clear by starting lower instead. */
+/* File controls float over the page, so its scroller starts below them (spreadsheets lower, for the sticky header). */
 .browser-file-page {
 	--browser-file-toolbar-inset: calc(3.25rem * var(--ui-space-scale, 1));
 }

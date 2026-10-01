@@ -30,11 +30,8 @@ import { useBrowserStore } from "./store";
 const WASH =
   "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]";
 
-/**
- * The bar over the chat while the browser is in full view: minimize, the chat's title (which shows or
- * hides the conversation) and a menu to split the chat back out. With only the composer showing it
- * slides in on hover, as ChatGPT's does.
- */
+/** Full-view chat bar: minimize, title (toggles the conversation), split menu; hover-reveals when
+ *  only the composer shows. */
 export function FullViewChatBar({ title }: { title: string | undefined }) {
   const t = useT();
   const dock = useBrowserStore((state) => state.chatDock);

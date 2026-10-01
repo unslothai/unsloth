@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! Loopback proxy every browser-panel page connects through. It resolves each host itself,
-//! refuses private answers, and connects to the address it checked, so neither a host name nor
-//! DNS rebinding can point a page at this machine or its network.
+//! Loopback proxy for browser-panel pages: resolves hosts itself, refuses private answers and
+//! connects to the checked address, defeating DNS rebinding.
 
 use crate::browser_webview::{host_is_private, ip_is_private};
 use std::net::{IpAddr, SocketAddr};

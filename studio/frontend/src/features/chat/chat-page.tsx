@@ -94,6 +94,7 @@ import {
   FullViewChatBar,
   FullViewChatButton,
   openUrlInBrowser,
+  pinBrowserPage,
   setBrowserPanelAvailable,
   useBrowserStore,
 } from "@/features/browser";
@@ -368,11 +369,8 @@ function messageHasImage(message: MessageRecord): boolean {
   return false;
 }
 
-/**
- * Annotations from the browser go out as their own message, as ChatGPT sends them. Submitted through
- * the composer's form, so they take the same checks as a typed send (a loaded model, a free thread);
- * a refused send, or a draft already in the composer, leaves them staged there instead.
- */
+/** Send browser annotations as their own message via the composer's form (same checks as a typed
+ *  send); a refused send or an existing draft leaves them staged. */
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
@@ -675,8 +673,7 @@ const SingleContent = memo(function SingleContent({
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, onCloseArtifact, closeBrowser]);
 
-  // Close the browser when leaving this chat. Keyed on the runtime thread id, which stays the same
-  // when a new chat saves its first message.
+  // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
   const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const shownThreadIdRef = useRef(shownThreadId);
   useEffect(() => {
@@ -688,8 +685,7 @@ const SingleContent = memo(function SingleContent({
     if (!chatActive) closeBrowser();
   }, [chatActive, closeBrowser]);
 
-  // The browser is full height, so the header and notice stop at its edge. Set the width on them
-  // only; on the root it would restyle the whole thread on every resize.
+  // Width on header/notice only: on the root it would restyle the whole thread per resize.
   const contextSurfaceRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const surface = contextSurfaceRef.current;
@@ -731,8 +727,7 @@ const SingleContent = memo(function SingleContent({
     };
   }, [showBrowserPanel, chatOnRight]);
 
-  // Moving the chat re-sorts the panels, and a new order starts from the default sizes; put the
-  // browser back at its width. In full view it is the only panel in the row, so it fills it.
+  // Moving the chat re-sorts panels to default sizes; restore the browser's width (full view fills).
   const browserLayout = `${browserFullView}:${chatOnRight}`;
   const seenBrowserLayoutRef = useRef(browserLayout);
   useEffect(() => {
@@ -804,8 +799,7 @@ const SingleContent = memo(function SingleContent({
         <ResizablePanel
           id="chat-thread"
           defaultSize="100%"
-          // Distinct per layout: a change re-registers the panel, which re-sorts the panels by
-          // where they now sit, so resizing follows a swapped or floating chat.
+          // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
           minSize={
             browserFullView
               ? "0%"
@@ -842,10 +836,16 @@ const SingleContent = memo(function SingleContent({
           withHandle={false}
           // The library's double-click reset would shut the panel without closing the artifact.
           disableDoubleClick
-          onPointerDown={() => {
-            window.addEventListener("pointerup", rememberArtifactPanelWidth, {
-              once: true,
-            });
+          onPointerDown={(event) => {
+            const unpin = pinBrowserPage(event.currentTarget);
+            const release = () => {
+              window.removeEventListener("pointerup", release);
+              window.removeEventListener("pointercancel", release);
+              unpin();
+              rememberArtifactPanelWidth();
+            };
+            window.addEventListener("pointerup", release);
+            window.addEventListener("pointercancel", release);
           }}
           onKeyUp={rememberArtifactPanelWidth}
           className={cn(

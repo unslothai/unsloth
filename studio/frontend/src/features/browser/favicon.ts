@@ -31,10 +31,7 @@ async function load(url: string): Promise<string | null> {
   }
 }
 
-/**
- * A page's favicon as a blob URL, fetched through the guarded proxy. Loading it
- * directly would let a page point Studio at a local or LAN address.
- */
+/** A page's favicon as a data: URL via the guarded proxy; loaded directly, a page could aim Studio at a LAN address. */
 export function proxiedFavicon(url: string): Promise<string | null> {
   if (/^data:image\//i.test(url)) return Promise.resolve(url);
   let icon = icons.get(url);

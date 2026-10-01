@@ -32,10 +32,7 @@ export function annotationsOfFile(
 
 const quoteAttr = (value: string) => value.replace(/[\n"]/g, " ");
 
-/**
- * What the model reads. The items stay JSON, which the model reads as easily as prose and the chip
- * can read back from a stored message, where the File is gone.
- */
+/** What the model reads: JSON items, so the chip can parse them back from a stored message. */
 export function annotationsContentText({
   file,
   items,
