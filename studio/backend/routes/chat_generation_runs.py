@@ -73,6 +73,7 @@ _MEDIA_FIELDS = {
     "audio_base64",
     "extra_audio_base64",
     "video_base64",
+    "mcp_image",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64

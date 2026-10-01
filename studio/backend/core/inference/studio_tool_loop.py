@@ -101,6 +101,7 @@ from core.inference.tools import (
     build_rag_autoinject,
     execute_tool,
     is_high_risk_tool_call,
+    mcp_image_share,
     never_needs_approval,
 )
 from state.tool_approvals import (
@@ -1244,6 +1245,7 @@ async def stream_with_studio_tools(
     run: ToolLoopRun,
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
@@ -1715,6 +1717,13 @@ async def stream_with_studio_tools(
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = (
+                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
+                if mcp_image is not None
+                else None
+            )
+            needs_confirmation = needs_confirmation or image_share is not None
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1723,6 +1732,8 @@ async def stream_with_studio_tools(
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1838,6 +1849,8 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
+                if image_share is not None:
+                    kwargs["mcp_image"] = image_share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long

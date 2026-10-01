@@ -161,7 +161,7 @@ from .diffusion_transformer_quant import (
     stored_denoiser_precision,
     transformer_is_quantised,
 )
-from .diffusion import _memory_request_forces_offload
+from .diffusion import _family_override_resolved, _memory_request_forces_offload
 from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
 from .diffusion_precision import (
@@ -178,6 +178,7 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
+    pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
     detect_video_family,
@@ -923,18 +924,24 @@ def _assert_pick_is_not_speech(
 
 
 def _detect_load_family(
-    repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+    display_repo_id: Optional[str] = None,
 ) -> Optional[VideoFamily]:
     """Family detection shared by validate_load_request and the load worker: the
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
-    fam = detect_video_family(repo_id, family_override) or (
-        detect_video_family(f"{repo_id}/{gguf_filename}")
-        if gguf_filename and not family_override
-        else None
+    if family_override:
+        return detect_video_family(repo_id, family_override)
+    fam = (
+        (display_repo_id and detect_video_family(display_repo_id))
+        or detect_video_family(repo_id)
+        or (gguf_filename and detect_video_family(f"{repo_id}/{gguf_filename}"))
+        or None
     )
-    if fam is None and gguf_filename and not family_override:
+    if fam is None and gguf_filename:
         # A renamed GGUF carries no family token, so resolve via general.architecture. No-backend archs still yield None
         # (a 400)
         arch = _picked_gguf_arch(repo_id, gguf_filename)
@@ -968,6 +975,7 @@ class _VideoLoadState:
     device: str
     dtype: str
     kind: str
+    display_repo_id: Optional[str] = None
     engine: str = "diffusers"
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
     # pipeline, so a load in flight never moves the resident model's card.
@@ -1258,6 +1266,29 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return int(trusted_mem_get_info()[0])
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None
+
+
+def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
+    """Live free VRAM via nvidia-smi / amd-smi (no CUDA context here), or None. No pin = sd.cpp's ordinal 0."""
+    if device != "cuda":
+        return None
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+        with gpu_query.fresh_reads():
+            devices = get_visible_gpu_utilization().get("devices", [])
+        want = 0 if ordinal is None else int(ordinal)
+        for entry in devices:
+            if entry.get("visible_ordinal") != want:
+                continue
+            total = entry.get("vram_total_gb")
+            used = entry.get("vram_used_gb")
+            if total is None or used is None:
+                return None
+            return max(0, int((float(total) - float(used)) * 1024**3))
+    except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
+        return None
+    return None
 
 
 def _h3_device_capacity_bytes(device: str) -> Optional[int]:
@@ -2246,6 +2277,16 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
     return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
+@functools.cache
+def _video_family_capabilities() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # Once per process: on Metal the device probe allocates and syncs, which a status poll must not repeat.
+    available = pipeline_available_video_families(device = resolve_diffusion_device_target().device)
+    return (
+        tuple(fam.name for fam in available),
+        tuple(fam.name for fam in available if fam.modular_workflow),
+    )
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -2308,6 +2349,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
+        display_repo_id: Optional[str] = None,
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
@@ -2322,7 +2364,7 @@ class VideoBackend:
                 f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
-        fam = _detect_load_family(repo_id, gguf_filename, family_override)
+        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -2404,6 +2446,17 @@ class VideoBackend:
                         f"can be applied and the dense weights cannot be quantized in place. "
                         f"{hint}"
                     )
+        if kind == "pipeline":
+            from .diffusion_families import local_pipeline_components_are_complete
+
+            root = Path(repo_id).expanduser()
+            index = "modular_model_index.json" if fam.modular_workflow else "model_index.json"
+            if root.exists() and not (
+                root.is_dir() and local_pipeline_components_are_complete(root, index)
+            ):
+                raise ValueError(
+                    f"Local pipeline path is not a diffusers directory (no valid {index}): {repo_id}"
+                )
         from .video_minimax_h3 import is_h3_native, validate_h3_transformer_filename
 
         if is_h3_native(fam, kind):
@@ -2444,7 +2497,8 @@ class VideoBackend:
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
 
-        _assert_local_base_is_pipeline(base_repo)
+        excluded = (fam.denoiser_attr,) if kind in ("gguf", "single_file") else ()
+        _assert_local_base_is_pipeline(base_repo, excluded_components = excluded)
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         if kind in ("gguf", "single_file") and fam.is_moe:
@@ -2494,22 +2548,6 @@ class VideoBackend:
                     )
             elif path_shaped:
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
-        # A local pipeline pick must be a diffusers directory (model_index.json), else it would only fail after eviction
-        if kind == "pipeline":
-            root = Path(repo_id).expanduser()
-            # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too
-            indexes = (
-                ("model_index.json", "modular_model_index.json")
-                if fam.modular_workflow
-                else ("model_index.json",)
-            )
-            if root.exists() and not (
-                root.is_dir() and any((root / name).is_file() for name in indexes)
-            ):
-                raise ValueError(
-                    f"Local pipeline path is not a diffusers directory "
-                    f"(no {' or '.join(indexes)}): {repo_id}"
-                )
         # Reject a malformed transformer_quant cheaply, before the handoff (pipeline-kind only, matching the image
         # backend)
         normalize_transformer_quant(transformer_quant)
@@ -2525,6 +2563,7 @@ class VideoBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -2561,6 +2600,7 @@ class VideoBackend:
             gguf_filename = gguf_filename,
             base_repo = base_repo,
             family_override = family_override,
+            display_repo_id = display_repo_id,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
@@ -2633,6 +2673,7 @@ class VideoBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
@@ -2666,7 +2707,10 @@ class VideoBackend:
         local_files_only = bool(kwargs.get("local_files_only"))
         try:
             fam = _detect_load_family(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kwargs.get("family_override"),
+                kwargs.get("display_repo_id"),
             )
             # Also on the worker, which a direct begin_load reaches without a plan. Here rather than in
             # validate_load_request, which is network-free by contract.
@@ -2989,12 +3033,15 @@ class VideoBackend:
         token: Optional[int],
         cancel_event: threading.Event,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         gguf_filename: Optional[str] = None,
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
+        family_override: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
         # NAMED so a static step-skip ask can be recorded as declined: sd.cpp runs every step itself.
         transformer_cache: Optional[str] = None,
+        speed_mode: Optional[str] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in through _run_load's kwargs,
         # and swallowed it meant the four-file bundle, the sizing metadata and the sd-cli install were all fetched by a
         # load that promised no downloads.
@@ -3030,6 +3077,7 @@ class VideoBackend:
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_supports_graph_cut,
+            sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
@@ -3312,6 +3360,14 @@ class VideoBackend:
             # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose
             # between.
             supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
+            # Lossy (INT8 QK^T), so only on an explicit speed_mode="max".
+            h3_sage = (
+                native_device != "cpu"
+                and str(speed_mode or "").strip().lower() == "max"
+                and os.environ.get("UNSLOTH_H3_SAGE_ATTN", "").strip().lower()
+                not in ("0", "false", "no", "off")
+                and sd_cpp_supports_sage_attn(binary)
+            )
             # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal would outlive the
             # decision and be committed against a runtime that never used it.
             native_ordinal = None if native_device == "cpu" else gpu_ordinal
@@ -3359,6 +3415,13 @@ class VideoBackend:
             native_offload += GRAPH_CUT_VRAM_FLAGS
             if "--offload-to-cpu" in native_offload:
                 native_offload += GRAPH_CUT_STREAM_FLAGS
+        native_env: tuple[tuple[str, str], ...] = ()
+        if h3_sage:
+            native_offload += ("--sage-attn",)
+            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
+            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
+            if H3_QUANT_CUBLAS_ENV not in os.environ:
+                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3377,6 +3440,7 @@ class VideoBackend:
                 audio_vae = str(resolved[3]),
             ),
             offload_flags = native_offload,
+            env = native_env,
         )
 
         with self._lock:
@@ -3395,6 +3459,7 @@ class VideoBackend:
                         pipe = runtime,
                         family = fam,
                         repo_id = repo_id,
+                        display_repo_id = display_repo_id,
                         base_repo = fam.base_repo,
                         device = native_device,
                         gpu_ordinal = native_ordinal,
@@ -3409,14 +3474,25 @@ class VideoBackend:
                         offload_policy = policy,
                         vae_tiling = False,
                         memory_mode = requested_mode,
-                        attention_backend = "flash",
+                        attention_backend = "sage" if h3_sage else "flash",
+                        speed_mode = SPEED_MAX if h3_sage else SPEED_OFF,
                         resolved = build_resolved_record(
                             {
+                                "family_override": _family_override_resolved(family_override, fam),
                                 "memory_mode": (memory_mode, policy, "native model offload"),
+                                "speed_mode": (
+                                    speed_mode,
+                                    SPEED_MAX if h3_sage else SPEED_OFF,
+                                    "sd.cpp SageAttention + BF16 cuBLAS"
+                                    if h3_sage
+                                    else "sd.cpp exact kernels",
+                                ),
                                 "attention_backend": (
                                     None,
-                                    "flash",
-                                    "sd.cpp diffusion flash attention",
+                                    "sage" if h3_sage else "flash",
+                                    "sd.cpp SageAttention (speed_mode=max)"
+                                    if h3_sage
+                                    else "sd.cpp diffusion flash attention",
                                 ),
                                 **(
                                     {
@@ -4360,6 +4436,7 @@ class VideoBackend:
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
+        display_repo_id: Optional[str] = None,
         model_kind: Optional[str] = None,
         hf_token: Optional[str] = None,
         transformer_quant: Optional[str] = None,
@@ -4388,7 +4465,7 @@ class VideoBackend:
         download manager."""
         from huggingface_hub import HfApi
 
-        fam = _detect_load_family(repo_id, gguf_filename, family_override)
+        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
         # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media family for every file
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
@@ -5081,6 +5158,7 @@ class VideoBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -5108,6 +5186,7 @@ class VideoBackend:
             gguf_filename = gguf_filename,
             base_repo = base_repo,
             family_override = family_override,
+            display_repo_id = display_repo_id,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
@@ -5122,13 +5201,16 @@ class VideoBackend:
                 token = _load_token,
                 cancel_event = threading.Event(),
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 gguf_filename = gguf_filename,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
+                family_override = family_override,
                 # Carried, not defaulted: load_pipeline is also reached directly (no _run_load), and dropping it here
                 # would let an offline load fetch the four-file bundle.
                 local_files_only = local_files_only,
                 transformer_cache = transformer_cache,
+                speed_mode = speed_mode,
             )
             return self.status()
 
@@ -5224,12 +5306,14 @@ class VideoBackend:
                 fam = fam,
                 target = target,
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 base = base,
                 kind = kind,
                 dtype = dtype,
                 device = device,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
+                family_override = family_override,
                 transformer_quant = transformer_quant,
                 text_encoder_quant = text_encoder_quant,
                 # The speed layer lives BELOW this dispatch, which the modular branch never reached: no channels_last
@@ -6193,6 +6277,7 @@ class VideoBackend:
 
             resolved = build_resolved_record(
                 {
+                    "family_override": _family_override_resolved(family_override, fam),
                     "memory_mode": _memory_mode_resolved(memory_mode, plan, offload_policy),
                     "speed_mode": (
                         speed_mode,
@@ -6282,6 +6367,7 @@ class VideoBackend:
                     pipe = pipe,
                     family = fam,
                     repo_id = repo_id,
+                    display_repo_id = display_repo_id,
                     base_repo = base,
                     device = device,
                     gpu_ordinal = target.ordinal,
@@ -6396,12 +6482,14 @@ class VideoBackend:
         torch: Any,
         fam: VideoFamily,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         base: str,
         kind: str,
         dtype: Any,
         device: str,
         hf_token: Optional[str],
         memory_mode: Optional[str],
+        family_override: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         speed_mode: Optional[str] = None,
@@ -7056,6 +7144,7 @@ class VideoBackend:
 
         resolved = build_resolved_record(
             {
+                "family_override": _family_override_resolved(family_override, fam),
                 "memory_mode": (
                     memory_mode,
                     offload_policy,
@@ -7143,6 +7232,7 @@ class VideoBackend:
                 pipe = pipe,
                 family = fam,
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 base_repo = base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
@@ -7915,7 +8005,7 @@ class VideoBackend:
                 # and the log is not the place for user content.
                 request_shape = {
                     "family": fam.name,
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     "gguf": state.gguf_filename,
                     "width": width,
                     "height": height,
@@ -8253,7 +8343,7 @@ class VideoBackend:
                 return {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     "width": width,
                     "height": height,
                     "num_frames": len(video_frames),
@@ -8490,12 +8580,33 @@ class VideoBackend:
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
         from .video_minimax_h3 import (
+            h3_native_render_flags,
+            h3_native_resident_bytes,
             inspect_video,
             stage_h3_references,
             transcode_video_to_mp4,
         )
 
         runtime = state.pipe
+        render_flags = list(runtime.offload_flags)
+        render_resident = False
+        if "--offload-to-cpu" in render_flags and state.memory_mode in (None, "auto"):
+            try:
+                files = runtime.files
+                file_bytes = sum(
+                    os.path.getsize(p)
+                    for p in (files.diffusion_model, files.llm, files.vae, files.audio_vae)
+                    if p
+                )
+                need = h3_native_resident_bytes(file_bytes, width, height, frames)
+            except Exception:  # noqa: BLE001 -- unknown size keeps the committed offload
+                need = None
+            render_flags, render_resident = h3_native_render_flags(
+                runtime.offload_flags,
+                memory_mode = state.memory_mode,
+                free_bytes = _h3_card_free_bytes(state.device, state.gpu_ordinal) if need else None,
+                need_bytes = need,
+            )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
         started = time.monotonic()
@@ -8606,7 +8717,8 @@ class VideoBackend:
                                 flow_shift = flow_shift,
                             ),
                             output_path = str(output_path),
-                            offload = list(runtime.offload_flags),
+                            offload = render_flags,
+                            env = dict(runtime.env) or None,
                             on_log = on_log,
                             cancel_event = cancel,
                         )
@@ -8630,7 +8742,7 @@ class VideoBackend:
                 return {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     "width": actual_width,
                     "height": actual_height,
                     "num_frames": actual_frames,
@@ -8654,7 +8766,7 @@ class VideoBackend:
                     "transformer_quant": state.transformer_quant,
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
-                    "offload_policy": state.offload_policy,
+                    "offload_policy": "none" if render_resident else state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)
@@ -8839,11 +8951,15 @@ class VideoBackend:
 
     def status(self) -> dict[str, Any]:
         state = self._state
+        supported, modular = _video_family_capabilities()
         if state is None:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
+                "supported_families": list(supported),
+                "modular_families": list(modular),
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
@@ -8882,6 +8998,7 @@ class VideoBackend:
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
             state.gguf_filename,
+            state.display_repo_id,
             state.repo_id,
             state.base_repo,
             fallback = (fam.default_steps, fam.default_guidance),
@@ -8889,7 +9006,10 @@ class VideoBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": fam.name,
+            "supported_families": list(supported),
+            "modular_families": list(modular),
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": state.dtype,
