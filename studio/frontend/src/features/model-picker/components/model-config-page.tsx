@@ -1267,8 +1267,10 @@ function MlxSpeculativeRows({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              The most tokens drafted per step. Leave blank to let Unsloth tune
-              it for this machine.
+              Tokens per draft: exactly this many up to the drafter's depth (3
+              for MTP heads), at most this many above it and for n-gram copies.
+              Unsloth still decodes plainly when drafting would be slower. Leave
+              blank to let Unsloth tune it for this machine.
             </InfoHint>
           </div>
           <input

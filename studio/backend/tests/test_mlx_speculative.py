@@ -111,6 +111,8 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     )
     assert (kind, reason, context, built) == ("dflash", spec.DRAFTER_INCOMPATIBLE, 4096, ["ok"])
     assert (draft.controller.max_depth, draft.controller.max_copy) == (6, 0)
+    for d, n, e in ((object(), 3, True), (object(), 4, False), (draft.drafter, 15, True)):
+        assert spec._draft(d, False, n).controller.fixed_depth is e
     draft, kind, reason, _ = spec.build_draft(
         None, spec.SpecResolution("dflash+ngram", sources[:1], copies = True), fits = fits
     )

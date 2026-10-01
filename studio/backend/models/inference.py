@@ -231,8 +231,9 @@ class LoadRequest(BaseModel):
             "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
             "MTP quants, and the measured sweet spot for DFlash too). Only "
             "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
-            "'dspark' or 'dflash'. On MLX a ceiling: the controller picks each "
-            "round's depth below it."
+            "'dspark' or 'dflash'. On MLX, exact up to the drafter's trained depth "
+            "(3 for MTP heads and assistants) and a ceiling above it or for n-gram "
+            "copies; the controller still decides when to draft."
         ),
     )
     spec_draft_model: Optional[str] = Field(

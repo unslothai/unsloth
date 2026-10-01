@@ -239,6 +239,7 @@ _MAX_DEPTH = (
     8  # a drafter without its own block size; the controller picks each round's depth below it
 )
 _MAX_COPY = 16
+_EXACT_HEAD_DEPTH = 3  # MTP heads and assistants chain a forward per drafted token
 
 
 def speculation_refusal(*, kv_quant: bool, distributed: bool, lora: bool) -> Optional[str]:
@@ -263,12 +264,13 @@ def _draft(drafter, copies: bool, draft_n_max: Optional[int]):
     from unsloth_zoo.mlx.speculative import DraftController, install_speculative_seam, SpeculativeDraft
 
     depth = 0 if drafter is None else int(getattr(drafter, "max_depth", _MAX_DEPTH))
-    copy = _MAX_COPY
+    copy, exact = _MAX_COPY, False
     if draft_n_max:
+        exact = draft_n_max <= getattr(drafter, "max_depth", _EXACT_HEAD_DEPTH)
         depth, copy = min(depth, draft_n_max), min(copy, draft_n_max)
     install_speculative_seam()
     return SpeculativeDraft(
-        DraftController(max_depth = depth, max_copy = copy, can_copy = copies), drafter
+        DraftController(max_depth = depth, max_copy = copy, can_copy = copies, fixed_depth = exact), drafter
     )
 
 
