@@ -48,3 +48,7 @@ test("valid messages keep only known fields", () => {
   });
   assert.deepEqual(from({ type: "shortcut", key: "l", shift: 1 }), { type: "shortcut", key: "l", shift: false });
 });
+
+test("an upload notice carries nothing a page could fill", () => {
+  assert.deepEqual(from({ type: "upload", url: "https://evil.example/" }), { type: "upload" });
+});

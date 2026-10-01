@@ -198,6 +198,7 @@ export const zhCN = {
       botCheckTitle: "此网站会检查是否为真实浏览器",
       botCheckDescription: "{host} 要求访客证明自己是真人，应用内视图在此无法做到。请在浏览器中打开。",
       resubmit: "此页面来自表单提交。重新加载会再次提交表单，可能会重复执行该操作。",
+      upload: "此视图不支持上传文件。请在系统浏览器中打开该页面后再提交。",
     },
     native: {
       externalPrompt: "{host} 想要打开 {url}",

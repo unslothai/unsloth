@@ -25,7 +25,27 @@ if (isTauri) {
     .catch(() => undefined);
 }
 
-/** Clear the native pages' own cookies, storage and cache. */
+let clearing = false;
+const closedListeners = new Set<() => void>();
+
+/** True while a clear runs: a page shown meanwhile could write the cleared data back. */
+export function nativeClearing(): boolean {
+  return clearing;
+}
+
+/** Called once a clear has closed every native page. */
+export function onNativeViewsClosed(listener: () => void): void {
+  closedListeners.add(listener);
+}
+
+/** Clear the native pages' own cookies, storage and cache, closing the pages for the clear. */
 export async function clearNativeBrowsingData(): Promise<void> {
-  if (useNativeBrowser.getState().enabled) await callNative("browser_view_clear_data");
+  if (!useNativeBrowser.getState().enabled) return;
+  clearing = true;
+  try {
+    await callNative("browser_view_clear_data", { closeViews: true });
+  } finally {
+    clearing = false;
+    for (const listener of closedListeners) listener();
+  }
 }

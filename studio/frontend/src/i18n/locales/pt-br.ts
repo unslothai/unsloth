@@ -198,6 +198,7 @@ export const ptBR = {
       botCheckTitle: "Este site verifica se você usa um navegador de verdade",
       botCheckDescription: "{host} pede que os visitantes provem que são pessoas, o que a visualização no app não consegue fazer aqui. Abra no seu navegador.",
       resubmit: "Esta página veio de um formulário. Carregá-la de novo reenvia o formulário, o que pode repetir o que ele fez.",
+      upload: "O envio de arquivos não funciona nesta visualização. Abra a página no navegador do sistema para enviá-lo.",
     },
     native: {
       externalPrompt: "{host} quer abrir {url}",

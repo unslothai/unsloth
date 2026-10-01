@@ -198,6 +198,7 @@ export const fr = {
       botCheckTitle: "Ce site vérifie que vous utilisez un vrai navigateur",
       botCheckDescription: "{host} demande aux visiteurs de prouver qu'ils sont humains, ce que l'affichage intégré ne peut pas faire ici. Ouvrez-le plutôt dans votre navigateur.",
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
+      upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",

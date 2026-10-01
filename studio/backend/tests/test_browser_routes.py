@@ -46,6 +46,7 @@ def test_the_shell_guards():
         "navigator.userActivation?.isActive !== false",
         "if (title === lastTitle) return;",
         "titleObserver.observe(document.head",
+        'post({ type: "upload" }); return;',
     ):
         assert guard in shell, guard
     # The child is locked against navigation only after it is in place.
@@ -78,8 +79,9 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
 def test_prepare_page_is_linear_on_unclosed_tags():
     # Unclosed "<meta" runs were quadratic, holding the GIL (and so the whole backend) for minutes.
     start = time.monotonic()
-    browser_mod._prepare_page("<meta<base" * 40_000, "https://example.com/")
-    assert time.monotonic() - start < 1
+    # 23 s quadratic, a few ms linear: room for a loaded CI box without losing the regression.
+    browser_mod._prepare_page("<meta<base" * 80_000, "https://example.com/")
+    assert time.monotonic() - start < 5
 
 
 def test_decode_prefers_the_header_then_the_meta_charset():

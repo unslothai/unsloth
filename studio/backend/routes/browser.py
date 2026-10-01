@@ -235,6 +235,10 @@ _FRAME_HTML = r"""<!doctype html>
           const params = new URLSearchParams();
           let data;
           try { data = new FormData(form, submitter || undefined); } catch { data = new FormData(form); }
+          // Files can't go through the proxy: say so rather than send the form without them.
+          for (const value of data.values()) {
+            if (typeof value !== "string" && (value.name || value.size)) { post({ type: "upload" }); return; }
+          }
           for (const [key, value] of data) if (typeof value === "string") params.append(key, value);
           const target = (submitter && submitter.getAttribute("formtarget")) || form.target || "";
           if (method === "post") {

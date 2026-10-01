@@ -16,6 +16,7 @@ export type FrameMessage =
   | { type: "title"; title: string }
   | { type: "url"; url: string }
   | { type: "reload" }
+  | { type: "upload" }
   | { type: "found"; found: boolean }
   | { type: "shortcut"; key: string; shift: boolean };
 
@@ -59,6 +60,8 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return { type: "title", title: title(message.title) };
     case "reload":
       return { type: "reload" };
+    case "upload":
+      return { type: "upload" };
     case "found":
       return { type: "found", found: message.found === true };
     case "shortcut":

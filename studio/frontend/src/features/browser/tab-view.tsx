@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { useT } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
@@ -61,6 +62,7 @@ function safeFavicon(url: string | null): string | null {
 
 /** Messages from a tab's page. `origin` is the site the page was loaded from, null until loaded. */
 function useFrameMessages(tabId: string, origin: string | null) {
+  const t = useT();
   return useCallback(
     (message: FrameMessage) => {
       const store = useBrowserStore.getState();
@@ -111,6 +113,15 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "reload":
           store.reload(tabId);
           break;
+        case "upload": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          const entry = tab ? currentEntry(tab) : null;
+          const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
+          toast(t("browser.error.upload"), {
+            action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
+          });
+          break;
+        }
         case "shortcut":
           if (message.key === "l") store.focusAddress();
           else if (message.key === "f") store.setFindOpen(true);
@@ -120,7 +131,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
       }
     },
-    [tabId, origin],
+    [tabId, origin, t],
   );
 }
 

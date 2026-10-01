@@ -198,6 +198,7 @@ export const de = {
       botCheckTitle: "Diese Website prüft auf einen echten Browser",
       botCheckDescription: "{host} verlangt von Besuchern einen Nachweis, dass sie Menschen sind. Die Ansicht in der App kann das hier nicht. Öffne die Seite stattdessen in deinem Browser.",
       resubmit: "Diese Seite stammt aus einem Formular. Erneutes Laden sendet das Formular noch einmal und kann dessen Aktion wiederholen.",
+      upload: "Datei-Uploads funktionieren in dieser Ansicht nicht. Öffne die Seite im Systembrowser, um sie zu senden.",
     },
     native: {
       externalPrompt: "{host} möchte {url} öffnen",

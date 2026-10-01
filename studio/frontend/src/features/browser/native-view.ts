@@ -15,7 +15,7 @@ import { toast } from "@/lib/toast";
 import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
-import { callNative as call } from "./native-support";
+import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
 import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
@@ -338,7 +338,7 @@ let running = false;
 let pending: { desired: Desired } | null = null;
 
 function pump(): void {
-  if (running || !pending) return;
+  if (running || !pending || nativeClearing()) return;
   const { desired } = pending;
   pending = null;
   running = true;
@@ -354,6 +354,20 @@ function apply(desired: Desired): void {
   pending = { desired };
   pump();
 }
+
+// A clear closed every page: forget them, keeping where each tab got to, and show them again.
+let epoch = 0;
+onNativeViewsClosed(() => {
+  for (const tabId of [...views.keys()]) keepReachedPage(tabId);
+  views.clear();
+  zooms.clear();
+  icons.clear();
+  pages.clear();
+  resume.clear();
+  recency = [];
+  epoch += 1;
+  pump();
+});
 
 /** Keeps the active tab's view over its placeholder, or hidden. Mounted with the panel. */
 export function startNativeViews(): () => void {
@@ -375,7 +389,7 @@ export function startNativeViews(): () => void {
       if (element) resizeObserver.observe(element);
       resized = element;
     }
-    const key = JSON.stringify(desired);
+    const key = JSON.stringify([epoch, desired]);
     if (key === sent) return;
     sent = key;
     apply(desired);
