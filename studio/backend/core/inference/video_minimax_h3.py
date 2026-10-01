@@ -115,13 +115,11 @@ def estimate_h3_diffusers_vram_gb(
     volume_mpixel_frames = width * height * num_frames / 1_000_000
     if text_encoder_streamed:
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
-
         text_encoder_gb = H3_TE_STREAMED_GB
         if transformer_streamed:
             # Nothing big is resident: the floor is the largest PHASE (encode window, denoise window + activations,
             # VAE decode) plus the denoiser's top-level group, on the device for the whole denoise.
             from .video_minimax_h3_residency import H3_TOP_LEVEL_GB, h3_phase_need_gb
-
             return h3_phase_need_gb(
                 width,
                 height,
@@ -200,7 +198,6 @@ def h3_host_capacity_bytes() -> int:
     already holds and will reuse. The render's floor is the process TOTAL at its peak, so the memory the
     loaded pipeline holds must be counted as available to it, never demanded a second time."""
     import psutil
-
     return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
 
 
@@ -301,9 +298,10 @@ H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
 H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
 
 
-def _h3_streamed_host_floor_gib(single_host_copy: bool, text_encoder_streamed: bool = False) -> float:
+def _h3_streamed_host_floor_gib(
+    single_host_copy: bool, text_encoder_streamed: bool = False
+) -> float:
     from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
-
     floor_gb = estimate_h3_diffusers_host_ram_gb(
         0.0,
         text_encoder_gb = H3_TE_QUANT_RESIDENT_GB["int8"],
@@ -332,7 +330,9 @@ def h3_diffusers_fit_tiers() -> list[dict]:
     single_copy = pin_arena_enabled()
     if not te_streamed and not single_copy:
         return []
-    gpu_gib = H3_DIFFUSERS_STREAMED_TIER_GPU_GIB if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
+    gpu_gib = (
+        H3_DIFFUSERS_STREAMED_TIER_GPU_GIB if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
+    )
     ram_gib = (
         _h3_streamed_host_floor_gib(True, text_encoder_streamed = te_streamed)
         if single_copy

@@ -31,13 +31,17 @@ _ALIGN = 512
 
 
 def pin_arena_enabled() -> bool:
-    return str(os.environ.get(PIN_ARENA_ENV, "1")).strip().lower() not in ("0", "off", "false", "no")
+    return str(os.environ.get(PIN_ARENA_ENV, "1")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _alloc_slab(nbytes: int) -> Any:
     """One pinned slab. A power-of-two request, so torch's host allocator rounds nothing."""
     import torch
-
     return torch.empty(nbytes, dtype = torch.uint8, pin_memory = True)
 
 
@@ -102,7 +106,6 @@ def _repoint(param: Any, pinned: Any) -> None:
     """Make ``param`` read the pinned copy now, so its pageable storage is freed during setup.
     Group offloading's own offload does exactly this after every forward."""
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
-
     if is_traceable_wrapper_subclass(param):
         names, _ = pinned.__tensor_flatten__()
         for name in names:
@@ -138,7 +141,11 @@ def pinned_arena_for_group_offload(
     arena = PinnedArena(slab_bytes)
 
     def _to_cpu(tensor: Any, low_cpu_mem_usage: bool) -> Any:
-        if low_cpu_mem_usage or getattr(tensor, "device", None) is None or tensor.device.type != "cpu":
+        if (
+            low_cpu_mem_usage
+            or getattr(tensor, "device", None) is None
+            or tensor.device.type != "cpu"
+        ):
             return original.__func__(tensor, low_cpu_mem_usage)
         try:
             pinned = arena.pin(tensor)

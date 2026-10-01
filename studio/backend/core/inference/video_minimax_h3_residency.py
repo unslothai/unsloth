@@ -49,7 +49,12 @@ H3_TOP_LEVEL_GB = 1.0
 
 
 def h3_dit_resident_enabled() -> bool:
-    return str(os.environ.get(H3_DIT_RESIDENT_ENV, "")).strip().lower() not in ("0", "off", "false", "no")
+    return str(os.environ.get(H3_DIT_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def h3_phase_need_gb(
@@ -76,7 +81,6 @@ def h3_phase_need_gb(
 def _tensor_bytes(tensor: Any) -> int:
     try:
         from .diffusion_prequant import tensor_payload_bytes
-
         return int(tensor_payload_bytes(tensor))
     except Exception:  # noqa: BLE001
         return int(tensor.numel()) * int(tensor.element_size())
@@ -90,7 +94,9 @@ def _group_tensors(group: Any) -> list:
             if id(tensor) not in seen:
                 seen.add(id(tensor))
                 out.append(tensor)
-    for tensor in list(getattr(group, "parameters", None) or ()) + list(getattr(group, "buffers", None) or ()):
+    for tensor in list(getattr(group, "parameters", None) or ()) + list(
+        getattr(group, "buffers", None) or ()
+    ):
         if id(tensor) not in seen:
             seen.add(id(tensor))
             out.append(tensor)
@@ -176,7 +182,13 @@ def demote(group: Any) -> None:
 class H3Residency:
     """The resident set of one streamed H3 denoiser: the top-level group and a prefix of its block groups."""
 
-    def __init__(self, transformer: Any, device: Any, *, logger: Any = None) -> None:
+    def __init__(
+        self,
+        transformer: Any,
+        device: Any,
+        *,
+        logger: Any = None,
+    ) -> None:
         self.top, self.blocks = h3_offload_groups(transformer)
         self.device = device
         self.logger = logger
@@ -201,7 +213,12 @@ class H3Residency:
         total = self.top_bytes if (self.top is not None and is_resident(self.top)) else 0
         return total + sum(b for g, b in zip(self.blocks, self.block_bytes) if is_resident(g))
 
-    def plan(self, budget_bytes: int, *, cap: Optional[int] = None) -> tuple[bool, int]:
+    def plan(
+        self,
+        budget_bytes: int,
+        *,
+        cap: Optional[int] = None,
+    ) -> tuple[bool, int]:
         """(top resident, number of resident blocks) that fit ``budget_bytes``; top first, then the block prefix."""
         if budget_bytes <= 0 or self.top is None and not self.blocks:
             return False, 0
@@ -229,7 +246,12 @@ class H3Residency:
         for i in range(n):
             make_resident(self.blocks[i])
 
-    def fit(self, budget_bytes: int, *, initial: bool = False) -> tuple[bool, int]:
+    def fit(
+        self,
+        budget_bytes: int,
+        *,
+        initial: bool = False,
+    ) -> tuple[bool, int]:
         """Re-fit the resident set to ``budget_bytes`` (the device bytes the resident set may occupy)."""
         # Uncapped: a request smaller than the one the load was sized for may hold more blocks than the load did.
         top, n = self.plan(budget_bytes)
@@ -324,7 +346,12 @@ def compile_blocks_below_offload_hooks(transformer: Any, logger: Any = None) -> 
     copies are issued, nothing about them is guarded, and the block graph is the one a resident denoiser compiles.
     Uses the settings ``_compile_repeated_blocks`` compiled with and the DiT's compile guard. Returns the blocks moved.
     ``UNSLOTH_H3_COMPILE_BELOW_HOOKS=0`` keeps the old placement."""
-    if str(os.environ.get(H3_COMPILE_BELOW_HOOKS_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(H3_COMPILE_BELOW_HOOKS_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return 0
     kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
     if not isinstance(kwargs, dict):
@@ -338,7 +365,10 @@ def compile_blocks_below_offload_hooks(transformer: Any, logger: Any = None) -> 
             continue
         registry = getattr(module, "_diffusers_hook", None)
         fn_refs = list(getattr(registry, "_fn_refs", None) or ())
-        target = next((ref for ref in fn_refs if _is_original_forward(getattr(ref, "forward", None), module)), None)
+        target = next(
+            (ref for ref in fn_refs if _is_original_forward(getattr(ref, "forward", None), module)),
+            None,
+        )
         if target is None:
             continue
         original = target.forward
@@ -374,7 +404,9 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
     if str(os.environ.get(H3_TOP_GROUP_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
         return False
     top, blocks = h3_offload_groups(transformer)
-    stream = next((getattr(g, "stream", None) for g in blocks if getattr(g, "stream", None) is not None), None)
+    stream = next(
+        (getattr(g, "stream", None) for g in blocks if getattr(g, "stream", None) is not None), None
+    )
     why = None
     if top is None:
         why = "no top-level group"
@@ -382,7 +414,9 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
         why = "the blocks have no copy stream"
     elif getattr(top, "stream", None) is not None:
         why = "the top-level group already streams"
-    elif getattr(top, "offload_to_disk_path", None) or not callable(getattr(top, "_init_cpu_param_dict", None)):
+    elif getattr(top, "offload_to_disk_path", None) or not callable(
+        getattr(top, "_init_cpu_param_dict", None)
+    ):
         why = "disk offload / unknown diffusers group"
     elif getattr(top, "_unsloth_pinned_top", False) or is_resident(top):
         # The instance onload_ / offload_ wrappers (diffusion_prequant's inference-mode guard) call the class
@@ -392,7 +426,13 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
         if logger is not None:
             logger.info("video.h3_top_group: left as diffusers built it (%s)", why)
         return False
-    saved = (top.stream, top.low_cpu_mem_usage, top.record_stream, top.non_blocking, top.cpu_param_dict)
+    saved = (
+        top.stream,
+        top.low_cpu_mem_usage,
+        top.record_stream,
+        top.non_blocking,
+        top.cpu_param_dict,
+    )
     try:
         from .diffusion_pinned_arena import pinned_arena_for_group_offload
 
@@ -404,9 +444,17 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
         with pinned_arena_for_group_offload():
             top.cpu_param_dict = top._init_cpu_param_dict()
     except Exception as exc:  # noqa: BLE001 -- keep diffusers' group as it was
-        top.stream, top.low_cpu_mem_usage, top.record_stream, top.non_blocking, top.cpu_param_dict = saved
+        (
+            top.stream,
+            top.low_cpu_mem_usage,
+            top.record_stream,
+            top.non_blocking,
+            top.cpu_param_dict,
+        ) = saved
         if logger is not None:
-            logger.warning("video.h3_top_group: pinned copy refused, keeping the pageable group: %s", exc)
+            logger.warning(
+                "video.h3_top_group: pinned copy refused, keeping the pageable group: %s", exc
+            )
         return False
     if logger is not None:
         logger.info(
@@ -419,7 +467,12 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
 H3_VAE_PINNED_SWAP_ENV = "UNSLOTH_H3_VAE_PINNED_SWAP"
 
 
-def install_pinned_swap(module: Any, *, logger: Any = None, label: str = "component") -> bool:
+def install_pinned_swap(
+    module: Any,
+    *,
+    logger: Any = None,
+    label: str = "component",
+) -> bool:
     """Make a ComponentsManager-rotated module move between host and device by RE-POINTING at a pinned host copy.
 
     The rotation moves a component with ``module.to(device)`` and parks it with ``module.to("cpu")``: an upload from
@@ -433,7 +486,12 @@ def install_pinned_swap(module: Any, *, logger: Any = None, label: str = "compon
     blocking the host, a CPU move re-points each weight at its pinned copy (no copy at all). Anything else (a dtype
     change, a weight whose dtype / shape no longer matches its pinned copy, a tensor added after the install) takes
     the stock ``nn.Module.to`` path. Returns True when installed. ``UNSLOTH_H3_VAE_PINNED_SWAP=0`` keeps stock moves."""
-    if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return False
     if module is None or getattr(module, "_unsloth_pinned_swap", None) is not None:
         return False
@@ -472,11 +530,7 @@ def install_pinned_swap(module: Any, *, logger: Any = None, label: str = "compon
         fallback = False
         for tensor in list(module.parameters()) + list(module.buffers()):
             pinned = host.get(id(tensor))
-            if (
-                pinned is None
-                or pinned.dtype != tensor.dtype
-                or pinned.shape != tensor.shape
-            ):
+            if pinned is None or pinned.dtype != tensor.dtype or pinned.shape != tensor.shape:
                 fallback = True
                 continue
             if device.type == "cpu":

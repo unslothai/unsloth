@@ -17,7 +17,6 @@ torch = pytest.importorskip("torch")
 
 def _h3_family():
     from core.inference.video_families import detect_video_family
-
     return detect_video_family("minimax-h3")
 
 
@@ -87,7 +86,6 @@ def test_the_conditioner_stream_kill_switch(monkeypatch):
 
 def test_the_conditioner_never_streams_off_cuda():
     from core.inference.video_minimax_h3_te import stream_h3_text_encoder
-
     te = types.SimpleNamespace(model = torch.nn.Linear(2, 2))
     assert stream_h3_text_encoder(object(), te, "cpu") is None
 
@@ -138,7 +136,9 @@ def test_pinning_in_place_replaces_tensors_and_releases_the_originals():
 
 class _Group:
     def __init__(self, nbytes):
-        self.modules = [torch.nn.Linear(1, nbytes // 4, bias = False)]  # nbytes/4 fp32 weights -> nbytes
+        self.modules = [
+            torch.nn.Linear(1, nbytes // 4, bias = False)
+        ]  # nbytes/4 fp32 weights -> nbytes
         self.parameters = []
         self.buffers = []
         self.stream = None
@@ -199,7 +199,9 @@ def test_residency_demotes_the_tail_for_a_bigger_request_and_promotes_it_back(mo
     r.fit(1000)
     assert r.resident_blocks() == 6
     r.fit(0)
-    assert r.resident_bytes() == 0 and all(g.where == "cpu" for g in r.blocks) and r.top.where == "cpu"
+    assert (
+        r.resident_bytes() == 0 and all(g.where == "cpu" for g in r.blocks) and r.top.where == "cpu"
+    )
 
 
 def test_residency_kill_switch(monkeypatch):

@@ -55,7 +55,6 @@ def _streamed_dit():
 
 def _graphs():
     from torch._dynamo.utils import counters
-
     return counters["stats"].get("unique_graphs", 0)
 
 
@@ -126,8 +125,9 @@ def test_regional_compile_records_its_kwargs_for_the_streamed_path():
     import inspect
 
     from core.inference import diffusion_speed
-
-    assert "_unsloth_regional_compile_kwargs" in inspect.getsource(diffusion_speed._compile_repeated_blocks)
+    assert "_unsloth_regional_compile_kwargs" in inspect.getsource(
+        diffusion_speed._compile_repeated_blocks
+    )
 
 
 class _FakeGroup:
@@ -188,8 +188,15 @@ def test_a_refused_pin_restores_the_group(monkeypatch):
 
     top._init_cpu_param_dict = boom
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(object())]))
-    assert not res.pin_streamed_top_level_group(object(), logger = types.SimpleNamespace(warning = lambda *a: None))
-    assert top.stream is None and top.low_cpu_mem_usage and top.non_blocking and top.cpu_param_dict == {}
+    assert not res.pin_streamed_top_level_group(
+        object(), logger = types.SimpleNamespace(warning = lambda *a: None)
+    )
+    assert (
+        top.stream is None
+        and top.low_cpu_mem_usage
+        and top.non_blocking
+        and top.cpu_param_dict == {}
+    )
 
 
 def _swap_ready(monkeypatch):

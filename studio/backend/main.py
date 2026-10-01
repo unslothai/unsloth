@@ -2462,7 +2462,6 @@ def _diffusers_offload_tiers() -> dict:
     Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
     try:
         from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
-
         tiers = h3_diffusers_fit_tiers()
     except Exception:  # noqa: BLE001 -- a picker hint must never break the polled route
         return {}

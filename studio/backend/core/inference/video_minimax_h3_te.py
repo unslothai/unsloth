@@ -520,7 +520,6 @@ _PIN_ALIGN = 512
 def h3_te_stream_enabled() -> bool:
     """Kill switch: ``UNSLOTH_H3_TE_STREAM=0`` keeps the conditioner in the CPU-offload rotation (the old behaviour)."""
     import os
-
     return str(os.environ.get(H3_TE_STREAM_ENV, "")).strip().lower() not in (
         "0",
         "off",
@@ -692,7 +691,9 @@ def stream_h3_text_encoder(
     except Exception as exc:  # noqa: BLE001 -- keep the rotation
         _remove_group_offload_hooks(target)
         if logger is not None:
-            logger.warning("video.h3_te_stream: group offloading refused, keeping the rotation: %s", exc)
+            logger.warning(
+                "video.h3_te_stream: group offloading refused, keeping the rotation: %s", exc
+            )
         return None
     if not _unhook_from_manager(manager, text_encoder, logger = logger, what = "te_stream:hook"):
         # Still in the rotation: its pre_forward would move the whole module under the group hooks.

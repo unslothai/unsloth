@@ -66,7 +66,6 @@ def _reload_families(monkeypatch, flag):
     else:
         monkeypatch.setenv("UNSLOTH_VIDEO_H3_480P", flag)
     import core.inference.video_families as vf
-
     return importlib.reload(vf)
 
 
@@ -107,16 +106,29 @@ def test_off_canvas_sizes_are_still_refused(families):
 def test_the_estimators_size_864x480_below_960x544(families):
     families()
     from core.inference.video_minimax_h3 import estimate_h3_diffusers_vram_gb
-
-    assert estimate_h3_diffusers_vram_gb(864, 480, 124) < estimate_h3_diffusers_vram_gb(960, 544, 124)
+    assert estimate_h3_diffusers_vram_gb(864, 480, 124) < estimate_h3_diffusers_vram_gb(
+        960, 544, 124
+    )
 
 
 @pytest.mark.parametrize(
     "te_stream, arena, expected",
     [
-        (None, None, [{"gpu_gb": 11.5, "system_ram_gb": 66.0, "requires_quantised_streaming": True}]),
-        ("0", None, [{"gpu_gb": 30.0, "system_ram_gb": 61.0, "requires_quantised_streaming": True}]),
-        (None, "0", [{"gpu_gb": 11.5, "system_ram_gb": 80.0, "requires_quantised_streaming": True}]),
+        (
+            None,
+            None,
+            [{"gpu_gb": 11.5, "system_ram_gb": 66.0, "requires_quantised_streaming": True}],
+        ),
+        (
+            "0",
+            None,
+            [{"gpu_gb": 30.0, "system_ram_gb": 61.0, "requires_quantised_streaming": True}],
+        ),
+        (
+            None,
+            "0",
+            [{"gpu_gb": 11.5, "system_ram_gb": 80.0, "requires_quantised_streaming": True}],
+        ),
         ("0", "0", []),
     ],
 )
@@ -126,7 +138,10 @@ def test_each_widening_follows_the_kill_switch_of_the_behaviour_it_relies_on(
     # The 12 GB tier is only true while the conditioner streams, the 61 GiB RAM tier only while the streamed denoiser
     # holds one host copy; turning either behaviour off must withdraw exactly the widening it made possible.
     monkeypatch.delenv("UNSLOTH_H3_DIFFUSERS_WIDE_TIERS", raising = False)
-    for name, value in (("UNSLOTH_H3_TE_STREAM", te_stream), ("UNSLOTH_DIFFUSION_PIN_ARENA", arena)):
+    for name, value in (
+        ("UNSLOTH_H3_TE_STREAM", te_stream),
+        ("UNSLOTH_DIFFUSION_PIN_ARENA", arena),
+    ):
         if value is None:
             monkeypatch.delenv(name, raising = False)
         else:
@@ -159,7 +174,11 @@ def test_a_streamed_conditioner_raises_the_host_floor_to_the_measured_peak():
     assert streamed == H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB >= 66.0 + 3.0
     # A double-counted denoiser is still larger than the streamed-set floor and wins.
     assert estimate_h3_diffusers_host_ram_gb(
-        30.0, text_encoder_gb = 27.2, transformer_gb = 20.3, transformer_streamed = True, text_encoder_streamed = True
+        30.0,
+        text_encoder_gb = 27.2,
+        transformer_gb = 20.3,
+        transformer_streamed = True,
+        text_encoder_streamed = True,
     ) == pytest.approx(84.8)
 
 

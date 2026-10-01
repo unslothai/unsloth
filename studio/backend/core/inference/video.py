@@ -6937,7 +6937,6 @@ class VideoBackend:
                         # denoiser now keeps as many of its blocks resident as each request leaves room for (see
                         # video_minimax_h3_residency). None (switch off, no group offload, refused) keeps the rotation.
                         from .video_minimax_h3_te import stream_h3_text_encoder
-
                         te_streamed = stream_h3_text_encoder(
                             manager, getattr(pipe, "text_encoder", None), device, logger = logger
                         )
@@ -6996,12 +6995,14 @@ class VideoBackend:
 
                         if denoiser_streamed in ("stream", "stream_lazy"):
                             from .video_minimax_h3_residency import pin_streamed_top_level_group
-
                             try:
                                 pin_streamed_top_level_group(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
-                        if h3_dit_resident_enabled() and denoiser_streamed in ("stream", "stream_lazy"):
+                        if h3_dit_resident_enabled() and denoiser_streamed in (
+                            "stream",
+                            "stream_lazy",
+                        ):
                             try:
                                 residency = H3Residency(denoiser, device, logger = logger)
                                 if residency.usable:
@@ -7023,7 +7024,9 @@ class VideoBackend:
                                 else:
                                     residency = None
                             except Exception as exc:  # noqa: BLE001 -- residency is a speed-up, stay streamed
-                                logger.warning("video.h3_residency: staying fully streamed: %s", exc)
+                                logger.warning(
+                                    "video.h3_residency: staying fully streamed: %s", exc
+                                )
                                 residency = None
                     else:
                         denoiser_pinned = pin_prequantized_module(
@@ -7144,7 +7147,6 @@ class VideoBackend:
                 # The group-offload hooks stay eager and only the block's own forward is compiled (no hook state in
                 # the guards, so no recompile per resident-set change or per prefetch chain).
                 from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
-
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
@@ -7174,10 +7176,11 @@ class VideoBackend:
             # With the conditioner and / or the denoiser out of the rotation, the VAEs are what rotates, and they evict
             # each other inside every render. Installed last: the VAE levers above replace weights.
             from .video_minimax_h3_residency import install_pinned_swap
-
             for vae_name in ("vae", "audio_vae"):
                 try:
-                    install_pinned_swap(getattr(pipe, vae_name, None), logger = logger, label = vae_name)
+                    install_pinned_swap(
+                        getattr(pipe, vae_name, None), logger = logger, label = vae_name
+                    )
                 except Exception as exc:  # noqa: BLE001 -- stock moves
                     logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
         resolved = build_resolved_record(
@@ -7989,7 +7992,12 @@ class VideoBackend:
                             available_vram_gb += residency.resident_bytes() / 1_000_000_000
                             required_vram_gb = available_vram_gb - floor_room / 1_000_000_000
                             residency.fit(
-                                max(0, _h3_residency_budget_bytes(residency, state.device, **fit_kwargs))
+                                max(
+                                    0,
+                                    _h3_residency_budget_bytes(
+                                        residency, state.device, **fit_kwargs
+                                    ),
+                                )
                             )
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
