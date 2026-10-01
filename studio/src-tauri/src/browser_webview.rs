@@ -19,9 +19,7 @@ use tauri::{
     WebviewBuilder, WebviewUrl,
 };
 
-/// Labels of browser webviews; the tab id follows.
 const LABEL_PREFIX: &str = "unsloth-browser-";
-/// Event the panel listens to, sent to the main webview only.
 const EVENT: &str = "unsloth-browser";
 /// The app's own webview, the only caller these commands answer.
 const MAIN_WEBVIEW: &str = "main";
@@ -51,9 +49,7 @@ pub struct BrowserViews {
 
 #[derive(Default)]
 struct ViewsState {
-    /// The tab shown in the panel, if any.
     shown: Option<String>,
-    /// Last address reported per tab.
     urls: HashMap<String, String>,
     /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
     downloads: HashMap<String, Vec<PathBuf>>,
@@ -125,7 +121,6 @@ pub struct ViewBounds {
     viewport_width: f64,
 }
 
-/// Whether a page may navigate (or frame) this URL.
 pub(crate) fn navigation_allowed(url: &Url) -> bool {
     match url.scheme() {
         // Documents a page makes itself, with its origin or none.
@@ -135,7 +130,6 @@ pub(crate) fn navigation_allowed(url: &Url) -> bool {
     }
 }
 
-/// Hosts that are this machine, its network, or Studio itself.
 pub(crate) fn host_is_private(host: &url::Host<&str>) -> bool {
     match host {
         url::Host::Ipv4(ip) => ipv4_is_private(*ip),
@@ -204,7 +198,6 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
         || (first & 0xfff0) == 0x3ff0
 }
 
-/// Links only other apps open, offered to the user.
 fn is_external_handoff(url: &Url) -> bool {
     // What the opener capability allows.
     url.scheme() == "mailto"
@@ -266,7 +259,6 @@ mod content_rules {
     #[derive(Default)]
     struct Rules {
         compiled: Option<Retained<WKContentRuleList>>,
-        /// Views waiting on the first compile, with their first load.
         waiting: Vec<(Retained<WKWebView>, Then)>,
         compiling: bool,
     }
@@ -1135,7 +1127,6 @@ pub fn browser_view_zoom<R: Runtime>(
         .map_err(|error| error.to_string())
 }
 
-/// Find text in a tab's page; true when it matched.
 #[tauri::command]
 pub async fn browser_view_find<R: Runtime>(
     webview: Webview<R>,
@@ -1477,7 +1468,6 @@ mod tests {
         let name = |suggested: &str| download_destination(dir.path(), Path::new(suggested), &none);
         std::fs::write(name("report.pdf"), b"x").unwrap();
         assert_eq!(name("report.pdf"), dir.path().join("report (1).pdf"));
-        // A name an unfinished download holds is taken too.
         let first = dir.path().join("report (1).pdf");
         let reserved = HashSet::from([first.as_path()]);
         assert_eq!(

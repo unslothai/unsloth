@@ -38,7 +38,6 @@ URL_HEADER = "X-Unsloth-Browser-Url"
 NAME_HEADER = "X-Unsloth-Browser-Filename"
 EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER)
 
-# Cap for documents (PDFs, images), which come back whole.
 _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
 # HTML goes into srcdoc and the page cache; more would stall the renderer.
 _MAX_BROWSER_HTML_BYTES = 10 * 1024 * 1024
@@ -376,7 +375,6 @@ _FRAME_HTML = r"""<!doctype html>
 class BrowserFetchRequest(BaseModel):
     url: str = Field(..., min_length = 1, max_length = 8192)
     method: Literal["GET", "POST"] = "GET"
-    # Urlencoded form body from the injected script.
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
     # Smaller cap for favicons, so an icon can't be 50 MB.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
@@ -523,7 +521,6 @@ async def browser_fetch(
     loop = asyncio.get_running_loop()
     task = loop.run_in_executor(_FETCH_POOL, _fetch_and_build, request, cancel_event)
     try:
-        # Stop the fetch when the panel aborts the load.
         while True:
             done, _ = await asyncio.wait({task}, timeout = _DISCONNECT_POLL_S)
             if done:

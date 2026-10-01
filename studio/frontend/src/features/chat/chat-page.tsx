@@ -451,7 +451,6 @@ const SingleContent = memo(function SingleContent({
     if (!chatActive || isMobile) return;
     setBrowserPanelAvailable(true);
     setInAppLinkHandler(openUrlInBrowser);
-    // Request edits on an opened file stages its prompt here.
     useBrowserStore.setState({
       requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
       sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
@@ -473,7 +472,6 @@ const SingleContent = memo(function SingleContent({
       useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null });
     };
   }, [chatActive, isMobile, aui]);
-  // The header's browser button only shows once the chat has messages.
   const threadHasMessages = useAuiState(({ thread }) => thread.messages.length > 0);
   useEffect(() => {
     if (chatActive) useBrowserStore.setState({ chatHasMessages: threadHasMessages });
@@ -536,7 +534,6 @@ const SingleContent = memo(function SingleContent({
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
   const showBrowserPanel = !showResearchPanel && !isMobile && browserOpen;
-  // Full view: the browser takes the whole width and the chat floats over it.
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
   const chatDock = useBrowserStore((state) => state.chatDock);
@@ -577,7 +574,6 @@ const SingleContent = memo(function SingleContent({
   const artifactOpenSequence = useChatArtifactsStore(
     (state) => state.openSequence,
   );
-  // Opening a canvas closes the browser, and vice versa.
   const seenArtifactOpenSequenceRef = useRef(artifactOpenSequence);
   useEffect(() => {
     if (seenArtifactOpenSequenceRef.current === artifactOpenSequence) return;
@@ -879,7 +875,6 @@ const SingleContent = memo(function SingleContent({
                 (chatOnRight ? "border-r" : "border-l"),
               (showResearchPanel || showBrowserPanel) && "border-border/70",
             )}
-            // No lift animation for the full-height pane.
             style={showBrowserPanel ? { transform: "none" } : undefined}
           >
              {showResearchPanel && openResearchRunId ? (

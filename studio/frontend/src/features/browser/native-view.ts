@@ -21,7 +21,6 @@ import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./stor
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
 
 const EVENT = "unsloth-browser";
-// Live views, hidden ones included.
 const MAX_VIEWS = 4;
 // Gap between a full-view page and the chat floating over it.
 const DOCK_GAP = 8;
@@ -53,9 +52,7 @@ type Bounds = { x: number; y: number; width: number; height: number; viewportWid
 
 const t = (key: TranslationKey, values?: InterpolationValues) => translate(key, values, getLocale());
 
-// Tab id to the history entry its view last loaded.
 const views = new Map<string, number>();
-// Tab ids, most recently shown last.
 let recency: string[] = [];
 const zooms = new Map<string, number>();
 const icons = new Map<string, string>();
@@ -190,7 +187,6 @@ function currentEntryUrl(tab: BrowserTab): string {
   return entry.kind === "web" ? entry.url : "";
 }
 
-/** Back, forward, reload or stop a tab's native page. */
 export function nativeAction(tabId: string, action: "back" | "forward" | "reload" | "stop"): void {
   if (!views.has(tabId)) return;
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
@@ -213,7 +209,6 @@ export function hasNativeView(tabId: string): boolean {
   return views.has(tabId);
 }
 
-/** Find in a tab's native page; whether it matched. */
 export async function nativeFind(tabId: string, query: string, backwards: boolean): Promise<boolean> {
   if (!views.has(tabId)) return false;
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
@@ -378,7 +373,6 @@ onNativeViewsClosed(() => {
   pump();
 });
 
-/** Keeps the active tab's view over its placeholder, or hidden. Mounted with the panel. */
 export function startNativeViews(): () => void {
   listenOnce();
   let frame = 0;

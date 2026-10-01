@@ -142,7 +142,6 @@ export function fileTitle(name: string): string {
   );
 }
 
-// Browser zoom steps, as Chrome has them.
 const ZOOM_STEPS = [
   0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4,
   5,
@@ -154,13 +153,11 @@ function stepZoom(zoom: number, direction: 1 | -1): number {
   return [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? zoom;
 }
 
-// Bordered pill in light mode, filled in dark, like the toolbar controls it groups.
 const PILL =
   "border border-border/80 bg-card dark:border-transparent dark:bg-accent";
 
 type ButtonProps = {
   label: string;
-  /** Key chord shown beside the label in the tooltip. */
   shortcut?: string | null;
   icon?: IconSvgElement;
   onClick?: () => void;
@@ -218,7 +215,6 @@ function IconButton({
   );
 }
 
-/** A round toolbar button on its own pill. */
 function CircleButton(props: ButtonProps) {
   return (
     <IconButton
@@ -280,7 +276,6 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
       />
     );
   }
-  // A document opened from the web shows its type.
   if (entry.kind === "web") {
     const name = fileNameFromUrl(tab.displayUrl ?? entry.url);
     const type = tab.documentType ?? undefined;
@@ -307,7 +302,6 @@ function useTabTitle() {
           ? "browser.pages.history"
           : "browser.pages.downloads",
       );
-    // Unloaded background tabs show their site.
     return entry.kind === "web" ? hostOf(entry.url) : entry.name;
   };
 }
@@ -342,7 +336,6 @@ function TabStrip({
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId;
           const title = tabTitle(tab, currentEntry(tab));
-          // Dividers sit between inactive tabs only.
           const divided =
             index > 0 && !active && tabs[index - 1]?.id !== activeTabId;
           return (
@@ -795,7 +788,6 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** Toolbar for an opened file: its menu, Request edits, zoom and download. */
 function FileToolbar({
   tab,
   entry,
@@ -1263,17 +1255,14 @@ function DeviceBar() {
   );
 }
 
-// Hidden pages still run scripts, so only the most recent tabs stay mounted.
 const MAX_MOUNTED_TABS = 4;
 // Hidden web pages run scripts on the chat's thread, so only the newest stays live.
 const MAX_HIDDEN_WEB_PAGES = 1;
 
-/** Mounted tabs: all, less hidden web pages past the newest few. */
 function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null): Set<string> {
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
   const live = new Set<string>();
   let hiddenWeb = 0;
-  // Newest first.
   for (const id of [...mounted].reverse()) {
     const tab = byId.get(id);
     if (!tab) continue;
@@ -1299,7 +1288,6 @@ export const BrowserPanel = memo(function BrowserPanel() {
   useEffect(() => (native ? startNativeViews() : undefined), [native]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeEntry = activeTab ? currentEntry(activeTab) : null;
-  // Mount tabs on first view. Most recent last.
   const [mounted, setMounted] = useState<readonly string[]>(() =>
     activeTabId ? [activeTabId] : [],
   );
@@ -1313,7 +1301,6 @@ export const BrowserPanel = memo(function BrowserPanel() {
     );
   }
   const live = liveTabIds(mounted, tabs, activeTabId);
-  // Files sit on the viewer's gray, with no line under the toolbar.
   const fileTab = activeEntry?.kind === "file";
   const documentShown = fileTab || Boolean(activeTab?.documentType);
   const deviceWidth =
@@ -1322,13 +1309,11 @@ export const BrowserPanel = memo(function BrowserPanel() {
       : null;
 
   return (
-    // Full-height pane; the top inset clears a desktop titlebar.
     <section
       aria-label={t("browser.title")}
       className="relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]"
     >
       <TabStrip tabs={tabs} activeTabId={activeTabId} />
-      {/* Toolbar and page sit on a card, raised off the tab strip. */}
       <div
         className={cn(
           "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-[14px] border-t border-border/60 dark:border-transparent",

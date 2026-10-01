@@ -210,7 +210,6 @@ function WebPage({
         updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
         if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
       } else {
-        // Host until the frame reports the title.
         updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
       }
     };
@@ -285,7 +284,6 @@ function WebPage({
   );
 }
 
-/** Placeholder that startNativeViews lays the tab's native view over. */
 function NativePage({ tab, entry }: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }> }) {
   const reload = useBrowserStore((store) => store.reload);
   if (tab.nativeError) {
@@ -324,7 +322,6 @@ function LocalFile({ tab }: { tab: BrowserTab }) {
   );
 }
 
-/** One tab's content. Stays mounted while recently shown, keeping scroll and state. */
 export const TabView = memo(function TabView({ tab, active }: { tab: BrowserTab; active: boolean }) {
   const entry = currentEntry(tab);
   const native = useNativeBrowser((state) => state.enabled);

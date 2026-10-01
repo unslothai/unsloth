@@ -43,7 +43,6 @@ function hasOwnText(element: Element): boolean {
   );
 }
 
-/** The spans on the same line of a PDF's text layer. */
 function pdfLine(span: Element): Range[] {
   const layer = span.closest(".textLayer");
   if (!layer) return [];
@@ -236,7 +235,6 @@ export function AnnotateLayer({
   saveRef.current = save;
 
   const send = () => {
-    // Includes a comment still being typed.
     const outgoing = committed();
     if (outgoing.length === 0) return;
     sendAnnotations?.({
@@ -246,7 +244,6 @@ export function AnnotateLayer({
     exit();
   };
 
-  // Marks follow the page as it scrolls, zooms and resizes.
   useEffect(() => {
     let frame = 0;
     let settle = 0;
@@ -343,7 +340,6 @@ export function AnnotateLayer({
       const next = blockAt(event.target, page);
       setHover((current) => (sameRanges(current, next) ? current : next));
     };
-    // Handle the latest pointer move once per frame.
     let moveFrame = 0;
     let lastMove: PointerEvent | null = null;
     const onMove = (event: PointerEvent) => {
@@ -418,7 +414,6 @@ export function AnnotateLayer({
     if (pending) inputRef.current?.focus();
   }, [pending]);
 
-  // Dragging the grip moves the bar out of the way.
   const dragBar = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     const start = { x: event.clientX - offset.x, y: event.clientY - offset.y };
@@ -592,7 +587,6 @@ export function AnnotateLayer({
   );
 }
 
-/** A marked part: dashed outline, a light fill, and a comment bubble on its corner. */
 function Mark({
   box,
   label,

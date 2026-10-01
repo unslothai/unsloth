@@ -24,7 +24,6 @@ export type InternalPage = "history" | "downloads";
 
 export type DeviceMode = "off" | "mobile" | "tablet";
 
-/** Which side of the browser the chat sits on when they are split. */
 export type ChatSide = "left" | "right";
 
 /** The chat floating over a full-view browser: hidden to a button, its composer, or the whole conversation. */
@@ -63,7 +62,6 @@ export type BrowserTab = {
   reloadKey: number;
   /** What the tab was opened for; opening it again focuses the tab. */
   openKey: string | null;
-  /** Page zoom, kept across navigations like a browser's per-tab zoom. */
   zoom: number;
   /** A native page's own history, used before the tab's. */
   nativeHistory: { back: boolean; forward: boolean } | null;
@@ -196,12 +194,9 @@ type BrowserState = {
   openSequence: number;
   /** Bumped to ask the address bar for focus (Cmd+L, a new tab). */
   focusAddressSequence: number;
-  /** Find bar for the active tab, and whether its last search missed. */
   findOpen: boolean;
   findMiss: boolean;
-  /** Device toolbar: pages shown at a phone or tablet width. */
   device: DeviceMode;
-  /** Full view: the browser takes the whole width and the chat floats over it. */
   fullView: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
@@ -213,7 +208,6 @@ type BrowserState = {
   sendAnnotations: SendAnnotations | null;
   /** Opens an HTML file in the chat's canvas; set by the chat while it is shown. */
   openInCanvas: OpenInCanvas | null;
-  /** The file tab being annotated for Request edits. */
   annotateTabId: string | null;
   setAnnotating: (tabId: string | null) => void;
   /** Per file tab; absent means DEFAULT_FILE_VIEW. */
@@ -255,7 +249,6 @@ type BrowserState = {
   setDevice: (device: DeviceMode) => void;
   setFullView: (fullView: boolean) => void;
   setChatDock: (dock: ChatDock) => void;
-  /** Leaves full view with the chat on this side. */
   splitWithChatOn: (side: ChatSide) => void;
 };
 
