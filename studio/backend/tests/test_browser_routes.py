@@ -2,11 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """The chat's browser panel: pages come back through the SSRF-guarded fetcher and render in an
-opaque-origin shell. What matters is that the shell stays isolated, that a page cannot navigate
-the frame out from under the proxy, and that non-HTML bodies pass through untouched."""
+isolated, opaque-origin shell that a page cannot navigate out from under the proxy."""
 
 import asyncio
 import json
+import threading
+import time
+from email.message import Message
 
 import pytest
 from fastapi import HTTPException
@@ -14,60 +16,44 @@ from fastapi import HTTPException
 import routes.browser as browser_mod
 
 
-def _shell_response():
-    return asyncio.run(browser_mod.browser_frame())
+def test_the_shell_is_isolated():
+    import main
 
-
-def test_the_shell_is_sandboxed_without_same_origin():
-    csp = _shell_response().headers["content-security-policy"]
+    csp = asyncio.run(browser_mod.browser_frame()).headers["content-security-policy"]
     assert "sandbox allow-scripts allow-forms;" in csp
     assert "allow-same-origin" not in csp
-    assert "object-src 'none';" in csp
-    # Submits are routed by the injected script; a real one would leave the proxy.
-    assert "form-action 'none';" in csp
+    for directive in ("object-src 'none';", "form-action 'none';", "upgrade-insecure-requests;"):
+        assert directive in csp
     assert "frame-ancestors 'self'" in csp
-
-
-def test_the_shell_does_not_inherit_studios_loopback_address():
-    # Pages must not inherit the shell's loopback address.
-    csp = _shell_response().headers["content-security-policy"]
     assert csp.rstrip().endswith("treat-as-public-address")
     # No plain-http requests of any kind, so pages can't hit local services.
     for part in csp.split(";"):
         name, *sources = part.split()
         if name.endswith("-src"):
             assert "http:" not in sources and "ws:" not in sources, name
-    assert "upgrade-insecure-requests;" in csp
-
-
-def test_the_shell_is_exempt_from_frame_denial():
-    import main
     assert browser_mod.BROWSER_FRAME_PATH in main._FRAMEABLE_PATHS
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
-def test_the_shell_only_obeys_its_parent():
+def test_the_shell_guards():
     shell = browser_mod._FRAME_HTML
-    assert "if (event.source !== parent) return;" in shell
-    # After the page loads, the parent can only send commands, relayed to the page.
-    assert (
-        'if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");'
-        in shell
-    )
-    # The navigation script and <base> go ahead of the page's own markup.
-    assert "inject(data.html, base + script)" in shell
-
-
-def test_the_page_cannot_navigate_its_own_frame():
-    shell = browser_mod._FRAME_HTML
-    # The page runs in a srcdoc child; afterwards the shell refuses every navigation of it.
-    assert "page.srcdoc = inject(" in shell
+    for guard in (
+        "if (event.source !== parent) return;",
+        "event.source === page.contentWindow",
+        'if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");',
+        "page.srcdoc = inject(data.html, base + script)",
+        'if (raw.startsWith("#"))',
+        "navigator.userActivation?.isActive !== false",
+        "if (title === lastTitle) return;",
+        "titleObserver.observe(document.head",
+    ):
+        assert guard in shell, guard
+    # The child is locked against navigation only after it is in place.
     assert shell.index("document.body.appendChild(page)") < shell.index(
         "lock.content = \"frame-src 'none'\""
     )
     assert "document.write(" not in shell
-    # Only the child's messages are relayed.
-    assert "event.source === page.contentWindow" in shell
+    assert "observe(document.documentElement" not in shell
 
 
 def test_prepare_page_strips_what_would_escape_the_sandbox():
@@ -78,26 +64,25 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
         '<meta charset="utf-8"><title>t</title></head><body></body></html>'
     )
     html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/b")
-    assert "<base" not in html
-    assert "Content-Security-Policy" not in html
-    assert "refresh" not in html
+    assert "<base" not in html and "Content-Security-Policy" not in html and "refresh" not in html
     assert '<meta charset="utf-8">' in html
     assert base == "https://example.com/docs/"
     assert refresh == {"delay": 2.0, "url": "https://example.com/docs/next.html"}
+    slow = '<meta http-equiv="refresh" content="600; url=/later">'
+    assert browser_mod._prepare_page(slow, "https://example.com/")[2] is None
 
 
-def test_a_slow_refresh_is_dropped_not_followed():
-    _, _, refresh = browser_mod._prepare_page(
-        '<meta http-equiv="refresh" content="600; url=/later">', "https://example.com/"
-    )
-    assert refresh is None
+def test_prepare_page_is_linear_on_unclosed_tags():
+    # Unclosed "<meta" runs were quadratic, holding the GIL (and so the whole backend) for minutes.
+    start = time.monotonic()
+    browser_mod._prepare_page("<meta<base" * 40_000, "https://example.com/")
+    assert time.monotonic() - start < 1
 
 
 def test_decode_prefers_the_header_then_the_meta_charset():
     body = "café".encode("latin-1")
     assert browser_mod._decode_html(body, "latin-1") == "café"
-    meta = b'<meta charset="latin-1">' + body
-    assert browser_mod._decode_html(meta, None).endswith("café")
+    assert browser_mod._decode_html(b'<meta charset="latin-1">' + body, None).endswith("café")
 
 
 def _fetch(
@@ -108,9 +93,8 @@ def _fetch(
     calls = []
 
     def fake_fetch(url, **kwargs):
-        calls.append((url, kwargs))
-        if meta is not None:
-            kwargs["meta_out"].update(meta)
+        calls.append(kwargs)
+        kwargs["meta_out"].update(meta or {})
         return result
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
@@ -125,9 +109,12 @@ class _Client:
         return self.disconnected
 
 
-def _call(request, client = None):
+def _call(client = None, **request):
+    request.setdefault("url", "https://example.com/")
     return asyncio.run(
-        browser_mod.browser_fetch(request, client or _Client(), current_subject = "user")
+        browser_mod.browser_fetch(
+            browser_mod.BrowserFetchRequest(**request), client or _Client(), current_subject = "user"
+        )
     )
 
 
@@ -137,51 +124,58 @@ def test_html_comes_back_as_json_with_its_final_url(monkeypatch):
         (None, b"<html><head><title>x</title></head></html>", "text/html"),
         {"url": "https://example.com/final", "charset": "utf-8"},
     )
-    response = _call(browser_mod.BrowserFetchRequest(url = "example.com"))
+    response = _call(url = "example.com")
     assert response.headers["x-unsloth-browser-kind"] == "html"
     payload = json.loads(response.body)
-    assert payload["url"] == "https://example.com/final"
-    assert payload["base"] == "https://example.com/final"
+    assert payload["url"] == payload["base"] == "https://example.com/final"
     assert "<title>x</title>" in payload["html"]
 
 
 def test_other_bodies_pass_through_untouched(monkeypatch):
     pdf = b"%PDF-1.7\n..."
     _fetch(monkeypatch, (None, pdf, "application/pdf"), {"url": "https://example.com/p.pdf"})
-    response = _call(browser_mod.BrowserFetchRequest(url = "https://example.com/p.pdf"))
+    response = _call(url = "https://example.com/p.pdf")
     assert response.headers["x-unsloth-browser-kind"] == "raw"
     assert response.headers["x-unsloth-browser-url"] == "https://example.com/p.pdf"
-    assert response.body == pdf
-    assert response.media_type == "application/pdf"
+    assert response.body == pdf and response.media_type == "application/pdf"
     assert response.headers["content-security-policy"] == "sandbox"
 
 
-def test_a_form_post_sends_its_body(monkeypatch):
+def test_fetch_arguments(monkeypatch):
     calls = _fetch(monkeypatch, (None, b"<html></html>", "text/html"))
-    _call(browser_mod.BrowserFetchRequest(url = "https://example.com/s", method = "POST", body = "q=a+b"))
-    assert calls[0][1]["post_data"] == b"q=a+b"
+    _call(method = "POST", body = "q=a+b", max_bytes = 4096)
+    assert calls[0]["post_data"] == b"q=a+b"
+    assert calls[0]["raw_bytes_max"] == 4096
+    assert isinstance(calls[0]["cancel_event"], threading.Event)
+    with pytest.raises(Exception):
+        browser_mod.BrowserFetchRequest(
+            url = "https://example.com/", max_bytes = browser_mod._MAX_BROWSER_FETCH_BYTES + 1
+        )
 
 
-def test_a_refused_fetch_is_a_bad_gateway(monkeypatch):
-    _fetch(monkeypatch, ("Blocked: refusing to fetch non-public address 127.0.0.1.", "", ""))
+@pytest.mark.parametrize(
+    "result, detail",
+    [
+        (("Blocked: refusing to fetch non-public address 127.0.0.1.", "", ""), "non-public"),
+        ((None, b"x" * (browser_mod._MAX_BROWSER_HTML_BYTES + 1), "text/html"), "byte limit"),
+    ],
+)
+def test_refused_and_oversized_fetches_are_a_bad_gateway(monkeypatch, result, detail):
+    _fetch(monkeypatch, result)
     with pytest.raises(HTTPException) as caught:
-        _call(browser_mod.BrowserFetchRequest(url = "http://127.0.0.1:8888/"))
-    assert caught.value.status_code == 502
-    assert "non-public" in caught.value.detail
+        _call()
+    assert caught.value.status_code == 502 and detail in caught.value.detail
 
 
-def test_fetches_run_in_their_own_pool_and_pass_a_cancel_event(monkeypatch):
-    import threading
-
+def test_fetches_run_in_their_own_pool(monkeypatch):
     threads = []
 
     def fake_fetch(url, **kwargs):
         threads.append(threading.current_thread().name)
-        assert isinstance(kwargs["cancel_event"], threading.Event)
         return None, b"<html></html>", "text/html"
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
-    _call(browser_mod.BrowserFetchRequest(url = "https://example.com/"))
+    _call()
     # Not the default executor, which chat inference shares.
     assert threads[0].startswith("browser-fetch")
 
@@ -195,55 +189,17 @@ def test_a_closed_request_cancels_the_fetch(monkeypatch):
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", slow_fetch)
     with pytest.raises(HTTPException) as caught:
-        _call(
-            browser_mod.BrowserFetchRequest(url = "https://example.com/"), _Client(disconnected = True)
-        )
+        _call(_Client(disconnected = True))
     assert caught.value.status_code == 499
-    # Wait for the pool thread to see the cancel.
     for _ in range(browser_mod._FETCH_POOL._max_workers):
         browser_mod._FETCH_POOL.submit(lambda: None).result(5)
     assert seen["cancelled"] is True
 
 
-def test_the_shell_keeps_widget_links_and_popups_in_check():
-    shell = browser_mod._FRAME_HTML
-    # href="#" belongs to the page's own click handler; it must not reload the page.
-    assert 'if (raw.startsWith("#"))' in shell
-    # window.open without a click or key press is a popup, and is dropped.
-    assert "navigator.userActivation?.isActive !== false" in shell
-    # Title reports are deduplicated, and only <head> is observed, not every DOM change.
-    assert "if (title === lastTitle) return;" in shell
-    assert "titleObserver.observe(document.head" in shell
-    assert "observe(document.documentElement" not in shell
-
-
-def test_an_oversized_html_page_is_refused_not_sent_to_the_panel(monkeypatch):
-    big = b"<html><body>" + b"x" * (browser_mod._MAX_BROWSER_HTML_BYTES + 1) + b"</body></html>"
-    _fetch(monkeypatch, (None, big, "text/html"))
-    with pytest.raises(HTTPException) as caught:
-        _call(browser_mod.BrowserFetchRequest(url = "https://example.com/huge"))
-    assert caught.value.status_code == 502
-    assert "byte limit" in caught.value.detail
-
-
-def test_a_caller_can_ask_for_a_smaller_cap(monkeypatch):
-    calls = _fetch(monkeypatch, (None, b"\x89PNG", "image/png"))
-    _call(browser_mod.BrowserFetchRequest(url = "https://example.com/favicon.ico", max_bytes = 4096))
-    assert calls[0][1]["raw_bytes_max"] == 4096
-    with pytest.raises(Exception):
-        browser_mod.BrowserFetchRequest(
-            url = "https://example.com/", max_bytes = browser_mod._MAX_BROWSER_FETCH_BYTES + 1
-        )
-
-
 def test_a_bot_check_is_reported_as_one(monkeypatch):
-    _fetch(
-        monkeypatch,
-        ("Failed to fetch URL: HTTP 403 Forbidden", "", ""),
-        {"bot_check": True},
-    )
+    _fetch(monkeypatch, ("Failed to fetch URL: HTTP 403 Forbidden", "", ""), {"bot_check": True})
     with pytest.raises(HTTPException) as caught:
-        _call(browser_mod.BrowserFetchRequest(url = "https://protected.example/"))
+        _call()
     assert caught.value.status_code == 502
     assert caught.value.detail == {
         "message": "Failed to fetch URL: HTTP 403 Forbidden",
@@ -252,8 +208,6 @@ def test_a_bot_check_is_reported_as_one(monkeypatch):
 
 
 def test_bot_checks_are_told_apart_from_plain_refusals():
-    from email.message import Message
-
     from core.inference.tools import _is_bot_check
 
     def headers(**values):
@@ -263,6 +217,11 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
         return message
 
     assert _is_bot_check(403, headers(cf_mitigated = "challenge"))
+    assert _is_bot_check(503, headers(cf_mitigated = "challenge"))
     assert _is_bot_check(403, headers(x_datadome = "protected"))
+    assert _is_bot_check(403, headers(Server = "cloudflare"))
+    # A rate limit or an outage behind Cloudflare is not a bot check.
+    assert not _is_bot_check(429, headers(Server = "cloudflare"))
+    assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))
     assert not _is_bot_check(403, headers(Server = "nginx"))

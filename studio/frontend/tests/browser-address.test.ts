@@ -24,32 +24,27 @@ test("anything else is a search on the chosen engine", () => {
   assert.match(resolveAddress("node.js tutorial", "bing") ?? "", /^https:\/\/www\.bing\.com\/search\?q=/);
 });
 
-test("search engines' click-tracking hops are skipped", () => {
+test("search engines' click-tracking hops are skipped, only to another web page", () => {
   assert.equal(
     unwrapRedirect("https://duckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2Fdocs&rut=abc"),
     "https://unsloth.ai/docs",
   );
   assert.equal(unwrapRedirect("https://www.google.com/url?q=https://unsloth.ai/&sa=U"), "https://unsloth.ai/");
-  assert.equal(unwrapRedirect("https://unsloth.ai/l/?uddg=x"), "https://unsloth.ai/l/?uddg=x");
+  for (const hop of [
+    "https://unsloth.ai/l/?uddg=x",
+    "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F",
+    ...["javascript:alert(1)", "file:///etc/passwd"].map(
+      (target) => `https://duckduckgo.com/l/?uddg=${encodeURIComponent(target)}`,
+    ),
+  ]) {
+    assert.equal(unwrapRedirect(hop), hop);
+  }
 });
 
 test("a document without a title is named by its path", () => {
   assert.equal(fileNameFromUrl("https://arxiv.org/pdf/1706.03762"), "1706.03762");
   assert.equal(fileNameFromUrl("https://example.com/files/My%20Report.pdf"), "My Report.pdf");
   assert.equal(fileNameFromUrl("https://example.com/"), "example.com");
-});
-
-test("a search engine's redirect hop is only followed to another web page", () => {
-  assert.equal(
-    unwrapRedirect("https://duckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F"),
-    "https://unsloth.ai/",
-  );
-  for (const target of ["javascript:alert(1)", "file:///etc/passwd"]) {
-    const hop = `https://duckduckgo.com/l/?uddg=${encodeURIComponent(target)}`;
-    assert.equal(unwrapRedirect(hop), hop, target);
-  }
-  const lookalike = "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F";
-  assert.equal(unwrapRedirect(lookalike), lookalike);
 });
 
 test("a saved page gets its base URL back", () => {
@@ -59,4 +54,8 @@ test("a saved page gets its base URL back", () => {
   );
   assert.equal(withBaseUrl("<!DOCTYPE html><p>x", "https://a.example/"), '<!DOCTYPE html><base href="https://a.example/"><p>x');
   assert.equal(withBaseUrl("<p>x", "https://a.example/"), '<base href="https://a.example/"><p>x');
+  // Unclosed tags were quadratic and froze the UI.
+  const start = performance.now();
+  withBaseUrl("<head<!doctype".repeat(10_000), "https://a.example/");
+  assert.ok(performance.now() - start < 1000);
 });

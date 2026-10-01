@@ -6451,10 +6451,6 @@ def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkey
         tools.execute_tool("python", {"code": 42}, session_id = "__LOCALID_badarg1")
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-s"]))
-
-
 def _sandbox_route_setup(tmp_path, monkeypatch):
     from routes import inference
 
@@ -6464,40 +6460,65 @@ def _sandbox_route_setup(tmp_path, monkeypatch):
         inference, "_sandbox_dir_for", lambda session_id, create = False: os.path.realpath(sandbox)
     )
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
     launched = []
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
     return inference, sandbox, launched
 
 
-def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkeypatch):
+def _open(inference, name):
     import asyncio
+    return asyncio.run(
+        inference.open_sandbox_file("thread-1", request = None, file = name, token = None, session = None)
+    )
 
+
+def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkeypatch):
     inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
     (sandbox / "outputs" / "report.pdf").write_bytes(b"%PDF-1.4")
-
-    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
-
-    result = asyncio.new_event_loop().run_until_complete(
-        inference.open_sandbox_file(
-            "thread-1", request = None, file = "outputs/report.pdf", token = None, session = None
-        )
-    )
-    assert result == {"status": "ok"}
-    assert len(launched) == 1
+    assert _open(inference, "outputs/report.pdf") == {"status": "ok"}
     # A private name for the same file, outside the sandbox.
-    opened = launched[0][-1]
+    (opened,) = [cmd[-1] for cmd in launched]
     assert not opened.startswith(os.path.realpath(sandbox))
     assert os.path.basename(opened) == "report.pdf"
     assert os.path.samefile(opened, sandbox / "outputs" / "report.pdf")
+
+
+@pytest.mark.parametrize(
+    "name, status",
+    [
+        # Model-written: a script or app would run, not be viewed.
+        ("run.sh", 415),
+        ("run.command", 415),
+        ("page.html", 415),
+        ("Tool.app", 415),
+        ("link.pdf", 404),
+        ("../../secret.pdf", 404),
+        ("missing.pdf", 404),
+        ("outputs", 404),
+    ],
+)
+def test_opening_refuses_scripts_links_and_escapes(tmp_path, monkeypatch, name, status):
+    from fastapi import HTTPException
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    outside = tmp_path / "secret.pdf"
+    outside.write_bytes(b"%PDF-1.4")
+    (sandbox / "link.pdf").symlink_to(outside)
+    for script in ("run.sh", "run.command", "page.html", "Tool.app"):
+        (sandbox / script).write_text("x", encoding = "utf-8")
+    with pytest.raises(HTTPException) as caught:
+        _open(inference, name)
+    assert caught.value.status_code in (status, 403)
+    assert launched == []
 
 
 def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_path, monkeypatch):
     from utils.paths import path_utils
 
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
-    sandbox = tmp_path / "sandbox"
-    sandbox.mkdir()
-    report = sandbox / "report.pdf"
+    report = tmp_path / "sandbox" / "report.pdf"
+    report.parent.mkdir()
     report.write_bytes(b"%PDF-1.4 checked")
     app = tmp_path / "Evil.app"
     app.write_text("x", encoding = "utf-8")
@@ -6509,54 +6530,28 @@ def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_pa
         return real_link(src, dst, **kwargs)
 
     monkeypatch.setattr(path_utils.os, "link", swap_then_link)
-    staged = path_utils._stage_for_open(report)
+    staged = path_utils._stage_for_open(report, report.parent)
     assert not staged.is_symlink()
     assert staged.read_bytes() == b"%PDF-1.4 checked"
 
 
-def test_a_model_written_script_never_opens_in_the_default_app(tmp_path, monkeypatch):
-    """The files are model-written: a script or app would run, not be viewed."""
-    import asyncio
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
+def test_a_parent_swapped_for_a_link_is_refused(tmp_path, monkeypatch):
+    from utils.paths import path_utils
 
-    from fastapi import HTTPException
-
-    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
-    for name in ("run.sh", "run.command", "page.html", "Tool.app"):
-        (sandbox / name).write_text("x", encoding = "utf-8")
-        with pytest.raises(HTTPException) as caught:
-            asyncio.new_event_loop().run_until_complete(
-                inference.open_sandbox_file(
-                    "thread-1", request = None, file = name, token = None, session = None
-                )
-            )
-        assert caught.value.status_code == 415, name
-    assert launched == []
-
-
-def test_opening_refuses_links_and_escapes(tmp_path, monkeypatch):
-    import asyncio
-
-    from fastapi import HTTPException
-
-    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
-    outside = tmp_path / "secret.pdf"
-    outside.write_bytes(b"%PDF-1.4")
-    (sandbox / "link.pdf").symlink_to(outside)
-    for name in ("link.pdf", "../../secret.pdf", "missing.pdf", "outputs"):
-        with pytest.raises(HTTPException) as caught:
-            asyncio.new_event_loop().run_until_complete(
-                inference.open_sandbox_file(
-                    "thread-1", request = None, file = name, token = None, session = None
-                )
-            )
-        assert caught.value.status_code in (403, 404), name
-    assert launched == []
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox, outside = tmp_path / "sandbox", tmp_path / "outside"
+    sandbox.mkdir()
+    outside.mkdir()
+    (outside / "secret.pdf").write_bytes(b"%PDF-1.4 secret")
+    # What the route checked was a real directory; by the open it is a link out.
+    (sandbox / "outputs").symlink_to(outside, target_is_directory = True)
+    with pytest.raises(FileNotFoundError):
+        path_utils._stage_for_open(sandbox / "outputs" / "secret.pdf", sandbox)
 
 
 def test_revealing_a_sandbox_file_selects_that_file(tmp_path, monkeypatch):
     import asyncio
-
-    from pathlib import Path as _Path
 
     from utils.paths import path_utils
 
@@ -6567,11 +6562,14 @@ def test_revealing_a_sandbox_file_selects_that_file(tmp_path, monkeypatch):
     monkeypatch.setattr(
         path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path)
     )
-
-    result = asyncio.new_event_loop().run_until_complete(
+    result = asyncio.run(
         inference.reveal_sandbox_dir(
             "thread-1", request = None, token = None, session = None, file = "outputs/report.csv"
         )
     )
     assert result["path"] == os.path.realpath(target)
-    assert revealed == [_Path(os.path.realpath(target))]
+    assert revealed == [Path(os.path.realpath(target))]
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q", "-s"]))

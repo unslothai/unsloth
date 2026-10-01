@@ -15,8 +15,10 @@ const html = (bytes: number): BrowserPage => ({
   html: "x".repeat(bytes / 2),
 });
 
-test("HTML pages count toward the byte budget", () => {
-  const cache = new PageCache<object>(12, 32 * MB, 8 * MB);
+const make = (pages = 12) => new PageCache<object>(pages, 32 * MB, 8 * MB);
+
+test("HTML pages count toward the byte budget, and one over the per-page limit is not kept", () => {
+  const cache = make();
   const keys = Array.from({ length: 12 }, () => ({}));
   for (const key of keys) cache.set(key, 0, html(6 * MB));
   // Twelve 6 MB pages would be 72 MB; only the newest five fit in 32 MB.
@@ -24,18 +26,12 @@ test("HTML pages count toward the byte budget", () => {
   assert.ok(cache.bytes <= 32 * MB);
   assert.equal(cache.get(keys[0], 0), undefined);
   assert.ok(cache.get(keys[11], 0));
-});
-
-test("a page over the per-page limit is not kept", () => {
-  const cache = new PageCache<object>(12, 32 * MB, 8 * MB);
-  const key = {};
-  cache.set(key, 0, html(20 * MB));
-  assert.equal(cache.size, 0);
-  assert.equal(cache.bytes, 0);
+  cache.set({}, 0, html(20 * MB));
+  assert.equal(cache.size, 5);
 });
 
 test("reloads, replacements and deletes keep the total right", () => {
-  const cache = new PageCache<object>(12, 32 * MB, 8 * MB);
+  const cache = make();
   const key = {};
   cache.set(key, 0, html(2 * MB));
   assert.equal(cache.get(key, 1), undefined);
@@ -46,7 +42,7 @@ test("reloads, replacements and deletes keep the total right", () => {
 });
 
 test("the least recently used page goes first", () => {
-  const cache = new PageCache<object>(2, 32 * MB, 8 * MB);
+  const cache = make(2);
   const [a, b, c] = [{}, {}, {}];
   cache.set(a, 0, html(2));
   cache.set(b, 0, html(2));
