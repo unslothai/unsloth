@@ -24,11 +24,34 @@ import {
   parseSourcesFromResult,
 } from "./document-citation-source";
 import { mergeGoogleNativeParts } from "./google-native-parts";
+import { extractMcpUiEnvelope } from "../mcp-apps/mcp-ui";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function mcpImages(
+  text: string,
+): { at: number; images: { data: string; mimeType: string }[] } | null {
+  const marker = "\n__MCP_IMAGES__:";
+  const at = text.lastIndexOf(marker);
+  if (at === -1) return null;
+  try {
+    const images: unknown = JSON.parse(text.slice(at + marker.length));
+    return Array.isArray(images) &&
+      images.length > 0 &&
+      images.every(
+        (image) =>
+          typeof record(image)?.data === "string" &&
+          typeof record(image)?.mimeType === "string",
+      )
+      ? { at, images: images as { data: string; mimeType: string }[] }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function recoveredToolResult(
@@ -51,29 +74,22 @@ function recoveredToolResult(
   }
   const sandbox =
     typeof toolName === "string" && SANDBOX_FILE_TOOLS.has(toolName);
-  const { text, files } = sandbox
+  const { text: withUi, files } = sandbox
     ? extractCreatedFiles(event.result)
     : { text: event.result, files: [] };
-  const mcpMarker = "\n__MCP_IMAGES__:";
-  const mcpAt = text.lastIndexOf(mcpMarker);
-  if (mcpAt !== -1) {
-    try {
-      const images: unknown = JSON.parse(text.slice(mcpAt + mcpMarker.length));
-      if (
-        Array.isArray(images) &&
-        images.length > 0 &&
-        images.every(
-          (image) =>
-            typeof record(image)?.data === "string" &&
-            typeof record(image)?.mimeType === "string",
-        )
-      ) {
-        return { text: text.slice(0, mcpAt), images };
-      }
-    } catch {
-      // Keep malformed envelopes as text.
-    }
+  // As the live adapter does: the UI line comes off first, then the image envelope.
+  const { text, ui } = extractMcpUiEnvelope(
+    withUi,
+    typeof toolName === "string" ? toolName : "",
+  );
+  if (ui) {
+    const images = mcpImages(text);
+    return images
+      ? { text: text.slice(0, images.at), images: images.images, ui }
+      : { text, ui };
   }
+  const images = mcpImages(text);
+  if (images) return { text: text.slice(0, images.at), images: images.images };
   const imageMarker = "\n__IMAGES__:";
   const imageAt = text.lastIndexOf(imageMarker);
   if (imageAt !== -1) {
@@ -135,8 +151,13 @@ export function createGenerationToolRecovery(
    *  unconditionally because it owns every card in its stream; a recovery shares the store with
    *  whatever else is on screen, so reaching for a card it never raised is not its business. */
   const armed = new Set<string>();
-  const armApproval = (entry: CarriedPart, approvalId: unknown, sessionId: string) => {
-    if (!toolConfirmations || typeof approvalId !== "string" || !approvalId) return;
+  const armApproval = (
+    entry: CarriedPart,
+    approvalId: unknown,
+    sessionId: string,
+  ) => {
+    if (!toolConfirmations || typeof approvalId !== "string" || !approvalId)
+      return;
     const partId = record(entry.part)?.toolCallId;
     if (typeof partId === "string" && partId) {
       armed.add(partId);
@@ -145,7 +166,8 @@ export function createGenerationToolRecovery(
   };
   const disarmApproval = (entry: CarriedPart) => {
     const partId = record(entry.part)?.toolCallId;
-    if (!toolConfirmations || typeof partId !== "string" || !armed.has(partId)) return;
+    if (!toolConfirmations || typeof partId !== "string" || !armed.has(partId))
+      return;
     armed.delete(partId);
     toolConfirmations.resolve(partId);
   };
