@@ -150,6 +150,20 @@ def test_an_edit_while_the_card_is_open_does_not_redirect_the_image(mapped_serve
     assert out.startswith("Error: the MCP server changed") and mapped_server == []
 
 
+def test_images_returned_by_an_image_call_never_reach_the_model(mapped_server, monkeypatch):
+    image = McpImage(mime = "image/png", data = _png_bytes())
+    args = {"image": ATTACHED_IMAGE}
+    approved = tools_mod.mcp_image_share("mcp__srv1__lookup", args, image)["image"]
+    resized = base64.b64encode(_png_bytes("JPEG")).decode()
+    envelope = mcp_client.MCP_IMAGES_SENTINEL + json.dumps(
+        [{"data": resized, "mimeType": "image/jpeg"}]
+    )
+    monkeypatch.setattr(tools_mod, "call_tool_sync", lambda **_: "1 image returned\n" + envelope)
+    out = tools_mod.execute_tool("mcp__srv1__lookup", args, mcp_image = approved)
+    assert mcp_client.MCP_IMAGES_SENTINEL not in out and resized not in out
+    assert out.endswith("[Images the tool returned were withheld from the model.]")
+
+
 def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server):
     image = McpImage(mime = "image/png", data = _png_bytes())
     args = {"image": ATTACHED_IMAGE}
@@ -169,8 +183,9 @@ def test_an_approved_image_whose_mapping_vanished_is_not_forwarded(mapped_server
         lambda d: base64.b64encode(d).decode().replace("/", "\\/"),
         lambda d: base64.b64encode(d[1:]).decode(),
         lambda d: base64.b64encode(d[len(d) // 2 :]).decode(),
+        lambda d: base64.b64encode(d[:60]).decode(),
     ],
-    ids = ["urlsafe", "hex", "wrapped", "json-escaped", "offset", "tail"],
+    ids = ["urlsafe", "hex", "wrapped", "json-escaped", "offset", "tail", "short"],
 )
 def test_a_reencoded_echo_withholds_the_result(encode):
     image = McpImage(mime = "image/png", data = _noise_png())

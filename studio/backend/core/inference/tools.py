@@ -67,6 +67,7 @@ from core.inference.mcp_image import (
 )
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
+    MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     call_tool_sync,
@@ -13982,6 +13983,13 @@ def execute_tool(
             config_check = _config_current,
         )
         if mcp_image is not None and isinstance(result, str):
+            # Returned images may be resized copies of the user's; none of them reach the model on this call.
+            result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
+            if returned_images:
+                result = (
+                    result.rstrip("\n")
+                    + "\n[Images the tool returned were withheld from the model.]"
+                )
             result = mcp_image.redact(result)
         if tool is not None and isinstance(result, str) and result.startswith("Error:"):
             return _mcp_schema_page(

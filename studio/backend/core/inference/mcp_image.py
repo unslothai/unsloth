@@ -23,7 +23,7 @@ ATTACHED_IMAGE = "attached_image"
 WITHHELD_RESULT = (
     "[The tool's reply contained the attached image, so it was withheld from the model.]"
 )
-_PROBE_BYTES = 96
+_PROBE_BYTES = 48
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # Pillow reports a JPEG carrying extra pictures (phone HDR / portrait shots) as MPO.
 _FORMATS = {"image/png": ("PNG",), "image/jpeg": ("JPEG", "MPO"), "image/webp": ("WEBP",)}
