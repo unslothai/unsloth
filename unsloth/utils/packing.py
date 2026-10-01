@@ -46,6 +46,9 @@ _SDPA_MASK_CACHE: dict = {}
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
+# Cache per device for cover_padded_cu_seqlens to avoid repeated D2H sync across layers
+_PADDED_CU_SEQLENS_CACHE: dict = {}
+
 
 def _window_cache_key(sliding_window: Optional[int]) -> int:
     if sliding_window is None or sliding_window <= 0:
@@ -600,6 +603,30 @@ def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int])
     return lengths + (padding,)
 
 
+def cover_padded_cu_seqlens(
+    seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: int
+) -> Tuple[torch.Tensor, int]:
+    """(cu_seqlens, max_seqlen) for flash varlen, with the collator's trailing pad as its own
+    segment; rows past cu_seqlens[-1] are otherwise left uninitialized in the output."""
+    _, cu_seqlens, max_seqlen = seq_info
+    device = cu_seqlens.device
+    entry = _PADDED_CU_SEQLENS_CACHE.get(device)
+    if entry is not None and entry["cu_seqlens"] is cu_seqlens and entry["total"] == total_tokens:
+        return entry["result"]
+
+    padding = total_tokens - int(cu_seqlens[-1].item())
+    result = (cu_seqlens, max_seqlen)
+    if padding > 0:
+        tail = torch.tensor([total_tokens], dtype = cu_seqlens.dtype, device = device)
+        result = (torch.cat([cu_seqlens, tail]), max(max_seqlen, padding))
+    _PADDED_CU_SEQLENS_CACHE[device] = {
+        "cu_seqlens": cu_seqlens,
+        "total": total_tokens,
+        "result": result,
+    }
+    return result
+
+
 def build_xformers_block_causal_mask(
     seq_info: Optional[Tuple[torch.Tensor, torch.Tensor, int]],
     *,
@@ -778,6 +805,7 @@ def clear_packed_caches():
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
+    _PADDED_CU_SEQLENS_CACHE.clear()
 
 
 __all__ = [
@@ -790,6 +818,7 @@ __all__ = [
     "get_packed_info_from_kwargs",
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
+    "cover_padded_cu_seqlens",
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",

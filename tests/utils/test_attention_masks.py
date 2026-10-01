@@ -583,6 +583,61 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
     assert captured["kwargs"]["window_size"] == window_tuple
 
 
+def test_run_attention_flash_varlen_covers_a_padded_flattened_row(monkeypatch):
+    packing_utils.clear_packed_caches()
+    seq_info = _make_seq_info([3, 4])
+    total = 8
+
+    def _fake_flash_varlen(Q, K, V, cu_q, cu_k, max_q, max_k, **kwargs):
+        # Like flash-attn: rows outside cu_seqlens are never written.
+        out = torch.full_like(Q, float("nan"))
+        bounds = cu_q.tolist()
+        for start, end in zip(bounds[:-1], bounds[1:]):
+            assert end - start <= max_q
+            q = Q[start:end].transpose(0, 1)
+            k = K[start:end].transpose(0, 1)
+            v = V[start:end].transpose(0, 1)
+            out[start:end] = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, is_causal = True
+            ).transpose(0, 1)
+        return out
+
+    monkeypatch.setattr(attention_dispatch, "flash_attn_varlen_func", _fake_flash_varlen)
+    monkeypatch.setattr(attention_dispatch, "HAS_FLASH_ATTENTION", True)
+
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.FLASH_VARLEN,
+        n_kv_heads = 1,
+        n_groups = 1,
+        flash_varlen_kwargs = {"causal": True},
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = total,
+        kv_seq_len = total,
+        n_heads = 1,
+        head_dim = 4,
+        requires_grad = False,
+        seq_info = seq_info,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q = torch.randn(1, 1, total, 4)
+    K = torch.randn(1, 1, total, 4)
+    V = torch.randn(1, 1, total, 4)
+
+    out = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    assert not torch.isnan(out).any()
+    first = torch.nn.functional.scaled_dot_product_attention(
+        Q[..., :3, :], K[..., :3, :], V[..., :3, :], is_causal = True
+    )
+    assert torch.allclose(out[0, :3, 0].float(), first[0, 0], atol = 2e-2)
+
+    cu_seqlens, max_seqlen = packing_utils.cover_padded_cu_seqlens(seq_info, 7)
+    assert cu_seqlens is seq_info[1] and max_seqlen == 4
+
+
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
 
 

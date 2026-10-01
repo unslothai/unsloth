@@ -26,6 +26,7 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    cover_padded_cu_seqlens,
     move_xformers_attention_bias,
 )
 
@@ -400,7 +401,7 @@ def run_attention(
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
         V_f = V.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
-        _, cu_seqlens, max_seqlen = context.seq_info
+        cu_seqlens, max_seqlen = cover_padded_cu_seqlens(context.seq_info, bsz * q_len)
         return flash_attn_varlen_func(
             Q_f,
             K_f,

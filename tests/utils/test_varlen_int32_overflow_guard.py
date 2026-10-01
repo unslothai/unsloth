@@ -84,7 +84,7 @@ def _context(
         n_heads = n_heads,
         head_dim = head_dim,
         requires_grad = requires_grad,
-        seq_info = (lengths, None, 1),
+        seq_info = (lengths, torch.zeros(n_docs + 1, dtype = torch.int32), 1),
         attention_mask = None,
         causal_mask = None,
     )
