@@ -40,6 +40,12 @@ def _shared_setup_2(monkeypatch, tmp_path):
     )
     embeddings._model = None
     embeddings._name = None
+    # _get publishes what it loaded into these globals and nothing here puts them back, so
+    # the fake model outlived the test: a later test in the same xdist worker that asks
+    # backend_is_loaded() reads them and is told something is resident. Snapshot them AFTER
+    # the reset above, so teardown restores None rather than whatever arrived leaked.
+    monkeypatch.setattr(embeddings, "_model", None)
+    monkeypatch.setattr(embeddings, "_name", None)
 
     embeddings._get("Org/Embedder")
 
@@ -168,6 +174,108 @@ def test_first_encode_builds_the_selected_backend_once(monkeypatch):
     embeddings.encode(["second"])
 
     assert builds == ["backend"]
+
+
+class _AutoBackend:
+    def encode(self, texts, **_kwargs):
+        return np.zeros((len(texts), 4), dtype = np.float32)
+
+    def token_counter(self, **_kwargs):
+        return lambda text: len(text.split())
+
+    def dim(self, **_kwargs):
+        return 4
+
+
+def _resolve_auto_for(monkeypatch, *, stored = None):
+    import utils.embedding_model_settings as ems
+
+    asked: list[str] = []
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(ems, "get_stored_backend", lambda _model: stored and stored["backend"])
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto", lambda: asked.append("probe") or "sentence-transformers"
+    )
+    monkeypatch.setattr(
+        embeddings, "_build_st_backend_or_fallback", lambda model_name = None: _AutoBackend()
+    )
+    return asked
+
+
+def test_auto_asks_the_hardware_once_for_the_backend_it_built(monkeypatch):
+    """Every encode, token count and identity check resolves ``auto``, and the GPU probe
+    behind it starts a subprocess, so asking per call started ~3 per indexed document (#10390)."""
+    asked = _resolve_auto_for(monkeypatch)
+
+    embeddings.encode(["first"], model_name = "org/embedder")
+    assert asked == ["probe"]
+    for _ in range(3):
+        embeddings.encode(["again"], model_name = "org/embedder")
+        embeddings.token_counter("org/embedder")("some words")
+        embeddings.dim("org/embedder")
+        embeddings.embedding_identity("org/embedder")
+    assert asked == ["probe"]
+
+    # An unload is a fresh start, so the next backend asks again.
+    embeddings.release_backend()
+    embeddings.encode(["after unload"], model_name = "org/embedder")
+    assert asked == ["probe", "probe"]
+
+
+def test_a_saved_backend_still_replaces_a_resident_auto_backend(monkeypatch):
+    """``auto`` is resolved per model so that saving a backend rebuilds (#9739); keeping the
+    hardware answer must not keep the backend it chose."""
+    stored = {"backend": None}
+    _resolve_auto_for(monkeypatch, stored = stored)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+
+    assert isinstance(embeddings._get_backend("org/embedder"), _AutoBackend)
+    stored["backend"] = "llama-server"
+    assert isinstance(embeddings._get_backend("org/embedder"), _SentinelLlamaBackend)
+
+
+def test_a_replaced_backend_asks_the_hardware_again(monkeypatch):
+    """The kept answer is tied to the object it was kept for, and that tie is what makes a
+    rebuild re-ask. Without it the tuple answers for a backend that is no longer published,
+    so a host whose hardware moved keeps being told what it had before the rebuild."""
+    asked = _resolve_auto_for(monkeypatch)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+
+    first = embeddings._get_backend("org/embedder")
+    assert asked == ["probe"]
+
+    # A GGUF repo name resolves without the hardware, so the rebuild caches nothing of its own.
+    monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: True)
+    second = embeddings._get_backend("org/embedder")
+    assert second is not first
+    assert asked == ["probe"]
+
+    # Back to a plain model: the published backend is no longer the one the answer was kept
+    # for, so auto must go and ask rather than answer from the replaced backend's probe.
+    monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: False)
+    assert embeddings._resolve_auto_for_model("org/embedder") == "sentence-transformers"
+    assert asked == ["probe", "probe"]
+
+
+def test_a_resolution_that_never_asked_the_hardware_keeps_nothing(monkeypatch):
+    """``_get_backend`` clears the per-thread answer before resolving, and that clear is
+    load-bearing: the identity and active-backend probes also resolve ``auto`` outside the
+    lock, so without it a build that short-circuited the hardware would publish the answer
+    an earlier, unrelated call had left behind."""
+    asked = _resolve_auto_for(monkeypatch)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+
+    # An out-of-lock caller resolves auto first, with no backend published yet.
+    embeddings.active_backend_is_llama("org/embedder")
+    assert asked == ["probe"]
+
+    # Now build for a model that never reaches the hardware question.
+    monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: True)
+    built = embeddings._get_backend("org/embedder")
+    assert isinstance(built, _SentinelLlamaBackend)
+
+    # Nothing was kept, because this build asked the hardware nothing.
+    assert embeddings._resident_hardware is None
 
 
 def test_encode_is_serialized(monkeypatch):
@@ -959,12 +1067,44 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     assert scanned == [str(snapshot)]
 
 
-def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
+def test_the_shared_load_setup_does_not_strand_module_weights(tmp_path):
+    """The three loads driven through _shared_setup_2 outlived the test that asked for
+    them, so the next test in the same xdist worker to call backend_is_loaded() was
+    answered from this file's fake model and told something was resident.
+
+    Driven through a nested monkeypatch context so the restore this asserts is
+    observable from inside the test rather than only at its teardown.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        _shared_setup_1(mp)
+        mp.setattr(embeddings, "_device", lambda: "cpu")
+        _shared_setup_2(mp, tmp_path)
+        # Non-vacuity: there is no strand to clean up unless the setup really loaded.
+        assert embeddings._model is not None, "the setup loaded nothing, so this proves nothing"
+        assert embeddings._name == "Org/Embedder"
+
+    assert embeddings._model is None
+    assert embeddings._name is None
+
+
+@pytest.mark.parametrize("resident", [False, True])
+def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch, resident):
     """Both locks are held across a whole model load, so a probe taking either
-    made GET, PUT, reset and unload wait it out."""
+    made GET, PUT, reset and unload wait it out.
+
+    Run for a resident model as well as an empty one: what is being claimed is that the
+    probe ANSWERS under the load locks, and an answer of False is only evidence of that
+    if False is also the right answer.
+    """
     import threading
 
     embeddings._reset_backend()
+    # _reset_backend drops the published backend, not the module-level weights, and
+    # backend_is_loaded deliberately falls through to those when no backend is published.
+    # So the answer below depends on globals this test never set: state them rather than
+    # inherit whatever ran earlier in this xdist worker.
+    monkeypatch.setattr(embeddings, "_model", object() if resident else None)
+    monkeypatch.setattr(embeddings, "_name", "org/embedder" if resident else None)
     answered = threading.Event()
     result = {}
 
@@ -980,7 +1120,7 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
         # Answered while the construction locks are still held by this thread.
         assert answered.wait(timeout = 5), "the status probe blocked on the load locks"
 
-    assert result == {"any": False, "named": False}
+    assert result == {"any": resident, "named": resident}
 
 
 def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):

@@ -125,3 +125,12 @@ export function getPostAuthRoute(): PostAuthRoute {
   if (mustChangePassword()) return "/change-password";
   return "/chat";
 }
+
+/**
+ * Whether this session may read its account's settings yet. Until a required password change lands,
+ * the backend refuses every other route with a 403, and the bootstrap sign-in on /change-password
+ * stores its tokens a step before that change.
+ */
+export function hasSettledAuthSession(): boolean {
+  return hasAuthToken() && getPostAuthRoute() === "/chat";
+}

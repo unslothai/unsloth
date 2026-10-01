@@ -60,9 +60,16 @@ class _Attr:
         return 0
 
 
-def _run(monkeypatch, libraries: dict[str, object]) -> tuple[int, str]:
-    """Run the reader with ctypes.CDLL answering from `libraries`; (exit code, stdout)."""
+def _run(
+    monkeypatch,
+    libraries: dict[str, object],
+    reader: str = "",
+) -> tuple[int, str]:
+    """Run the reader with ctypes.CDLL answering from `libraries`; (exit code, stdout).
+    `reader` is the argument install.sh passes to run one reader under its own deadline."""
     import ctypes as real_ctypes
+
+    monkeypatch.setattr(sys, "argv", ["-", reader] if reader else ["-"])
 
     def cdll(name):
         if name in libraries:
@@ -133,3 +140,32 @@ def test_nvml_answers_first_when_it_can(monkeypatch):
     )
     code, out = _run(monkeypatch, {"libnvidia-ml.so.1": nvml, "libcuda.so.1": _cuda_lib()})
     assert (code, out) == (0, "12.8 6.1,6.1")
+
+
+def _nvml_lib():
+    return _lib(
+        nvmlInit_v2 = _Ok(),
+        nvmlShutdown = _Ok(),
+        nvmlDeviceGetCount_v2 = _Ok(1),
+        nvmlSystemGetCudaDriverVersion_v2 = _Ok(12080),
+        nvmlDeviceGetHandleByIndex_v2 = _Ok(1),
+        nvmlDeviceGetCudaComputeCapability = _Ok(10, 0),
+    )
+
+
+def test_each_reader_runs_alone_under_its_own_deadline(monkeypatch):
+    """install.sh runs NVML and the CUDA driver API as separate bounded processes, so a slow
+    NVML no longer uses up the deadline the driver API needed (8x B200: NVML took ~23s)."""
+    libs = {"libnvidia-ml.so.1": _nvml_lib(), "libcuda.so.1": _cuda_lib(cap = (10, 0))}
+    assert _run(monkeypatch, libs, "nvml") == (0, "12.8 10.0")
+    assert _run(monkeypatch, libs, "cuda") == (0, "13.1 10.0")
+    assert _run(monkeypatch, {"libcuda.so.1": _cuda_lib()}, "nvml") == (1, "")
+    assert _run(monkeypatch, {"libnvidia-ml.so.1": _nvml_lib()}, "cuda") == (1, "")
+
+
+def test_install_sh_gives_each_reader_its_own_bound():
+    text = INSTALL_SH.read_text(encoding = "utf-8")
+    body = text[text.index("_nvidia_library_inventory() {") :]
+    body = body[: body.index("\n}\n")]
+    assert "for _nli_reader in nvml cuda; do" in body
+    assert '_run_bounded --secs "$_nli_secs" "$_nli_py" -I - "$_nli_reader"' in body

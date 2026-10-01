@@ -62,20 +62,27 @@ def load_krea2_tokenizer(
         check_cancelled()
     from transformers import AutoTokenizer
 
+    from .diffusion_offline_source import offline_snapshot_source
+
+    cache_dir = _live_cache_dir()
     kwargs: dict[str, Any] = {
         "subfolder": "tokenizer",
         "local_files_only": local_files_only,
-        "cache_dir": _live_cache_dir(),
+        "cache_dir": cache_dir,
     }
     if hf_token:
         kwargs["token"] = hf_token
+    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
+    source = offline_snapshot_source(
+        repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
+    )
     try:
-        return AutoTokenizer.from_pretrained(repo_id, **kwargs)
+        return AutoTokenizer.from_pretrained(source, **kwargs)
     except Exception as exc:  # noqa: BLE001 -- 4.x config-parse failure, retry with override
         if check_cancelled is not None:
             check_cancelled()
         logger.info("diffusion.krea2 tokenizer compat fallback: %s", exc)
-        return AutoTokenizer.from_pretrained(repo_id, extra_special_tokens = {}, **kwargs)
+        return AutoTokenizer.from_pretrained(source, extra_special_tokens = {}, **kwargs)
 
 
 def remap_rope_parameters(text_config) -> None:
@@ -192,10 +199,11 @@ def load_krea2_pipeline(
     # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
     # AttributeError, so fail first with the fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
+        from .diffusion_families import DIFFUSERS_UPDATE_REMEDY
         raise RuntimeError(
             f"Krea 2 needs diffusers >= 0.39.0 (Krea2Pipeline); this environment has "
             f"diffusers {getattr(diffusers, '__version__', 'unknown')}. "
-            f"Upgrade with: pip install -U diffusers"
+            f"{DIFFUSERS_UPDATE_REMEDY} On a plain pip install: pip install -U diffusers"
         )
 
     token = hf_token or None

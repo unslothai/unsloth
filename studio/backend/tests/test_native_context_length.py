@@ -431,13 +431,22 @@ class TestRouteCompleteness:
         block that leaves them off now defaults them to None and blanks the control.
         """
         blocks = self._find_construction_blocks("LoadResponse")
-        non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
+        npu = [b for b in blocks if "is_npu = True" in b]
+        non_gguf = [
+            b
+            for b in blocks
+            if "is_gguf = True" not in b and "is_gguf=True" not in b and b not in npu
+        ]
         assert non_gguf, "Expected at least one non-GGUF LoadResponse block"
         for block in non_gguf:
             for field in ("native_context_length", "max_context_length"):
                 assert re.search(
                     rf"{field} = _positive_int_or_none\(\s*_model_info\.get\(", block
                 ), f"Non-GGUF LoadResponse should read {field} from _model_info:\n{block[:200]}"
+        assert npu, "Expected the NPU LoadResponse block"
+        for block in npu:
+            for field in ("native_context_length", "max_context_length"):
+                assert f"{field} = model.max_context_length" in block, block[:200]
 
     def test_non_gguf_load_responses_set_runtime_context_length(self):
         """Non-GGUF LoadResponse blocks report runtime context_length."""

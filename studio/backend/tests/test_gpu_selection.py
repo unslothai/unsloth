@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import unittest
+import types
 from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -35,6 +36,11 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BITSANDBYTES_OPTIMIZER = "adamw_8bit"
+PAGED_BITSANDBYTES_OPTIMIZER = "paged-adamw-8bit"
+ADAMW_BITSANDBYTES_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_OPTIMIZER = "paged_adamw_32bit"
+XPU_SAFE_OPTIMIZER = "adamw_torch"
 
 
 async def _inline_to_thread(func, /, *args, **kwargs):
@@ -224,9 +230,28 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
 
+        # Two discrete cards. Stubbed rather than left to the host's own torch: the
+        # integrated-memory reconciliation reads props.total_memory for every CUDA row,
+        # so on a unified-memory machine (an RTX Spark N1X) a real 45.39 GiB pool was
+        # joined onto this fake 24 GiB row and the assertion below read the runner's
+        # hardware instead of the fixture.
+        _discrete = types.SimpleNamespace(
+            name = "NVIDIA RTX 4090",
+            total_memory = 24 * (1 << 30),
+            is_integrated = 0,
+            gcnArchName = "",
+        )
+
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware._torch_get_device_module",
+                return_value = (
+                    types.SimpleNamespace(get_device_properties = lambda ordinal: _discrete),
+                    "cuda",
+                ),
+            ),
             patch(
                 "utils.hardware.hardware._get_parent_visible_gpu_spec",
                 return_value = {"raw": "5,3", "numeric_ids": [5, 3]},
@@ -876,6 +901,68 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(metadata["selected_gpu_ids"])
 
 
+class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
+    def test_an_uncovered_card_is_rejected_with_the_arch_list(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch(
+                "utils.hardware.hardware._describe_rocm_gpus",
+                return_value = ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"],
+            ),
+            patch(
+                "utils.hardware.hardware._torch_kernel_arch_tokens",
+                return_value = ["gfx1030", "gfx1034"],
+            ),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run the PyTorch build this Unsloth Studio installed, "
+                r"which has kernels for gfx1030, gfx1034 only",
+            ):
+                prepare_gpu_selection([1], model_name = "unsloth/test")
+        mock_auto_select.assert_not_called()
+
+    def test_a_covered_card_beside_an_uncovered_one_is_accepted(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            selected, metadata = prepare_gpu_selection([0], model_name = "unsloth/test")
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "explicit")
+        mock_auto_select.assert_not_called()
+
+    def test_the_refusal_names_the_arch_on_wheels_without_gcnArchName(self):
+        props = SimpleNamespace(
+            name = "AMD Radeon RX 5700 XT", gcnArchName = "", gfx_arch_name = "gfx1010:xnack-"
+        )
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", return_value = props),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"numeric_ids": [0, 1], "raw": None},
+            ),
+        ):
+            self.assertEqual(
+                _hw_module._describe_rocm_gpus([1]), ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"]
+            )
+
+    def test_a_host_where_every_card_is_covered_is_untouched(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
+        ):
+            selected, _ = prepare_gpu_selection([1], model_name = "unsloth/test")
+        self.assertEqual(selected, [1])
+
+
 class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
         backend = TrainingBackend()
@@ -958,6 +1045,58 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(config["gpu_ids"])
         self.assertEqual(config["resolved_gpu_ids"], [0, 1])
         self.assertEqual(config["gpu_selection"]["selection_mode"], "auto")
+
+    def test_training_backend_swaps_bitsandbytes_optimizers_on_xpu(self):
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        for optimizer in (
+            DEFAULT_BITSANDBYTES_OPTIMIZER,
+            PAGED_BITSANDBYTES_OPTIMIZER,
+            ADAMW_BITSANDBYTES_OPTIMIZER,
+            PAGED_32BIT_BITSANDBYTES_OPTIMIZER,
+        ):
+            with self.subTest(optimizer = optimizer):
+                backend = TrainingBackend()
+                with (
+                    patch("core.training.training.get_device", return_value = DeviceType.XPU),
+                    patch(
+                        "core.training.training.prepare_gpu_selection",
+                        return_value = ([0], {"selection_mode": "auto"}),
+                    ) as mock_prepare_gpu_selection,
+                    patch(
+                        "core.training.training._CTX.Queue",
+                        side_effect = [dummy_queue, dummy_queue],
+                    ),
+                    patch(
+                        "core.training.training._CTX.Process", return_value = DummyProcess()
+                    ) as mock_process,
+                    patch("core.training.training.threading.Thread", return_value = DummyThread()),
+                ):
+                    backend.start_training(
+                        job_id = "test-job-xpu-optimizer",
+                        model_name = "unsloth/test",
+                        training_type = "LoRA/QLoRA",
+                        optim = optimizer,
+                        gpu_ids = None,
+                    )
+
+                config = mock_process.call_args.kwargs["kwargs"]["config"]
+                self.assertEqual(config["device_backend"], DeviceType.XPU.value)
+                self.assertEqual(config["optim"], XPU_SAFE_OPTIMIZER)
+                self.assertEqual(
+                    mock_prepare_gpu_selection.call_args.kwargs["optimizer"],
+                    XPU_SAFE_OPTIMIZER,
+                )
 
     def test_training_backend_preserves_uuid_parent_visibility_in_auto_mode(self):
         backend = TrainingBackend()
@@ -1513,6 +1652,92 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
+
+    def test_training_route_uses_xpu_safe_optimizer_for_vram_coordination(self):
+        training_route = _load_route_module(
+            "training_route_module_for_xpu_optimizer_test",
+            "routes/training.py",
+        )
+        request = TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            optim = DEFAULT_BITSANDBYTES_OPTIMIZER,
+            gpu_ids = None,
+        )
+        seen = {}
+
+        class DummyBackend:
+            current_job_id = None
+
+            def is_training_active(self):
+                return False
+
+            def start_training(self, **kwargs):
+                seen["backend_optimizer"] = kwargs["optim"]
+                kwargs["before_spawn"]()
+                return True
+
+        def _capture_training_vram_optimizer(**kwargs):
+            seen["vram_optimizer"] = kwargs["optimizer"]
+            return True, {"usable_gb": 24.0, "required_gb": 12.0}
+
+        def _run_can_keep(can_keep):
+            can_keep()
+            return []
+
+        with (
+            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(training_route, "_diffusion_training_active", return_value = False),
+            patch.object(training_route, "_diffusion_gpu_admission", return_value = nullcontext()),
+            patch.object(
+                training_route,
+                "_reject_untrainable_model_request",
+                return_value = SimpleNamespace(
+                    model_name = "unsloth/test",
+                    model_local_path = None,
+                    cached_model_pin = None,
+                ),
+            ),
+            patch.object(training_route, "load_model_defaults", return_value = {"training": {}}),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(_hw_module, "DEVICE", DeviceType.XPU),
+            patch("utils.hardware.ensure_hardware_detected", return_value = DeviceType.XPU),
+            patch(
+                "routes.training_vram.can_keep_chat_during_training",
+                side_effect = _capture_training_vram_optimizer,
+            ),
+            patch(
+                "routes.training_vram.coordinate_models_for_training",
+                side_effect = _run_can_keep,
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(
+                    current_checkpoint = None,
+                    is_export_active = lambda: False,
+                ),
+            ),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = SimpleNamespace(is_loaded = False, unload = lambda: None),
+            ),
+            patch("core.inference.gpu_arbiter.release", lambda *_args, **_kwargs: None),
+            patch(
+                "core.inference.video.get_video_backend",
+                return_value = SimpleNamespace(
+                    status = lambda: {"loaded": False},
+                    unload = lambda: None,
+                ),
+            ),
+        ):
+            response = asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+        self.assertEqual(response.status, "queued")
+        self.assertEqual(seen["backend_optimizer"], XPU_SAFE_OPTIMIZER)
+        self.assertEqual(seen["vram_optimizer"], XPU_SAFE_OPTIMIZER)
 
     def test_training_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
         training_route = _load_route_module(
@@ -2332,3 +2557,131 @@ class TestTheFallbackNameIsOneUnslothResolves(unittest.TestCase):
             answer = get_device_map([0, 1])
         self.assertIn(answer, planned)
         self.assertEqual(planned[answer], "balanced")
+
+
+class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
+    """The diffusion trainers pick their optimizer themselves, outside the request model the
+    route normalizes, so they need the same XPU policy applied before construction."""
+
+    def _probe(self):
+        from core.training.diffusion_train_common import bitsandbytes_optimizer_supported
+        return bitsandbytes_optimizer_supported
+
+    def test_xpu_host_refuses_bitsandbytes_optimizers(self):
+        with patch("utils.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertFalse(self._probe()())
+
+    def test_selected_backends_other_than_xpu_keep_bitsandbytes(self):
+        for device in (DeviceType.CUDA, DeviceType.CPU, DeviceType.MLX):
+            with self.subTest(device = device):
+                with patch("utils.hardware.get_device", return_value = device):
+                    self.assertTrue(self._probe()())
+
+    def test_a_hybrid_host_that_selected_cuda_keeps_bitsandbytes(self):
+        """An Intel iGPU beside an NVIDIA card reports torch.xpu.is_available() True while
+        detection selects CUDA. Keying on presence would drop 8-bit on a CUDA run and make
+        restore_resume_state refuse every existing AdamW8bit checkpoint."""
+        import torch
+        with (
+            patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)),
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+        ):
+            self.assertTrue(self._probe()())
+
+    def test_a_raising_probe_fails_open(self):
+        def _boom():
+            raise RuntimeError("driver exploded")
+
+        with patch("utils.hardware.get_device", side_effect = _boom):
+            self.assertTrue(self._probe()())
+
+    def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
+        import torch
+
+        import core.training.diffusion_dit_trainer as dit_mod
+        import core.training.diffusion_lora_trainer as lora_mod
+
+        class _Bnb8bitMarker(torch.optim.AdamW):
+            """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
+            exactly as the Intel Triton SYCL assertion does."""
+
+            def step(self, *args, **kwargs):
+                raise AssertionError("sycl headers not found")
+
+        fake_bnb = ModuleType("bitsandbytes")
+        fake_optim = ModuleType("bitsandbytes.optim")
+        fake_optim.AdamW8bit = _Bnb8bitMarker
+        fake_bnb.optim = fake_optim
+
+        cases = (
+            ("sdxl_lora", lora_mod, "_make_lora_optimizer"),
+            ("dit", dit_mod, "_make_optimizer"),
+        )
+        for label, module, factory_name in cases:
+            factory = getattr(module, factory_name)
+            for on_xpu in (True, False):
+                with self.subTest(trainer = label, xpu = on_xpu):
+                    param = torch.nn.Parameter(torch.zeros(2, 2))
+                    param.grad = torch.ones(2, 2)
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
+                        ),
+                        patch.object(
+                            module,
+                            "bitsandbytes_optimizer_supported",
+                            lambda supported = not on_xpu: supported,
+                        ),
+                    ):
+                        optimizer = factory([param], 1e-4)
+
+                    if on_xpu:
+                        # Must not be the bnb optimizer, and must survive an actual step.
+                        self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
+                        optimizer.step()
+                    else:
+                        # Unchanged off XPU: still the 8-bit optimizer, not a blanket disable.
+                        self.assertIsInstance(optimizer, _Bnb8bitMarker)
+
+
+class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
+    """`unsloth train` exposes no --optim, so without this the CLI falls through to
+    trainer.py's own `adamw_8bit` literal and reproduces issue #10021 off the Studio path."""
+
+    def _resolve(self, device: DeviceType) -> str:
+        from core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+        return normalize_training_optimizer_for_device(
+            DEFAULT_TRAINING_OPTIMIZER,
+            device_backend = device.value,
+        )
+
+    def test_xpu_cli_default_is_the_safe_optimizer(self):
+        self.assertEqual(self._resolve(DeviceType.XPU), XPU_SAFE_OPTIMIZER)
+
+    def test_other_backends_keep_the_historical_cli_default(self):
+        from core.training.training import DEFAULT_TRAINING_OPTIMIZER
+        for device in (DeviceType.CUDA, DeviceType.CPU):
+            with self.subTest(device = device):
+                self.assertEqual(self._resolve(device), DEFAULT_TRAINING_OPTIMIZER)
+
+    def test_the_cli_sets_optim_from_the_host_policy(self):
+        """The wiring, not just the helper: train.py must stamp `optim` into training_kwargs."""
+        source = (_BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py").read_text(
+            encoding = "utf-8"
+        )
+        self.assertIn("_optimizer_for_host", source)
+        self.assertIn(
+            'training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))', source
+        )
+
+    def test_an_undetectable_host_keeps_the_historical_default(self):
+        """The CLI helper must fail open: a device lookup that raises cannot stop a run."""
+        cli = _BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py"
+        source = cli.read_text(encoding = "utf-8")
+        self.assertIn("except Exception:", source)
+        # The fallback returns the requested/default optimizer rather than propagating.
+        self.assertIn("return optimizer", source)

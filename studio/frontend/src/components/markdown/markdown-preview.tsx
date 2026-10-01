@@ -18,6 +18,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { INERT_MARKDOWN_COMPONENTS } from "./inert-components";
 import "katex/dist/katex.min.css";
 
 type MarkdownPlugins = NonNullable<
@@ -45,6 +46,8 @@ type MarkdownPreviewProps = {
   markdown: string;
   className?: string;
   plain?: boolean;
+  /** No links or checkboxes, for a preview nested in another control. */
+  inert?: boolean;
   /**
    * Parse on the next idle callback so the surrounding UI paints first. For a document that
    * arrives whole and is big enough to stall - a finished research report - the wait is the same
@@ -57,6 +60,7 @@ function MarkdownPreviewImpl({
   markdown,
   className,
   plain = false,
+  inert = false,
   defer = false,
 }: MarkdownPreviewProps): ReactElement {
   // Math and mermaid over a document with neither still cost a pass per node, and shiki over a
@@ -96,7 +100,7 @@ function MarkdownPreviewImpl({
         <Streamdown
           mode="static"
           plugins={plugins}
-          components={MARKDOWN_COMPONENTS}
+          components={inert ? INERT_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
           urlTransform={safeMarkdownUrl}
           controls={false}
           className={markdownClassName}

@@ -1422,7 +1422,7 @@ def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
 
     Reading the PR's whole label list meant that adding any label to a PR that already carried
     `installer-differential` evaluated true and started the lane again, which with
-    `cancel-in-progress: true` cancels a measurement that is already running. The `labeled` event
+    `cancel-in-progress` on a pull request cancels a measurement that is already running. The `labeled` event
     has to look at the label that was just applied; `synchronize` still reads the full list, because
     there no single label was applied.
     """
@@ -1449,7 +1449,8 @@ def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
         "the concurrency group does not distinguish the label, so an unrelated label still cancels "
         "a measurement in progress before this gate can run"
     )
-    assert "unrelated-label" in group and "cancel-in-progress: true" in group
+    assert "unrelated-label" in group
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in group
 
 
 def test_installer_output_that_looks_like_a_runner_header_survives() -> None:

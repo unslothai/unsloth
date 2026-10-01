@@ -346,7 +346,7 @@ def test_fetch_release_falls_back_to_latest_on_404(monkeypatch):
             raise urllib.error.HTTPError(url, 404, "not found", None, None)
         return _Resp()
 
-    monkeypatch.setattr(sdmod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sdmod, "auth_safe_open", fake_urlopen)
     rel = _fetch_release("gone-tag", repo = "leejet/stable-diffusion.cpp")
     assert rel["tag_name"] == "latest-xyz"
     assert any("/tags/gone-tag" in c for c in calls) and any(c.endswith("/latest") for c in calls)
@@ -357,7 +357,7 @@ def test_fetch_release_propagates_non_404(monkeypatch):
         url = getattr(req, "full_url", req)
         raise urllib.error.HTTPError(url, 403, "rate limited", None, None)
 
-    monkeypatch.setattr(sdmod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sdmod, "auth_safe_open", fake_urlopen)
     with pytest.raises(urllib.error.HTTPError):
         _fetch_release("any-tag")
 
@@ -3294,3 +3294,48 @@ def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
         with pytest.raises(RuntimeError, match = "unsafe symlink"):
             _safe_extractall(zf, target)
     assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "remaining", "body", "throttled"),
+    [
+        (403, "0", b"", True),
+        (429, "4998", b"", True),
+        (403, "4998", b'{"message": "secondary rate limit"}', True),
+        (403, "4998", b'{"message": "Resource not accessible"}', False),
+    ],
+)
+def test_a_rate_limit_stops_the_fallback_ladder(
+    monkeypatch, capsys, status, remaining, body, throttled
+):
+    import email.message
+
+    seen = []
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+
+    def fake_fetch(
+        tag,
+        *,
+        repo,
+        token,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append(repo)
+        raise urllib.error.HTTPError(
+            f"https://api/{repo}", status, "refused", headers, io.BytesIO(body)
+        )
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    if not throttled:
+        assert sdmod._resolve_with_fallback("auto", None)[2] is None
+        assert len(seen) > 1
+        return
+    with pytest.raises(sdmod.GitHubRateLimited, match = "rate limiting.*GH_TOKEN"):
+        sdmod._resolve_with_fallback("auto", None)
+    assert len(seen) == 1
+    assert sdmod.main(["--print-asset"]) == 2
+    assert "rate limiting" in capsys.readouterr().err

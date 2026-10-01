@@ -9,7 +9,7 @@ import {
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { File02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -53,7 +53,7 @@ function formatSize(bytes: number): string {
 // Projects created with staged files, so the landing can open on Sources.
 const projectsWithPendingSources = new Set<string>();
 
-function markProjectSourcesPending(projectId: string): void {
+export function markProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.add(projectId);
 }
 
@@ -66,6 +66,23 @@ export function hasProjectSourcesPending(projectId: string): boolean {
 /** Drop the marker once the landing has committed. */
 export function consumeProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.delete(projectId);
+}
+
+// Landings mounted now, counted, so a caller can tell whether a marker would still be read.
+const mountedProjectLandings = new Map<string, number>();
+
+/** Call from the landing's mount effect; returns the cleanup. */
+export function noteProjectLandingMounted(projectId: string): () => void {
+  mountedProjectLandings.set(projectId, (mountedProjectLandings.get(projectId) ?? 0) + 1);
+  return () => {
+    const count = (mountedProjectLandings.get(projectId) ?? 1) - 1;
+    if (count > 0) mountedProjectLandings.set(projectId, count);
+    else mountedProjectLandings.delete(projectId);
+  };
+}
+
+export function isProjectLandingMounted(projectId: string): boolean {
+  return mountedProjectLandings.has(projectId);
 }
 
 /** Upload staged files to a new project. Indexing runs in the background; a
@@ -342,7 +359,7 @@ export function ProjectSourceDropzone({
           addFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         className={cn(
-          "rounded-[22px] border border-border transition-colors dark:border-white/10",
+          "rounded-[22px] border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
           dragging && "border-primary/60 bg-primary/5",
           disabled && "opacity-60",
         )}
@@ -385,7 +402,7 @@ export function ProjectSourceDropzone({
                   className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
                 >
                   <HugeiconsIcon
-                    icon={File02Icon}
+                    icon={FileEmpty02Icon}
                     strokeWidth={1.75}
                     className="size-4 shrink-0 text-muted-foreground"
                   />
