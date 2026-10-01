@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Install or refresh the optional systemd user unit for Unsloth Studio (#9258).
-# Called from install.sh; may also be invoked directly after setup.
+# Writes (and with --enable/--start, enables) the optional systemd user unit for Unsloth Studio.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +11,6 @@ UNIT_NAME="unsloth-studio.service"
 
 _UNSLOTH_EXE=""
 _STUDIO_HOME=""
-# Match `unsloth studio` (127.0.0.1). Opt into LAN with --host / UNSLOTH_SYSTEMD_HOST=0.0.0.0.
 _HOST="${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}"
 _PORT="${UNSLOTH_SYSTEMD_PORT:-8888}"
 _DO_ENABLE=false
@@ -34,42 +32,24 @@ Options:
 EOF
 }
 
-_systemd_escape() {
-    # systemd unit escaping for paths embedded in quoted strings.
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+# Inside a double-quoted unit value: backslash and quote escape, % is a specifier.
+_unit_quote() {
+    local v="$1"
+    v="${v//\\/\\\\}"
+    v="${v//\"/\\\"}"
+    v="${v//%/%%}"
+    printf '"%s"' "$v"
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --unsloth-exe)
-            _UNSLOTH_EXE="${2:-}"
-            shift 2
-            ;;
-        --studio-home)
-            _STUDIO_HOME="${2:-}"
-            shift 2
-            ;;
-        --host)
-            _HOST="${2:-}"
-            shift 2
-            ;;
-        --port)
-            _PORT="${2:-}"
-            shift 2
-            ;;
-        --enable)
-            _DO_ENABLE=true
-            shift
-            ;;
-        --start)
-            _DO_ENABLE=true
-            _DO_START=true
-            shift
-            ;;
-        -h|--help)
-            _usage
-            exit 0
-            ;;
+        --unsloth-exe) _UNSLOTH_EXE="${2:-}"; shift 2 ;;
+        --studio-home) _STUDIO_HOME="${2:-}"; shift 2 ;;
+        --host) _HOST="${2:-}"; shift 2 ;;
+        --port) _PORT="${2:-}"; shift 2 ;;
+        --enable) _DO_ENABLE=true; shift ;;
+        --start) _DO_ENABLE=true; _DO_START=true; shift ;;
+        -h|--help) _usage; exit 0 ;;
         *)
             echo "Unknown argument: $1" >&2
             _usage >&2
@@ -87,8 +67,7 @@ if [ ! -x "$_UNSLOTH_EXE" ]; then
     exit 1
 fi
 case "$_PORT" in
-    ''|*[!0-9]*) echo "ERROR: --port must be a positive integer." >&2; exit 2 ;;
-    0) echo "ERROR: --port must be greater than zero." >&2; exit 2 ;;
+    ''|*[!0-9]*|0) echo "ERROR: --port must be a positive integer." >&2; exit 2 ;;
 esac
 if [ -z "$_HOST" ]; then
     echo "ERROR: --host must not be empty." >&2
@@ -114,33 +93,28 @@ if [ "$_DO_ENABLE" = true ]; then
 fi
 
 _UNSLOTH_EXE="$(CDPATH= cd -P -- "$(dirname "$_UNSLOTH_EXE")" && pwd -P)/$(basename "$_UNSLOTH_EXE")"
-if [ -n "$_STUDIO_HOME" ]; then
-    if [ -d "$_STUDIO_HOME" ]; then
-        _STUDIO_HOME="$(CDPATH= cd -P -- "$_STUDIO_HOME" && pwd -P)"
-    fi
+if [ -n "$_STUDIO_HOME" ] && [ -d "$_STUDIO_HOME" ]; then
+    _STUDIO_HOME="$(CDPATH= cd -P -- "$_STUDIO_HOME" && pwd -P)"
 fi
 
-_exe_q=$(_systemd_escape "$_UNSLOTH_EXE")
-_exec_start="\"$_exe_q\" studio -H \"$_HOST\" -p $_PORT"
-_exec_stop="\"$_exe_q\" studio stop"
-
-_env_lines=""
-if [ -n "$_STUDIO_HOME" ]; then
-    _home_q=$(_systemd_escape "$_STUDIO_HOME")
-    _env_lines="Environment=\"UNSLOTH_STUDIO_HOME=$_home_q\""
-fi
+# No ExecStop: `unsloth studio stop` would also stop every other Studio on this home.
+_exec_start="$(_unit_quote "$_UNSLOTH_EXE") studio -H $(_unit_quote "$_HOST") -p $_PORT"
+_env_line=""
+[ -n "$_STUDIO_HOME" ] && _env_line="Environment=$(_unit_quote "UNSLOTH_STUDIO_HOME=$_STUDIO_HOME")"
 
 _unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$_unit_dir"
 _unit_path="$_unit_dir/$UNIT_NAME"
-_tmp="$(mktemp)"
-sed \
-    -e "s|@@ENVIRONMENT_LINES@@|${_env_lines}|" \
-    -e "s|@@EXEC_START@@|${_exec_start}|" \
-    -e "s|@@EXEC_STOP@@|${_exec_stop}|" \
-    "$TEMPLATE" > "$_tmp"
+_tmp="$(mktemp "$_unit_dir/.$UNIT_NAME.XXXXXX")"
+while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in
+        @@ENVIRONMENT_LINES@@) [ -z "$_env_line" ] || printf '%s\n' "$_env_line" ;;
+        ExecStart=@@EXEC_START@@) printf 'ExecStart=%s\n' "$_exec_start" ;;
+        *) printf '%s\n' "$_line" ;;
+    esac
+done < "$TEMPLATE" > "$_tmp"
+chmod 0644 "$_tmp"
 mv "$_tmp" "$_unit_path"
-chmod 0644 "$_unit_path"
 
 if [ "$_DO_ENABLE" != true ]; then
     printf '%s\n' "$_unit_path"
@@ -150,6 +124,6 @@ fi
 systemctl --user daemon-reload
 systemctl --user enable "$UNIT_NAME"
 if [ "$_DO_START" = true ]; then
-    systemctl --user restart "$UNIT_NAME" || systemctl --user start "$UNIT_NAME"
+    systemctl --user restart "$UNIT_NAME"
 fi
 printf '%s\n' "$_unit_path"

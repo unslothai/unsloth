@@ -161,5 +161,21 @@ def test_the_notice_on_a_real_bare_call():
     assert "PROBE_OK" in proc.stdout, proc.stderr[-3000:]
 
 
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_the_notice_names_a_route_to_4bit_that_exists(index):
+    # Some -bf16 repos have no 4bit sibling (CohereLabs/command-a-plus-05-2026-bf16).
+    # Unsloth's 4bit LoRA kernels read the nested quant state and need a matching compute dtype.
+    guards = _bf16_notice_guards()
+    assert len(guards) == 4, "the notice moved; update this test"
+    text = ast.get_source_segment(SRC, guards[index].body[0]) or ""
+    for needed in (
+        "quantization_config",
+        "BitsAndBytesConfig",
+        "bnb_4bit_use_double_quant = True",
+        "bnb_4bit_compute_dtype",
+    ):
+        assert needed in text, (needed, text)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

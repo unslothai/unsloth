@@ -1,10 +1,12 @@
-"""Regression tests for optional systemd user service install (#9258)."""
+"""Optional systemd user service for Studio (#9258)."""
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 
 from pathlib import Path
 
@@ -15,116 +17,175 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 SYSTEMD_INSTALL_SH = REPO_ROOT / "studio" / "systemd" / "install_user_service.sh"
 UNINSTALL_SH = REPO_ROOT / "scripts" / "uninstall.sh"
 
-TRUTHY_VALUES = ("1", "true", "TRUE", "yes", "YES", "on", "ON")
-FALSEY_VALUES = ("", "0", "false", "no", "off", "anything-else")
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux") or shutil.which("bash") is None,
+    reason = "systemd user units are Linux only",
+)
 
 
-def test_systemd_install_script_exists():
-    assert SYSTEMD_INSTALL_SH.is_file()
-    assert (REPO_ROOT / "studio" / "systemd" / "unsloth-studio.service.in").is_file()
+def _fake_bin(tmp_path: Path, name: str, body: str) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok = True)
+    exe = bin_dir / name
+    exe.write_text(f"#!/bin/sh\n{body}\n")
+    exe.chmod(0o755)
+    return exe
 
 
-def test_install_sh_documents_systemd_env_vars():
-    source = INSTALL_SH.read_text(encoding = "utf-8")
-    assert "UNSLOTH_SKIP_SYSTEMD" in source
-    assert "UNSLOTH_INSTALL_SYSTEMD" in source
-    assert "UNSLOTH_SYSTEMD_HOST" in source
-    assert "UNSLOTH_SYSTEMD_PORT" in source
+def _write_unit(
+    tmp_path: Path,
+    *args: str,
+    env: dict | None = None,
+) -> str:
+    exe = _fake_bin(tmp_path, "unsloth", "exit 0")
+    full_env = {k: v for k, v in os.environ.items() if not k.startswith("UNSLOTH_SYSTEMD_")}
+    full_env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    full_env.update(env or {})
+    out = subprocess.run(
+        ["bash", str(SYSTEMD_INSTALL_SH), "--unsloth-exe", str(exe), *args],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = full_env,
+    ).stdout.strip()
+    assert out == str(tmp_path / "config" / "systemd" / "user" / "unsloth-studio.service")
+    return Path(out).read_text()
 
 
-def test_systemd_defaults_to_loopback_not_all_interfaces():
-    """Opting into systemd must not quietly expose Studio on every interface (#9308)."""
-    install_source = INSTALL_SH.read_text(encoding = "utf-8")
-    assert "UNSLOTH_SYSTEMD_HOST:-127.0.0.1" in install_source
-    assert "UNSLOTH_SYSTEMD_HOST:-0.0.0.0" not in install_source
-
-    script = SYSTEMD_INSTALL_SH.read_text(encoding = "utf-8")
-    assert "UNSLOTH_SYSTEMD_HOST:-127.0.0.1" in script
-    assert '_HOST="0.0.0.0"' not in script
+def test_unit_defaults_to_loopback(tmp_path):
+    unit = _write_unit(tmp_path, "--port", "9090")
+    assert 'studio -H "127.0.0.1" -p 9090' in unit
+    assert "0.0.0.0" not in unit
+    assert "unsloth-studio-managed-systemd" in unit
+    assert "Restart=on-failure" in unit
+    assert "Environment=" not in unit
+    assert "@@" not in unit
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
-    [(value, "true") for value in TRUTHY_VALUES] + [(value, "false") for value in FALSEY_VALUES],
+    ("args", "env"),
+    [(("--host", "0.0.0.0"), {}), ((), {"UNSLOTH_SYSTEMD_HOST": "0.0.0.0"})],
 )
-@pytest.mark.skipif(not Path("/bin/sh").exists(), reason = "POSIX shell is unavailable")
-def test_posix_skip_systemd_value_parsing(value: str, expected: str):
-    source = INSTALL_SH.read_text(encoding = "utf-8")
-    parser = re.search(
-        r'case "\$\{UNSLOTH_SKIP_SYSTEMD:-\}" in.*?esac',
-        source,
-        flags = re.DOTALL,
+def test_unit_lan_bind_is_opt_in(tmp_path, args, env):
+    assert 'studio -H "0.0.0.0" -p 8888' in _write_unit(tmp_path, *args, env = env)
+
+
+def test_unit_has_no_execstop_that_stops_other_studios(tmp_path):
+    # `unsloth studio stop` stops every server on the home, including ones the user started by hand.
+    assert "ExecStop" not in _write_unit(tmp_path)
+
+
+def test_unit_escapes_odd_paths(tmp_path):
+    home = tmp_path / 'my "studio" 100% $HOME'
+    home.mkdir()
+    unit = _write_unit(tmp_path, "--studio-home", str(home))
+    env_line = next(l for l in unit.splitlines() if l.startswith("Environment="))
+    escaped = str(home.resolve()).replace('"', '\\"').replace("%", "%%")
+    assert env_line == f'Environment="UNSLOTH_STUDIO_HOME={escaped}"'
+
+
+def test_enable_start_drives_systemctl(tmp_path):
+    log = tmp_path / "systemctl.log"
+    _fake_bin(tmp_path, "systemctl", f'echo "$*" >> "{log}"')
+    _write_unit(
+        tmp_path,
+        "--start",
+        env = {"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"},
     )
-    assert parser is not None
-    env = os.environ.copy()
-    env["UNSLOTH_SKIP_SYSTEMD"] = value
-    result = subprocess.run(
-        [
-            "sh",
-            "-c",
-            f"_SKIP_SYSTEMD=false\n{parser.group(0)}\nprintf '%s' \"$_SKIP_SYSTEMD\"",
-        ],
+    assert log.read_text().splitlines() == [
+        "--user show-environment",
+        "--user daemon-reload",
+        "--user enable unsloth-studio.service",
+        "--user restart unsloth-studio.service",
+    ]
+
+
+def _offer_harness() -> str:
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    funcs = []
+    for name in (
+        "_resolve_systemd_install_script",
+        "_systemd_user_session_available",
+        "_offer_systemd_user_service",
+    ):
+        m = re.search(rf"^{name}\(\) \{{.*?^\}}", source, flags = re.DOTALL | re.MULTILINE)
+        assert m is not None, name
+        funcs.append(m.group(0))
+    stubs = 'step() { echo "STEP $*"; }\nsubstep() { :; }\n_can_read_tty() { return 0; }\n'
+    return (
+        stubs
+        + "\n".join(funcs)
+        + '\n_offer_systemd_user_service\necho "STARTED=$_SYSTEMD_STARTED"\n'
+    )
+
+
+def _run_offer(tmp_path: Path, **vars: str) -> str:
+    script = tmp_path / "helper.sh"
+    log = tmp_path / "helper.log"
+    script.write_text(f'echo "$*" > "{log}"\n')
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents = True, exist_ok = True)
+    py = venv / "bin" / "python"
+    py.write_text(f'#!/bin/sh\necho "{script}"\n')
+    py.chmod(0o755)
+    preset = {
+        "OS": "linux",
+        "_SKIP_SYSTEMD": "false",
+        "_INSTALL_SYSTEMD": "false",
+        "_SYSTEMD_STARTED": "false",
+        "_REPO_IS_CHECKOUT": "0",
+        "_REPO_ROOT": str(tmp_path),
+        "VENV_DIR": str(venv),
+        "STUDIO_HOME": str(tmp_path / "home"),
+        "_STUDIO_HOME_REDIRECT": "default",
+        **vars,
+    }
+    assigns = "".join(f"{k}='{v}'\n" for k, v in preset.items())
+    env = {k: v for k, v in os.environ.items() if not k.startswith("UNSLOTH_SYSTEMD_")}
+    env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env['PATH']}"
+    out = subprocess.run(
+        ["sh", "-c", assigns + _offer_harness()],
         check = True,
         capture_output = True,
         text = True,
         env = env,
-    )
-    assert result.stdout == expected
+        stdin = subprocess.DEVNULL,
+    ).stdout
+    return out + (log.read_text() if log.exists() else "")
 
 
-def test_install_sh_offers_systemd_before_autostart_prompt():
+def test_no_user_bus_asks_nothing_and_keeps_launch_prompt(tmp_path):
+    _fake_bin(tmp_path, "systemctl", "exit 1")
+    out = _run_offer(tmp_path)
+    assert "STARTED=false" in out
+    assert "--unsloth-exe" not in out
+
+
+def test_opt_in_installs_with_studio_home_for_env_redirect(tmp_path):
+    out = _run_offer(tmp_path, _INSTALL_SYSTEMD = "true", _STUDIO_HOME_REDIRECT = "env")
+    assert "STARTED=true" in out
+    assert f"--studio-home {tmp_path / 'home'}" in out
+    assert "--host 127.0.0.1 --port 8888" in out
+
+
+def test_piped_install_never_runs_a_helper_planted_in_cwd(tmp_path):
+    planted = tmp_path / "studio" / "systemd" / "install_user_service.sh"
+    planted.parent.mkdir(parents = True)
+    planted.write_text(f'touch "{tmp_path / "planted_ran"}"\n')
+    assert "STARTED=true" in _run_offer(tmp_path, _INSTALL_SYSTEMD = "true")
+    assert not (tmp_path / "planted_ran").exists()
+
+
+def test_launch_prompt_skipped_only_after_service_started():
     source = INSTALL_SH.read_text(encoding = "utf-8")
-    assert "_offer_systemd_user_service" in source
-    assert source.index("_offer_systemd_user_service") < source.index(
-        "Start Unsloth Studio now? [Y/n]"
-    )
-    assert (
-        "Install a systemd user service for auto-start on boot and crash recovery? [y/N]" in source
-    )
+    offer = source.index("\n_offer_systemd_user_service\n")
+    skip = source.index('[ "$_SYSTEMD_STARTED" = true ] && _SKIP_AUTOSTART=true')
+    assert offer < skip < source.index("Start Unsloth Studio now? [Y/n]")
 
 
-def test_offer_systemd_skips_interactive_prompt_without_user_session():
-    """Plain ./install.sh on non-systemd Linux must reach autostart unchanged (#9308)."""
-    source = INSTALL_SH.read_text(encoding = "utf-8")
-    assert source.index("_systemd_user_session_available") < source.index(
-        "_offer_systemd_user_service"
-    )
-    offer_start = source.index("_offer_systemd_user_service() {")
-    offer_end = source.index("\n}\n\n# ── Helper: install packages via apt", offer_start)
-    offer_body = source[offer_start:offer_end]
-    systemd_prompt = (
-        "Install a systemd user service for auto-start on boot and crash recovery? [y/N]"
-    )
-    prompt_at = offer_body.index(systemd_prompt)
-    guard_at = offer_body.index("_systemd_user_session_available", 0, prompt_at)
-    assert guard_at != -1
-    assert "_INSTALL_SYSTEMD" in offer_body[guard_at:prompt_at]
-    skip_autostart_at = source.index('if [ "$_SYSTEMD_STARTED" = true ]; then')
-    assert skip_autostart_at > source.index("_offer_systemd_user_service")
-    assert source.index("Start Unsloth Studio now? [Y/n]") > skip_autostart_at
-
-
-@pytest.mark.skipif(not Path("/bin/sh").exists(), reason = "POSIX shell is unavailable")
-def test_systemd_user_session_helper_matches_install_script():
-    source = INSTALL_SH.read_text(encoding = "utf-8")
-    helper = re.search(
-        r"_systemd_user_session_available\(\) \{.*?^\}",
-        source,
-        flags = re.DOTALL | re.MULTILINE,
-    )
-    assert helper is not None
-    result = subprocess.run(
-        ["sh", "-c", helper.group(0) + "\n_systemd_user_session_available; echo $?"],
-        check = True,
-        capture_output = True,
-        text = True,
-    )
-    # CI runners may or may not have a user bus; either outcome must be 0/1 from the probe.
-    assert result.stdout.strip() in {"0", "1"}
-
-
-def test_uninstall_sh_removes_managed_systemd_unit():
+def test_uninstall_disables_service_before_kill_sweep():
     source = UNINSTALL_SH.read_text(encoding = "utf-8")
-    assert "_remove_systemd_user_service" in source
-    assert "unsloth-studio-managed-systemd" in source
+    assert source.index("\n    _remove_systemd_user_service\n") < source.index(
+        "\n    _pkill_studio\n"
+    )
     assert "systemctl --user disable --now unsloth-studio.service" in source

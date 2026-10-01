@@ -38,26 +38,38 @@ which is ahead of every test module in the session.
 from __future__ import annotations
 
 _REAL_ACCELERATOR: bool | None = None
+_REAL_CUDA: bool | None = None
 
 
-def _probe() -> bool:
+def _ask(probe) -> bool:
+    try:
+        return bool(probe())
+    except Exception:
+        # A probe that raises is not an accelerator. torch.xpu on a build without
+        # XPU support, and torch.accelerator on torch < 2.6, both do this.
+        return False
+
+
+def _record() -> None:
+    """Fill both caches from one pass, so a single pre-spoof call primes them together.
+
+    ``tests/conftest.py`` calls ``has_real_accelerator()`` once, early. If the CUDA answer
+    were recorded lazily on its own first call, that call could land after a test module had
+    imported the spoof, and the CUDA cache would then hold the spoof's answer while the
+    accelerator cache held the machine's.
+    """
+    global _REAL_ACCELERATOR, _REAL_CUDA
     try:
         import torch
     except Exception:
-        return False
-    for probe in (
-        lambda: hasattr(torch, "cuda") and torch.cuda.is_available(),
-        lambda: hasattr(torch, "xpu") and torch.xpu.is_available(),
-        lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available(),
-    ):
-        try:
-            if probe():
-                return True
-        except Exception:
-            # A probe that raises is not an accelerator. torch.xpu on a build without
-            # XPU support, and torch.accelerator on torch < 2.6, both do this.
-            pass
-    return False
+        _REAL_ACCELERATOR, _REAL_CUDA = False, False
+        return
+    _REAL_CUDA = _ask(lambda: hasattr(torch, "cuda") and torch.cuda.is_available())
+    _REAL_ACCELERATOR = (
+        _REAL_CUDA
+        or _ask(lambda: hasattr(torch, "xpu") and torch.xpu.is_available())
+        or _ask(lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available())
+    )
 
 
 def has_real_accelerator() -> bool:
@@ -67,7 +79,23 @@ def has_real_accelerator() -> bool:
     any spoof runs, so every later caller gets the pre-spoof answer no matter what
     has patched ``torch.cuda`` since.
     """
-    global _REAL_ACCELERATOR
     if _REAL_ACCELERATOR is None:
-        _REAL_ACCELERATOR = _probe()
+        _record()
     return _REAL_ACCELERATOR
+
+
+def has_real_cuda() -> bool:
+    """True if this machine really has a CUDA device specifically.
+
+    ``has_real_accelerator()`` is the right gate for a test that only needs somewhere to put a
+    tensor. It is the wrong one for a test that names ``cuda``: it is true on an XPU-only or
+    Ascend NPU-only host too, so a CUDA-only test gated on it un-skips there and either dies
+    allocating on a device that is not present, or raises out of ``torch.cuda`` at import while
+    the decorator is still being evaluated.
+
+    Spoof-resistant on the same terms as its sibling, which a bare ``torch.cuda.is_available()``
+    is not.
+    """
+    if _REAL_CUDA is None:
+        _record()
+    return _REAL_CUDA

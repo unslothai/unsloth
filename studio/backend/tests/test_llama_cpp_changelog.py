@@ -146,7 +146,7 @@ def test_invalid_repo_never_reaches_github(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(changes, "auth_safe_open", fail)
 
     assert changes._fetch_release("owner/repository/extra", "b1") is None
     assert called is False
@@ -166,7 +166,7 @@ def test_repo_with_a_dot_segment_never_reaches_github(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(changes, "auth_safe_open", fail)
 
     for repo in ("../etc", "owner/..", "..", "../rate_limit"):
         assert changes._fetch_release(repo, "b1") is None
@@ -361,7 +361,7 @@ def test_a_truncated_response_does_not_escape_to_the_caller(monkeypatch):
         def read(self, size = -1):
             raise http.client.IncompleteRead(b"partial")
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
+    monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())
 
     # IncompleteRead is an HTTPException, not an OSError.
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
@@ -378,6 +378,29 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
         def read(self, size = -1):
             return b"x" * (changes.MAX_RELEASE_BYTES + 1)
 
-    monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
+    monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())
 
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+
+
+def test_a_rate_limit_holds_the_changelog_even_for_a_forced_refresh(monkeypatch):
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    for name in ("_release_memo", "_release_failed_at", "_release_forced_at"):
+        monkeypatch.setattr(changes, name, {})
+    headers = email.message.Message()
+    headers["Retry-After"] = "90"
+    calls = []
+
+    def refused(*_args, **_kwargs):
+        calls.append(1)
+        raise urllib.error.HTTPError("url", 403, "rate limited", headers, None)
+
+    monkeypatch.setattr(changes, "auth_safe_open", refused)
+    assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+    assert 85 < freshness_flow.github_rate_limit_remaining() <= 90
+    assert changes._release_for_tag("unslothai/llama.cpp", "b2", force_refresh = True) is None
+    assert calls == [1]

@@ -16,6 +16,7 @@ import inspect
 import torch
 from typing import Optional, List
 
+from unsloth_zoo.device_type import device_synchronize
 from .q_galore_projector import (
     GaLoreProjector,
     _quantize,
@@ -185,18 +186,18 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 self.update_step(group, p, gindex, pindex)
 
                 if "rank" in group:
-                    # p.data now holds the weight update in low-rank space.
-                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
-
-                    # Re-apply decoupled weight decay using pre-update weights.
+                    # Decay the pre-update weight BEFORE adding the update; it touches only
+                    # p._saved_data, so p.data still holds the low-rank update below.
                     if "_wd_saved" in group:
-                        p.data.add_(
-                            p.data,
+                        p._saved_data.add_(
+                            p._saved_data,
                             alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
 
+                    # project_back stays inline: a loop-local name outlives the iteration (+64 MiB).
+                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
                     del p._saved_data
 
                 if has_weight_quant:
@@ -213,8 +214,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # dequantizes before the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        device_synchronize()
 
         return loss
 

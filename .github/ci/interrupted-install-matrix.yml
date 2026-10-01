@@ -15,7 +15,7 @@ interrupt:
   # A marker, never a delay: every label prints BEFORE its work, so the kill lands inside
   # the phase, while a timed wait bets on phase duration and twice turned a leg into a
   # duplicate of the next one. This one is the reported case, killed installing structlog.
-  - {os: macos-15, label: studio-deps, marker: 'studio deps', pr: true}
+  - {os: macos-15, label: studio-deps, marker: 'Unsloth Studio deps', pr: true}
   # Coarse phases, earliest to latest, each leaving a different partial venv. No venv leg:
   # "Creating virtual environment" runs ~0.1s, shorter than any poll, so its kill always
   # landed in the NEXT phase and the leg duplicated this one.
@@ -30,7 +30,7 @@ interrupt:
   # Killed before install_python_stack.py writes the manifest.
   - {os: macos-15, label: data-designer,  marker: 'data designer deps', pr: false}
   # Linux: same teardown path, different package manager and process semantics.
-  - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', pr: false}
+  - {os: ubuntu-latest, label: studio-deps, marker: 'Unsloth Studio deps', pr: false}
   - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', pr: true}
 
 # Windows has no process groups, so the kill path differs. Both legs are nightly only:
@@ -38,5 +38,5 @@ interrupt:
 interrupt_windows:
   # install.ps1:121 parses `--no-torch`; `-SkipTorch` matches no case there and is
   # silently dropped. The torch leg must NOT skip torch or its marker never appears.
-  - {label: studio-deps, marker: 'studio deps', installArgs: '--tauri --no-torch --local', pr: false}
+  - {label: studio-deps, marker: 'Unsloth Studio deps', installArgs: '--tauri --no-torch --local', pr: false}
   - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local', pr: false}

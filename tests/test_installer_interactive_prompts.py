@@ -44,15 +44,17 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/install_rocm_wsl_strixhalo.sh",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
+    "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
+    "studio/install_mxc_prebuilt.py",
     "studio/install_node_prebuilt.py",
     "studio/install_python_stack.py",
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
+    "studio/nvidia_probe.py",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
-    # install.sh resolves and shells out to this for the optional systemd unit (#9258).
     "studio/systemd/install_user_service.sh",
 )
 
@@ -66,10 +68,8 @@ APPROVED_PROMPTS: dict[tuple[str, str], str] = {
         "Windows half of the sanctioned launch prompt above."
     ),
     ("install.sh", "install a systemd user service for auto-start on boot and crash recovery?"): (
-        "Linux-only opt-in for a managed user unit (#9258). Skipped silently when systemd "
-        "or the user bus is unavailable unless UNSLOTH_INSTALL_SYSTEMD is set. Non-interactive "
-        "installs use UNSLOTH_INSTALL_SYSTEMD / UNSLOTH_SKIP_SYSTEMD; the prompt only runs on a TTY "
-        "and defaults to no so curl|sh never stalls."
+        "Linux opt-in for a systemd user unit, asked only with a user bus and a TTY, "
+        "default no; UNSLOTH_INSTALL_SYSTEMD / UNSLOTH_SKIP_SYSTEMD answer it unattended."
     ),
     ("install.sh", "accept?"): (
         "Consent before `sudo apt-get install` of missing system packages, "

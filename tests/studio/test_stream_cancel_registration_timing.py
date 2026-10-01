@@ -148,6 +148,25 @@ def test_async_generators_cleanup_tracker_in_finally():
     )
 
 
+# _sse_streaming_response is the shared SSE constructor; the test below pins that it stays same-task.
+_SAME_TASK_BUILDERS = ("_SameTaskStreamingResponse", "_sse_streaming_response")
+
+
+def test_sse_streaming_response_builds_a_same_task_response():
+    fn = next(
+        n
+        for n in ast.walk(_TREE)
+        if isinstance(n, ast.FunctionDef) and n.name == "_sse_streaming_response"
+    )
+    names = {
+        sub.func.id
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "_SameTaskStreamingResponse" in names
+    assert "StreamingResponse" not in names
+
+
 def test_chat_completions_streams_avoid_starlette_task_group():
     top = _async_function("produce_openai_chat_completions")
     legacy_calls = []
@@ -157,7 +176,7 @@ def test_chat_completions_streams_avoid_starlette_task_group():
             continue
         if sub.func.id == "StreamingResponse":
             legacy_calls.append(sub.lineno)
-        if sub.func.id == "_SameTaskStreamingResponse":
+        if sub.func.id in _SAME_TASK_BUILDERS:
             same_task_calls += 1
     assert not legacy_calls, (
         "Streaming /v1/chat/completions must use _SameTaskStreamingResponse, "
@@ -180,7 +199,7 @@ def test_openai_passthrough_stream_avoids_starlette_task_group():
                 continue
             if sub.func.id == "StreamingResponse":
                 legacy_calls.append(sub.lineno)
-            if sub.func.id == "_SameTaskStreamingResponse":
+            if sub.func.id in _SAME_TASK_BUILDERS:
                 same_task_calls += 1
     assert not legacy_calls, (
         "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
@@ -973,26 +992,27 @@ def test_audio_stream_stays_responsive_under_blocking_next():
     async def _run(loop_coro):
         return await asyncio.gather(loop_coro, _fire_early())
 
+    # Counted in chunks: the blocking loop never lets _fire_early run, so it drains all
+    # eight before seeing a cancel that arrived at 50ms; the awaiting loop stops at the first.
     cancel_event.clear()
     t0 = time.monotonic()
     prefix_seen, _ = asyncio.run(_run(_prefix_loop()))
     prefix_elapsed = time.monotonic() - t0
-    assert prefix_elapsed >= 0.13, (
-        f"pre-fix pattern should block event loop for >=1 chunk time "
-        f"(~150ms); got {prefix_elapsed:.3f}s, {len(prefix_seen)} chunks"
+    assert len(prefix_seen) == 8, (
+        "pre-fix pattern let the cancel through, so it is no longer modelling a blocked "
+        f"event loop; got {len(prefix_seen)} chunks"
     )
 
     cancel_event.clear()
-    t0 = time.monotonic()
     postfix_seen, _ = asyncio.run(_run(_postfix_loop()))
-    postfix_elapsed = time.monotonic() - t0
-    assert postfix_elapsed < prefix_elapsed, (
-        f"post-fix pattern must exit faster than pre-fix (blocking) "
-        f"pattern; post={postfix_elapsed:.3f}s vs pre={prefix_elapsed:.3f}s"
-    )
     assert (
         len(postfix_seen) < 8
     ), f"post-fix loop must not drain all chunks; got {len(postfix_seen)}"
+    assert len(postfix_seen) < len(prefix_seen), (
+        f"post-fix pattern saw as much as the blocking one: post={len(postfix_seen)} "
+        f"vs pre={len(prefix_seen)}"
+    )
+    assert prefix_elapsed < 30.0, f"the blocking loop never returned: {prefix_elapsed:.3f}s"
 
 
 def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
