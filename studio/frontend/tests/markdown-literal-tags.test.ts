@@ -40,8 +40,14 @@ test("placeholders and generic types in prose stay visible", () => {
       "The <script> tag loads JS. More text follows.",
       "For all 0<x and x>1 we have a bound.",
       "<your-api-key>",
+      "Use Vec<T> and close </T> here.",
+      "   <your-api-key>",
     ]) {
-      assert.equal(text(render(line, mode)).trim(), line, `${mode}: ${line}`);
+      assert.equal(
+        text(render(line, mode)).trim(),
+        line.trim(),
+        `${mode}: ${line}`,
+      );
     }
   }
   assert.match(
@@ -51,6 +57,10 @@ test("placeholders and generic types in prose stay visible", () => {
   for (const [block, line] of [
     ["<div>Use <your-api-key> here</div>", "Use <your-api-key> here"],
     ["<div>Use <code_snippet> here</div>", "Use <code_snippet> here"],
+    [
+      "<div>Use <T>x</T> in Vec<Vec<T>> here</div>",
+      "Use <T>x</T> in Vec<Vec<T>> here",
+    ],
     [
       "<details>\n<summary>Setup</summary>\nReplace <your-api-key> in /home/<user>/.env\n</details>",
       "Replace <your-api-key> in /home/<user>/.env",
@@ -68,6 +78,7 @@ test("allowed HTML tags still render as elements", () => {
     /<kbd[^>]*>Ctrl<\/kbd>/,
   );
   assert.match(render("H<sub>2</sub>O"), /<sub[^>]*>2<\/sub>/);
+  assert.match(render("Press <KBD>Ctrl</KBD>."), /<kbd[^>]*>Ctrl<\/kbd>/);
   assert.match(render("| a |\n| - |\n| x<br>y |"), /x<br[^>]*>y/);
   const details = render(
     "<details>\n<summary>More</summary>\n\nHidden\n\n</details>",
@@ -78,7 +89,37 @@ test("allowed HTML tags still render as elements", () => {
     render('<search-image token="t1"></search-image>'),
     /<search-image token="t1"/,
   );
-  assert.doesNotMatch(render("a <script>alert(1)</script> b"), /<script>/);
+});
+
+test("hostile markup never renders as markup", () => {
+  for (const markdown of [
+    "a <script>alert(1)</script> b",
+    "<ScRiPt\n>alert(1)</script >",
+    "x <img src=x onerror=alert(1)> y",
+    'x <iframe src="javascript:alert(1)"></iframe> y',
+    "<svg onload=alert(1)><circle r=5></circle></svg>",
+    '<a href="javascript:alert(1)">x</a>',
+    "<style>*{display:none}</style>",
+    "<div><script>alert(1)</script><img src=x onerror=alert(1)><svg onload=alert(1)></div>",
+    '<details open ontoggle=alert(1)><summary>s</summary><iframe srcdoc="<script>alert(1)</script>"></iframe></details>',
+    "<custom-wrapper>\n<b>b</b> <img src=x onerror=alert(1)>\n</custom-wrapper>",
+    '<p style="position:fixed;inset:0">overlay</p>',
+    '<div>x <kbd style="position:fixed">k</kbd> <T></div>',
+  ]) {
+    for (const mode of ["static", "streaming"] as const) {
+      const html = render(markdown, mode);
+      assert.doesNotMatch(
+        html,
+        /<(script|iframe|svg|style|object|embed|form|math)\b/i,
+        html,
+      );
+      assert.doesNotMatch(
+        html,
+        /<[a-z][^>]*\s(on[a-z]+|srcdoc|style)=|<[a-z][^>]*="\s*javascript:/i,
+        html,
+      );
+    }
+  }
 });
 
 test("literal tags keep their source position so streamed blocks re-render", () => {

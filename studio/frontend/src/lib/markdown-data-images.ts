@@ -7,7 +7,11 @@
  * allow data images (`allowDataImages: true`), so the message renders "[Image blocked: …]" instead
  * of the image. Streamdown extends its own schema with caller `allowedTags` only when it receives
  * its default pipeline (identity check), so callers that pass one must carry that merge themselves.
+ *
+ * Sanitize also drops every tag outside the schema, which erases `<placeholder>` and `Vec<T>` from
+ * replies, so those become text before `raw`. Sanitize and harden still decide every element.
  */
+import type { Element, Root, RootContent } from "hast";
 import type { Pluggable, Plugin } from "unified";
 import { defaultRehypePlugins } from "streamdown";
 
@@ -17,55 +21,51 @@ interface SanitizeSchema {
   protocols?: Record<string, string[]>;
 }
 
-interface HastNode {
-  type: string;
-  value?: string;
-  tagName?: string;
-  properties?: Record<string, unknown>;
-  children?: HastNode[];
-  position?: unknown;
-}
+const HTML_TAG_NAME = /^\s*<\/?([a-z][^\s/<>]*)/i;
+const INNER_TAG = /<(\/?)([a-z][^\s/<>]*)/gi;
 
-const HTML_TAG_NAME = /^\s*<\/?([a-z][a-z0-9-]*)/i;
-const INNER_TAG = /<(\/?)([a-z][^\s/>]*)/gi;
-
-function rehypeLiteralUnknownTags(tagNames: string[]) {
-  const known = new Set(tagNames);
-  return function walk(node: HastNode): void {
-    const children = node.children ?? [];
-    children.forEach((child, index) => {
-      if (child.type !== "raw") {
-        walk(child);
-        return;
+const rehypeLiteralUnknownTags: Plugin<[string[]], Root> =
+  function rehypeLiteralUnknownTags(tagNames) {
+    const known = new Set(tagNames);
+    return (tree) => {
+      function walk(node: Root | Element): void {
+        const children: RootContent[] = node.children;
+        children.forEach((child, index) => {
+          if (child.type === "element") {
+            walk(child);
+            return;
+          }
+          if (child.type !== "raw") return;
+          const tag = HTML_TAG_NAME.exec(child.value)?.[1];
+          if (!tag) return;
+          if (known.has(tag.toLowerCase())) {
+            child.value = child.value.replace(
+              INNER_TAG,
+              (match, slash, name) =>
+                known.has(name.toLowerCase()) ? match : `&lt;${slash}${name}`,
+            );
+            return;
+          }
+          // Streamdown's memoised components only re-render when the node position changes.
+          const { position } = child;
+          const text = { type: "text" as const, value: child.value, position };
+          children[index] =
+            node.type === "root"
+              ? {
+                  type: "element",
+                  tagName: "p",
+                  properties: {},
+                  children: [text],
+                  position,
+                }
+              : text;
+        });
       }
-      const tag = HTML_TAG_NAME.exec(child.value ?? "")?.[1];
-      if (!tag) {
-        return;
-      }
-      if (known.has(tag.toLowerCase())) {
-        child.value = child.value?.replace(INNER_TAG, (match, slash, name) =>
-          known.has(name.toLowerCase()) ? match : `&lt;${slash}${name}`,
-        );
-        return;
-      }
-      // Streamdown's memoised components only re-render when the node position changes.
-      const { position } = child;
-      const text = { type: "text", value: child.value, position };
-      children[index] =
-        node.type === "root"
-          ? {
-              type: "element",
-              tagName: "p",
-              properties: {},
-              children: [text],
-              position,
-            }
-          : text;
-    });
+      walk(tree);
+    };
   };
-}
 
-/** Keep data images and resolve sandbox paths before URL hardening. */
+/** Keep data images, show disallowed tags as text, resolve sandbox paths before URL hardening. */
 export function withDataImageSupport(
   allowedTags: Record<string, string[]>,
   beforeHarden: Pluggable[] = [],
