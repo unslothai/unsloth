@@ -404,13 +404,26 @@ class _ModuleIndex:
 
     def resolve(self, dotted: str) -> Path | None:
         """The file defining `dotted`, walking up so `a.b.func` finds module `a.b`."""
+        return self.resolve_module(dotted)[0]
+
+    def resolve_module(self, dotted: str) -> tuple:
+        """(file, the module spelling that matched), walking up from the longest prefix.
+
+        The spelling matters and `files[file]` cannot supply it. A file under
+        studio/backend is indexed under both roots, and `files` keeps the shorter name, so
+        stripping `utils.parser` off `studio.backend.utils.parser.parse` left an empty
+        qualname: the callee did not resolve to any function and taint returned by a
+        backend helper never reached its caller in the CLI. Returning what actually matched
+        keeps the two spellings interchangeable.
+        """
         segments = dotted.split(".")
         while segments:
-            hit = self.modules.get(".".join(segments))
+            candidate = ".".join(segments)
+            hit = self.modules.get(candidate)
             if hit is not None:
-                return hit
+                return hit, candidate
             segments.pop()
-        return None
+        return None, ""
 
 
 class _FileFacts:
@@ -455,7 +468,7 @@ class _FileFacts:
                             self._bind_import(alias.asname, alias.name)
                         else:
                             # `import pkg.parser` binds `pkg`, not `pkg.parser`. Recording
-                            # the full dotted name against the head made target_of append
+                            # the full dotted name against the head made resolution append
                             # the original tail to it a second time, so `pkg.parser.parse`
                             # resolved as `pkg.parser.parser.parse` and did not resolve at
                             # all: taint returned by that helper never reached its caller.
@@ -557,27 +570,33 @@ class _FileFacts:
             parts.pop()
         return name if name in self.functions else None
 
-    def target_of(
+    def targets_of(
         self,
         callee: ast.AST,
         class_name: str = "",
         scope: str = "",
-    ) -> tuple[Path, str] | None:
-        """Resolve a call target to a first-party (file, qualname), or None.
+    ) -> list:
+        """Every first-party (file, qualname) a call can reach.
 
-        This is what makes the analysis inter-procedural. Three forms matter:
-        a bare local function, a name imported with `from ... import f`, and a
-        `module.f` where `module` was imported.
+        This is what makes the analysis inter-procedural. Four forms matter: a bare local
+        function, a method on a class defined here, a name imported with
+        `from ... import f`, and a `module.f` where `module` was imported.
+
+        A list, because one alias can be bound twice in the same file. Taking the first
+        resolvable target meant that with `codec` bound to a clean parser in one function
+        and a dirty one in another, the clean one was chosen for both and a value from the
+        dirty parser reached a sink unreported. Every binding is analysed now, which is the
+        same fail-closed choice the source and sink tables already make.
         """
         name = _call_name(callee)
         if not name:
-            return None
+            return []
         head, _, tail = name.partition(".")
         # Bare call to a function defined in this file, nested helpers included.
         if not tail:
             local = self._local_function(name, scope)
             if local is not None:
-                return (self.path, local)
+                return [(self.path, local)]
         # `self.method(...)` and `cls.method(...)`. Without this an instance method is
         # outside the analysis entirely: taint neither enters it nor returns from it, so
         # a class that parses an untrusted config in one method and dynamically imports
@@ -585,25 +604,30 @@ class _FileFacts:
         if head in ("self", "cls") and tail and class_name:
             candidate = f"{class_name}.{tail}"
             if candidate in self.functions:
-                return (self.path, candidate)
-            return None
+                return [(self.path, candidate)]
+            return []
         # `from pkg.mod import f` then `f(...)`.
         targets = self._targets(head)
         if not targets:
-            if not tail:
-                local = self._local_function(name, scope)
-                if local is not None:
-                    return (self.path, local)
-            return None
+            # `Parser.parse(...)` where Parser is a class defined in this file. The method
+            # is already indexed as `Parser.parse`, but the head is neither an import nor
+            # self, so the callee was rejected and a local static or class method sat
+            # outside the analysis: it could return a parsed config straight into an
+            # import_module with nothing reported.
+            local = self._local_function(name, scope)
+            if local is not None:
+                return [(self.path, local)]
+            return []
+        found = []
         for dotted in targets:
             full = f"{dotted}.{tail}" if tail else dotted
-            file = self.index.resolve(full)
+            file, module = self.index.resolve_module(full)
             if file is None:
                 continue
-            module = self.index.files.get(file, "")
             qualname = full[len(module) + 1 :] if module and full.startswith(module + ".") else ""
-            return (file, qualname)
-        return None
+            if (file, qualname) not in found:
+                found.append((file, qualname))
+        return found
 
 
 def _param_names(node: ast.AST) -> list[str]:
@@ -801,9 +825,9 @@ class _TaintPass(ast.NodeVisitor):
                 if reason:
                     return reason
             return None
-        # A first-party callee that returns tainted data.
-        target = self.facts.target_of(node.func, self.class_name, scope = self.qualname)
-        if target is not None:
+        # A first-party callee that returns tainted data. Any of them: an alias bound
+        # twice resolves to more than one callee, and only one of them need be dirty.
+        for target in self.facts.targets_of(node.func, self.class_name, scope = self.qualname):
             returned = self.state.returns_tainted.get(target)
             if returned:
                 return returned
@@ -935,9 +959,10 @@ class _TaintPass(ast.NodeVisitor):
 
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
-        target = self.facts.target_of(node.func, self.class_name, scope = self.qualname)
-        if target is None:
-            return
+        for target in self.facts.targets_of(node.func, self.class_name, scope = self.qualname):
+            self._propagate_into_one(node, target)
+
+    def _propagate_into_one(self, node: ast.Call, target) -> None:
         params = self.state.params.get(target)
         if not params:
             return
@@ -948,6 +973,15 @@ class _TaintPass(ast.NodeVisitor):
         for position, argument in enumerate(node.args):
             reason = self.tainted(argument)
             if not reason:
+                continue
+            if isinstance(argument, ast.Starred):
+                # `execute(*json.loads(blob))` spreads over the parameters from here on,
+                # and how many is not knowable, so all of them from this position are
+                # bound. Treating it as one positional tainted only the first, and a
+                # second element reaching subprocess.run was reported nowhere.
+                for parameter in params[position + offset :]:
+                    if parameter not in ("self", "cls"):
+                        self._bind(bound, parameter, reason)
                 continue
             index = position + offset
             if index < len(params):

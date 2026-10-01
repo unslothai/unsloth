@@ -40,6 +40,8 @@
     "studio/backend/utils/transformers_version.py::_probe_autoconfig::subprocess.run::6e283cad68f59edf::34a5d1d0e23be621": 1,
     "unsloth/models/_utils.py::_resolve_text_causal_lm_class::get_class_from_dynamic_module::b7a268bb9c7ebe2c::c2920e71229fb914": 1,
     "unsloth/models/_utils.py::resolve_remote_code_model_class::get_class_from_dynamic_module::281f4ae0ed10fad9::e21171dbdef3d324": 1,
+    "unsloth/models/sentence_transformer.py::FastSentenceTransformer._resolve_module_class::import_from_string::180573f5aeefdb98::cb7f35f9876bb7ce": 2,
+    "unsloth/models/sentence_transformer.py::FastSentenceTransformer._resolve_module_class::import_module_class::9a08f32d1af83ea3::cb7f35f9876bb7ce": 1,
     "unsloth/save.py::_quantize_q2_k_l::subprocess.Popen::3f2e8083a35892d6::cda7dd79725d3f8b": 1,
     "unsloth/save.py::_quantize_q2_k_l::subprocess.run::60b0be277de013cd::cda7dd79725d3f8b": 1,
     "unsloth/save.py::_unsloth_save_compressed_tensors::subprocess.check_call::d48dd18ae7f491f2::d6bf29b1c67c9cda": 1,

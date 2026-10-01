@@ -1014,3 +1014,105 @@ def test_a_partial_scan_does_not_call_every_other_allowance_stale(tmp_path, monk
     assert scoped == []
     # Unscoped is the old behaviour, and it is what made the option unusable.
     assert L._stale_allowances(findings) != []
+
+
+def test_both_bindings_of_a_reused_alias_are_analysed(tmp_path):
+    """One alias, two first-party parsers, and only one of them is dirty.
+
+    Taking the first resolvable target meant the sorted-clean one was chosen for calls in
+    both functions, so a value from the dirty parser reached a sink with no finding. Every
+    binding is analysed now, which is the same fail-closed choice the source and sink
+    tables make. a_clean sorts first, which is the order that used to lose.
+    """
+    (tmp_path / "a_clean.py").write_text("def parse(path):\n    return 'llama'\n", encoding = "utf-8")
+    (tmp_path / "z_dirty.py").write_text(
+        "import json\n"
+        "def parse(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    user = tmp_path / "use.py"
+    user.write_text(
+        "import importlib\n"
+        "def clean(path):\n"
+        "    from a_clean import parse as codec\n"
+        "    return importlib.import_module('x.' + codec(path))\n"
+        "def dirty(path):\n"
+        "    from z_dirty import parse as codec\n"
+        "    return importlib.import_module('y.' + codec(path))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "a_clean.py", tmp_path / "z_dirty.py", user], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_file_under_two_roots_resolves_by_its_longer_name(tmp_path):
+    """The same file is indexed under the repository root and under studio/backend.
+
+    `files[file]` keeps only the shorter name, so stripping it off the longer spelling
+    left an empty qualname: the callee resolved to no function at all and taint returned
+    by a backend helper never reached a caller that imported it by the full path. The
+    qualname now comes from the spelling that actually matched.
+    """
+    backend = tmp_path / "studio" / "backend" / "utils"
+    backend.mkdir(parents = True)
+    for marker in (tmp_path / "studio", tmp_path / "studio" / "backend", backend):
+        (marker / "__init__.py").write_text("", encoding = "utf-8")
+    (backend / "parser.py").write_text(
+        "import json\n"
+        "def parse(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        return json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    caller = tmp_path / "cli.py"
+    caller.write_text(
+        "import importlib\n"
+        "from studio.backend.utils.parser import parse\n"
+        "def load(path):\n"
+        "    return importlib.import_module('x.' + parse(path))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan(
+        [backend / "parser.py", caller],
+        roots = [tmp_path, tmp_path / "studio" / "backend"],
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_starred_argument_binds_the_parameters_it_spreads_over(tmp_path):
+    """`execute(*json.loads(blob))` populates more than the first parameter.
+
+    Treated as one positional it tainted only `prefix`, so the parsed second element
+    reaching subprocess.run was reported nowhere.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(prefix, command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    return execute(*json.loads(blob))\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_call_through_a_local_class_name_resolves(tmp_path):
+    """`Parser.parse(blob)` is already indexed as `Parser.parse`.
+
+    The head is neither an import nor self, so the callee was rejected and a local static
+    or class method sat outside the analysis: it could return a parsed config straight
+    into an import_module with nothing reported.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Parser:\n"
+        "    @staticmethod\n"
+        "    def parse(blob):\n"
+        "        return json.loads(blob)['model_type']\n"
+        "def load(blob):\n"
+        "    return importlib.import_module('x.' + Parser.parse(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
