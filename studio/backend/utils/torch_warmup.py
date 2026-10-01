@@ -280,7 +280,9 @@ def gate_torch_stack_import(reason: str, log = None) -> bool:
 
 
 def ensure_dynamo_imported(
-    log = None, reason: Optional[str] = None, timeout: Optional[float] = None
+    log = None,
+    reason: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> bool:
     """Finish ``import torch._dynamo`` on ONE thread. True iff dynamo is importable.
 
