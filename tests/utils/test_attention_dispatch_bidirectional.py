@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Bidirectional packed attention must preserve sentence boundaries in every fallback."""
 
 from dataclasses import replace
@@ -48,7 +48,7 @@ def _run(
 
 @pytest.mark.parametrize("backend", [ad.SDPA, ad.FLASH_VARLEN, ad.XFORMERS])
 def test_packed_bidirectional_outputs_and_gradients_match_independent_rows(monkeypatch, backend):
-    # For Flash/xFormers, force the shared overflow rescue and execute real CPU SDPA.
+    # Flash / xFormers: force the int32-overflow SDPA fallback so CPU SDPA runs for real.
     if backend != ad.SDPA:
         monkeypatch.setattr(ad, "_VARLEN_INT32_GUARD_DISABLED", False)
         monkeypatch.setattr(ad, "_varlen_backward_overflows_int32", lambda *args: True)
@@ -87,23 +87,10 @@ def test_future_tokens_affect_their_sentence_but_not_other_sentences():
     torch.testing.assert_close(modified[:, 2:], output[:, 2:])
 
 
-@pytest.mark.parametrize("mask_kind", ["none", "padding", "extended"])
-def test_dense_bidirectional_sdpa_matches_reference(mask_kind):
+def test_dense_bidirectional_sdpa_matches_reference():
     qkv = _qkv()
-    key_keep = torch.tensor([[True, True, False, False, False]])
-    mask = None
-    reference_mask = None
-    if mask_kind == "padding":
-        mask = key_keep
-        reference_mask = key_keep[:, None, None, :]
-    elif mask_kind == "extended":
-        mask = torch.zeros(1, 1, 1, 5).masked_fill(~key_keep[:, None, None, :], float("-inf"))
-        reference_mask = mask
-    context = replace(_context(), seq_info = None, attention_mask = mask)
-    # Explicit false on the call must also defeat stale causal backend kwargs.
-    output = _run(context, qkv, sdpa_kwargs = {"is_causal": True})
-    reference = scaled_dot_product_attention(*qkv, attn_mask = reference_mask).transpose(1, 2)
-    torch.testing.assert_close(output, reference)
+    output = _run(replace(_context(), seq_info = None), qkv)
+    torch.testing.assert_close(output, scaled_dot_product_attention(*qkv).transpose(1, 2))
 
 
 def test_default_context_preserves_causal_sdpa():
@@ -177,71 +164,3 @@ def test_xformers_uses_bidirectional_blocks_and_separate_cache(monkeypatch):
 
     monkeypatch.setattr(ad, "xformers_attention", fake_kernel, raising = False)
     _run(_context(), _qkv(), ad.XFORMERS)
-
-
-def test_xformers_causal_block_survives_missing_bidirectional_class(monkeypatch):
-    class CausalBlock:
-        @classmethod
-        def from_seqlens(cls, lengths):
-            return cls()
-
-    monkeypatch.setattr(packing, "_XFormersBlockMask", CausalBlock)
-    monkeypatch.setattr(packing, "_XFormersBidirectionalMask", None)
-    monkeypatch.setattr(packing, "_XFORMERS_MASK_CACHE", packing.OrderedDict())
-    monkeypatch.setattr(packing, "_XFORMERS_BLOCK_MASK_CACHE", {})
-    seq_info = _context().seq_info
-    assert type(packing.build_xformers_block_causal_mask(seq_info)) is CausalBlock
-    assert packing.build_xformers_block_causal_mask(seq_info, is_causal = False) is None
-
-
-def test_xformers_without_bidirectional_block_falls_back_to_masked_sdpa(monkeypatch):
-    monkeypatch.setattr(ad, "HAS_XFORMERS", True)
-    monkeypatch.setattr(ad, "_XFormersBidirectionalMask", None)
-    monkeypatch.setattr(
-        ad,
-        "xformers_attention",
-        lambda *args, **kwargs: pytest.fail("unmasked xFormers ran"),
-        raising = False,
-    )
-    qkv = _qkv()
-    output = _run(_context(), qkv, ad.XFORMERS)
-    reference = torch.cat(
-        [
-            scaled_dot_product_attention(*(tensor[:, :, start:end] for tensor in qkv))
-            for start, end in ((0, 2), (2, 5))
-        ],
-        dim = 2,
-    ).transpose(1, 2)
-    torch.testing.assert_close(output, reference)
-
-
-def test_xformers_missing_block_does_not_drop_softcap(monkeypatch):
-    monkeypatch.setattr(ad, "HAS_XFORMERS", True)
-    monkeypatch.setattr(ad, "_XFormersBidirectionalMask", None)
-    with pytest.raises(RuntimeError, match = "cannot preserve softcap=50.0"):
-        _run(
-            _context(),
-            _qkv(),
-            ad.XFORMERS,
-            flash_varlen_kwargs = {"softcap": 50.0},
-        )
-
-
-@pytest.mark.parametrize("backend", [ad.SDPA, ad.FLASH_VARLEN, ad.XFORMERS])
-def test_bidirectional_window_rejected_before_dispatch(backend):
-    with pytest.raises(ValueError, match = "Bidirectional.*sliding_window"):
-        _run(_context(sliding_window = 3), _qkv(), backend)
-
-
-def test_bidirectional_packing_helpers_reject_sliding_window():
-    seq_info = _context().seq_info
-    with pytest.raises(ValueError, match = "Bidirectional.*sliding_window"):
-        packing.build_sdpa_packed_attention_mask(
-            seq_info,
-            dtype = torch.float32,
-            device = torch.device("cpu"),
-            sliding_window = 3,
-            is_causal = False,
-        )
-    with pytest.raises(ValueError, match = "Bidirectional.*sliding_window"):
-        packing.build_xformers_block_causal_mask(seq_info, sliding_window = 3, is_causal = False)

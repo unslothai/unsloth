@@ -1423,6 +1423,17 @@ class FastSentenceTransformer(FastModel):
         return int(max(20, final_threshold))
 
     @staticmethod
+    def _enable_unpadding(st_model, use_unpadding):
+        if not use_unpadding:
+            return
+        from ._sentence_transformer_unpadding import enable_sentence_transformer_unpadding
+        if not enable_sentence_transformer_unpadding(st_model, auto = use_unpadding == "auto"):
+            print(
+                "Unsloth: use_unpadding needs Transformers 5, a BERT / RoBERTa encoder, "
+                "mean pooling and flash-attn or xformers; training stays padded."
+            )
+
+    @staticmethod
     def _apply_torch_compile(model, mode = "default"):
         """Apply torch.compile to a SentenceTransformer model (with an accelerate unwrap_model bug workaround)."""
         if getattr(model, "_unsloth_unpadding_installed", False):
@@ -1467,19 +1478,12 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
-        use_unpadding = "auto",
+        use_unpadding = False,
         **kwargs,
     ):
-        """Load a sentence model with optional training-only encoder unpadding.
-
-        ``False`` preserves ordinary execution. The default ``"auto"`` packs eligible batches
-        with at least 8,192 padded token slots; ``True`` also packs smaller batches
-        to save activation memory, which can cost throughput. Unsupported
-        architectures/backends and compiled execution remain padded.
-        """
-        if type(use_unpadding) is not bool and not (
-            isinstance(use_unpadding, str) and use_unpadding == "auto"
-        ):
+        # use_unpadding: "auto" packs eligible training batches with >= 8192 padded slots,
+        # True packs every eligible batch (saves memory, can cost speed).
+        if use_unpadding not in (False, True, "auto") or type(use_unpadding) not in (bool, str):
             raise ValueError('use_unpadding must be "auto", True, or False')
         try:
             from sentence_transformers import SentenceTransformer
@@ -1691,9 +1695,7 @@ class FastSentenceTransformer(FastModel):
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
             st_model.no_modules = False
-            if use_unpadding:
-                from ._sentence_transformer_unpadding import enable_sentence_transformer_unpadding
-                enable_sentence_transformer_unpadding(st_model, auto = use_unpadding == "auto")
+            FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
             FastSentenceTransformer._patch_transformer_module_save_config(
                 st_model[0], getattr(st_model[0].auto_model, "config", None)
             )
@@ -2018,6 +2020,7 @@ class FastSentenceTransformer(FastModel):
             print(f"Unsloth: Successfully pushed merged model to https://huggingface.co/{repo_id}")
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
+        FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
         return st_model
 
     @staticmethod
