@@ -1845,6 +1845,11 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
+      scrollToBottomButton: "زر التمرير إلى الأسفل",
+      scrollToBottomButtonDescription:
+        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
+      scrollToBottomButtonKeywords:
+        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",

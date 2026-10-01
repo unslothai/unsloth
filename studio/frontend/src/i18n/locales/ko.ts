@@ -1840,6 +1840,11 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
+      scrollToBottomButton: "맨 아래로 스크롤 버튼",
+      scrollToBottomButtonDescription:
+        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
+      scrollToBottomButtonKeywords:
+        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",

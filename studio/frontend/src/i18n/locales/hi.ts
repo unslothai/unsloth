@@ -1851,6 +1851,11 @@ export const hi = {
       autoScrollManual: "मैन्युअल",
       autoScrollKeywords:
         "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
+      scrollToBottomButton: "नीचे स्क्रॉल करने का बटन",
+      scrollToBottomButtonDescription:
+        "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
+      scrollToBottomButtonKeywords:
+        "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",

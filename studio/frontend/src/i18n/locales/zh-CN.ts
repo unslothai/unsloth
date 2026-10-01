@@ -1806,6 +1806,11 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
+      scrollToBottomButton: "滚动到底部按钮",
+      scrollToBottomButtonDescription:
+        "向上滚动后显示一个按钮，用于跳回最新消息。",
+      scrollToBottomButtonKeywords:
+        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineReadAloud: "在回复上显示朗读",

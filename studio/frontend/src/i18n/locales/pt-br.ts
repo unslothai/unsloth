@@ -1861,6 +1861,11 @@ export const ptBR = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "rolagem rolar automática acompanhar fim pular streaming gerar visualização travar scroll autoscroll follow",
+      scrollToBottomButton: "Botão de rolar até o final",
+      scrollToBottomButtonDescription:
+        "Mostra um botão para voltar à mensagem mais recente depois de rolar para cima.",
+      scrollToBottomButtonKeywords:
+        "rolar final baixo pular recente seta botão ocultar scroll bottom button",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",

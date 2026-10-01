@@ -1883,6 +1883,11 @@ export const de = {
       autoScrollManual: "Manuell",
       autoScrollKeywords:
         "scrollen automatisch mitscrollen folgen unten springen Streaming generieren Ansicht sperren scroll autoscroll follow",
+      scrollToBottomButton: "Schaltfläche „Nach unten scrollen“",
+      scrollToBottomButtonDescription:
+        "Eine Schaltfläche anzeigen, um nach dem Hochscrollen zur neuesten Nachricht zurückzuspringen.",
+      scrollToBottomButtonKeywords:
+        "scrollen unten springen neueste Pfeil Schaltfläche ausblenden scroll bottom button",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",

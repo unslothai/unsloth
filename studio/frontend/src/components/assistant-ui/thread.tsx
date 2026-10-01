@@ -2453,17 +2453,24 @@ const ThreadScrollToBottom: FC = () => {
   // MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
+  const enabled = useChatPreferencesStore(
+    (state) => state.showScrollToBottomButton,
+  );
   return (
     <TooltipIconButton
       tooltip="Scroll to bottom"
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
-        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-4 bg-background hover:bg-accent dark:bg-background dark:hover:bg-accent",
-        isAtBottom && "invisible pointer-events-none",
+        // Muted in dark mode: the page background made it disappear.
+        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background hover:bg-accent dark:bg-muted dark:hover:bg-accent",
+        (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
     >
-      <ArrowDownIcon strokeWidth={1.75} className="size-icon" />
+      <ArrowDownIcon
+        strokeWidth={1.75}
+        className="size-[calc(var(--ui-icon-size)*1.125)]"
+      />
     </TooltipIconButton>
   );
 };
