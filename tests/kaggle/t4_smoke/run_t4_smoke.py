@@ -66,6 +66,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import tempfile
 import sys
@@ -1399,6 +1400,18 @@ def reference_step_count(ref: dict):
 # otherwise be band-checked against a trace of the old rows.
 # Hub repo ids among the reference-defining fields, compared without case.
 _REPO_ID_KEYS = frozenset({"model", "resolved_checkpoint"})
+_HUB_REPO_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
+
+
+def _is_hub_repo_id(value: Any) -> bool:
+    """``owner/name`` and not a directory here. A local checkpoint path keeps its case:
+    on a case-sensitive filesystem /models/Foo and /models/foo are different weights."""
+    return (
+        isinstance(value, str)
+        and _HUB_REPO_ID_RE.fullmatch(value) is not None
+        and not os.path.exists(value)
+    )
+
 
 REFERENCE_DEFINING_SETTINGS = (
     "max_steps",
@@ -1605,7 +1618,7 @@ def check_reference(
             continue
         observed_pairs.append((key, ref[key], observed))
     for key, expected, observed in observed_pairs:
-        if key in _REPO_ID_KEYS and isinstance(expected, str) and isinstance(observed, str):
+        if key in _REPO_ID_KEYS and _is_hub_repo_id(expected) and _is_hub_repo_id(observed):
             # Hub repo ids are case-insensitive: unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit and
             # unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit are one repo, and which spelling
             # the loader reports changed in #8058. The revision below still pins the weights.
