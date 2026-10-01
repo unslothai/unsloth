@@ -240,3 +240,75 @@ def test_strided_processor_on_cuda_matches_the_stock_backend(backend):
         kw[k] = kw[k].to(torch.bfloat16)
     with torch.no_grad():
         assert _equal(stock(**kw), model(**kw))
+
+
+# ── fused q/k RMSNorm + RoPE (video_minimax_h3_qknorm) ─────────────────────────────────────────────────────────
+
+from core.inference import video_minimax_h3_qknorm as Q  # noqa: E402
+
+
+def _qk_inputs(device = "cpu", dtype = torch.bfloat16, seq = 37, heads = 3, dim = 128, rot = 96, strided = False):
+    g = torch.Generator(device = device).manual_seed(3)
+    if strided:
+        qkv = torch.randn(1, seq, 3 * heads * dim, device = device, dtype = dtype, generator = g)
+        x = qkv[..., : heads * dim].unflatten(-1, (heads, dim))
+    else:
+        x = torch.randn(1, seq, heads, dim, device = device, dtype = dtype, generator = g)
+    w = (1 + 0.2 * torch.randn(dim, device = device, generator = g)).to(dtype)
+    ang = torch.rand(seq, rot // 2, device = device, generator = g) * 30
+    ang = torch.cat((ang, ang), dim = -1)
+    return x, w, ang.cos(), ang.sin()
+
+
+def test_qk_norm_rope_reference_is_the_stock_module_chain():
+    x, w, cos, sin = _qk_inputs()
+    norm = torch.nn.RMSNorm(128, eps = 1e-5).to(torch.bfloat16)
+    norm.weight.data.copy_(w)
+    stock = h3._apply_rotary_emb(norm(x), cos, sin)
+    assert torch.equal(Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5), stock)
+
+
+def test_qk_norm_rope_op_off_cuda_is_the_stock_math():
+    x, w, cos, sin = _qk_inputs()
+    assert torch.equal(Q.qk_norm_rope(x, w, cos, sin, 1e-5), Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5))
+
+
+def test_strided_processor_with_fused_qk_rope_matches_stock(quantized):
+    quantized.set_attention_backend("_native_math")
+    stock = copy.deepcopy(quantized)
+    A.install_strided_attention(quantized)
+    assert quantized.transformer_blocks[0].attn.processor._unsloth_qk_rope is True
+    assert _equal(_run(stock), _run(quantized))
+
+
+def test_fused_qk_rope_kill_switch(quantized, monkeypatch):
+    monkeypatch.setenv(Q.QK_ROPE_ENV, "0")
+    A.install_strided_attention(quantized)
+    assert quantized.transformer_blocks[0].attn.processor._unsloth_qk_rope is False
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the Triton kernel runs on CUDA only")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("strided", [False, True])
+@pytest.mark.parametrize("seq", [1, 777])
+def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
+    import torch._inductor.config as ic
+
+    x, w, cos, sin = _qk_inputs("cuda", dtype, seq = seq, heads = 56, strided = strided)
+    ours = Q._launch(x, w, cos, sin, 1e-5)
+    eager = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
+    prev = ic.emulate_precision_casts
+    ic.emulate_precision_casts = True
+    try:
+        compiled = torch.compile(Q.reference_qk_norm_rope, dynamic = False)(x, w, cos, sin, 1e-5)
+    finally:
+        ic.emulate_precision_casts = prev
+    assert ours.is_contiguous() and ours.shape == x.shape
+    # Only the 128-term sum-of-squares order is free: a handful of rows may land one rounding step away.
+    for ref in (eager, compiled):
+        diff = (ours.float() - ref.float()).abs()
+        assert int((ours != ref).sum()) <= max(2, ours.numel() // 100000)
+        assert float(diff.max()) <= float((ref.float().abs().max() * 2 ** -7))
+    # negative control: a one-ulp-scale perturbation must be caught
+    bad = (ours.float() * (1 + 2 ** -7)).to(dtype)
+    assert int((bad != eager).sum()) > ours.numel() // 2

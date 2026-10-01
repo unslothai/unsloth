@@ -92,6 +92,7 @@ def strided_processor_class() -> Any:
     class per call would retrace every block). Anything this path does not cover (a mask, context parallelism, a
     backend other than torch's cuDNN / flash SDPA) goes through the stock ``__call__`` unchanged. The kill switch is
     read at install, not per call."""
+    import torch
     import torch.nn.functional as F
     from diffusers.models.transformers.transformer_minimax_h3 import (
         MiniMaxH3AttnProcessor,
@@ -101,6 +102,19 @@ def strided_processor_class() -> Any:
 
     # The torch-native dispatcher backends that already hand SDPA strided views (math / efficient) are listed too,
     # so the processor stays exercisable off CUDA; Studio only ever pins cuDNN or flash here.
+    from .video_minimax_h3_qknorm import qk_norm_rope
+
+    def _fusable_norm(norm: Any) -> bool:
+        return (
+            isinstance(norm, torch.nn.RMSNorm)
+            and norm.weight is not None
+            and norm.eps is not None
+            and tuple(norm.normalized_shape) == (attn_head_dim(norm),)
+        )
+
+    def attn_head_dim(norm: Any) -> int:
+        return int(norm.weight.shape[-1])
+
     kernels = {
         _CUDNN: SDPBackend.CUDNN_ATTENTION,
         _FLASH: SDPBackend.FLASH_ATTENTION,
@@ -109,6 +123,9 @@ def strided_processor_class() -> Any:
     }
 
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
+        # set per instance at install from UNSLOTH_H3_QK_ROPE; the class default keeps the stock norm + rope
+        _unsloth_qk_rope = False
+
         def __call__(
             self,
             attn: Any,
@@ -130,12 +147,17 @@ def strided_processor_class() -> Any:
             key = key.unflatten(-1, (attn.heads, -1))
             value = value.unflatten(-1, (attn.heads, -1))
 
-            query = attn.norm_q(query)
-            key = attn.norm_k(key)
-
-            if rotary_emb is not None:
-                query = _apply_rotary_emb(query, *rotary_emb)
-                key = _apply_rotary_emb(key, *rotary_emb)
+            if rotary_emb is not None and self._unsloth_qk_rope and _fusable_norm(attn.norm_q) and _fusable_norm(attn.norm_k):
+                # one read + one write per row for norm and rope together (video_minimax_h3_qknorm)
+                cos, sin = rotary_emb
+                query = qk_norm_rope(query, attn.norm_q.weight, cos, sin, float(attn.norm_q.eps))
+                key = qk_norm_rope(key, attn.norm_k.weight, cos, sin, float(attn.norm_k.eps))
+            else:
+                query = attn.norm_q(query)
+                key = attn.norm_k(key)
+                if rotary_emb is not None:
+                    query = _apply_rotary_emb(query, *rotary_emb)
+                    key = _apply_rotary_emb(key, *rotary_emb)
 
             # (B, S, H, D) -> (B, H, S, D) views, no copy: both kernels take the strides and write their output in
             # the query's physical layout, so the permute back below is a view as well.
@@ -179,12 +201,24 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
         if logger is not None:
             logger.info("video.h3_attn: strided processor unavailable, keeping stock: %s", exc)
         return 0
+    from .video_minimax_h3_qknorm import qk_norm_rope_op, qk_rope_enabled
+
+    qk_rope_on = qk_rope_enabled()
+    if qk_rope_on:
+        try:
+            # Register the custom op now, outside any traced region.
+            qk_norm_rope_op()
+        except Exception as exc:  # noqa: BLE001 -- keep the stock norm + rope
+            qk_rope_on = False
+            if logger is not None:
+                logger.info("video.h3_attn: fused q/k norm+rope unavailable: %s", exc)
     swapped = 0
     for module in _h3_attention_modules(transformer):
         old = getattr(module, "processor", None)
         if old is None or isinstance(old, cls):
             continue
         new = cls()
+        new._unsloth_qk_rope = qk_rope_on
         new._attention_backend = getattr(old, "_attention_backend", None)
         new._parallel_config = getattr(old, "_parallel_config", None)
         module.set_processor(new)
@@ -377,8 +411,19 @@ def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
         for name in ("to_q", "to_k", "to_v"):
             delattr(module, name)
         fused += 1
-    if fused and logger is not None:
-        logger.info("video.h3_attn: fused int8 QKV on %d attention modules", fused)
+    if fused:
+        # The three per-module projections are freed piecemeal while each fused weight is a fresh, larger block, so
+        # the caching allocator is left holding ~5.8 GB of unreusable fragments (measured: cold-render reserved
+        # 58.7 -> 64.5 GB on an RTX PRO 6000). Hand them back.
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+        if logger is not None:
+            logger.info("video.h3_attn: fused int8 QKV on %d attention modules", fused)
     return fused
 
 
