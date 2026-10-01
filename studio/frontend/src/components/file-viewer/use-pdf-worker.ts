@@ -9,10 +9,7 @@ export type PdfWorker = {
   loaded: Set<{ destroy(): Promise<void> }>;
 };
 
-/**
- * One worker per viewer. unpdf sets globalThis.pdfjsWorker to its own PDF.js build, which PDF.js
- * then adopts and fails on (version mismatch). Passing a worker skips that lookup.
- */
+/** Own worker per viewer: unpdf's globalThis.pdfjsWorker is another PDF.js version, which PDF.js would adopt. */
 export function usePdfWorker(enabled: boolean): PdfWorker | null {
   const [state, setState] = useState<PdfWorker | null>(null);
   useEffect(() => {
@@ -24,7 +21,6 @@ export function usePdfWorker(enabled: boolean): PdfWorker | null {
       worker: pdfjs.PDFWorker.create({ port }),
       loaded: new Set(),
     };
-    // External resource owned by this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setState(next);
     return () => {
