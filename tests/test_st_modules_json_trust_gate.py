@@ -715,3 +715,107 @@ def test_the_module_config_check_is_skipped_where_upstream_gates_it(tmp_path, mo
 
     monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
     FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_only_the_config_the_loader_reads_is_requested(tmp_path, monkeypatch):
+    """WordEmbeddings.load never opens config.json, so asking for it is a liability.
+
+    With the fetch failing closed, an unnecessary request against a cache that has no
+    recorded 404 for the unused name turned a model the delegated loader could load
+    entirely from cache into a refusal.
+    """
+    _simulate_pre_six(monkeypatch)
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_modules_json_for_gating",
+        staticmethod(lambda *a, **k: str(tmp_path / "modules.json")),
+    )
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "0_WordEmbeddings",
+                    "type": "sentence_transformers.models.WordEmbeddings",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    requested = []
+    config_dir = tmp_path / "cached" / "0_WordEmbeddings"
+    config_dir.mkdir(parents = True)
+    (config_dir / "wordembedding_config.json").write_text(
+        json.dumps(
+            {"tokenizer_class": "sentence_transformers.models.tokenizer.WhitespaceTokenizer"}
+        ),
+        encoding = "utf-8",
+    )
+
+    def fake_download(repo_id, filename, **kwargs):
+        requested.append(filename)
+        name = filename.rsplit("/", 1)[-1]
+        target = config_dir / name
+        if not target.is_file():
+            raise OSError("not cached, and the loader would never ask for this one")
+        return str(target)
+
+    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", fake_download)
+
+    FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+    assert requested == ["0_WordEmbeddings/wordembedding_config.json"]
+
+
+def test_router_still_falls_back_to_config_json(tmp_path, monkeypatch):
+    """Router is the one class that does read config.json when its own file is absent."""
+    from huggingface_hub.errors import EntryNotFoundError
+    from sentence_transformers import models as st_models
+
+    if getattr(st_models, "Router", None) is None:
+        pytest.skip("installed sentence-transformers has no Router")
+
+    _simulate_pre_six(monkeypatch)
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_modules_json_for_gating",
+        staticmethod(lambda *a, **k: str(tmp_path / "modules.json")),
+    )
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "1_Router",
+                    "type": "sentence_transformers.models.Router",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    config_dir = tmp_path / "cached" / "1_Router"
+    config_dir.mkdir(parents = True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"types": {"query": f"{MARKER}.Thing"}}), encoding = "utf-8"
+    )
+
+    requested = []
+
+    def fake_download(repo_id, filename, **kwargs):
+        requested.append(filename)
+        name = filename.rsplit("/", 1)[-1]
+        target = config_dir / name
+        if not target.is_file():
+            raise EntryNotFoundError("absent")
+        return str(target)
+
+    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", fake_download)
+
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+    assert requested[-1] == "1_Router/config.json"

@@ -1537,7 +1537,17 @@ class FastSentenceTransformer(FastModel):
         config_file_name = getattr(module_class, "config_file_name", None)
         if isinstance(config_file_name, str):
             config_names.append(config_file_name)
-        config_names.append("config.json")
+        else:
+            config_names.append("config.json")
+        # Only Router and Asym fall back to config.json when their own file is absent.
+        # The others open exactly one file, and requesting a second one the loader never
+        # reads can fail on a cache that is complete for the load but carries no recorded
+        # 404 for the unused name, turning a loadable offline model into a refusal.
+        if (
+            getattr(module_class, "__name__", "") in ("Asym", "Router")
+            and "config.json" not in config_names
+        ):
+            config_names.append("config.json")
 
         try:
             is_local = os.path.isdir(model_name)
@@ -1583,6 +1593,9 @@ class FastSentenceTransformer(FastModel):
                         f"`trust_remote_code=True` to allow custom code to be run."
                     ) from exception
                 folders.append(os.path.dirname(downloaded))
+                # The loader opens the first of these it finds, so once one is read there
+                # is no second file to check and no reason to ask for one.
+                break
 
         for load_path in dict.fromkeys(folders):
             FastSentenceTransformer._check_module_config_class_refs(
