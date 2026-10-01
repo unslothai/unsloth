@@ -147,7 +147,7 @@ test("window focus triggers recovery when the document is visible", () => {
   assert.equal(recoveries, 1);
 });
 
-// The wake handler is the only caller; deleting the call leaves every test above green.
+// The wake handler is the only caller; deleting the call or its guard leaves every test above green.
 test("recoverCurrentThread reconciles ordinary saved messages", () => {
   const source = fileURLToPath(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
@@ -174,9 +174,17 @@ test("recoverCurrentThread reconciles ordinary saved messages", () => {
   walk(parsed);
   assert.ok(handler, "recoverCurrentThread not found");
   const calls = new Set<string>();
+  let reconcileGuarded = false;
   const collect = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       calls.add(node.expression.text);
+      if (node.expression.text === "reconcileOrdinarySavedMessagesInView") {
+        for (let p = node.parent; p; p = p.parent) {
+          if (ts.isIfStatement(p) && p.expression.getText() === "fromBackend") {
+            reconcileGuarded = true;
+          }
+        }
+      }
     }
     ts.forEachChild(node, collect);
   };
@@ -188,4 +196,5 @@ test("recoverCurrentThread reconciles ordinary saved messages", () => {
   ]) {
     assert.ok(calls.has(name), `${name} not called from recoverCurrentThread`);
   }
+  assert.ok(reconcileGuarded, "reconciliation must skip legacy fallback reads");
 });

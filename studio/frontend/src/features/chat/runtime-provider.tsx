@@ -187,6 +187,7 @@ import {
   getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
+  readStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
   saveStoredChatMessage,
@@ -2149,18 +2150,21 @@ function useStudioRuntimeAdapters(
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
       const generation = beginSavedHistoryReconciliation(remoteId);
-      void listStoredChatMessages(remoteId)
-        .then((messages) => {
+      void readStoredChatMessages(remoteId)
+        .then(({ messages, fromBackend }) => {
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
             return;
           }
           if (aui.threadListItem().getState().remoteId !== remoteId) {
             return;
           }
-          reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
-            editingMessageId:
-              useChatRuntimeStore.getState().editingMessageId ?? null,
-          });
+          // A legacy browser copy served during an outage is older, not an external update.
+          if (fromBackend) {
+            reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
+              editingMessageId:
+                useChatRuntimeStore.getState().editingMessageId ?? null,
+            });
+          }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
             return;
           }
