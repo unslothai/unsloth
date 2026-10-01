@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from utils.datasets.format_detection import detect_dataset_format
+from utils.datasets.format_detection import detect_dataset_format, is_number_text
 
 
 def _first_row(dataset) -> Optional[dict]:
@@ -568,7 +568,7 @@ def detect_vlm_dataset_structure(dataset):
             continue
         value = sample[col]
         if isinstance(value, str) and value:
-            text_candidates.append((col, min(len(value), 1000)))
+            text_candidates.append((col, 0 if is_number_text(value) else min(len(value), 1000)))
         elif isinstance(value, list) and value and isinstance(value[0], str):
             text_candidates.append((col, min(len(value[0]), 1000) // 2))
     text_candidates.sort(key = lambda item: item[1], reverse = True)

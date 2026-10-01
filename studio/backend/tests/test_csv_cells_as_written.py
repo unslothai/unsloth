@@ -44,6 +44,8 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training import trainer as tmod  # noqa: E402
 from hub.services.datasets.local import _load_local_preview_slice  # noqa: E402
+from hub.utils.dataset_format import check_dataset_format  # noqa: E402
+from utils.datasets.format_detection import detect_vlm_dataset_structure  # noqa: E402
 
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
@@ -121,3 +123,15 @@ def test_cpt_csv_still_trains_the_text_column_not_the_id(trainer, tmp_path):
         "The first document.</s>",
         "The second document.</s>",
     ]
+
+
+def test_vision_csv_still_trains_the_caption_not_a_numeric_label(tmp_path):
+    path = tmp_path / "vision.csv"
+    path.write_text(
+        "image,caption,label\nhttps://example.com/a.png,cat,1042\nhttps://example.com/b.png,dog,7\n"
+    )
+
+    preview, _ = _load_local_preview_slice(dataset_path = path, train_split = "train", preview_size = 10)
+
+    assert check_dataset_format(preview, is_vlm = True)["detected_text_column"] == "caption"
+    assert detect_vlm_dataset_structure(preview)["text_column"] == "caption"
