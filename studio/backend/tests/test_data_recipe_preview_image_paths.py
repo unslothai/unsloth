@@ -78,14 +78,17 @@ def _path_only_parquet(
     nested: bool = False,
 ) -> Path:
     import datasets
+    import pyarrow.parquet as pq
 
     cell = {"bytes": None, "path": str(image)}
     image_feature = [datasets.Image()] if nested else datasets.Image()
     features = datasets.Features({"image": image_feature, "label": datasets.Value("string")})
     out = tmp_path / "rows.parquet"
-    datasets.Dataset.from_dict(
+    dataset = datasets.Dataset.from_dict(
         {"image": [[cell] if nested else cell], "label": ["x"]}, features = features
-    ).to_parquet(str(out))
+    )
+    # pyarrow directly: to_parquet stats every path, and the Hub one does not resolve offline.
+    pq.write_table(dataset.data.table, str(out))
     return out
 
 
@@ -152,3 +155,35 @@ def test_managed_account_image_file_lookup_skips_the_cwd_fallback(studio_home, m
 
     assert run_as(ALICE, _load_image_file_to_base64, "private.png", base_path = str(base)) is None
     assert _load_image_file_to_base64("private.png", base_path = str(base)) is not None
+
+
+def test_managed_account_hub_hosted_images_still_preview(studio_home, monkeypatch):
+    datasets = pytest.importorskip("datasets")
+    hub = "hf://datasets/org/repo@0123abc/cat.png"
+    parquet = _path_only_parquet(studio_home, hub)
+    opened = []
+
+    def fake_decode(
+        self,
+        value,
+        token_per_repo_id = None,
+    ):
+        opened.append(value["path"])
+        return PIL.new("RGB", (4, 4))
+
+    monkeypatch.setattr(datasets.Image, "decode_example", fake_decode)
+
+    (row,) = run_as(ALICE, _hub_preview, parquet)
+
+    assert opened == [hub]
+    assert _is_image_payload(row["image"])
+
+
+def test_managed_account_file_url_is_not_treated_as_hub_hosted(studio_home):
+    pytest.importorskip("datasets")
+    private = _png(studio_home / "elsewhere" / "private.png")
+    parquet = _path_only_parquet(studio_home, f"file://{private.as_posix()}")
+
+    (row,) = run_as(ALICE, _hub_preview, parquet)
+
+    assert not _is_image_payload(row["image"])
