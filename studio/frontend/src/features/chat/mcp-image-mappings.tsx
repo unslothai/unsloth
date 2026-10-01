@@ -44,7 +44,9 @@ export function McpImageMappings({
   async function discover(id: string) {
     setLoading(true);
     try {
-      await refreshMcpServerTools(id);
+      const probe = await refreshMcpServerTools(id);
+      if (!probe.ok)
+        throw new Error(probe.error ?? "The server did not respond.");
       const tools = await listMcpServerTools(id);
       setOptions(
         tools.flatMap((tool) =>
