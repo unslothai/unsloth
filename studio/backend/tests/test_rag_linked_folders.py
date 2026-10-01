@@ -2830,3 +2830,20 @@ def test_a_stale_rowid_entry_falls_back_to_the_partition_scan(rag_home, stub_emb
             (folder["id"],),
         ).fetchone()["document_id"]
     assert _vectors(b_id) == _vectors(by_rel["a.txt"])
+
+
+@requires_sqlite_vec
+def test_donor_vectors_are_read_before_the_write_lock(rag_home, stub_embeddings, monkeypatch):
+    in_transaction = []
+    original = store._donor_vectors
+
+    def spy(conn, source, chunk_ids):
+        in_transaction.append(conn.in_transaction)
+        return original(conn, source, chunk_ids)
+
+    monkeypatch.setattr(store, "_donor_vectors", spy)
+    source, folder = _folder(rag_home)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (source / name).write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    assert in_transaction == [False, False]

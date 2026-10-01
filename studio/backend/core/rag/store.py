@@ -590,9 +590,7 @@ def _remember_vec_rowids(conn: sqlite3.Connection, document_id: str, rowids: lis
             _vec_rowids.popitem(last = False)
 
 
-def _donor_vectors_by_rowid(
-    conn: sqlite3.Connection, source: dict, chunk_ids: dict[str, str]
-) -> list | None:
+def _donor_vectors_by_rowid(conn: sqlite3.Connection, source: dict, chunk_ids) -> list | None:
     with _vec_rowids_lock:
         rowids = _vec_rowids.get((_db_file(conn), source["id"]))
     if not rowids or len(rowids) != len(chunk_ids):
@@ -606,26 +604,55 @@ def _donor_vectors_by_rowid(
             batch,
         ).fetchall()
     found = {r["chunk_id"] for r in rows if r["scope"] == source["scope"]}
-    return rows if len(rows) == len(found) and found == chunk_ids.keys() else None
+    return rows if len(rows) == len(found) and found == set(chunk_ids) else None
 
 
-def copy_document_index(conn: sqlite3.Connection, source: dict, target_id: str, scope: str) -> int:
-    """Uncommitted chunk + FTS + vector copy; returns vector rows copied (0 without chunks_vec)."""
+def _donor_vectors(conn: sqlite3.Connection, source: dict, chunk_ids) -> list:
+    rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
+    if rows is not None:
+        return rows
+    source_ids = list(chunk_ids)
+    rows = []
+    # Filter in SQL so only the donor's rows reach Python; batched for SQLITE_MAX_VARIABLE_NUMBER.
+    for start in range(0, len(source_ids), 500):
+        batch = source_ids[start : start + 500]
+        rows += conn.execute(
+            f"SELECT scope, chunk_id, embedding FROM chunks_vec WHERE scope=? "
+            f"AND chunk_id IN ({','.join('?' * len(batch))})",
+            [source["scope"], *batch],
+        ).fetchall()
+    return rows
+
+
+def prefetch_donor_vectors(conn: sqlite3.Connection, source: dict) -> list | None:
+    """Read ``source``'s vector rows outside any write transaction, for copy_document_index."""
+    if not rag_db.vec_table_exists(conn):
+        return None
+    ids = [
+        r["id"] for r in conn.execute("SELECT id FROM chunks WHERE document_id=?", (source["id"],))
+    ]
+    return _donor_vectors(conn, source, ids)
+
+
+def copy_document_index(
+    conn: sqlite3.Connection,
+    source: dict,
+    target_id: str,
+    scope: str,
+    prefetched: list | None = None,
+) -> int:
+    """Uncommitted chunk + FTS + vector copy; returns vector rows copied (0 without chunks_vec).
+    ``prefetched`` (prefetch_donor_vectors) is used only if it still covers exactly the donor's chunks."""
     chunk_ids = _copy_chunk_rows(conn, source["id"], target_id, scope)
     if not rag_db.vec_table_exists(conn):
         return 0
-    rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
-    if rows is None:
-        source_ids = list(chunk_ids)
-        rows = []
-        # Filter in SQL so only the donor's rows reach Python; batched for SQLITE_MAX_VARIABLE_NUMBER.
-        for start in range(0, len(source_ids), 500):
-            batch = source_ids[start : start + 500]
-            rows += conn.execute(
-                f"SELECT chunk_id, embedding FROM chunks_vec WHERE scope=? "
-                f"AND chunk_id IN ({','.join('?' * len(batch))})",
-                [source["scope"], *batch],
-            ).fetchall()
+    rows = prefetched
+    if (
+        rows is None
+        or len(rows) != len(chunk_ids)
+        or {r["chunk_id"] for r in rows} != chunk_ids.keys()
+    ):
+        rows = _donor_vectors(conn, source, chunk_ids)
     rowids = [
         conn.execute(
             "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",

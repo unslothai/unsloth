@@ -521,6 +521,13 @@ def start_ingestion(
         # RESERVED lock that long fails concurrent writers with "database is locked".
         effective_model = model_name or config.effective_embedding_model()
         effective_identity = embeddings.embedding_identity(effective_model)
+        # Read a reuse donor's vectors before BEGIN IMMEDIATE: a cold read scans the whole vec0 partition,
+        # and holding RESERVED that long fails other writers (lease heartbeats) with "database is locked".
+        prefetched = None
+        if reuse_identical and not dedupe:
+            candidate = store.reusable_document_by_hash(conn, scope, sha, ext, effective_identity)
+            if candidate is not None:
+                prefetched = (candidate["id"], store.prefetch_donor_vectors(conn, candidate))
         # The job lease is committed in the same transaction as the document, so cleanup never observes an
         # unowned in-flight document.
         conn.execute("BEGIN IMMEDIATE")
@@ -598,7 +605,13 @@ def start_ingestion(
                     commit = False,
                 )
                 donor_chunks = donor["num_chunks"] or 0
-                copied = store.copy_document_index(conn, donor, reused_id, scope)
+                copied = store.copy_document_index(
+                    conn,
+                    donor,
+                    reused_id,
+                    scope,
+                    prefetched[1] if prefetched and prefetched[0] == donor["id"] else None,
+                )
                 if rag_db.vec_table_exists(conn) and copied != donor_chunks:
                     # Donor lost vectors: ingest normally rather than copy a dense-search-invisible doc.
                     conn.execute("ROLLBACK TO reuse_identical")
