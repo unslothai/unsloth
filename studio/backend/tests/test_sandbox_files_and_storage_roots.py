@@ -6564,6 +6564,43 @@ def test_a_parent_swapped_for_a_link_is_refused(tmp_path, monkeypatch):
         path_utils._stage_for_open(sandbox / "outputs" / "secret.pdf", sandbox)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinks need privileges on Windows")
+def test_a_parent_swapped_for_a_link_before_a_reveal_is_refused(tmp_path, monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from utils.paths import path_utils
+
+    inference, sandbox, _launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "outputs").mkdir(exist_ok = True)
+    (sandbox / "outputs" / "report.csv").write_text("a,b", encoding = "utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "report.csv").write_text("secret", encoding = "utf-8")
+    checked = inference._sandbox_regular_file
+
+    def check_then_swap(*args):
+        result = checked(*args)
+        shutil.rmtree(sandbox / "outputs")
+        (sandbox / "outputs").symlink_to(outside, target_is_directory = True)
+        return result
+
+    monkeypatch.setattr(inference, "_sandbox_regular_file", check_then_swap)
+    revealed = []
+    monkeypatch.setattr(
+        path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path)
+    )
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference.reveal_sandbox_dir(
+                "thread-1", request = None, token = None, session = None, file = "outputs/report.csv"
+            )
+        )
+    assert caught.value.status_code == 404
+    assert revealed == []
+
+
 def test_revealing_a_sandbox_file_selects_that_file(tmp_path, monkeypatch):
     import asyncio
 

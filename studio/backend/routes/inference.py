@@ -31393,6 +31393,20 @@ def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
     return sandbox_dir, path
 
 
+def _unmoved_sandbox_file(root: str, path: str) -> str:
+    """``path`` resolved, if it still names the same file under ``root``; a link swapped in since
+    the check is refused, since a reveal hands the file manager a name."""
+    try:
+        real = os.path.realpath(path)
+        expected = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        actual = os.path.relpath(real, os.path.realpath(root))
+    except ValueError:
+        raise FileNotFoundError(path) from None
+    if expected != actual or actual.startswith(os.pardir) or not os.path.isfile(real):
+        raise FileNotFoundError(path)
+    return real
+
+
 @router.post("/sandbox/{session_id}/open")
 async def open_sandbox_file(
     session_id: str,
@@ -31456,9 +31470,10 @@ async def reveal_sandbox_dir(
 
         from utils.paths.path_utils import reveal_in_file_manager
 
-        _root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+        root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
         try:
-            await run_in_threadpool(reveal_in_file_manager, Path(path))
+            real = await run_in_threadpool(_unmoved_sandbox_file, root, path)
+            await run_in_threadpool(reveal_in_file_manager, Path(real))
         except FileNotFoundError:
             raise HTTPException(status_code = 404, detail = "Not found") from None
         except Exception:
