@@ -13,15 +13,25 @@ import type { InterpolationValues } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
+import { create } from "zustand";
 import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { type BrowserTab, currentEntry, entryKey, setNativeWebHistory, useBrowserStore } from "./store";
 
-/** Native views in the desktop app; the proxy otherwise. */
-export const nativeBrowser = isTauri;
+/** Whether pages open in native views: in the desktop app where they can use its checking proxy
+ *  (not macOS 13 and earlier), the proxied frame otherwise. */
+export const useNativeBrowser = create(() => ({ enabled: false }));
 
-if (nativeBrowser) setNativeWebHistory(true);
+if (isTauri) {
+  void call<boolean>("browser_view_supported")
+    .then((supported) => {
+      if (!supported) return;
+      setNativeWebHistory(true);
+      useNativeBrowser.setState({ enabled: true });
+    })
+    .catch(() => undefined);
+}
 
 const EVENT = "unsloth-browser";
 // Live views, hidden ones included.
@@ -190,9 +200,8 @@ export async function nativeFind(tabId: string, query: string, backwards: boolea
 }
 
 /** Clear the native pages' own cookies, storage and cache. */
-export function clearNativeBrowsingData(): void {
-  if (!nativeBrowser) return;
-  void call("browser_view_clear_data").catch(() => undefined);
+export async function clearNativeBrowsingData(): Promise<void> {
+  if (useNativeBrowser.getState().enabled) await call("browser_view_clear_data");
 }
 
 // Studio UI that covers the panel. Not tooltips, or every hover would blank the page.

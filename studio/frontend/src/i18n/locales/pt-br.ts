@@ -207,6 +207,7 @@ export const ptBR = {
       blocked: "Este endereço não pode ser aberto no painel do navegador. Ele só abre sites públicos.",
       clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites.",
       clearDataDescription: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
+      clearDataFailed: "Não foi possível limpar os dados de sites. Tente novamente.",
     },
   },
   composerSettings: {

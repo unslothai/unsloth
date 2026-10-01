@@ -207,6 +207,7 @@ export const es = {
       blocked: "Esta dirección no se puede abrir en el panel del navegador. Solo abre sitios web públicos.",
       clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios.",
       clearDataDescription: "Esto borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios. Los archivos descargados se quedan en tu equipo.",
+      clearDataFailed: "No se pudieron borrar los datos de sitios. Inténtalo de nuevo.",
     },
   },
   composerSettings: {

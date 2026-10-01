@@ -12,7 +12,7 @@ import { proxiedFavicon } from "./favicon";
 import { FileView } from "./file-view";
 import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
-import { nativeBrowser } from "./native-view";
+import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
@@ -280,12 +280,13 @@ function LocalFile({ tab }: { tab: BrowserTab }) {
 /** One tab's content. Stays mounted while recently shown, keeping scroll and state. */
 export const TabView = memo(function TabView({ tab, active }: { tab: BrowserTab; active: boolean }) {
   const entry = currentEntry(tab);
+  const native = useNativeBrowser((state) => state.enabled);
   return (
     <div className={cn("absolute inset-0 flex min-h-0 flex-col", !active && "hidden")} aria-hidden={!active}>
       {entry.kind === "newtab" ? (
         <NewTabPage tabId={tab.id} />
       ) : entry.kind === "web" ? (
-        nativeBrowser ? (
+        native ? (
           <NativePage tab={tab} entry={entry} />
         ) : (
           <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />

@@ -91,10 +91,10 @@ import {
   clearNativeBrowsingData,
   hasNativeView,
   nativeAction,
-  nativeBrowser,
   nativeFind,
   returnToNativePage,
   startNativeViews,
+  useNativeBrowser,
 } from "./native-view";
 import { useBrowserPrefsStore } from "./prefs-store";
 import {
@@ -650,13 +650,14 @@ export function ClearBrowsingDataDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
+  const native = useNativeBrowser((state) => state.enabled);
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("browser.clearData.title")}</AlertDialogTitle>
           <AlertDialogDescription>
-            {t(nativeBrowser ? "browser.native.clearDataDescription" : "browser.clearData.description")}
+            {t(native ? "browser.native.clearDataDescription" : "browser.clearData.description")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -667,8 +668,10 @@ export function ClearBrowsingDataDialog({
               history.clearHistory();
               history.clearDownloads();
               clearPageCache();
-              clearNativeBrowsingData();
-              toast.success(t("browser.clearData.done"));
+              clearNativeBrowsingData().then(
+                () => toast.success(t("browser.clearData.done")),
+                () => toast.error(t("browser.native.clearDataFailed")),
+              );
             }}
           >
             {t("browser.clearData.confirm")}
@@ -778,7 +781,7 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
 
 /** Whether the tab shows a native view, whose own history Back and Forward use first. */
 function nativePage(tab: BrowserTab | undefined): boolean {
-  return Boolean(nativeBrowser && tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
+  return Boolean(tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
 }
 
 function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
@@ -1346,7 +1349,8 @@ export const BrowserPanel = memo(function BrowserPanel() {
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
-  useEffect(() => (nativeBrowser ? startNativeViews() : undefined), []);
+  const native = useNativeBrowser((state) => state.enabled);
+  useEffect(() => (native ? startNativeViews() : undefined), [native]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeEntry = activeTab ? currentEntry(activeTab) : null;
   // Mount tabs on first view. Most recent last.

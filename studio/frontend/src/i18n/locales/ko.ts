@@ -207,6 +207,7 @@ export const ko = {
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
+      clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
     },
   },
   composerSettings: {

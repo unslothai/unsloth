@@ -204,6 +204,7 @@ export const en = {
       blocked: "This address can't open in the browser panel. It only opens public websites.",
       clearDataSettingDescription: "Clear browsing history, download history, cached pages, and the cookies and site data pages keep, which signs you out of sites.",
       clearDataDescription: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
+      clearDataFailed: "Couldn't clear site data. Try again.",
     },
   },
   composerSettings: {

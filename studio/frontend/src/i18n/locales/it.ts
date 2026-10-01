@@ -204,6 +204,7 @@ export const it = {
       blocked: "Questo indirizzo non si può aprire nel pannello del browser. Apre solo siti web pubblici.",
       clearDataSettingDescription: "Cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti.",
       clearDataDescription: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
+      clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",
     },
   },
   composerSettings: {

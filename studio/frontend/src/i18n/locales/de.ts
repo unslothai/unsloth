@@ -207,6 +207,7 @@ export const de = {
       blocked: "Diese Adresse kann im Browserbereich nicht geöffnet werden. Er öffnet nur öffentliche Websites.",
       clearDataSettingDescription: "Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten löschen. Du wirst dabei von Websites abgemeldet.",
       clearDataDescription: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
+      clearDataFailed: "Websitedaten konnten nicht gelöscht werden. Versuche es erneut.",
     },
   },
   composerSettings: {

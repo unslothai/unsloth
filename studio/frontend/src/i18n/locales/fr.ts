@@ -207,6 +207,7 @@ export const fr = {
       blocked: "Cette adresse ne peut pas s'ouvrir dans le panneau du navigateur. Il n'ouvre que les sites web publics.",
       clearDataSettingDescription: "Effacer l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites.",
       clearDataDescription: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
+      clearDataFailed: "Impossible d'effacer les données des sites. Réessayez.",
     },
   },
   composerSettings: {

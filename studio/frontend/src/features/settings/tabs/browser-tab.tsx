@@ -15,9 +15,9 @@ import {
   SEARCH_ENGINES,
   type SearchEngineId,
   browserPanelAvailable,
-  nativeBrowser,
   useBrowserPrefsStore,
   useBrowserStore,
+  useNativeBrowser,
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { useState } from "react";
@@ -27,6 +27,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export function BrowserTab() {
   const t = useT();
+  const native = useNativeBrowser((state) => state.enabled);
   const openLinksInBrowser = useBrowserPrefsStore((state) => state.openLinksInBrowser);
   const openFilesInBrowser = useBrowserPrefsStore((state) => state.openFilesInBrowser);
   const searchEngine = useBrowserPrefsStore((state) => state.searchEngine);
@@ -127,7 +128,7 @@ export function BrowserTab() {
         <SettingsRow
           label={t("browser.clearDataSetting")}
           description={t(
-            nativeBrowser ? "browser.native.clearDataSettingDescription" : "browser.clearDataSettingDescription",
+            native ? "browser.native.clearDataSettingDescription" : "browser.clearDataSettingDescription",
           )}
         >
           <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>

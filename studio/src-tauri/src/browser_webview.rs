@@ -7,8 +7,8 @@
 //! Pages are untrusted:
 //! - Navigations (frames too) must be http(s) to a public host: local URLs reach the app's
 //!   commands, and loopback the backend. Every request goes through `browser_proxy`, which
-//!   refuses private addresses after DNS; macOS before 14, which can't set a proxy, gets a
-//!   content rule list against private hosts instead.
+//!   refuses private addresses after DNS. macOS before 14 can't proxy a webview, so the panel
+//!   uses its proxied frame there instead.
 //! - No IPC: capabilities are bound to `main`, and these commands only answer it.
 //! - Pages use their own profile, never the app's, which holds Studio's sign-in.
 //! - Popups become tabs; downloads get the OS quarantine mark.
@@ -526,11 +526,10 @@ fn with_page_profile<R: Runtime>(
     {
         let _ = (app, proxy);
         // Before macOS 14 the only other store is a private one.
-        Ok(if macos_at_least(14) {
-            builder.data_store_identifier(PAGE_DATA_STORE)
-        } else {
-            builder.incognito(true)
-        })
+        if !browser_view_supported() {
+            return Err("native pages need macOS 14".into());
+        }
+        Ok(builder.data_store_identifier(PAGE_DATA_STORE))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -803,10 +802,8 @@ fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
         let Some(view) = (unsafe { objc2::rc::Retained::retain(raw) }) else {
             return;
         };
-        // Never unproxied where a proxy can be set; macOS 13 and earlier rely on the rules.
-        if macos_at_least(14)
-            && !crate::browser_proxy::address().is_ok_and(|proxy| page_proxy::route(&view, proxy))
-        {
+        // Never unproxied.
+        if !crate::browser_proxy::address().is_ok_and(|proxy| page_proxy::route(&view, proxy)) {
             log::error!("browser page not loaded: its proxy couldn't be set");
             return;
         }
@@ -912,9 +909,13 @@ fn browser_views<R: Runtime>(app: &AppHandle<R>) -> Vec<Webview<R>> {
 // ---------------------------------------------------------------------------------------------
 // Commands
 
-/// Whether pages open in native webviews.
+/// Whether pages open in native webviews: only where they can be routed through
+/// `browser_proxy` (macOS 14+ for a per-webview proxy).
 #[tauri::command]
 pub fn browser_view_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    return macos_at_least(14);
+    #[cfg(not(target_os = "macos"))]
     true
 }
 

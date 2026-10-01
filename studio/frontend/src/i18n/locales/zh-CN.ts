@@ -207,6 +207,7 @@ export const zhCN = {
       blocked: "此地址无法在浏览器面板中打开。面板只打开公开网站。",
       clearDataSettingDescription: "清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，这会让你退出各网站。",
       clearDataDescription: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
+      clearDataFailed: "无法清除网站数据。请重试。",
     },
   },
   composerSettings: {

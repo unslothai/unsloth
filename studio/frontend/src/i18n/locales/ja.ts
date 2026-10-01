@@ -208,6 +208,7 @@ export const ja = {
       blocked: "このアドレスはブラウザパネルでは開けません。開けるのは公開ウェブサイトのみです。",
       clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去します。サイトからはログアウトされます。",
       clearDataDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
+      clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
     },
   },
   composerSettings: {
