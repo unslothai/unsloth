@@ -32,3 +32,31 @@ def test_dense_measured_peak_scales_with_fp32_compute(monkeypatch):
     )
     # measured: 4248 MiB above the weights at fp16, 8480 at fp32
     assert fp16 == 5120 and fp32 >= 8480 * 1.15
+
+
+def test_dense_table_skips_bf16_denoisers(monkeypatch):
+    """The dense eager table was measured on fp16 (and fp32-promoted) cards; a bf16 card keeps the flat plan."""
+    import types
+
+    for name in (dm.MEASURED_ACTIVATION_ENV, "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE", dm.PARTIAL_RESIDENT_ENV):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(
+        dm,
+        "_loaded_component_mib",
+        lambda pipe: {"transformer": (22700, "dit"), "text_encoder_2": (9346, "text_encoder"), "vae": (160, "other")},
+    )
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: False)
+    memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", 24000, 24564)
+    plan = dm.MemoryPlan(
+        requested_mode = dm.MEMORY_MODE_AUTO,
+        offload_policy = dm.OFFLOAD_GROUP,
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = memory,
+        estimates = {"safe_device_budget_mib": 21500, "base_overhead_mib": 2048},
+        stream_text_encoders = True,
+    )
+    for dtype, kept in ((torch.bfloat16, False), (torch.float16, True)):
+        pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+        out = dm.refine_plan_from_loaded_weights(pipe, plan, family = "flux.1", speed_mode = "off")
+        assert bool(out.resident_transformer_mib) is kept, dtype

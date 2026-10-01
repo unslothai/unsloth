@@ -224,17 +224,14 @@ def decide_small_host(
             route,
         )
     if lora_active and not forced:
-        refuse = None
-        if not host_ram_check_disabled():
-            refuse = _refusal(dense, reserve, host_available_mib, "LoRA adapters need the dense load")
+        # The int8 denoiser cannot carry adapters: keep the dense load (it may still fit with swap or page reclaim).
         return SmallHostDecision(
             False,
-            "LoRA adapters need the dense denoiser",
+            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available)",
             host_available_mib,
             host_total_mib,
             dense,
             route,
-            refuse = refuse,
         )
     refuse = None
     if (
@@ -361,12 +358,12 @@ def quantize_int8_weight_(
             if isinstance(sub, cls):
                 continue
             for pname, p in list(sub.named_parameters(recurse = False)):
-                if p.is_floating_point() and p.dtype != compute_dtype:
+                if p.dtype == torch.bfloat16 and p.dtype != compute_dtype:
                     p.data = p.data.to(keep, compute_dtype)
                 elif p.device != keep:
                     p.data = p.data.to(keep)
             for bname, b in list(sub.named_buffers(recurse = False)):
-                if b is not None and b.is_floating_point() and b.dtype != compute_dtype:
+                if b is not None and b.dtype == torch.bfloat16 and b.dtype != compute_dtype:
                     sub._buffers[bname] = b.to(keep, compute_dtype)
     if work.type == "cuda":
         torch.cuda.empty_cache()
@@ -390,12 +387,12 @@ def cast_resident_(module: Any, device: Any, compute_dtype: Any) -> None:
         for mname, sub in module.named_modules():
             want = torch.float32 if keep and any(k in mname for k in keep) else compute_dtype
             for pname, p in list(sub.named_parameters(recurse = False)):
-                dt = want if p.is_floating_point() else p.dtype
+                dt = want if p.dtype == torch.bfloat16 else p.dtype
                 p.data = p.data.to(dev).to(dt)
             for bname, b in list(sub.named_buffers(recurse = False)):
                 if b is None:
                     continue
-                dt = want if b.is_floating_point() else b.dtype
+                dt = want if b.dtype == torch.bfloat16 else b.dtype
                 sub._buffers[bname] = b.to(dev).to(dt)
 
 
@@ -418,11 +415,12 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
         return torch.float32 if _kept(mname) else compute_dtype
 
     def _convert(sub: Any, want: Any) -> None:
+        # Only what the stored-dtype load changed: an fp32 buffer (RoPE ``inv_freq``) stays fp32, as in the dense load.
         for pname, p in list(sub.named_parameters(recurse = False)):
-            if p.is_floating_point() and p.dtype != want:
+            if p.dtype == torch.bfloat16 and p.dtype != want:
                 p.data = p.data.to(want)
         for bname, b in list(sub.named_buffers(recurse = False)):
-            if b is not None and b.is_floating_point() and b.dtype != want:
+            if b is not None and b.dtype == torch.bfloat16 and b.dtype != want:
                 sub._buffers[bname] = b.to(want)
 
     first_owner = None

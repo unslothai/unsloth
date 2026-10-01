@@ -6373,9 +6373,26 @@ class DiffusionBackend:
                                     )
                                 )
                                 self._raise_if_load_cancelled(_load_token)
+                                # Same host-RAM pre-check as the full pipeline: the companions (a 15.8 GB bf16
+                                # Qwen2.5-VL at fp32) are what fills the host here.
+                                small_host = self._small_host_decision(
+                                    _base_local_dir or fetch_base,
+                                    pipe_kwargs,
+                                    target,
+                                    dtype,
+                                    lora_active = _has_active_lora(loras),
+                                )
+                                if small_host is not None and small_host.engaged:
+                                    pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
+                                        small_host, dtype
+                                    )
                                 pipe = pipeline_cls.from_pretrained(
                                     _base_local_dir or fetch_base, **pipe_kwargs
                                 )
+                                if small_host is not None and small_host.engaged:
+                                    plan = self._apply_small_host_route(
+                                        pipe, plan, small_host, target, dtype, fam, logger, _load_token
+                                    )
 
                     # The same helper the route preflight asked, so the two cannot disagree.
                     pipeline_quant_uncompilable = _pipeline_quant_uncompilable_reason(
@@ -7891,6 +7908,10 @@ class DiffusionBackend:
             elif name.startswith("text_encoder"):
                 mib = prepare_streamed_encoder_(module, dtype)
                 info["components"][name] = f"memory-mapped, layerwise cast ({mib} MiB)"
+            elif name not in ("transformer", "transformer_2", "unconditional_transformer"):
+                # A large VAE / image encoder: the dense load's conversion, one tensor at a time.
+                cast_resident_(module, "cpu", dtype)
+                info["components"][name] = "converted"
             else:
                 # Pageable: torch's pinned allocator rounds each block to a power of two (11.3 GB of FLUX.1 int8
                 # weights held 18 GB pinned), more than the route saves.
@@ -8481,6 +8502,12 @@ class DiffusionBackend:
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             return
 
+        if _small_host_int8(pipe):
+            raise ValueError(
+                "LoRA is not available on this load: system RAM was too small for the dense model, so Studio "
+                "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
+                "model with the LoRA selected (Studio then keeps the dense transformer), or use a host with more RAM."
+            )
         if not diffusion_lora.supports_lora(
             engine = "diffusers",
             family = getattr(state.family, "name", None),
@@ -9718,7 +9745,10 @@ class DiffusionBackend:
                 model_kind = state.kind,
                 transformer_quant = state.transformer_quant,
                 compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
-            ),
+            )
+            and not _small_host_int8(state.pipe),
+            # What the small-host route did to each component (None when it did not engage).
+            "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",
                 family = state.family.name,
@@ -9729,6 +9759,12 @@ class DiffusionBackend:
                 transformer_quant = state.transformer_quant,
             ),
         }
+
+
+def _small_host_int8(pipe: Any) -> bool:
+    """Whether the small-host route stored a denoiser as int8 weights on this pipe."""
+    info = small_host_engaged_on(pipe) or {}
+    return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:

@@ -89,10 +89,9 @@ def test_refuses_before_loading_when_even_the_route_cannot_fit(monkeypatch):
     assert _decide(QWEN, dtype = torch.float32, total = 16 * 1024, available = 14000).refuse is None
 
 
-def test_lora_keeps_the_dense_load_and_refuses_cleanly():
+def test_lora_keeps_the_dense_load():
     d = _decide(FLUX1, lora_active = True)
-    assert not d.engaged and d.refuse and "LoRA" in d.refuse
-    assert _decide(FLUX1, lora_active = True, total = 230 * 1024, available = 220 * 1024).refuse is None
+    assert not d.engaged and d.refuse is None and "LoRA" in d.reason
 
 
 def test_torch_dtype_map_only_names_routed_components():
@@ -168,6 +167,8 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
             self.embed = torch.nn.Embedding(100, 64)
             self.block = Block()
             self.norm = torch.nn.LayerNorm(64)
+            # computed at init, never stored: fp32 in the dense fp16 load too (RoPE inv_freq)
+            self.register_buffer("inv_freq", torch.rand(8), persistent = False)
 
         @property
         def dtype(self):
@@ -177,9 +178,21 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
             return self.norm(self.block(self.embed(ids)))
 
     torch.manual_seed(0)
-    enc = Enc().to(torch.bfloat16)
+    enc = Enc()
+    for p in enc.parameters():
+        p.data = p.data.to(torch.bfloat16)  # the stored-dtype load: parameters bf16, init-time buffers fp32
     dense = Enc()
     dense.load_state_dict({k: v.float() for k, v in enc.state_dict().items()})
+    dense.inv_freq = enc.inv_freq.clone()
+    sh.prepare_streamed_encoder_(enc, torch.float16)
+    assert enc.inv_freq.dtype == torch.float32
+    enc_fp16 = enc
+    enc = Enc()
+    for p in enc.parameters():
+        p.data = p.data.to(torch.bfloat16)
+    dense.load_state_dict({k: v.float() for k, v in enc.state_dict().items()})
+    dense.inv_freq = enc.inv_freq.clone()
+    del enc_fp16
     sh.prepare_streamed_encoder_(enc, torch.float32)
     # the first float parameter's owner converts so .dtype reports the compute dtype
     assert enc.dtype == torch.float32
@@ -227,3 +240,12 @@ def test_route_plan_streams_encoders_and_keeps_what_fits(monkeypatch):
     assert DiffusionBackend._small_host_plan(None, pipe, none, None, log) is none
     other = _group_plan()
     assert DiffusionBackend._small_host_plan(None, object(), other, None, log) is other
+
+
+def test_lora_refused_and_status_reports_the_int8_route():
+    from core.inference.diffusion import _small_host_int8
+
+    pipe = types.SimpleNamespace(_unsloth_small_host = {"components": {"transformer": "int8 weights (1 MiB)"}})
+    assert _small_host_int8(pipe)
+    assert not _small_host_int8(types.SimpleNamespace(_unsloth_small_host = {"components": {"transformer": "cast on device"}}))
+    assert not _small_host_int8(object())

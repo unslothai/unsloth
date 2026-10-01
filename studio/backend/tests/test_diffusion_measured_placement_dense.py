@@ -56,7 +56,10 @@ def klein_pipe(monkeypatch):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN_LOADED))
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: False)
-    return object()
+    import torch
+
+    # fp16 on the T4: the compute dtype the dense eager table was measured at
+    return types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.float16))
 
 
 def _refine(pipe, plan, family = "flux.2-klein", speed = "off"):

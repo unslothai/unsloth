@@ -2057,19 +2057,20 @@ def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
         return None
 
 
-def _denoiser_compute_bytes(pipe: Any) -> int:
-    """Element size of the denoiser's float compute dtype (4 for an fp32-promoted family), 2 when unreadable."""
+def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
+    """Element size of the denoiser's compute dtype where the dense eager table applies: 2 for fp16, 4 for an
+    fp32-promoted family. None for bf16 (unmeasured there) or when unreadable."""
     try:
+        import torch
+
         for name in ("transformer", "unet"):
             module = getattr(pipe, name, None)
             dtype = getattr(module, "dtype", None) if module is not None else None
             if dtype is not None:
-                import torch
-
-                return 4 if dtype == torch.float32 else 2
+                return {torch.float16: 2, torch.float32: 4}.get(dtype)
     except Exception:  # noqa: BLE001
         pass
-    return 2
+    return None
 
 
 def refine_plan_from_loaded_weights(
@@ -2109,8 +2110,11 @@ def refine_plan_from_loaded_weights(
         # A dense denoiser uses the eager-tier table, sized by its loaded DiT; a torchao one the compiled table.
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
+        if dense_mib is not None and compute_bytes is None:
+            # The dense table was measured eager on an fp16 card (and fp32-promoted); a bf16 card can compile later.
+            return plan
         headroom = measured_image_runtime_mib(
-            family, speed_mode, dense_transformer_mib = dense_mib, compute_bytes = compute_bytes
+            family, speed_mode, dense_transformer_mib = dense_mib, compute_bytes = compute_bytes or 2
         )
         if headroom is None:
             return plan
