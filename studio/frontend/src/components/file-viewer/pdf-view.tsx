@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import { queueParse } from "./parse-queue";
+import { usePdfWorker } from "./use-pdf-worker";
 import { useWidth } from "./use-width";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -224,37 +225,6 @@ function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: 
     };
   }, [enabled, file, release]);
   return { ready: !enabled || ready === file, release };
-}
-
-type PdfWorker = {
-  worker: InstanceType<typeof pdfjs.PDFWorker>;
-  loaded: Set<{ destroy(): Promise<void> }>;
-};
-
-/**
- * One worker per document. unpdf sets globalThis.pdfjsWorker to its own PDF.js build, which PDF.js
- * then adopts and fails on (version mismatch). Passing a worker skips that lookup.
- */
-function usePdfWorker(enabled: boolean): PdfWorker | null {
-  const [state, setState] = useState<PdfWorker | null>(null);
-  useEffect(() => {
-    // Queued thumbnails and failed loads hold no worker.
-    if (!enabled) return;
-    const port = new Worker(pdfjs.GlobalWorkerOptions.workerSrc, { type: "module" });
-    const next: PdfWorker = { worker: pdfjs.PDFWorker.create({ port }), loaded: new Set() };
-    // External resource owned by this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setState(next);
-    return () => {
-      setState(null);
-      // PDF.js frees a document's fonts only once the worker answers its Terminate.
-      void Promise.allSettled([...next.loaded].map((doc) => doc.destroy())).then(() => {
-        next.worker.destroy();
-        port.terminate();
-      });
-    };
-  }, [enabled]);
-  return state;
 }
 
 export default function PdfView({
