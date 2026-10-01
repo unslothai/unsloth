@@ -123,7 +123,8 @@ def run():
         blurred(False)
         expect(page.get_by_role("dialog")).to_have_count(0)
         print("Starting modal checks")
-        for kind in ["dialog", "alert", "sheet", "scoped"]:
+        tour_facts = None
+        for kind in ["dialog", "alert", "sheet", "tour", "scoped"]:
             print("Checking", kind)
             page.get_by_role("button", name = f"Open {kind}", exact = True).click()
             blurred(kind != "scoped")
@@ -134,6 +135,15 @@ def run():
                 blurred(True)
             if kind == "alert":
                 page.get_by_role("button", name = "Cancel", exact = True).click()
+            elif kind == "tour":
+                tour_facts = facts()
+                if EXPECTED:
+                    assert tour_facts["blur"] == "blur(2px)", tour_facts
+                    assert tour_facts["opacity"] == "1", tour_facts
+                else:
+                    assert tour_facts["content"] == "none", tour_facts
+                page.screenshot(path = str(OUT / "tour-light.png"))
+                page.get_by_role("button", name = "Skip", exact = True).click()
             elif kind in ("dialog", "scoped"):
                 page.locator("[data-slot=dialog-close]").click()
             else:
@@ -195,12 +205,14 @@ def run():
                     "url": URL,
                     "expected_blur": EXPECTED,
                     "media": media_facts,
+                    "tour": tour_facts,
                     "commands": commands + ["start_dragging"],
                     "checks": [
                         "media",
                         "dialog",
                         "alert",
                         "sheet",
+                        "tour",
                         "scoped excluded",
                         "menu excluded",
                         "nested",

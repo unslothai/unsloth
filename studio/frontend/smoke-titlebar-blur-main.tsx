@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { GuidedTour } from "@/features/tour/components/guided-tour";
 import "./src/index.css";
 
 const art =
@@ -75,7 +76,7 @@ function Scene() {
               viewer
             </p>
             <div className="mb-6 flex gap-3">
-              {["media", "dialog", "alert", "sheet", "scoped"].map((k) => (
+              {["media", "dialog", "alert", "sheet", "tour", "scoped"].map((k) => (
                 <Button key={k} onClick={() => setKind(k)}>
                   Open {k}
                 </Button>
@@ -90,6 +91,7 @@ function Scene() {
               </DropdownMenu>
             </div>
             <img
+              data-tour="preview"
               src={art}
               alt="Illustrated mountain lake"
               className="max-h-[60vh] rounded-xl"
@@ -156,6 +158,20 @@ function Scene() {
             </SheetDescription>
           </SheetContent>
         </Sheet>
+        <GuidedTour
+          open={kind === "tour"}
+          onOpenChange={(o) => !o && setKind("")}
+          steps={[
+            {
+              id: "preview",
+              target: "preview",
+              title: "Preview tour",
+              body: "The viewport tour backdrop must also cover the titlebar.",
+            },
+          ]}
+          onSkip={() => {}}
+          onComplete={() => {}}
+        />
       </div>
     </TooltipProvider>
   );

@@ -35,7 +35,7 @@
 		opacity: 0;
 		transition: opacity 100ms;
 	}
-	body:has([data-viewport-backdrop="true"][data-state="open"])
+	body:has(> [data-viewport-backdrop="true"][data-state="open"])
 		[data-slot="window-titlebar"]::after {
 		opacity: 1;
 	}
