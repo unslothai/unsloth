@@ -3877,6 +3877,7 @@ from core.inference.passthrough_healing import (
 )
 from core.inference.providers import (
     HOSTED_TOOL_NAMES,
+    answers_decisions_only,
     get_base_url,
     get_provider_info,
     hosted_only_tools,
@@ -20995,6 +20996,14 @@ async def generate_audio(
     )
 
 
+def _refuse_decision_connection(provider_type: Optional[str], api_type: Optional[str]) -> None:
+    if answers_decisions_only(provider_type, api_type):
+        raise HTTPException(
+            status_code = 400,
+            detail = "This connection answers decisions only. Use it from Settings > API > Decision API.",
+        )
+
+
 async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
     """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
     provider_id = (body.provider_id or "").strip()
@@ -21014,6 +21023,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
@@ -21214,6 +21224,7 @@ async def _external_stt_transcription(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400,
@@ -24610,6 +24621,7 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
+    _refuse_decision_connection(provider_type, api_type)
 
     # Unsloth's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
@@ -32198,7 +32210,9 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
 # compatibility alias for the canonical OpenAI path.
 @router.get("/models/", include_in_schema = False)
 @router.get("/models")
-async def openai_list_models(current_subject: str = Depends(get_current_subject)):
+async def openai_list_models(
+    output_modalities: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
     """
     OpenAI-compatible model listing endpoint (``GET /v1/models``).
 
@@ -32206,7 +32220,14 @@ async def openai_list_models(current_subject: str = Depends(get_current_subject)
     locally available (downloaded/cached) models -- not only what is resident in
     memory. Each entry carries a clean public id and a ``loaded`` flag.
     """
-    return {"object": "list", "data": await _openai_catalog_objects()}
+    wanted = {m.strip() for m in (output_modalities or "").split(",")}
+    if not wanted & {"all", "decisions"}:
+        return {"object": "list", "data": await _openai_catalog_objects()}
+    from routes.systemone import decision_model_objects
+
+    data = [] if wanted == {"decisions"} else await _openai_catalog_objects()
+    data += await asyncio.to_thread(decision_model_objects)
+    return {"object": "list", "data": data}
 
 
 @router.get("/models/{model_id:path}")
