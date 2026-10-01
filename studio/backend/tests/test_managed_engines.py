@@ -2123,6 +2123,8 @@ def test_sglang_without_torchao_refuses_int8_and_int4(version):
     )
     assert "--torchao-config" not in args
     assert args[args.index("--quantization") + 1] == "fp8"
+    assert "--disable-piecewise-cuda-graph" not in args
+    assert args[args.index("--cuda-graph-backend-prefill") + 1] == "disabled"
     legacy = ADAPTERS["sglang"].command(
         "python",
         "model",

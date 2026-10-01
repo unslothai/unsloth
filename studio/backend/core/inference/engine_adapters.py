@@ -169,6 +169,14 @@ class EngineAdapter:
                 ["--enforce-eager"]
                 if self.name == "vllm"
                 else ["--disable-cuda-graph", "--disable-piecewise-cuda-graph"]
+                if legacy_torchao
+                # 0.5.18 folded both into per-phase backends and removed the piecewise flag.
+                else [
+                    "--cuda-graph-backend-decode",
+                    "disabled",
+                    "--cuda-graph-backend-prefill",
+                    "disabled",
+                ]
             )
         if self.name == "sglang":
             entrypoint = [
