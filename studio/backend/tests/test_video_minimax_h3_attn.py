@@ -320,3 +320,26 @@ def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
     # negative control: a one-ulp-scale perturbation must be caught
     bad = (ours.float() * (1 + 2 ** -7)).to(dtype)
     assert int((bad != eager).sum()) > ours.numel() // 2
+
+
+def _graph_breaks(model) -> int:
+    import torch._dynamo
+
+    torch._dynamo.reset()
+    with torch.no_grad():
+        explained = torch._dynamo.explain(model)(**_inputs())
+    torch._dynamo.reset()
+    return explained.graph_break_count
+
+
+@pytest.mark.parametrize("qk_rope", ["1", "0"])
+def test_strided_processor_adds_no_graph_break(monkeypatch, qk_rope):
+    # A break inside every attention call splits each compiled block in two and runs the tail outside the region
+    # (measured: 2x slower steps). The fused q/k op must be reached through ``torch.ops``, not a cached Python wrapper.
+    monkeypatch.setenv(Q.QK_ROPE_ENV, qk_rope)
+    model = _tiny_model()
+    model.set_attention_backend("_native_math")
+    stock = _graph_breaks(model)
+    assert A.install_strided_attention(model) > 0
+    assert model.transformer_blocks[0].attn.processor._unsloth_qk_rope is (qk_rope == "1")
+    assert _graph_breaks(model) == stock

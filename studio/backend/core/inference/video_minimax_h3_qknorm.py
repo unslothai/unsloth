@@ -223,4 +223,10 @@ def qk_norm_rope_op() -> Any:
 
 
 def qk_norm_rope(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> Any:
-    return qk_norm_rope_op()(x, weight, cos, sin, eps)
+    """Eager convenience entry. Compiled code must call ``torch.ops.unsloth_h3.qk_norm_rope`` directly (after
+    ``qk_norm_rope_op()`` registered it): dynamo traces through this wrapper's ``lru_cache`` into the registration
+    and graph-breaks there."""
+    import torch
+
+    qk_norm_rope_op()
+    return torch.ops.unsloth_h3.qk_norm_rope(x, weight, cos, sin, eps)

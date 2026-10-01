@@ -102,7 +102,6 @@ def strided_processor_class() -> Any:
 
     # The torch-native dispatcher backends that already hand SDPA strided views (math / efficient) are listed too,
     # so the processor stays exercisable off CUDA; Studio only ever pins cuDNN or flash here.
-    from .video_minimax_h3_qknorm import qk_norm_rope
 
     def _fusable_norm(norm: Any) -> bool:
         return (
@@ -148,10 +147,13 @@ def strided_processor_class() -> Any:
             value = value.unflatten(-1, (attn.heads, -1))
 
             if rotary_emb is not None and self._unsloth_qk_rope and _fusable_norm(attn.norm_q) and _fusable_norm(attn.norm_k):
-                # one read + one write per row for norm and rope together (video_minimax_h3_qknorm)
+                # one read + one write per row for norm and rope together (video_minimax_h3_qknorm). Called through
+                # torch.ops (registered at install): dynamo traces into a Python wrapper around the op's builder and
+                # graph-breaks there, which split every compiled block in two (measured: 2x slower steps).
                 cos, sin = rotary_emb
-                query = qk_norm_rope(query, attn.norm_q.weight, cos, sin, float(attn.norm_q.eps))
-                key = qk_norm_rope(key, attn.norm_k.weight, cos, sin, float(attn.norm_k.eps))
+                op = torch.ops.unsloth_h3.qk_norm_rope
+                query = op(query, attn.norm_q.weight, cos, sin, float(attn.norm_q.eps))
+                key = op(key, attn.norm_k.weight, cos, sin, float(attn.norm_k.eps))
             else:
                 query = attn.norm_q(query)
                 key = attn.norm_k(key)
