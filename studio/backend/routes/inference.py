@@ -27078,6 +27078,7 @@ async def produce_openai_chat_completions(
                 if model_info.get("audio_type") == "whisper":
                     return backend.generate_whisper_response(
                         audio_array = audio_array,
+                        use_adapter = payload.use_adapter,
                         cancel_event = cancel_event,
                         stats_holder = _audio_stats_holder,
                         **extra_audio_kwargs,
