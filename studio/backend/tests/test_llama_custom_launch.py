@@ -619,3 +619,18 @@ def test_custom_gpu_launch_masks_rocm_arch_gate_survivors(launch, monkeypatch):
     env, child_ids = seen[0]
     assert child_ids == (0, 2)
     assert env["CUDA_VISIBLE_DEVICES"] in {"0,2", "0,1"}
+
+
+@pytest.mark.parametrize(
+    "line,disabled",
+    [("cache-prompt=false", True), ("no-cache-prompt=true", True), ("cache-prompt=true", False)],
+)
+def test_custom_prompt_cache_setting_is_recorded(launch, line, disabled):
+    launch.caps["option_catalog"] = parse_option_catalog(
+        HELP + "\n--alias NAME                            model id\n"
+        "--jinja                                 templates\n"
+        "--cache-prompt, --no-cache-prompt       whether to enable prompt caching (default: enabled)\n"
+    )
+    intent = replace(launch.intent, llama_cpp_config = source(f"[*]\nnp=2\nc=56000\nngl=0\n{line}"))
+    assert launch.backend.load_model(intent)
+    assert launch.backend._prompt_cache_disabled is disabled

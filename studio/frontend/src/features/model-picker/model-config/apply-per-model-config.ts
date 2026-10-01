@@ -57,7 +57,7 @@ export function applyPerModelConfigToRuntime(
         )
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
-    // Explicit managed, not undefined, on diffusion: an omitted field inherits the stored custom config.
+    // Explicit managed on diffusion: an omitted field inherits the stored custom config.
     llamaCppConfig:
       options.isDiffusion && config.llamaCppConfig !== undefined
         ? { version: 1, mode: "managed" }
@@ -170,7 +170,7 @@ export function perModelConfigsEqual(
   b: PerModelConfig,
 ): boolean {
   return (
-    // Unset and managed load the same engine, so Reset does not read as a pending change.
+    // Unset and managed load the same engine.
     JSON.stringify(customOnly(a.llamaCppConfig)) ===
       JSON.stringify(customOnly(b.llamaCppConfig)) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&

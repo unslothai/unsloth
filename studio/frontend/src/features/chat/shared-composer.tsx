@@ -205,6 +205,7 @@ import {
   shouldPinDiffusionPlacement,
 } from "./lib/gpu-placement";
 import {
+  loadedLlamaCppConfigFields,
   managedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
@@ -1838,8 +1839,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                // Only when this panel has read the stored value: omitted, the load inherits it, which keeps
-                // CLI-set flags working.
                 ...llamaCppConfigPayload(ownConfig.llamaCppConfig),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
@@ -1975,10 +1974,7 @@ export function SharedComposer({
             : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status applier is held off for
           // the whole load, so a switch straight after would snapshot the other model's list.
-          loadedLlamaCppConfig:
-            resp.requested_llama_cpp_config ?? ownConfig.llamaCppConfig ?? null,
-          llamaCppConfig: resp.requested_llama_cpp_config ?? ownConfig.llamaCppConfig,
-          llamaCppConfigSummary: resp.llama_cpp_config_summary ?? null,
+          ...loadedLlamaCppConfigFields(resp, ownConfig.llamaCppConfig),
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
               ? (resp.requested_llama_extra_args ?? [])

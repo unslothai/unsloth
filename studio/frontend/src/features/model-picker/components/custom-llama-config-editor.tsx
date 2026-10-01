@@ -54,7 +54,7 @@ export function CustomLlamaConfigEditor({
   const active = value?.mode === "custom";
   const ini = active ? value.ini : "";
   const section = active ? value.section : null;
-  // Module scope, not a ref: a refused load remounts the editor after dropping the source from value.
+  // Module scope: a refused load remounts the editor without the source in value.
   const sourceKey = `${modelPath}\u0000${ggufVariant ?? ""}`;
   useEffect(() => {
     if (active) lastCustomSource.set(sourceKey, { ini, section });
@@ -78,29 +78,16 @@ export function CustomLlamaConfigEditor({
   const sections = customConfigSections(ini);
   const oversized =
     new TextEncoder().encode(ini).length > MAX_LLAMA_CPP_CONFIG_BYTES;
-  // Storage drops a blank configuration, so it would load and save as managed without saying so.
+  // Storage drops a blank config, which would then load and save as managed silently.
   const blank = active && ini.trim().length === 0;
   useEffect(() => {
-    revision.current += 1;
-    // Load repeats authoritative preflight. An unvalidated draft may still be submitted.
+    // Load repeats the server preflight, so an unvalidated draft stays loadable.
     onLoadableChange(!active || (!oversized && !blank));
-  }, [
-    ini,
-    section,
-    active,
-    oversized,
-    blank,
-    modelPath,
-    ggufVariant,
-    onLoadableChange,
-  ]);
-  // A validation still in flight must not gate Load after the editor is gone.
-  useEffect(
-    () => () => {
+    // An in-flight validation of an older input (or after unmount) must not gate Load.
+    return () => {
       revision.current += 1;
-    },
-    [],
-  );
+    };
+  }, [inputKey, active, oversized, blank, onLoadableChange]);
   const validate = async () => {
     const current = ++revision.current;
     setBusyKey(inputKey);
@@ -138,7 +125,7 @@ export function CustomLlamaConfigEditor({
         valid: false,
         message: error instanceof Error ? error.message : "Validation failed.",
       });
-      // No verdict was reached, so Load stays available; it repeats the preflight itself.
+      // No verdict: Load stays available and repeats the preflight.
     } finally {
       if (current === revision.current) setBusyKey(null);
     }

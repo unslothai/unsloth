@@ -279,18 +279,16 @@ test("blank custom source is rejected without erasing its saved predecessor", ()
 
 test("custom configuration is rendered under the advanced GGUF arguments", () => {
   const page = readSrc("features/model-picker/components/model-config-page.tsx");
-  const settings = page.slice(
-    page.indexOf("<fieldset"),
-    page.indexOf("<div\n        className={", page.indexOf("</fieldset>")),
-  );
-  const fieldsetEnd = settings.indexOf("</fieldset>");
-  const toggle = settings.indexOf("<AdvancedSettingsToggle", fieldsetEnd);
-  const managedAdvanced = settings.indexOf("<GgufAdvancedSettings", toggle);
-  const editor = settings.indexOf("<CustomLlamaConfigEditor");
+  const start = page.indexOf('<ManagedFieldset locked={customActive} label="Studio engine settings">');
+  const fieldsetEnd = page.indexOf("</ManagedFieldset>", start);
+  const toggle = page.indexOf("<AdvancedSettingsToggle", fieldsetEnd);
+  const managed = page.indexOf('label="Managed llama.cpp settings"', toggle);
+  const managedAdvanced = page.indexOf("<GgufAdvancedSettings", managed);
+  const editor = page.indexOf("<CustomLlamaConfigEditor", managedAdvanced);
+  assert.ok(start > 0 && start < fieldsetEnd);
   assert.ok(fieldsetEnd < toggle);
-  assert.ok(toggle < managedAdvanced);
+  assert.ok(toggle < managed && managed < managedAdvanced);
   assert.ok(managedAdvanced < editor);
-  assert.match(settings, /aria-label="Managed llama\.cpp settings"/);
   assert.match(page, /configState\.llamaCppConfig\?\.mode === "custom" \|\|/);
 });
 

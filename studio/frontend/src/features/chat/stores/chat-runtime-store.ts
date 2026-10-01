@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- The picker barrel imports this store; provenance helpers are import-free.
+// eslint-disable-next-line no-restricted-imports -- The picker barrel imports this store; this leaf is import-free.
 import {
   explicitSamplingFields,
   inheritedSamplingFields,
   markSamplingFields,
   SAMPLING_WIRE_FIELDS,
-} from "@/features/model-picker/model-config/llama-cpp-config";
-// eslint-disable-next-line no-restricted-imports -- These wire types belong to the same import-free config leaf.
-import type {
-  LlamaCppConfig,
-  LlamaCppConfigSummary,
+  type LlamaCppConfig,
+  type LlamaCppConfigSummary,
 } from "@/features/model-picker/model-config/llama-cpp-config";
 import { authFetch } from "@/features/auth";
 import {
@@ -2123,12 +2120,27 @@ export function requestedGpuIdsFromResponse(resp: {
 
 type LlamaCppConfigEcho = { requested_llama_cpp_config?: { mode: string } | null };
 
-export function isCustomLlamaLoad(resp: LlamaCppConfigEcho): boolean {
+function isCustomLlamaLoad(resp: LlamaCppConfigEcho): boolean {
   return resp.requested_llama_cpp_config?.mode === "custom";
 }
 
-// A custom llama.cpp load reports its INI's tuning, which is not what the managed controls
-// asked for; adopting it carries that tuning into the next managed load.
+/** The config a load ran with: the server's echo, else what was sent. */
+export function loadedLlamaCppConfigFields(
+  resp: {
+    requested_llama_cpp_config?: LlamaCppConfig | null;
+    llama_cpp_config_summary?: LlamaCppConfigSummary | null;
+  },
+  sent: LlamaCppConfig | undefined,
+) {
+  const config = resp.requested_llama_cpp_config ?? sent;
+  return {
+    llamaCppConfig: config,
+    loadedLlamaCppConfig: config ?? null,
+    llamaCppConfigSummary: resp.llama_cpp_config_summary ?? null,
+  };
+}
+
+// A custom load echoes its INI's tuning; adopting it would carry that into the next managed load.
 export function managedKvCacheFields(
   resp: { cache_type_kv?: string | null } & LlamaCppConfigEcho,
 ) {
@@ -4586,8 +4598,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       } else if (
         !checkpointChanged &&
         options?.persist !== false &&
-        // A caller that built its own mask (a preset, a control edit) already said which fields
-        // are explicit; re-marking changed values would pin Default's values over a custom config.
+        // A caller-built mask (preset, control edit) is final: re-marking would pin Default over the INI.
         params.samplingFieldsExplicit === state.params.samplingFieldsExplicit
       ) {
         const changedSampling = Object.entries(SAMPLING_WIRE_FIELDS)

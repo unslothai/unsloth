@@ -2533,7 +2533,14 @@ def _count_gguf_admission_prompt(
             strict = True,
             prefer_native = images == 0,
             chat_template_kwargs = llama_backend._request_reasoning_kwargs(
-                payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+                payload.enable_thinking,
+                payload.reasoning_effort,
+                payload.preserve_thinking,
+                **(
+                    {"request_template_kwargs": _request_kwargs}
+                    if (_request_kwargs := _passthrough_chat_template_kwargs(payload))
+                    else {}
+                ),
             ),
             continue_final_message = _continue_final_message(payload)
             and bool(trailing_assistant_text(messages)),
@@ -15690,7 +15697,7 @@ def _resolve_llama_cpp_config(
     config = None,
     model_identifier = None,
 ):
-    """Resolve one source without combining configuration from different model rows."""
+    """Request's own source, else this model row's saved override, else the resident same-model load's."""
     from core.inference.llama_custom_config import parse_config_source
     from utils.openai_auto_switch_settings import resolve_override_for_load
 
@@ -17026,10 +17033,12 @@ async def _load_model_impl(
         requested_llama_cpp_config = request.llama_cpp_config
 
         # Validate user pass-through args up front so a managed-flag collision
-        # returns 400 before any model work.
-        def _validated_extra_args(args):
+        # returns 400 before any model work. Custom mode launches without them.
+        def _validated_extra_args(req):
+            if _custom_llama_config(req):
+                return []
             try:
-                return validate_extra_args(args)
+                return validate_extra_args(req.llama_extra_args)
             except ValueError as exc:
                 # Keep the curated validation message (names the flag); just strip paths.
                 logger.warning("inference.validate_extra_args_failed: %s", exc)
@@ -17038,14 +17047,10 @@ async def _load_model_impl(
                     detail = redact_native_paths(str(exc)),
                 )
 
-        # Without its own custom config, reject unsafe args before the resolver
-        # consults the resident backend; custom ignores them, so re-check after.
-        if not _custom_llama_config(request):
-            _validated_extra_args(request.llama_extra_args)
+        extra_llama_args = _validated_extra_args(request)
         request = _resolve_llama_cpp_config(request)
-        extra_llama_args = _validated_extra_args(
-            [] if _custom_llama_config(request) else request.llama_extra_args
-        )
+        if _custom_llama_config(request):
+            extra_llama_args = []
         # Re-narrow []-from-None back to None so the inheritance path below can
         # tell "caller omitted" from "caller explicit []".
         extra_llama_args: Optional[list[str]] = (
@@ -17377,12 +17382,7 @@ async def _load_model_impl(
             config,
             public_model_identifier,
         )
-        try:
-            extra_llama_args = validate_extra_args(
-                [] if _custom_llama_config(request) else request.llama_extra_args
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+        extra_llama_args = _validated_extra_args(request)
         custom_compiled = await _preflight_custom_llama_config(
             request, config, native_grant_backed = native_grant_backed
         )
@@ -17630,15 +17630,12 @@ async def _load_model_impl(
             )
         )
         if custom_compiled is not None:
-            # Custom mode ignores managed placement, including a saved CPU-only
-            # choice. Explicit native CPU placement can skip the handoff only when
-            # every retained projector is also pinned to host memory.
-            custom_tuning = dict(custom_compiled.tuning)
+            # Only an explicit native CPU placement, projector included, skips the GPU handoff.
             custom_projector_needs_gpu = (
                 _load_keeps_a_projector(config, disable_vision = request.disable_vision)
                 if config.is_vision
                 else bool(getattr(config, "gguf_mmproj_file", None))
-            ) and custom_tuning.get("mmproj_offload") is not False
+            ) and dict(custom_compiled.tuning).get("mmproj_offload") is not False
             chat_load_needs_gpu = not (
                 custom_compiled.explicit_cpu_only and not custom_projector_needs_gpu
             )
@@ -19509,7 +19506,6 @@ async def estimate_memory(
 
     request = _resolve_llama_cpp_config(request)
     if _custom_llama_config(request):
-        # Managed memory estimates include policies that strict mode does not apply.
         return EstimateMemoryResponse(available = False, reason = "unsizable")
     if is_ollama_manifest_ref(request.model_path):
         # Resolving one writes a .gguf link to disk; that belongs to the load path.

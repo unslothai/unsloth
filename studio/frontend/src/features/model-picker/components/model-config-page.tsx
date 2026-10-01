@@ -364,8 +364,8 @@ function withoutUnsupportedDiffusionSettings(
     // them as though it had, so a box filled before classification flipped would leave the
     // model running without what it says.
     llamaExtraArgs: null,
-    // The diffusion runner has no llama-server to configure. Explicit managed, not omitted: an
-    // omitted field lets the backend inherit the stored custom config.
+    // Explicit managed, not omitted: the diffusion runner has no llama-server, and an omitted
+    // field inherits the stored custom config.
     ...(config.llamaCppConfig?.mode === "custom"
       ? { llamaCppConfig: MANAGED_LLAMA_CPP_CONFIG }
       : {}),
@@ -1318,6 +1318,28 @@ function LoadModeRow({
         </p>
       )}
     </div>
+  );
+}
+
+/** Locked while a custom INI owns llama.cpp tuning. */
+function ManagedFieldset({
+  locked,
+  label,
+  children,
+}: {
+  locked: boolean;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <fieldset
+      disabled={locked}
+      inert={locked ? true : undefined}
+      className={`min-w-0 space-y-5 ${locked ? "opacity-50" : ""}`}
+      aria-label={label}
+    >
+      {children}
+    </fieldset>
   );
 }
 
@@ -3174,8 +3196,7 @@ export function ModelConfigPage({
   };
 
   const persistConfig = (next: PerModelConfig) => {
-    // Normalizing drops a blank or oversized custom config, which would save as managed and
-    // overwrite a good stored one while reporting success.
+    // Normalizing drops a blank or oversized custom config, saving managed over a good one.
     if (
       remember &&
       next.llamaCppConfig !== undefined &&
@@ -3332,7 +3353,7 @@ export function ModelConfigPage({
     setVramBudgetLocked(false);
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
-  // A diffusion model hides the editor and loads managed, so its custom config must not lock the page.
+  // Diffusion hides the editor and loads managed, so its custom config must not lock the page.
   const customActive =
     config.llamaCppConfig?.mode === "custom" && !resolvedIsDiffusion;
 
@@ -3381,7 +3402,7 @@ export function ModelConfigPage({
         remember={remember}
         hasSavedSettings={savedRemember}
       />
-      {/* Outside the managed fieldset: the estimate prices the custom config too, so it stays live. */}
+      {/* Outside the managed fieldset: custom mode is sent too, so the row reports it unsizable instead of a managed figure. */}
       {memoryEstimateRequest != null && (
         <div className="mb-5">
           <MemoryEstimateRow
@@ -3406,12 +3427,7 @@ export function ModelConfigPage({
           />
         </div>
       )}
-      <fieldset
-        disabled={customActive}
-        inert={customActive ? true : undefined}
-        className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
-        aria-label="Studio engine settings"
-      >
+      <ManagedFieldset locked={customActive} label="Studio engine settings">
         {target.isGguf && (
           <>
             <div className="space-y-2">
@@ -3531,7 +3547,7 @@ export function ModelConfigPage({
             )}
           </>
         )}
-      </fieldset>
+      </ManagedFieldset>
 
       {target.isGguf && (
         <div className="mt-5 space-y-5">
@@ -3541,11 +3557,9 @@ export function ModelConfigPage({
           />
           {showAdvanced && (
             <>
-              <fieldset
-                disabled={customActive}
-                inert={customActive ? true : undefined}
-                className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
-                aria-label="Managed llama.cpp settings"
+              <ManagedFieldset
+                locked={customActive}
+                label="Managed llama.cpp settings"
               >
                 <GgufAdvancedSettings
                   hideVision={customActive}
@@ -3564,8 +3578,8 @@ export function ModelConfigPage({
                   draftKey={draftKey}
                   onExtraArgsLoadableChange={setExtraArgsLoadable}
                 />
-              </fieldset>
-              {/* The projector choice still reaches a custom load, so it stays editable there. */}
+              </ManagedFieldset>
+              {/* The projector still reaches a custom load, so it stays editable. */}
               {customActive && (
                 <div>
                   <VisionRow config={config} update={update} />
@@ -3682,7 +3696,7 @@ export function ModelConfigPage({
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
-                llamaCppConfig: { version: 1, mode: "managed" },
+                llamaCppConfig: MANAGED_LLAMA_CPP_CONFIG,
               });
             }}
           >

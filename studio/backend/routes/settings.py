@@ -2251,7 +2251,8 @@ def update_openai_auto_switch_override(
         _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
             () if payload.mirrors_reasoning_budget else _reasoning_fields
         )
-        if _carried_fields and not is_removal:
+        _stored_row = None
+        if not is_removal and (_carried_fields or payload.llama_cpp_config is None):
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -2268,31 +2269,15 @@ def update_openai_auto_switch_override(
             # Taken as a unit from the first row that exists, not field by field down the list: a load stops at the
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
-            for _alias_id in _alias_ids:
-                _stored_tuning = get_model_override(_alias_id)
-                if not _stored_tuning:
-                    continue
-                for name in _carried_fields:
-                    if _kept_tuning[name] is None:
-                        _kept_tuning[name] = _stored_tuning.get(name)
-                break
+            _stored_row = next((row for row in map(get_model_override, _alias_ids) if row), None)
+        if _stored_row:
+            for name in _carried_fields:
+                if _kept_tuning[name] is None:
+                    _kept_tuning[name] = _stored_row.get(name)
         removed_keys: list[str] = []
         kept_custom_config = payload.llama_cpp_config
-        if kept_custom_config is None and not is_removal:
-            config_ids = [payload.model_id]
-            for candidate in (
-                _bare_model_id(payload.model_id),
-                _legacy_standalone_gguf_key(payload.model_id),
-                *cached_repo_alias_keys(payload.model_id),
-            ):
-                if candidate and candidate not in config_ids:
-                    config_ids.append(candidate)
-            config_ids.sort(key = lambda key: not is_cache_load_path_key(key))
-            for config_id in config_ids:
-                stored_config = get_model_override(config_id)
-                if stored_config:
-                    kept_custom_config = stored_config.get("llama_cpp_config")
-                    break
+        if kept_custom_config is None and _stored_row:
+            kept_custom_config = _stored_row.get("llama_cpp_config")
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to, not the literal one sent
             # (the browser normalizes casing), and every spelling: clearing one of two leaves the survivor as the sole

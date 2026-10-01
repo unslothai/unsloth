@@ -290,11 +290,9 @@ def test_model_alias_reconciliation(key, catalog, tmp_path):
         compile_ini(f"[*]\n{key}={tmp_path / 'other.gguf'}", catalog, model_path = str(model))
 
 
-def test_resource_preflight_defers_identity_only(catalog):
-    result = compile_ini("[*]\nm=placeholder", catalog, validate_resources = False)
-    assert "before launch" in result.diagnostics[0]
+def test_reserved_option_is_refused_beside_a_resource(catalog):
     with pytest.raises(CustomConfigError, match = "managed by Studio"):
-        compile_ini("[*]\nm=placeholder\nhost=evil", catalog, validate_resources = False)
+        compile_ini("[*]\nm=placeholder\nhost=evil", catalog)
 
 
 def test_reconciled_resource_must_exist(catalog, tmp_path):
@@ -475,7 +473,7 @@ def test_canonical_digest_comments_order_json_and_selection(catalog):
     b = compile_ini(
         '[*]\nchat-template-kwargs = { "a": 1, "b": 2 }\nctx-size=56000 # note', catalog
     )
-    assert a.digest == b.digest and a.source_digest != b.source_digest
+    assert a.digest == b.digest
     assert (
         a.digest != compile_ini('[*]\nc=56001\nchat-template-kwargs={"b":2,"a":1}', catalog).digest
     )

@@ -576,7 +576,7 @@ export function residentRuntimeMatchesConfig(
     return true;
   }
   if (config.llamaCppConfig?.mode === "custom" || status.requested_llama_cpp_config?.mode === "custom") {
-    // The server must revalidate capabilities and resource identity before deduplicating.
+    // Only the server can tell whether a custom config is unchanged (binary, resources).
     return false;
   }
   const placementPreserved =

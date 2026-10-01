@@ -99,6 +99,7 @@ import {
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
+  loadedLlamaCppConfigFields,
   managedGpuMemoryFields,
   managedKvCacheFields,
   managedSpeculativeSettings,
@@ -2333,8 +2334,7 @@ export function useChatModelRuntime() {
               if (!forceCancelActive) {
                 if (loadLlamaCppConfig?.mode !== "custom") {
                   await unloadModel({ model_path: currentCheckpoint });
-                  // Only a real /unload removes the resident model. Custom mode leaves
-                  // replacement to /load so cancellation must not treat it as gone.
+                  // Custom mode leaves replacement to /load, which preflights before evicting.
                   loadRun.residentModelUnloaded = true;
                 }
               }
@@ -2756,13 +2756,7 @@ export function useChatModelRuntime() {
               // process's list, so the last thing we knew still holds unless this was a different model. An
               // explicit empty list is recorded as empty, not null, since omitting the field is what makes /load
               // inherit. The server's echo comes first, as the only account of what the launch carried.
-              loadedLlamaCppConfig:
-                loadResponse.requested_llama_cpp_config ??
-                loadLlamaCppConfig ??
-                null,
-              llamaCppConfig:
-                loadResponse.requested_llama_cpp_config ?? loadLlamaCppConfig,
-              llamaCppConfigSummary: loadResponse.llama_cpp_config_summary ?? null,
+              ...loadedLlamaCppConfigFields(loadResponse, loadLlamaCppConfig),
               loadedLlamaExtraArgs:
                 loadResponse.requested_llama_extra_args !== undefined
                   ? (loadResponse.requested_llama_extra_args ?? [])
@@ -2985,10 +2979,22 @@ export function useChatModelRuntime() {
                     rollbackState.loadedCtxCheckpoints ?? null,
                   cacheRam: previousServerTuning.cacheRam ?? null,
                   loadedCacheRam: rollbackState.loadedCacheRam ?? null,
-                  loadedSpeculativeType: rollbackSpeculativeType,
-                  loadedSpecDraftNMax:
-                    rollbackResponse.spec_draft_n_max ?? null,
-                  loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
+                  // A custom echo carries the INI's tuning, not the managed baselines (as managedKvCacheFields).
+                  ...(rollbackResponse.requested_llama_cpp_config?.mode ===
+                  "custom"
+                    ? {
+                        loadedSpeculativeType:
+                          rollbackState.loadedSpeculativeType,
+                        loadedSpecDraftNMax: rollbackState.loadedSpecDraftNMax,
+                        loadedKvCacheDtype: rollbackState.loadedKvCacheDtype,
+                      }
+                    : {
+                        loadedSpeculativeType: rollbackSpeculativeType,
+                        loadedSpecDraftNMax:
+                          rollbackResponse.spec_draft_n_max ?? null,
+                        loadedKvCacheDtype:
+                          rollbackResponse.cache_type_kv ?? null,
+                      }),
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
                   // nParallel above.
