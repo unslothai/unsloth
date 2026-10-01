@@ -33,6 +33,7 @@ from ._utils import (
 )
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
@@ -112,6 +113,7 @@ from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
+from .vision import _resolve_offload_embedding, offload_input_embedding, restore_input_embedding
 
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
@@ -2476,6 +2478,16 @@ class FastLlamaModel:
         # HF gets it again through **kwargs alongside our config= and fails with a duplicate kwarg.
         user_config = kwargs.pop("config", None)
         block_swap_layers = kwargs.pop("block_swap_layers", 0)
+        offload_embedding = kwargs.pop("offload_embedding", False)
+        _offload_embedding_allowed = offload_embedding is not False
+        if offload_embedding and fast_inference:
+            if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
+                print(
+                    "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
+                )
+            offload_embedding = False
+        # None: no memory plan; True / False: the block swap planner decided.
+        _embedding_needed = None
         if block_swap_layers and kwargs.get("state_dict") is not None:
             block_swap_layers = refuse_block_swap_load(
                 block_swap_layers,
@@ -2757,10 +2769,11 @@ class FastLlamaModel:
             )
         if block_swap_layers == "auto":
             # Sized like the device map planner: how many trailing layers must stay in host RAM.
-            block_swap_layers, device_map = resolve_auto_block_swap(
+            block_swap_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
+                offload_embedding = bool(offload_embedding) and num_labels is None,
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 skip_reason = _planner_skip_reason,
                 **planner_config_overrides(kwargs),
@@ -3125,6 +3138,14 @@ class FastLlamaModel:
             subfolder = kwargs.get("subfolder"),
             variant = kwargs.get("variant"),
         )
+        # A memory plan decides "auto"; without one "auto" is the size rule. An explicit True always asks.
+        if _embedding_needed is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO:
+            offload_embedding = _embedding_needed
+        if offload_embedding and num_labels is None:
+            if _resolve_offload_embedding(model, offload_embedding, needed = bool(_embedding_needed)):
+                offload_input_embedding(model)
+        # get_peft_model(block_swap_layers = "auto") may move it later, unless the caller said no.
+        model._unsloth_offload_embedding_allowed = _offload_embedding_allowed
 
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.apply_qkv = original_apply_qkv
@@ -3791,6 +3812,8 @@ class FastLlamaModel:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
+        if train_embed_tokens and restore_input_embedding(model):
+            print("Unsloth: Moved the offloaded input embedding back to the GPU to train it.")
         input_embeddings_device = model.get_input_embeddings().weight.device
         if is_classification:
             output_embeddings_device = model.score.weight.device

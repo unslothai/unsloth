@@ -494,19 +494,21 @@ def resolve_auto_block_swap(
     model_name,
     *,
     max_seq_length,
+    offload_embedding = False,
     planner_kwargs = None,
     skip_reason = None,
     **config_kwargs,
 ):
-    """`from_pretrained(block_swap_layers = "auto")`: `(layers, device_map)`, the trailing decoder layers
-    to build in host RAM so the rest plus a training step's reserve fits, and the map to load the rest
-    with. 0 and the map unchanged when everything fits, so nothing is swapped and nothing slows down.
-    `device_map = "unsloth"` / `"unsloth_balanced"` sizes every card through the multi-GPU planner;
-    anything else sizes the one card the load uses."""
+    """`from_pretrained(block_swap_layers = "auto")`: `(layers, device_map, embedding)`, the trailing
+    decoder layers to build in host RAM so the rest plus a training step's reserve fits, the map to load
+    the rest with, and whether to move the input embedding to host RAM first (one GPU, when
+    `offload_embedding` allows; None when nothing was planned). 0, the map unchanged and no move when
+    everything fits, so nothing slows down. `device_map = "unsloth"` / `"unsloth_balanced"` sizes every
+    card through the multi-GPU planner; anything else sizes the one card the load uses."""
 
     def _none(reason):
         print(f"Unsloth: block_swap_layers = 'auto' loads every layer onto the GPU: {reason}.")
-        return 0, device_map
+        return 0, device_map, None
 
     if skip_reason is not None:
         return _none(skip_reason)
@@ -560,6 +562,12 @@ def resolve_auto_block_swap(
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    if offload_embedding and not multi:
+        try:
+            if "offload_embedding" in inspect.signature(plan_block_swap).parameters:
+                options["offload_embedding"] = True
+        except (TypeError, ValueError):
+            pass
     plan = plan_block_swap(
         model_name,
         max_memory = max_memory,
@@ -571,12 +579,13 @@ def resolve_auto_block_swap(
         "Unsloth: "
         + plan.describe().splitlines()[0].replace("block swap:", "block_swap_layers = 'auto':")
     )
+    embedding = bool(getattr(plan, "offload_embedding", False))
     if not plan.layers:
-        return 0, device_map
+        return 0, device_map, embedding
     if multi and plan.device_plan is not None:
         print(plan.device_plan.describe())
-        return plan.layers, plan.device_plan.device_map
-    return plan.layers, {"": target}
+        return plan.layers, plan.device_plan.device_map, embedding
+    return plan.layers, {"": target}, embedding
 
 
 def __get_model_name(

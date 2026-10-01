@@ -50,6 +50,7 @@ def _load(
         "build_host_layers": object() if zoo else None,
         "find_decoder_layers": lambda m: m.layers,
         "auto_swap_indices": lambda layers, reserve, depth: auto_pick,
+        "_offload_embedding_for_room": lambda model: False,
         "estimate_training_reserve_bytes": lambda config, seq_len, extra_bytes = 0: 2**30,
         "torch": types.SimpleNamespace(cuda = types.SimpleNamespace(is_available = lambda: cuda)),
     }
@@ -458,3 +459,14 @@ def test_load_refusals_fall_back_for_auto_and_raise_for_a_count(capsys):
     assert "loads every layer onto the GPU" in capsys.readouterr().out
     with pytest.raises(ValueError, match = "state_dict"):
         ns["refuse_block_swap_load"](4, "does not take a state_dict.")
+
+
+def test_auto_moves_the_embedding_before_any_layer():
+    ns, calls = _load()
+    picks = iter([([0, 2], 0), ([], 0)])
+    ns["auto_swap_indices"] = lambda layers, reserve, depth: next(picks)
+    moved = []
+    ns["_offload_embedding_for_room"] = lambda model: moved.append(model) or True
+    m = _Model()
+    assert ns["install_block_swap"](m, "auto") is None
+    assert moved == [m] and calls == []

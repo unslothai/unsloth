@@ -652,9 +652,14 @@ def _embedding_is_worth_offloading(input_embeddings):
     return size >= _OFFLOAD_EMBEDDING_MIN_BYTES and size / total >= _OFFLOAD_EMBEDDING_MIN_FRACTION
 
 
-def _resolve_offload_embedding(model, offload_embedding):
+def _resolve_offload_embedding(
+    model,
+    offload_embedding,
+    needed = False,
+):
     """Report `offload_embedding` as True only when the offload will really run. It is a VRAM optimisation, not a correctness switch, so turn it off where it cannot help instead of failing the load. It also gates `_attach_bnb_multidevice_hooks`, which must still run whenever no offload happens, so every "no offload" case has to answer False. `"auto"` (the default) decides from the size of the embedding, and the declines below stay silent for it: they explain why something a caller asked for is not happening, and nobody asked for a default."""
     automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
+    # `needed`: a memory plan wants the room, so "auto" skips the size rule.
 
     def _decline(reason):
         if not automatic:
@@ -683,7 +688,45 @@ def _resolve_offload_embedding(model, offload_embedding):
     if is_distributed():
         # The offload leaves embed_tokens on the CPU while the rest of the rank stays on CUDA; under full finetuning it is trainable, and DDP with device_ids refuses a module whose trainable parameters span both.
         return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
-    return _embedding_is_worth_offloading(in_embed) if automatic else True
+    if automatic and (
+        getattr(in_embed, "weight", None) is None or in_embed.weight.device.type in ("cpu", "meta")
+    ):
+        return False
+    return (needed or _embedding_is_worth_offloading(in_embed)) if automatic else True
+
+
+def offload_input_embedding(model):
+    """Move the input embedding to host RAM: lookups run there and only the looked-up rows go back
+    to the decoder's card. Returns the bytes moved."""
+    embed_tokens = model.get_input_embeddings()
+    out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+    print(f"Unsloth: Offloading embeddings to RAM to save {round(nbytes / 1024**3, 2)} GB.")
+    _embed_device = embed_tokens.weight.device  # decoder device, before offload
+    embed_tokens.to("cpu")
+    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+    # The transformers model, not a PEFT wrapper: its `device` property is the one callers read.
+    _pin_device_to_decoder(model.get_base_model() if hasattr(model, "get_base_model") else model)
+    # GPU memory must be freed explicitly or it will not be freed.
+    clean_gpu_cache()
+    gc.collect()
+    return nbytes
+
+
+def restore_input_embedding(model):
+    """Undo `offload_input_embedding` (training the embedding needs it on the card). The hooks stay
+    and become no-ops once weight and decoder share a device."""
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if not getattr(base, "_unsloth_embedding_offloaded", False):
+        return False
+    embed_tokens = model.get_input_embeddings()
+    out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(out_embed, "weight", None)
+    if weight is None or weight.device.type == "cpu":
+        return False
+    embed_tokens.to(weight.device)
+    base._unsloth_embedding_offloaded = False
+    return True
 
 
 VLLM_SUPPORTED_VLM = [
@@ -2541,6 +2584,8 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         try:
+            # get_peft_model(block_swap_layers = "auto") may move it later, unless the caller said no.
+            _offload_embedding_allowed = offload_embedding is not False
             if offload_embedding and fast_inference:
                 if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
                     print(
@@ -2645,23 +2690,8 @@ class FastBaseModel:
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
                 if offload_embedding:
-                    embed_tokens = model.get_input_embeddings()
-                    out_embed = (
-                        model.get_output_embeddings()
-                        if hasattr(model, "get_output_embeddings")
-                        else None
-                    )
-                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                    embed_tokens.to("cpu")
-
-                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                    _pin_device_to_decoder(model)
-                    # GPU memory must be freed explicitly or it will not be freed.
-                    clean_gpu_cache()
-                    gc.collect()
+                    offload_input_embedding(model)
+                model._unsloth_offload_embedding_allowed = _offload_embedding_allowed
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,

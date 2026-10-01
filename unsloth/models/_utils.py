@@ -6082,6 +6082,22 @@ def refuse_block_swap_load(block_swap_layers, reason):
     raise ValueError(f"Unsloth: from_pretrained(block_swap_layers = ...) {reason}")
 
 
+def _offload_embedding_for_room(model):
+    """Move a frozen, untied input embedding to host RAM unless the caller passed offload_embedding = False."""
+    if not getattr(model, "_unsloth_offload_embedding_allowed", True):
+        return False
+    embedding = model.get_input_embeddings()
+    if embedding is None or any(p.requires_grad for p in embedding.parameters()):
+        return False
+    from .loader_utils import OFFLOAD_EMBEDDING_AUTO
+    from .vision import _resolve_offload_embedding, offload_input_embedding
+
+    if not _resolve_offload_embedding(model, OFFLOAD_EMBEDDING_AUTO, needed = True):
+        return False
+    offload_input_embedding(model)
+    return True
+
+
 def _auto_block_swap_indices(model, prefetch_depth):
     """Layers to swap so each GPU keeps a training step's reserve free; [] when it already does."""
     if auto_swap_indices is None:
@@ -6096,6 +6112,9 @@ def _auto_block_swap_indices(model, prefetch_depth):
     seq_len = getattr(model, "max_seq_length", None) or 2048
     reserve = estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra)
     indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
+    # Only the looked-up rows cross PCIe, so the embedding goes before any layer.
+    if indices and _offload_embedding_for_room(model):
+        indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
     if not indices:
         print(
             f"Unsloth: block_swap_layers = 'auto' swaps nothing: every GPU keeps the "
