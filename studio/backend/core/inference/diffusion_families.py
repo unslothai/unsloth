@@ -361,8 +361,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
-        # The DiT overflows fp16 (NaN latents, a black image on every fp16-only card; ComfyUI lists only bf16 / fp32
-        # for it): an fp16 target computes in fp32 instead.
+        # The DiT overflows fp16 (NaN latents, a black image on every fp16-only card): an fp16 target computes in fp32.
         fp16_incompatible = True,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
