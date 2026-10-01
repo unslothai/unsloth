@@ -261,10 +261,7 @@ def enable_padding_free_metadata(model, trainer):
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    # The wrapped collator decides whether to use seq_lengths at
-                    # all from the first example and then reads it off every row,
-                    # so the derived lengths still have to reach it. Put them on a
-                    # shallow copy instead of the caller's own row.
+                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
                     if collated is examples:
                         collated = list(examples)
                     collated[index] = {**example, "seq_lengths": lengths}
