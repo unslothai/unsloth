@@ -396,6 +396,8 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
+    from core.inference.context_window import keep_date_note
+
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
@@ -409,7 +411,19 @@ def _fit_with_instruction_pins(
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)
     ):
-        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+        fitted, truncation = _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+    moved = keep_date_note(messages, fitted)
+    if moved is not None and truncation:
+        message, before = moved
+        try:
+            tokens = kwargs["count_tokens"](fitted)
+        except Exception:  # noqa: BLE001 -- an unpriced note is dropped, never a failed chat
+            tokens = None
+        target = prompt_budget(kwargs.get("context_length") or 0, kwargs.get("max_tokens") or 0)
+        if tokens is None or tokens > target:
+            message["content"] = before
+        else:
+            truncation = {**truncation, "prompt_tokens_after": tokens}
     return fitted, truncation
 
 
@@ -2132,7 +2146,11 @@ _RESPAWN_REAP_GRACE_S = 1.0
 
 
 def _finalize_reasoning_only_cumulative(
-    cumulative: str, reasoning_text: str, finish_reason: Optional[str], promote_reasoning_only: bool
+    cumulative: str,
+    reasoning_text: str,
+    finish_reason: Optional[str],
+    promote_reasoning_only: bool,
+    resumed_reasoning: str = "",
 ) -> str:
     """Close a live thinking block and promote it only after a clean stop.
 
@@ -2143,9 +2161,13 @@ def _finalize_reasoning_only_cumulative(
     promotion and let the client surface the ``length`` terminal state. Raw
     consumers that do not split reasoning from visible content can disable the
     fallback to avoid returning the same reasoning twice.
+
+    Include ``resumed_reasoning`` in the promoted reply; the stream contains only the new tail.
     """
     visible_fallback = (
-        reasoning_text if promote_reasoning_only and finish_reason != "length" else ""
+        resumed_reasoning + reasoning_text
+        if promote_reasoning_only and finish_reason != "length"
+        else ""
     )
     return cumulative + "</think>" + visible_fallback
 
@@ -7675,6 +7697,7 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
+        self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
         self._kv_value_length: Optional[int] = None
@@ -9302,6 +9325,20 @@ class LlamaCppBackend:
         except Exception:
             return False
         return build is not None and build < cls._OUTPUT_ROWS_CAPPED_BUILD
+
+    # ggml-org/llama.cpp#23089 added continuation inside an unfinished reasoning block.
+    _THOUGHT_CONTINUATION_BUILD = 9200
+
+    @classmethod
+    def resumes_thoughts(cls, binary: Optional[str] = None) -> bool:
+        """Whether this llama-server continues a trailing turn that holds only reasoning.
+
+        Unknown builds are treated as current, matching Studio's prebuilts."""
+        try:
+            build = cls.probe_build_number(binary)
+        except Exception:
+            return True
+        return build is None or build >= cls._THOUGHT_CONTINUATION_BUILD
 
     _ADVERTISED_DEFAULT_RE = re.compile(r"\(default:\s*(-?\d+)")
 
@@ -24135,6 +24172,7 @@ class LlamaCppBackend:
 
             server_caps = _launch_caps(binary)
             self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
+            self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -35439,12 +35477,16 @@ class LlamaCppBackend:
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
-            trailing_assistant_text,
+            trailing_assistant_resume_kind,
         )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
-        continue_final_message = continue_final_message and bool(
-            trailing_assistant_text(openai_messages)
+        _resume_kind = (
+            trailing_assistant_resume_kind(openai_messages) if continue_final_message else None
+        )
+        continue_final_message = _resume_kind is not None
+        resumed_reasoning = (
+            openai_messages[-1]["reasoning_content"] if _resume_kind == "reasoning_content" else ""
         )
 
         payload = {
@@ -35644,6 +35686,7 @@ class LlamaCppBackend:
                                         reasoning_text,
                                         _metadata_finish_reason,
                                         promote_reasoning_only,
+                                        resumed_reasoning,
                                     )
                                     _prov_entry = None
                                     yield cumulative
@@ -35967,7 +36010,11 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
-        from core.inference.chat_template_helpers import forced_tool_name, trailing_assistant_text
+        from core.inference.chat_template_helpers import (
+            forced_tool_name,
+            trailing_assistant_resume_kind,
+            trailing_assistant_text,
+        )
 
         initial_forced_name = forced_tool_name(tool_choice)
         if initial_forced_name and initial_forced_name not in _gguf_active_tool_names(tools):
@@ -35984,7 +36031,9 @@ class LlamaCppBackend:
                 and not bypass_permissions
                 and permission_mode not in ("auto", "off")
             )
-        ) or bool(continue_final_message and trailing_assistant_text(conversation))
+        ) or bool(
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -36485,7 +36534,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = bool(
-                                continue_final_message and trailing_assistant_text(fitted)
+                                continue_final_message
+                                and trailing_assistant_resume_kind(fitted) is not None
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
@@ -36610,9 +36660,15 @@ class LlamaCppBackend:
                 payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is
             # no longer trailing, so later turns are normal.
-            if continue_final_message and trailing_assistant_text(conversation):
+            _resume_kind = (
+                trailing_assistant_resume_kind(conversation) if continue_final_message else None
+            )
+            if _resume_kind is not None:
                 payload["continue_final_message"] = True
                 payload["add_generation_prompt"] = False
+            _resumed_reasoning = (
+                conversation[-1]["reasoning_content"] if _resume_kind == "reasoning_content" else ""
+            )
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None
@@ -36661,7 +36717,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = bool(
-                                continue_final_message and trailing_assistant_text(fitted)
+                                continue_final_message
+                                and trailing_assistant_resume_kind(fitted) is not None
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
@@ -36867,6 +36924,7 @@ class LlamaCppBackend:
                                             reasoning_accum,
                                             _iter_finish_reason,
                                             promote_reasoning_only,
+                                            _resumed_reasoning,
                                         )
                                         _prov_entry = None
                                         if not _suppress_visible_output:
@@ -37439,6 +37497,7 @@ class LlamaCppBackend:
                                 reasoning_accum,
                                 _iter_finish_reason,
                                 promote_reasoning_only,
+                                _resumed_reasoning,
                             )
                             _prov_entry = None
                             if not _suppress_visible_output:
@@ -37642,10 +37701,15 @@ class LlamaCppBackend:
                                 _cand_l,
                                 {
                                     "role": "assistant",
-                                    "content": _unfinished_thought_progress(reasoning_accum),
+                                    # The stream holds only the resumed thought's tail.
+                                    "content": _unfinished_thought_progress(
+                                        _resumed_reasoning + reasoning_accum
+                                    ),
                                 },
                                 continue_final_message = continue_final_message,
                             )
+                            if _resumed_reasoning:
+                                _cand_l[-1].pop("reasoning_content", None)
                             _cand_l.append(
                                 {
                                     "role": "user",
@@ -39006,11 +39070,12 @@ class LlamaCppBackend:
                     # the field above so a whitespace-only split never appends an
                     # empty assistant message.
                     if not assistant_appended and (
-                        content_text or assistant_msg.get("reasoning_content")
+                        content_text or assistant_msg.get("reasoning_content") or _resumed_reasoning
                     ):
-                        if assistant_msg.get("reasoning_content"):
+                        if assistant_msg.get("reasoning_content") or _resumed_reasoning:
+                            # Whole thought: the nudge below hides the original's field.
                             assistant_msg["content"] = neutralize_control_markup(
-                                reasoning_accum,
+                                _resumed_reasoning + reasoning_accum,
                                 self.markup_profile,
                             )
                             _continued_partial = (
@@ -39022,12 +39087,14 @@ class LlamaCppBackend:
                                 assistant_msg["content"] = f"\n{assistant_msg['content']}"
                             if content_text:
                                 assistant_msg["content"] += f"\n{content_text}"
-                            del assistant_msg["reasoning_content"]
+                            assistant_msg.pop("reasoning_content", None)
                         append_assistant_turn(
                             conversation,
                             assistant_msg,
                             continue_final_message = _merge_into_partial,
                         )
+                        if _resumed_reasoning:
+                            conversation[-1].pop("reasoning_content", None)
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
                 if _final_over_cap:

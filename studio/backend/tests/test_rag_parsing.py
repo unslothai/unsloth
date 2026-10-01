@@ -556,6 +556,63 @@ def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
     assert "Name |  | END" in text
 
 
+def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.opc.constants import CONTENT_TYPE as CT, RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+    from docx.oxml import parse_xml
+
+    def note(kind, note_id, text):
+        return f'<w:{kind} w:id="{note_id}"><w:p><w:r><w:{kind}Ref/></w:r>{_r(" " + text)}</w:p></w:{kind}>'
+
+    def notes(kind, body):
+        return (
+            f"<w:{kind}s {_DOCX_XMLNS}>"
+            f'<w:{kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{kind}>'
+            f'<w:{kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{kind}>'
+            f"{body}</w:{kind}s>"
+        ).encode()
+
+    def ref(kind, note_id):
+        return f'<w:r><w:{kind}Reference w:id="{note_id}"/></w:r>'
+
+    section = document.element.body[-1]
+    section.addprevious(
+        parse_xml(
+            f"<w:p {_DOCX_XMLNS}><w:del w:id=\"9\">{ref('footnote', 4)}</w:del>"
+            f"{_r('First.')}{ref('footnote', 2)}"
+            f"{_r(' Second.')}{ref('footnote', 1)}{ref('endnote', 1)}"
+            f"{_r(' ' + chr(0xE000) + '7' + chr(0xE001))}</w:p>"
+        )
+    )
+    for kind, content_type, reltype, body in (
+        (
+            "footnote",
+            CT.WML_FOOTNOTES,
+            RT.FOOTNOTES,
+            note("footnote", 1, "Source: LATER")
+            + note("footnote", 2, "Source: EARLIER")
+            + note("footnote", 3, "Source: UNREFERENCED")
+            + note("footnote", 4, "Source: DELETED"),
+        ),
+        ("endnote", CT.WML_ENDNOTES, RT.ENDNOTES, note("endnote", 1, "Source: ENDNOTEBODY")),
+    ):
+        part = Part(
+            PackURI(f"/word/{kind}s.xml"), content_type, notes(kind, body), document.part.package
+        )
+        document.part.relate_to(part, reltype)
+    path = tmp_path / "notes.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "First.[1] Second.[2][i] \ue0007\ue001\n"
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n"
+        "Endnotes\n[i] Source: ENDNOTEBODY"
+    )
+
+
 def _parse_html(tmp_path, body):
     from core.rag import parsers
 

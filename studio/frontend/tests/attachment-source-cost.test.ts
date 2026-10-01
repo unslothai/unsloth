@@ -5,7 +5,7 @@
 // store notification and on every render, and useShallow gates the re-render,
 // not the selector. Building a "data:audio/wav;base64,..." string in there
 // therefore copies the whole clip per token of a streamed reply, twice over:
-// AttachmentThumb and AttachmentPreviewDialog each mount the hook.
+// the composer card and AttachmentPreviewDialog each mount the hook.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -157,14 +157,14 @@ test("the attachment selector still resolves text and image attachments", () => 
 });
 
 // ComposerPrimitive.Attachments keys its providers by list index. Removing the
-// first attachment therefore reuses AttachmentUI for the next attachment, so
+// first attachment therefore reuses ComposerAttachmentCard for the next attachment, so
 // every stateful preview/source branch needs the attachment identity as its own
 // reset boundary.
 test("attachment previews reset when an index is reused for another attachment", () => {
   const attachment = readSrc("components/assistant-ui/attachment.tsx");
   const ui = attachment.slice(
-    attachment.indexOf("const AttachmentUI"),
-    attachment.indexOf("const AttachmentRemove"),
+    attachment.indexOf("const ComposerAttachmentCard: FC"),
+    attachment.indexOf("const SentAttachmentLayoutContext"),
   );
 
   assert.match(ui, ATTACHMENT_ID_SELECTOR_RE);

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -1102,6 +1103,48 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
 
 
+# Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
+# the estimate still adds that buffer on top of every file, plus a margin.
+H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
+# Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
+H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+H3_QUANT_CUBLAS_MIN_BATCH = "1024"
+# Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
+H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
+H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
+H3_NATIVE_RESIDENT_MARGIN_BYTES = 2 * 1024**3
+_H3_STREAM_ONLY_FLAGS = ("--offload-to-cpu", "--stream-layers")
+
+
+def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
+    volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
+    compute = math.ceil(
+        H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
+    )
+    return int(file_bytes) + compute + H3_NATIVE_RESIDENT_MARGIN_BYTES
+
+
+def h3_native_render_flags(
+    offload_flags: "tuple[str, ...] | list[str]",
+    *,
+    memory_mode: Optional[str],
+    free_bytes: Optional[int],
+    need_bytes: Optional[int],
+    env: Optional[dict] = None,
+) -> tuple[list[str], bool]:
+    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
+    the estimate; anything unknown keeps the committed flags."""
+    flags = list(offload_flags)
+    environ = env if env is not None else os.environ
+    if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
+        return flags, False
+    if (memory_mode or "auto") != "auto" or "--offload-to-cpu" not in flags:
+        return flags, False
+    if free_bytes is None or need_bytes is None or int(free_bytes) < int(need_bytes):
+        return flags, False
+    return [f for f in flags if f not in _H3_STREAM_ONLY_FLAGS], True
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
@@ -1125,6 +1168,7 @@ class MiniMaxH3NativeRuntime:
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
