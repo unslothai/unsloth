@@ -419,3 +419,41 @@ def test_a_stale_baseline_allowance_fails_the_gate(tmp_path, monkeypatch):
     clean.write_text("VALUE = 1\n", encoding = "utf-8")
 
     assert L.main(["--paths", str(clean)]) == 1
+
+
+def test_an_allowance_does_not_survive_a_change_around_the_call(tmp_path, monkeypatch):
+    """A baselined sink is re-opened when its enclosing function changes.
+
+    The case that matters: the sink was accepted because something nearby validated its
+    input. This analysis does not model validators, so weakening one leaves the path,
+    the qualname, the sink and the call's own text identical. Without the function in
+    the identity, the stale allowance would match and the gate would pass on exactly
+    the regression it exists to catch.
+    """
+    guarded = (
+        "import importlib, json, re\n"
+        "def load(path):\n"
+        "    with open(path + '/config.json') as handle:\n"
+        "        model_type = json.load(handle)['model_type']\n"
+        "    if not re.fullmatch(r'[a-z0-9_]+', model_type):\n"
+        "        raise ValueError('bad')\n"
+        "    return importlib.import_module('a.' + model_type)\n"
+    )
+    weakened = guarded.replace(
+        "    if not re.fullmatch(r'[a-z0-9_]+', model_type):\n        raise ValueError('bad')\n",
+        "",
+    )
+
+    sample = tmp_path / "sample.py"
+    baseline = tmp_path / "untrusted_sinks_baseline.json"
+    monkeypatch.setattr(L, "BASELINE_PATH", baseline)
+    monkeypatch.setattr(L, "REPO_ROOT", tmp_path)
+
+    # Review and record the guarded version.
+    sample.write_text(guarded, encoding = "utf-8")
+    assert L.main(["--paths", str(sample), "--update"]) == 0
+    assert L.main(["--paths", str(sample)]) == 0
+
+    # Remove the guard. The call itself is untouched, so only the function differs.
+    sample.write_text(weakened, encoding = "utf-8")
+    assert L.main(["--paths", str(sample)]) == 1

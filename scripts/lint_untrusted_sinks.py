@@ -411,6 +411,9 @@ class _FileFacts:
         self.functions: dict[str, ast.AST] = {}
         # qualname -> parameter names in order
         self.params: dict[str, list[str]] = {}
+        # qualname -> digest of the whole function, so a baselined sink is re-opened when
+        # anything around it changes, including a validator that guarded its input
+        self.contexts: dict[str, str] = {}
         self._collect()
 
     def _collect(self) -> None:
@@ -431,6 +434,7 @@ class _FileFacts:
                     qualname = ".".join(scope)
                     self.functions[qualname] = child
                     self.params[qualname] = _param_names(child)
+                    self.contexts[qualname] = _norm_hash(child)
                     walk(child)
                     scope.pop()
                     continue
@@ -848,6 +852,7 @@ class _TaintPass(ast.NodeVisitor):
                 "artefacts": sorted(self.artefacts),
                 "tier": tier,
                 "hash": _norm_hash(node),
+                "context": self.facts.contexts.get(self.qualname, ""),
                 "gated": sink not in SINKS_GATED_ELSEWHERE,
             }
         )
@@ -916,6 +921,7 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                 "artefacts": [],
                 "tier": "A",
                 "hash": _norm_hash(node),
+                "context": facts.contexts.get(qualname, ""),
                 "gated": True,
             }
         )
@@ -1003,6 +1009,7 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, bool]) -> list[
                     "artefacts": [],
                     "tier": "A",
                     "hash": _norm_hash(call),
+                    "context": facts.contexts.get(qualname, ""),
                     "gated": True,
                 }
             )
@@ -1167,7 +1174,21 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
 
 
 def _baseline_key(finding: dict) -> str:
-    return f"{finding['path']}::{finding['qualname']}::{finding['sink']}::{finding['hash']}"
+    """Identity of a reviewed sink.
+
+    The enclosing function's digest is part of it, not just the call's own text. A
+    baselined sink may have been accepted because something nearby validated its input,
+    and this analysis does not model validators, so weakening one leaves the path, the
+    qualname, the sink and the call text identical: the allowance would still match and
+    the gate would pass on exactly the regression it exists to catch. Including the
+    function means any change around the call re-opens the question. That costs churn,
+    and the churn is the point: if you edit a function containing a reviewed sink, you
+    re-justify it.
+    """
+    return (
+        f"{finding['path']}::{finding['qualname']}::{finding['sink']}"
+        f"::{finding['hash']}::{finding.get('context', '')}"
+    )
 
 
 def _load_baseline() -> dict:
