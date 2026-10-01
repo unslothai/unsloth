@@ -47,14 +47,17 @@ export type BlockKind =
   | "expression"
   | "seed"
   | "note";
-export type BlockType =
-  | SamplerType
-  | LlmType
+export type ValidatorBlockType =
   | "validator_python"
   | "validator_sql"
   | "validator_oxc"
   | "validator_json"
-  | "validator_markdown"
+  | "validator_markdown";
+
+export type BlockType =
+  | SamplerType
+  | LlmType
+  | ValidatorBlockType
   | "expression"
   | "markdown_note"
   | "seed"

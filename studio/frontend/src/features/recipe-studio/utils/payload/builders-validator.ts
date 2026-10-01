@@ -27,7 +27,10 @@ export function buildValidatorColumn(
   if (targetColumns.length === 0) {
     errors.push(`Validator ${config.name}: target column required.`);
   }
-  if (config.validator_type === "json") {
+  if (
+    config.validator_type === "json" ||
+    config.validator_type === "markdown"
+  ) {
     return {
       // biome-ignore lint/style/useNamingConvention: api schema
       column_type: "validation",
@@ -40,26 +43,10 @@ export function buildValidatorColumn(
       // biome-ignore lint/style/useNamingConvention: api schema
       validator_params: {
         // biome-ignore lint/style/useNamingConvention: api schema
-        validation_function: JSON_VALIDATION_FN_MARKER,
-      },
-      // biome-ignore lint/style/useNamingConvention: api schema
-      batch_size: parseBatchSize(config.batch_size),
-    };
-  }
-  if (config.validator_type === "markdown") {
-    return {
-      // biome-ignore lint/style/useNamingConvention: api schema
-      column_type: "validation",
-      name: config.name,
-      drop: config.drop ?? false,
-      // biome-ignore lint/style/useNamingConvention: api schema
-      target_columns: targetColumns,
-      // biome-ignore lint/style/useNamingConvention: api schema
-      validator_type: "local_callable",
-      // biome-ignore lint/style/useNamingConvention: api schema
-      validator_params: {
-        // biome-ignore lint/style/useNamingConvention: api schema
-        validation_function: MARKDOWN_VALIDATION_FN_MARKER,
+        validation_function:
+          config.validator_type === "json"
+            ? JSON_VALIDATION_FN_MARKER
+            : MARKDOWN_VALIDATION_FN_MARKER,
       },
       // biome-ignore lint/style/useNamingConvention: api schema
       batch_size: parseBatchSize(config.batch_size),

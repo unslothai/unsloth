@@ -41,6 +41,7 @@ import {
   getBlocksForKind,
   type BlockType,
   type SeedBlockType,
+  type ValidatorBlockType,
 } from "../blocks/registry";
 import {
   RECIPE_STUDIO_ONBOARDING_ICON_TONE,
@@ -85,12 +86,7 @@ type BlockSheetProps = {
   onAddToolProfile: () => void;
   onAddExpression: () => void;
   onAddValidator: (
-    type:
-      | "validator_python"
-      | "validator_sql"
-      | "validator_oxc"
-      | "validator_json"
-      | "validator_markdown",
+    type: ValidatorBlockType,
   ) => void;
   onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
@@ -384,12 +380,7 @@ export function BlockSheet({
     }
     if (kind === "validator") {
       onAddValidator(
-        type as
-          | "validator_python"
-          | "validator_sql"
-          | "validator_oxc"
-          | "validator_json"
-          | "validator_markdown",
+        type as ValidatorBlockType,
       );
       return;
     }
