@@ -2295,7 +2295,15 @@ def _pin_top_level_group(module: Any, logger: Any = None) -> bool:
             return False
         if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
             return False
-        need_mib = sum(int(t.numel()) * int(t.element_size()) for t in tensors) // (1024 * 1024)
+        # the user's "pin nothing" override wins, as on every other streamed path
+        if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+            return False
+        # per tensor rounded to a power of two, like torch's pinned allocator (and _module_host_mib)
+        need_mib = sum(
+            1 << (int(t.numel()) * int(t.element_size()) - 1).bit_length()
+            for t in tensors
+            if int(t.numel()) * int(t.element_size()) > 0
+        ) // (1024 * 1024)
         budget = None if _pinned_memory_capped() else _pin_budget_mib()
         if budget is None or need_mib > budget:
             return False

@@ -2907,13 +2907,30 @@ def _top_group_module(monkeypatch, *, stream = None, torchao = False):
     return module, group
 
 
-def test_top_level_group_kill_switch(monkeypatch):
+@pytest.mark.parametrize("env", ["UNSLOTH_DIFFUSION_PIN_TOP_GROUP", "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN"])
+def test_top_level_group_kill_switch(monkeypatch, env):
     import core.inference.diffusion_memory as mem
 
     module, group = _top_group_module(monkeypatch)
-    monkeypatch.setenv(mem.PIN_TOP_GROUP_ENV, "0")
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setenv(env, "0")
     assert mem._pin_top_level_group(module) is False
     assert group.onload_ == "diffusers" and group.offload_ == "diffusers"
+
+
+def test_top_level_group_respects_the_pinned_allocator_rounding(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    module, group = _top_group_module(monkeypatch)
+    monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
+    # a 3 MiB weight pins as a 4 MiB block: a 3 MiB budget must refuse it
+    group.modules = [types.SimpleNamespace(parameters = lambda: [__import__("torch").empty(3 << 18)], buffers = lambda: [])]
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 3)
+    assert mem._pin_top_level_group(module) is False
+    assert group.onload_ == "diffusers"
 
 
 @pytest.mark.parametrize("kind", ["streamed_group", "torchao"])
