@@ -11,6 +11,7 @@ VRAM covers a conservative resident estimate.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,11 +133,15 @@ def _video_backend_tests():
 def _backend_with_files(monkeypatch, tmp_path, calls, *, memory_mode, flags):
     backend = _video_backend_tests()._h3_native_backend(monkeypatch, calls)
     paths = {}
+    sizes = {}
     for name, size in (("diffusion_model", 9), ("llm", 17), ("vae", 5), ("audio_vae", 1)):
         p = tmp_path / f"{name}.bin"
-        with open(p, "wb") as fh:
-            fh.truncate(size * GIB)  # sparse: the size is what counts
+        p.write_bytes(b"")
         paths[name] = str(p)
+        sizes[str(p)] = size * GIB
+    # Not truncate(): NTFS allocates the full 32 GiB per test, which fills a Windows runner's disk.
+    real_getsize = os.path.getsize
+    monkeypatch.setattr(os.path, "getsize", lambda p: sizes.get(str(p)) or real_getsize(p))
     import dataclasses
 
     state = backend._state
