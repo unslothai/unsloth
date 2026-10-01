@@ -31,10 +31,6 @@ test("a prompt setting change clears local usage even during a run", async () =>
     {
       "../api/chat-adapter": {},
       "../api/chat-api": {},
-      "../api/mcp-image-privacy": {
-        isMcpToolOnly: () => false,
-        mcpImageAttachmentForTokenCount: () => undefined,
-      },
       "../external-providers": {
         isExternalModelId: () => false,
       },
@@ -71,10 +67,6 @@ test("a prompt setting change leaves external usage intact", async () => {
     {
       "../api/chat-adapter": {},
       "../api/chat-api": {},
-      "../api/mcp-image-privacy": {
-        isMcpToolOnly: () => false,
-        mcpImageAttachmentForTokenCount: () => undefined,
-      },
       "../external-providers": {
         isExternalModelId: () => true,
       },

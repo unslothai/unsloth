@@ -18,9 +18,6 @@ export type McpImageInputMapping = {
 };
 
 export interface McpServerConfig {
-  allow_image_attachments: boolean;
-  image_input_mappings?: McpImageInputMapping[];
-  config_revision?: number;
   id: string;
   builtin_id: string | null;
   display_name: string;
@@ -28,6 +25,7 @@ export interface McpServerConfig {
   headers: Record<string, string>;
   is_enabled: boolean;
   use_oauth: boolean;
+  image_input_mappings?: McpImageInputMapping[];
   created_at: string;
   updated_at: string;
 }
@@ -178,7 +176,6 @@ export function createMcpServer(payload: {
   headers?: Record<string, string>;
   isEnabled?: boolean;
   useOauth?: boolean;
-  allowImageAttachments?: boolean;
   imageInputMappings?: McpImageInputMapping[];
 }): Promise<McpServerConfig> {
   return trackMcpServerMutation(
@@ -190,7 +187,6 @@ export function createMcpServer(payload: {
         headers: payload.headers ?? null,
         is_enabled: payload.isEnabled ?? true,
         use_oauth: payload.useOauth ?? false,
-        allow_image_attachments: payload.allowImageAttachments ?? false,
         image_input_mappings: payload.imageInputMappings ?? [],
       },
     }),
@@ -206,20 +202,18 @@ export function updateMcpServer(
     headers?: Record<string, string> | null;
     isEnabled?: boolean;
     useOauth?: boolean;
-    allowImageAttachments?: boolean;
     imageInputMappings?: McpImageInputMapping[];
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
-  if (payload.imageInputMappings !== undefined) body.image_input_mappings = payload.imageInputMappings;
   if (payload.displayName !== undefined)
     body.display_name = payload.displayName;
   if (payload.url !== undefined) body.url = payload.url;
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;
   if (payload.useOauth !== undefined) body.use_oauth = payload.useOauth;
-  if (payload.allowImageAttachments !== undefined)
-    body.allow_image_attachments = payload.allowImageAttachments;
+  if (payload.imageInputMappings !== undefined)
+    body.image_input_mappings = payload.imageInputMappings;
   return trackMcpServerMutation(
     mcpRequest(`/${serverId}`, { method: "PUT", body }),
   );
@@ -235,6 +229,12 @@ export function refreshMcpServerTools(
   serverId: string,
 ): Promise<McpServerProbeResult> {
   return mcpRequest(`/${serverId}/refresh`, { method: "POST" });
+}
+
+export function listMcpServerTools(
+  serverId: string,
+): Promise<{ name: string; inputSchema?: unknown }[]> {
+  return mcpRequest(`/${serverId}/tools`);
 }
 
 export function testMcpServer(payload: {

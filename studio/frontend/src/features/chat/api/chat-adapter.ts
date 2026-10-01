@@ -11,14 +11,11 @@ import {
   shouldOfferMinPRecovery,
 } from "../lib/min-p-recovery";
 import {
-  isMcpToolOnly,
-  markImageDisclosureReceived,
-  mcpImagePolicySnapshot,
-  modelVisibleMessage,
   type ImageDisclosure,
-  type McpImagePolicySnapshot,
-} from "./mcp-image-privacy";
-import { listMcpServers } from "./mcp-servers-api";
+  isMcpToolOnly,
+  modelVisibleMessage,
+  toolOnlyImage,
+} from "./mcp-image";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -5297,47 +5294,6 @@ export function createOpenAIStreamAdapter(
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
-      const submittedImages =
-        generationUserMessage?.attachments?.filter(
-          (attachment) => attachment.type === "image",
-        ) ?? [];
-      let mcpImagePolicy: McpImagePolicySnapshot | undefined;
-      if (hasOutboundImage || submittedImages.length) {
-        try {
-          mcpImagePolicy = mcpImagePolicySnapshot(
-            mcpEnabledForChat && supportsTools ? await listMcpServers() : [],
-          );
-        } catch {
-          throw new Error(
-            "Could not verify MCP image attachment settings. Try again.",
-          );
-        }
-        if (
-          submittedImages.length &&
-          submittedImages.every(isMcpToolOnly) !== mcpImagePolicy.tool_only
-        ) {
-          throw new Error(
-            "MCP image sharing settings changed. Remove and attach the image again.",
-          );
-        }
-      }
-      const privateImages = generationUserMessage?.attachments?.filter(isMcpToolOnly) ?? [];
-      let mcpImageAttachment: { message_id: string; attachment_id: string } | undefined;
-      if (privateImages.length) {
-        if (privateImages.length !== 1 || !resolvedThreadId || isThreadIncognito(resolvedThreadId) || !generationUserMessage) {
-          throw new Error("Tool-only sharing requires one image in a saved conversation.");
-        }
-        const stored = (await listStoredChatMessages(resolvedThreadId)).find((m) => m.id === generationUserMessage.id);
-        const index = messages.findIndex((message) => message.id === generationUserMessage.id);
-        await saveStoredChatMessage({
-          id: generationUserMessage.id, threadId: resolvedThreadId,
-          parentId: stored?.parentId !== undefined ? stored.parentId : index > 0 ? messages[index - 1]!.id : null,
-          role: "user", content: generationUserMessage.content,
-          attachments: generationUserMessage.attachments,
-          createdAt: generationUserMessage.createdAt?.getTime?.() ?? Date.now(),
-        }, { requireAcknowledgement: true });
-        mcpImageAttachment = { message_id: generationUserMessage.id, attachment_id: privateImages[0]!.id };
-      }
 
       // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
       // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
@@ -5346,9 +5302,15 @@ export function createOpenAIStreamAdapter(
       const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
         typeof findLatestUserImageBase64
       >[0];
+      const toolOnlyImages =
+        generationUserMessage?.attachments?.filter(isMcpToolOnly) ?? [];
+      if (toolOnlyImages.length > 1) {
+        throw new Error("Attach only one image for MCP tools per message.");
+      }
+      const mcpImage = toolOnlyImage(generationUserMessage);
       const currentTurnCarriesMedia = Boolean(
-        // Tool-only images carry no model-visible pixels, but still need the live disclosure stream.
-        submittedImages.length ||
+        // A tool-only image needs the live stream to ask before it is sent.
+        mcpImage ||
           findLatestUserImageBase64(currentTurnMessages) ||
           findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
           findLatestUserVideoBase64(currentTurnMessages),
@@ -6676,12 +6638,7 @@ export function createOpenAIStreamAdapter(
               requestPayload = await buildRequestPayload(
                 retriedWithRefreshedKey,
               );
-              if (mcpImageAttachment) {
-                requestPayload = { ...requestPayload, mcp_image_attachment: mcpImageAttachment } as OpenAIChatCompletionsRequest;
-              }
-              if (mcpImagePolicy) {
-                requestPayload = { ...requestPayload, mcp_image_policy: mcpImagePolicy };
-              }
+              if (mcpImage) requestPayload = { ...requestPayload, mcp_image: mcpImage };
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -7176,9 +7133,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
-                        markImageDisclosureReceived(
-                          toolEvent.image_disclosure as ImageDisclosure | undefined,
-                        ),
+                        toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {

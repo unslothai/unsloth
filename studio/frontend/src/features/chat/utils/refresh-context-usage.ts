@@ -11,10 +11,6 @@ import {
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
-import {
-  isMcpToolOnly,
-  mcpImageAttachmentForTokenCount,
-} from "../api/mcp-image-privacy";
 import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
@@ -95,13 +91,6 @@ function foldHash(text: string, seed: number): number {
 }
 
 function foldPart(part: unknown, seed: number): number {
-  if (isMcpToolOnly(part)) {
-    const id = (part as { id?: unknown }).id;
-    return foldHash(
-      `mcpToolOnly:${typeof id === "string" ? id : ""}`,
-      seed,
-    );
-  }
   let serialized: string;
   try {
     serialized = JSON.stringify(part) ?? "";
@@ -267,23 +256,6 @@ export async function refreshContextUsage(
     if (stale()) return;
     const countExtras = await buildLocalTokenCountExtras(payloadThreadId);
     if (stale()) return;
-    const latestUser = [...runMessages]
-      .reverse()
-      .find((message) => message.role === "user");
-    const hasToolOnlyImage =
-      latestUser && "attachments" in latestUser
-        ? latestUser.attachments?.some(isMcpToolOnly) === true
-        : false;
-    const persistedMessages =
-      payloadThreadId && hasToolOnlyImage
-        ? await listStoredChatMessages(payloadThreadId)
-        : [];
-    if (stale()) return;
-    const mcpImageAttachment = mcpImageAttachmentForTokenCount(
-      runMessages as Parameters<typeof mcpImageAttachmentForTokenCount>[0],
-      payloadThreadId,
-      persistedMessages,
-    );
 
     // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
     // injects schemas the client cannot see.
@@ -293,9 +265,6 @@ export async function refreshContextUsage(
         ...countHistory,
         ...buildLocalTokenCountReasoning(),
         ...countExtras,
-        ...(mcpImageAttachment
-          ? { mcp_image_attachment: mcpImageAttachment }
-          : {}),
       });
 
     if (stale()) return;

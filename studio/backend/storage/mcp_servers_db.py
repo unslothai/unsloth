@@ -24,10 +24,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             headers_json TEXT,
             is_enabled INTEGER NOT NULL DEFAULT 1,
             use_oauth INTEGER NOT NULL DEFAULT 0,
-            allow_image_attachments INTEGER NOT NULL DEFAULT 0,
-            image_input_mappings_json TEXT NOT NULL DEFAULT '[]',
-            image_input_schema_digest TEXT,
-            config_revision INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -37,23 +33,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
-    for column in ("builtin_id", "builtin_config_json"):
+    for column in ("builtin_id", "builtin_config_json", "image_input_mappings_json"):
         if column not in cols:
             conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} TEXT")
-    if "image_input_mappings_json" not in cols:
-        conn.execute(
-            "ALTER TABLE mcp_servers ADD COLUMN image_input_mappings_json TEXT NOT NULL DEFAULT '[]'"
-        )
-    if "allow_image_attachments" not in cols:
-        conn.execute(
-            "ALTER TABLE mcp_servers ADD COLUMN allow_image_attachments INTEGER NOT NULL DEFAULT 0"
-        )
-    if "image_input_schema_digest" not in cols:
-        conn.execute("ALTER TABLE mcp_servers ADD COLUMN image_input_schema_digest TEXT")
-    if "config_revision" not in cols:
-        conn.execute(
-            "ALTER TABLE mcp_servers ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1"
-        )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_builtin_id ON mcp_servers(builtin_id)"
     )
@@ -89,11 +71,9 @@ def create_server(
     headers_json: Optional[str] = None,
     is_enabled: bool = True,
     use_oauth: bool = False,
-    allow_image_attachments: bool = False,
     builtin_id: Optional[str] = None,
     builtin_config_json: Optional[str] = None,
-    image_input_mappings_json: str = "[]",
-    image_input_schema_digest: Optional[str] = None,
+    image_input_mappings_json: Optional[str] = None,
 ) -> None:
     from core.inference.mcp_client import validate_mcp_address
 
@@ -105,9 +85,9 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                is_enabled, use_oauth, allow_image_attachments, created_at, updated_at, builtin_id, builtin_config_json,
-                image_input_mappings_json, image_input_schema_digest, config_revision)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 is_enabled, use_oauth, created_at, updated_at, builtin_id, builtin_config_json,
+                 image_input_mappings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -116,13 +96,11 @@ def create_server(
                 headers_json,
                 int(is_enabled),
                 int(use_oauth),
-                int(allow_image_attachments),
                 now,
                 now,
                 builtin_id,
                 builtin_config_json,
                 image_input_mappings_json,
-                image_input_schema_digest,
             ),
         )
         conn.commit()
@@ -137,12 +115,11 @@ def update_server(id: str, changes: dict) -> bool:
     if "url" in changes:
         from core.inference.mcp_client import validate_mcp_address
         validate_mcp_address(changes["url"])
-    bool_cols = {"is_enabled", "use_oauth", "allow_image_attachments"}
+    bool_cols = {"is_enabled", "use_oauth"}
     sets, params = [], []
     for col, value in changes.items():
         sets.append(f"{col} = ?")
         params.append(int(value) if col in bool_cols else value)
-    sets.append("config_revision = config_revision + 1")
     sets.append("updated_at = ?")
     params.extend([datetime.now(timezone.utc).isoformat(), id])
 

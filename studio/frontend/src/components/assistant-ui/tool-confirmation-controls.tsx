@@ -18,10 +18,8 @@ import type {
   ToolCallMessagePartComponent,
   ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useChatActive, useChatNavigationStore } from "@/features/chat";
-import { disclosureExpired, mayAutoApproveTool } from "@/features/chat/api/mcp-image-privacy";
-import { authFetch } from "@/features/auth";
 
 /**
  * Allow / Always allow / Deny controls for a tool call paused awaiting the
@@ -56,35 +54,12 @@ export function ToolConfirmationControls({
     (s) => s.clearToolConfirmation,
   );
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
+  // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
   const disclosure = confirmation?.imageDisclosure;
-  const seenDisclosure = useRef(false);
-  if (disclosure) seenDisclosure.current = true;
-  const [preview, setPreview] = useState<string>();
-  useEffect(() => {
-    setPreview(undefined);
-    const path = disclosure?.previewUrl;
-    if (!path?.startsWith("/api/") || path.includes("\\")) return;
-    let active = true;
-    let objectUrl: string | undefined;
-    void authFetch(path).then(async (response) => {
-      if (!response.ok) return;
-      const blob = await response.blob();
-      if (!active) return;
-      objectUrl = URL.createObjectURL(blob);
-      setPreview(objectUrl);
-    }).catch(() => undefined);
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [disclosure?.previewUrl]);
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (!disclosure) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [disclosure]);
-  const expired = disclosure ? disclosureExpired(disclosure, now) : false;
   const autoAllowed = useChatRuntimeStore(
     (s) =>
-      mayAutoApproveTool(disclosure, s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
+      !disclosure &&
+      (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
 
   const [decided, setDecided] = useState(false);
@@ -105,7 +80,7 @@ export function ToolConfirmationControls({
 
   const resolve = useCallback(
     async (decision: "allow" | "deny", alsoAlways = false) => {
-      if (!toolCallId || !confirmation || expired || failure === "gone") return;
+      if (!toolCallId || !confirmation) return;
       setPending(decision);
       setFailure(null);
       try {
@@ -113,13 +88,12 @@ export function ToolConfirmationControls({
           confirmation.sessionId,
           confirmation.approvalId,
           decision,
-          disclosure ? "mcp_image_disclosure" : "tool",
         );
         if (ok) {
           // The session-wide grant is recorded only once the backend has actually taken the
           // decision. Granting it up front on the click meant a press that visibly failed still
           // silently auto-approved this tool for every later call in the session.
-          if (alsoAlways && !disclosure && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
+          if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
           // Only hide the controls once the backend confirms it matched the pending call --
           // otherwise the generation would stay blocked with no way to retry.
           setDecided(true);
@@ -140,9 +114,6 @@ export function ToolConfirmationControls({
       allowToolAlways,
       autoAllowKey,
       toolName,
-      disclosure,
-      expired,
-      failure,
     ],
   );
 
@@ -209,38 +180,40 @@ export function ToolConfirmationControls({
     },
   );
 
-  if (!showControls) return seenDisclosure.current && !decided ? <p role="status" className="text-xs text-muted-foreground">Image sharing request expired or cancelled.</p> : null;
+  if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.
   if (autoAllowed && !failed) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
-      {disclosure && <div className="w-full space-y-2 rounded-lg border p-3 text-sm">
-        {preview ? <img src={preview} alt="Image to share" className="max-h-32 max-w-48 rounded object-contain" /> : <p>Image preview unavailable.</p>}
-        <p>Share {(disclosure.sizeBytes / 1024).toFixed(1)} KiB with {disclosure.serverName}?</p>
-        <p className="break-all">Tool: {disclosure.toolName}<br />Destination: {disclosure.destination}<br />Field: {disclosure.field} ({disclosure.encoding})</p>
-        <p className="text-muted-foreground">This server may retain or forward the image. Sharing permits one invocation.</p>
-        {expired && <p role="status">{disclosure.status === "cancelled" ? "Image sharing cancelled." : "Image sharing request expired."}</p>}
-      </div>}
+      {disclosure ? (
+        <p className="w-full text-xs text-muted-foreground">
+          Send your attached image ({Math.ceil(disclosure.size_bytes / 1024)}{" "}
+          KB) to {disclosure.server} ({disclosure.tool})? The server may keep
+          it.
+        </p>
+      ) : null}
       <Button
         size="xs"
-        disabled={pending !== null || expired || failure === "gone"}
+        disabled={pending !== null || failure === "gone"}
         onClick={() => void resolve("allow")}
       >
         {disclosure ? "Share image once" : "Allow"}
       </Button>
-      {!disclosure && <Button
-        size="xs"
-        variant="outline"
-        disabled={pending !== null || failure === "gone"}
-        onClick={() => void resolve("allow", true)}
-      >
-        Always allow
-      </Button>}
+      {disclosure ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={pending !== null || failure === "gone"}
+          onClick={() => void resolve("allow", true)}
+        >
+          Always allow
+        </Button>
+      )}
       <Button
         size="xs"
         variant="destructive"
-        disabled={pending !== null || expired || failure === "gone"}
+        disabled={pending !== null || failure === "gone"}
         onClick={() => void resolve("deny")}
       >
         Deny

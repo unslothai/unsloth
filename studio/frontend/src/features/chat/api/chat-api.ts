@@ -338,7 +338,6 @@ export async function countChatInputTokens(payload: {
   enable_tools?: boolean;
   enabled_tools?: string[];
   mcp_enabled?: boolean;
-  mcp_image_attachment?: { message_id: string; attachment_id: string };
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
@@ -498,7 +497,6 @@ export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
   decision: "allow" | "deny",
-  purpose: "tool" | "mcp_image_disclosure" = "tool",
 ): Promise<boolean> {
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
@@ -507,7 +505,6 @@ export async function resolveToolConfirmation(
       session_id: sessionId,
       approval_id: approvalId,
       decision,
-      purpose,
     }),
   });
   // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.

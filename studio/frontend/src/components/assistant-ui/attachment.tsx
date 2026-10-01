@@ -571,7 +571,6 @@ const AttachmentUI: FC = () => {
 };
 
 const AttachmentRemove: FC = () => {
-  const attachmentId = useAuiState(({ attachment }) => attachment.id);
   return (
     <AttachmentPrimitive.Remove asChild={true}>
       <Button

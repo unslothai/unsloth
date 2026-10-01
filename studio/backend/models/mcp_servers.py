@@ -3,24 +3,15 @@
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import BaseModel, Field, StrictStr
 
 
 class McpImageInputMapping(BaseModel):
-    """Explicit opt-in mapping for one private image argument."""
-
-    model_config = ConfigDict(extra = "forbid")
+    """A top-level string field of ``tool`` that receives the user's approved image."""
 
     tool: StrictStr = Field(min_length = 1, max_length = 256)
     field: StrictStr = Field(min_length = 1, max_length = 256)
-    encoding: Literal["base64", "data_url"]
-
-    @field_validator("tool", "field")
-    @classmethod
-    def _plain_nonempty_name(cls, value: str) -> str:
-        if value != value.strip() or "\x00" in value:
-            raise ValueError("mapping names must be trimmed and contain no NUL bytes")
-        return value
+    encoding: Literal["base64", "data_url"] = "base64"
 
 
 class McpServerCreate(BaseModel):
@@ -29,8 +20,7 @@ class McpServerCreate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: bool = True
     use_oauth: bool = False
-    allow_image_attachments: bool = False
-    image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list, max_length = 256)
+    image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list, max_length = 64)
 
 
 class McpServerUpdate(BaseModel):
@@ -40,9 +30,7 @@ class McpServerUpdate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: Optional[bool] = None
     use_oauth: Optional[bool] = None
-    allow_image_attachments: Optional[bool] = None
-    # Absent = preserve; [] = clear. Null is rejected by the route.
-    image_input_mappings: Optional[list[McpImageInputMapping]] = Field(default = None, max_length = 256)
+    image_input_mappings: Optional[list[McpImageInputMapping]] = Field(None, max_length = 64)
 
 
 class McpServerResponse(BaseModel):
@@ -53,9 +41,7 @@ class McpServerResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory = dict)
     is_enabled: bool = True
     use_oauth: bool = False
-    allow_image_attachments: bool = False
     image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list)
-    config_revision: int = 1
     created_at: str
     updated_at: str
 
@@ -111,7 +97,6 @@ class McpServerProbeResult(BaseModel):
     error: Optional[str] = None
     blender_ready: Optional[bool] = None
     blender_error: Optional[str] = None
-    image_mapping_errors: list[str] = Field(default_factory = list)
 
 
 class McpServerImportRequest(BaseModel):

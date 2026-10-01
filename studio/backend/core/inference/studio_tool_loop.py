@@ -100,13 +100,8 @@ from core.inference.tools import (
     build_rag_autoinject,
     execute_tool,
     is_high_risk_tool_call,
+    mcp_image_share,
     never_needs_approval,
-)
-from core.inference.mcp_image_tool_loop import (
-    abort_call_decision,
-    begin_call_decision,
-    mcp_image_run_lifetime,
-    wait_call_decision,
 )
 from state.tool_approvals import (
     DECISION_EXPIRED,
@@ -1248,14 +1243,13 @@ async def _drain_step_task(task: Any, cancel_event: threading.Event) -> None:
         pass
 
 
-@mcp_image_run_lifetime
 async def stream_with_studio_tools(
     transport: ToolLoopTransport,
     *,
     run: ToolLoopRun,
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
-    mcp_image_run = None,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
@@ -1717,11 +1711,6 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
-            image_approval = (
-                await asyncio.to_thread(mcp_image_run.prepare_call, name, arguments, card_id)
-                if mcp_image_run is not None
-                else None
-            )
             needs_confirmation = (
                 confirm_tool_calls
                 and not bypass_permissions
@@ -1730,15 +1719,23 @@ async def stream_with_studio_tools(
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
-            needs_confirmation = needs_confirmation or image_approval is not None
-            approval_id, decision_slot, start_event = begin_call_decision(
-                decision,
-                image_approval,
-                needs_confirmation,
-                session_id,
-                new_approval_id,
-                begin_tool_decision,
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = (
+                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
+                if mcp_image is not None
+                else None
             )
+            needs_confirmation = needs_confirmation or image_share is not None
+            approval_id = new_approval_id() if needs_confirmation else ""
+            decision_slot = (
+                begin_tool_decision(session_id, approval_id) if needs_confirmation else None
+            )
+
+            start_event = decision.tool_start_event()
+            start_event["approval_id"] = approval_id
+            start_event["awaiting_confirmation"] = needs_confirmation
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1751,12 +1748,7 @@ async def stream_with_studio_tools(
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
-                            wait_call_decision,
-                            image_approval,
-                            decision_slot,
-                            approval_id,
-                            cancel_event,
-                            ordinary_wait = wait_tool_decision,
+                            wait_tool_decision, decision_slot, approval_id, cancel_event
                         )
                     )
                     try:
@@ -1786,9 +1778,7 @@ async def stream_with_studio_tools(
                     decision_slot = None
             finally:
                 if decision_slot is not None:
-                    abort_call_decision(
-                        image_approval, decision_slot, approval_id, abort_tool_decision
-                    )
+                    abort_tool_decision(decision_slot, approval_id)
 
             if denied:
                 # An approval nobody answered is not the user's decision, and this string is the only
@@ -1861,8 +1851,8 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
-                if image_approval is not None:
-                    kwargs["mcp_image_context"] = image_approval.context
+                if image_share is not None:
+                    kwargs["mcp_image"] = mcp_image
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long

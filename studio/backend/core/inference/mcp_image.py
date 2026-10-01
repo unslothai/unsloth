@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Send a user's attached image to a mapped MCP tool field without the model seeing its bytes.
+
+A server opts in by mapping one top-level string field of a tool. The model only ever sees the
+placeholder ``ATTACHED_IMAGE`` in that field; the tool loop asks the user before every call that
+would carry the image, and ``execute_tool`` swaps the bytes in after that approval.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import copy
+import io
+import json
+from dataclasses import dataclass, field
+from typing import Optional
+
+ATTACHED_IMAGE = "attached_image"
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# Pillow reports a JPEG carrying extra pictures (phone HDR / portrait shots) as MPO.
+_FORMATS = {"image/png": ("PNG",), "image/jpeg": ("JPEG", "MPO"), "image/webp": ("WEBP",)}
+
+
+class McpImageError(ValueError):
+    pass
+
+
+@dataclass(frozen = True)
+class McpImage:
+    mime: str
+    data: bytes = field(repr = False)
+
+    def encoded(self, encoding: str) -> str:
+        text = base64.b64encode(self.data).decode("ascii")
+        return f"data:{self.mime};base64,{text}" if encoding == "data_url" else text
+
+    def redact(self, text: str) -> str:
+        # Servers that echo their input would otherwise put the bytes in the model's context.
+        head, *tails = text.split(self.encoded("base64").rstrip("="))
+        for tail in tails:
+            head = head.removesuffix(f"data:{self.mime};base64,") + "[attached image]"
+            head += tail.removeprefix("==").removeprefix("=")
+        return head
+
+
+def parse_mcp_image(data_url: str) -> McpImage:
+    """Decode and verify the data URL a Studio client sends as ``mcp_image``."""
+    header, sep, payload = data_url.partition(",")
+    mime = header[5:].split(";", 1)[0].lower() if header.startswith("data:") else ""
+    if not sep or mime not in _FORMATS or ";base64" not in header.lower():
+        raise McpImageError("The tool image must be a PNG, JPEG or WebP data URL.")
+    try:
+        data = base64.b64decode("".join(payload.split()), validate = True)
+    except (binascii.Error, ValueError):
+        raise McpImageError("The tool image is not valid base64.") from None
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise McpImageError("The tool image must be at most 10 MiB.")
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.verify()
+            actual = image.format
+    except Exception:
+        raise McpImageError("The tool image could not be decoded.") from None
+    if actual not in _FORMATS[mime]:
+        raise McpImageError("The tool image content does not match its type.")
+    return McpImage(mime = mime, data = data)
+
+
+def image_input_mappings(server: dict) -> list[dict]:
+    raw = server.get("image_input_mappings_json")
+    if not raw:
+        return []
+    try:
+        mappings = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [m for m in mappings if isinstance(m, dict)] if isinstance(mappings, list) else []
+
+
+def _input_schema(tool: dict) -> dict:
+    schema = tool.get("inputSchema") or tool.get("input_schema")
+    return schema if isinstance(schema, dict) else {}
+
+
+def image_mapping(server: dict, tool: Optional[dict]) -> Optional[dict]:
+    """The server's mapping for ``tool`` while its field is still a top-level string."""
+    if not tool:
+        return None
+    for mapping in image_input_mappings(server):
+        if mapping.get("tool") != tool.get("name"):
+            continue
+        properties = _input_schema(tool).get("properties")
+        prop = properties.get(mapping.get("field")) if isinstance(properties, dict) else None
+        if isinstance(prop, dict) and prop.get("type") == "string":
+            return mapping
+    return None
+
+
+def public_tool(server: dict, tool: dict) -> dict:
+    """``tool`` as the model sees it: a mapped field accepts only the placeholder."""
+    mapping = image_mapping(server, tool)
+    if mapping is None:
+        return tool
+    schema = copy.deepcopy(_input_schema(tool))
+    schema["properties"][mapping["field"]] = {
+        "type": "string",
+        "enum": [ATTACHED_IMAGE],
+        "description": (
+            f'Pass "{ATTACHED_IMAGE}" to send the image the user attached to their latest '
+            "message. Studio inserts it after the user approves; never pass image data or a URL."
+        ),
+    }
+    public = {k: v for k, v in tool.items() if k not in ("inputSchema", "input_schema")}
+    public["inputSchema"] = schema
+    return public

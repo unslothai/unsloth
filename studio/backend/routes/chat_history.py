@@ -834,12 +834,6 @@ async def delete_threads(
         delete_chat_threads_with_active_runs,
         payload.ids,
     )
-    from core.inference.mcp_image_disclosure import revoke_mcp_image_references
-    from state.tool_approvals import revoke_mcp_image_disclosures
-
-    for thread_id in payload.ids:
-        revoke_mcp_image_references(subject = current_subject, thread_id = thread_id)
-        revoke_mcp_image_disclosures(subject = current_subject, thread_id = thread_id)
     _cancel_research_runs(request, deleted_research_run_ids)
     _cancel_chat_generation_runs(request, deleted_chat_run_ids)
     _cancel_active_generations(payload.ids)
@@ -1149,19 +1143,6 @@ def delete_attachment(
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
     chat_originals.sweep()
-    from core.inference.mcp_image_disclosure import revoke_mcp_image_references
-    from state.tool_approvals import revoke_mcp_image_disclosures
-
-    revoke_mcp_image_references(
-        subject = current_subject,
-        message_id = message_id,
-        attachment_id = attachment_id,
-    )
-    revoke_mcp_image_disclosures(
-        subject = current_subject,
-        message_id = message_id,
-        attachment_id = attachment_id,
-    )
     return {"ok": True}
 
 
@@ -1715,8 +1696,9 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
         raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
-        settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
-        return ChatSettingsResponse(settings = settings)
+        return ChatSettingsResponse(
+            settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
+        )
     except CorruptSettingsError as exc:
         raise log_and_http_error(
             exc,

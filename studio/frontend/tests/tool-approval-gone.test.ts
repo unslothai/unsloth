@@ -153,7 +153,7 @@ test("Always allow records its session grant only after the backend takes the de
     /onClick=\{\(\) => \{\s*if \(autoAllowKey\) allowToolAlways/,
     "the session grant is being recorded on the click again, ahead of the decision landing",
   );
-  assert.match(CONTROLS, /if \(alsoAlways && !disclosure && autoAllowKey\) allowToolAlways\(/);
+  assert.match(CONTROLS, /if \(alsoAlways && autoAllowKey\) allowToolAlways\(/);
   assert.match(
     CONTROLS,
     /onClick=\{\(\) => void resolve\("allow", true\)\}/,

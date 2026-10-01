@@ -76,12 +76,6 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
 )
 from core.inference.passthrough_healing import nudge_enabled
-from core.inference.mcp_image_tool_loop import (
-    abort_call_decision,
-    begin_call_decision,
-    mcp_image_run_lifetime,
-    wait_call_decision,
-)
 from state.tool_approvals import (
     DECISION_EXPIRED,
     TOOL_APPROVAL_EXPIRED_MESSAGE,
@@ -598,7 +592,6 @@ def _spent_prompt_tokens(
     return _dense_message_tokens(conversation) + _dense_message_tokens(tools or [])
 
 
-@mcp_image_run_lifetime
 def run_safetensors_tool_loop(
     *,
     single_turn: Callable[[list], Generator[str, None, None]],
@@ -614,6 +607,7 @@ def run_safetensors_tool_loop(
     thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
+    mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
@@ -623,7 +617,6 @@ def run_safetensors_tool_loop(
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
-    mcp_image_run = None,
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
 ) -> Generator[dict, None, None]:
@@ -1463,7 +1456,7 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" never
             # prompts (sandbox stays on).
-            from core.inference.tools import never_needs_approval
+            from core.inference.tools import mcp_image_share, never_needs_approval
 
             needs_confirm = (
                 bool(confirm_tool_calls)
@@ -1474,20 +1467,16 @@ def run_safetensors_tool_loop(
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_high_risk_tool_call
                 needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
-            image_approval = (
-                mcp_image_run.prepare_call(decision.tool_name, decision.arguments, decision.card_id)
-                if mcp_image_run is not None
-                else None
-            )
-            needs_confirm = needs_confirm or image_approval is not None
-            approval_id, decision_slot, start_event = begin_call_decision(
-                decision,
-                image_approval,
-                needs_confirm,
-                session_id,
-                new_approval_id,
-                begin_tool_decision,
-            )
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+            needs_confirm = needs_confirm or image_share is not None
+            approval_id = new_approval_id() if needs_confirm else ""
+            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            start_event = decision.tool_start_event()
+            start_event["approval_id"] = approval_id
+            start_event["awaiting_confirmation"] = needs_confirm
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share
 
             try:
                 # A gated call has not started: say waiting, not "Running" (GGUF parity).
@@ -1502,12 +1491,10 @@ def run_safetensors_tool_loop(
                 yield start_event
 
                 _decision = (
-                    wait_call_decision(
-                        image_approval,
+                    wait_tool_decision(
                         decision_slot,
                         approval_id,
                         cancel_event = cancel_event,
-                        ordinary_wait = wait_tool_decision,
                     )
                     if decision_slot is not None
                     else None
@@ -1549,9 +1536,7 @@ def run_safetensors_tool_loop(
                 decision_slot = None
             finally:
                 if decision_slot is not None:
-                    abort_call_decision(
-                        image_approval, decision_slot, approval_id, abort_tool_decision
-                    )
+                    abort_tool_decision(decision_slot, approval_id)
 
             eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
             # RAG: cap paraphrased KB re-searches that slip past the dup guard.
@@ -1679,8 +1664,8 @@ def run_safetensors_tool_loop(
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
-                    if image_approval is not None:
-                        kwargs["mcp_image_context"] = image_approval.context
+                    if image_share is not None:
+                        kwargs["mcp_image"] = mcp_image
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

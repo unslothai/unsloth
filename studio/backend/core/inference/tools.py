@@ -59,6 +59,12 @@ import time
 import urllib.parse
 import urllib.request
 
+from core.inference.mcp_image import (
+    ATTACHED_IMAGE,
+    image_input_mappings,
+    image_mapping,
+    public_tool,
+)
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
     TOOL_CACHE_INVALIDATING_FIELDS,
@@ -69,7 +75,6 @@ from core.inference.mcp_client import (
     is_studio_decisions,
     is_stdio,
     list_tools_async,
-    mcp_tool_model_visible,
     parse_server_headers,
     probe_timeout,
     record_probe_failure,
@@ -13319,8 +13324,23 @@ def _mcp_tool_schema_text(display: str, tool: dict) -> str:
 def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     for tool in get_cached_tools(server["id"]) or []:
         if tool.get("name") == tool_name and _mcp_tool_model_visible(tool):
-            return tool
+            return public_tool(server, tool)
     return None
+
+
+def mcp_image_share(name, arguments, mcp_image) -> dict | None:
+    """Approval-card details when this call would send the user's attached image, else None."""
+    if mcp_image is None or not isinstance(arguments, dict):
+        return None
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    mapping = image_mapping(server, tool) if server else None
+    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+        return None
+    return {
+        "server": server.get("display_name") or server["id"],
+        "tool": tool_name,
+        "size_bytes": len(mcp_image.data),
+    }
 
 
 def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
@@ -13508,7 +13528,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not mcp_tool_model_visible(tool):
+        if not _mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = names_by_raw.get(raw_name)
@@ -13587,6 +13607,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
             if not in_failure_cooloff(server["id"]):
                 complete = False
             continue
+        payload = [public_tool(server, tool) for tool in payload]
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed), complete
 
@@ -13645,6 +13666,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
+        payload = [public_tool(server, tool) for tool in payload]
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed)
 
@@ -13691,7 +13713,7 @@ def execute_tool(
     *,
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
-    mcp_image_context = None,
+    mcp_image = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -13875,32 +13897,16 @@ def execute_tool(
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
-        config_revision = server.get("config_revision")
-
-        # A private reference is a selector, never a grant. Direct callers must
-        # not bypass the interactive disclosure gate or send it as raw input.
-        from .mcp_image_disclosure import stored_image_input_mappings
-
-        image_mapping = next(
-            (
-                mapping
-                for mapping in stored_image_input_mappings(server)
-                if isinstance(mapping, dict) and mapping.get("tool") == tool_name
-            ),
-            None,
+        mapping = (
+            image_mapping(server, tool or _mcp_cached_tool(server, tool_name))
+            if image_input_mappings(server) and isinstance(arguments, dict)
+            else None
         )
-        mapped_image_tool = image_mapping is not None
-        mapped_field = image_mapping.get("field") if mapped_image_tool else None
-        private_selector = mapped_image_tool and any(
-            isinstance(value, str) and value.startswith("mcp-image-ref-")
-            for value in arguments.values()
-        )
-        private_enabled = mapped_image_tool and bool(server.get("allow_image_attachments"))
-        mapped_argument = isinstance(mapped_field, str) and mapped_field in arguments
-        if (
-            private_selector or (private_enabled and mapped_argument)
-        ) and mcp_image_context is None:
-            return "Error: Sharing this image requires a new explicit image approval."
+        if mapping and arguments.get(mapping["field"]) == ATTACHED_IMAGE:
+            # Only a tool loop that just got the user's approval for this call passes mcp_image.
+            if mcp_image is None:
+                return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
+            arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -13911,19 +13917,11 @@ def execute_tool(
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
-                and (mcp_image_context is None or bool(row.get("allow_image_attachments")))
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
-                and row.get("config_revision") == config_revision
             )
 
-        private_kwargs = {}
-        if mcp_image_context is not None:
-            from .mcp_image_redaction import McpImageCallContext, PRIVATE_CALL_ERROR
-            if not isinstance(mcp_image_context, McpImageCallContext) or not mapped_image_tool:
-                return PRIVATE_CALL_ERROR
-            private_kwargs["disclosure_context"] = mcp_image_context
         result = call_tool_sync(
             url = url,
             headers = headers,
@@ -13934,8 +13932,9 @@ def execute_tool(
             cancel_event = cancel_event,
             scope = mcp_scope,
             config_check = _config_current,
-            **private_kwargs,
         )
+        if mcp_image is not None and isinstance(result, str):
+            result = mcp_image.redact(result)
         if tool is not None and isinstance(result, str) and result.startswith("Error:"):
             return _mcp_schema_page(
                 result.rstrip() + "\n\n", _mcp_tool_schema_text(display, tool), 0

@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { listMcpServers } from "./api/mcp-servers-api";
-import { mcpImagePolicySnapshot } from "./api/mcp-image-privacy";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
+import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
+import { listMcpServers } from "./api/mcp-servers-api";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -95,6 +95,7 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  externalModelSupportsStudioTools,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
@@ -313,28 +314,32 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-const MCP_TOOL_ONLY_MIMES = ["image/png", "image/jpeg", "image/webp"];
-const MCP_TOOL_ONLY_MAX_BYTES = 10 * 1024 * 1024;
-const MCP_TOOL_ONLY_FORMAT_ERROR =
-  "Tool-only images must be PNG, JPEG or WebP and at most 10 MiB.";
+const MCP_TOOL_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
+
+/** Whether images go to mapped MCP tool fields instead of the model; null when unknown. */
+async function mcpToolOnlyEnabled(): Promise<boolean | null> {
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  const toolsSupported = parseExternalModelId(checkpoint)
+    ? externalModelSupportsStudioTools(checkpoint)
+    : state.supportsTools ||
+      !chatModelLoaded({
+        checkpoint,
+        modelLoading: state.modelLoading,
+        isExternalModel: false,
+        residentCheckpoint: state.residentCheckpoint,
+      });
+  if (!toolsSupported || !state.mcpEnabledForChat) return false;
+  try {
+    return mcpImageMappingsEnabled(await listMcpServers());
+  } catch {
+    return null;
+  }
+}
 
 class VisionImageAdapter implements AttachmentAdapter {
   accept = CHAT_IMAGE_ACCEPT;
   private readonly converted = new Map<string, Promise<File | null>>();
-  private readonly pendingToolOnly = new Set<string>();
-
-  private async mcpToolOnlyEnabled(): Promise<boolean> {
-    const state = useChatRuntimeStore.getState();
-    const modelLoaded = !!state.params.checkpoint && !state.modelLoading;
-    if (!state.mcpEnabledForChat || (modelLoaded && !state.supportsTools)) return false;
-    try {
-      return mcpImagePolicySnapshot(await listMcpServers()).tool_only;
-    } catch {
-      const reason = "Could not verify MCP image attachment settings. Try again.";
-      toast.error(reason);
-      throw new Error(reason);
-    }
-  }
 
   async *add({
     file: picked,
@@ -378,24 +383,22 @@ class VisionImageAdapter implements AttachmentAdapter {
           visionDisabledByUser: state.loadedVisionDisabledByUser,
           mmprojFallbackReason: state.mmprojFallbackReason,
         });
-    const mcpToolOnly = await this.mcpToolOnlyEnabled();
+    // Unknown (the server list failed) keeps the ordinary image path.
+    const mcpToolOnly = (await mcpToolOnlyEnabled()) === true;
     if (unavailableReason && !mcpToolOnly) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
-    if (mcpToolOnly) {
+    if (
+      mcpToolOnly &&
+      (picked.size > 10 * 1024 * 1024 ||
+        (!MCP_TOOL_IMAGE_MIMES.includes(picked.type) &&
+          convertedImageType(picked) === null))
+    ) {
       const reason =
-        picked.size > MCP_TOOL_ONLY_MAX_BYTES ||
-        (!MCP_TOOL_ONLY_MIMES.includes(picked.type) &&
-          convertedImageType(picked) === null)
-          ? MCP_TOOL_ONLY_FORMAT_ERROR
-          : this.pendingToolOnly.size > 0
-            ? "Only one tool-only image can be attached at a time."
-            : null;
-      if (reason) {
-        toast.error(reason);
-        throw new Error(reason);
-      }
+        "Images for MCP tools must be PNG, JPEG or WebP and at most 10 MB.";
+      toast.error(reason);
+      throw new Error(reason);
     }
 
     const maxSize = 20 * 1024 * 1024;
@@ -411,7 +414,6 @@ class VisionImageAdapter implements AttachmentAdapter {
       ...(mcpToolOnly ? { mcpToolOnly: true } : {}),
       status: { type: "requires-action", reason: "composer-send" },
     } satisfies PendingAttachment & { mcpToolOnly?: boolean };
-    if (mcpToolOnly) this.pendingToolOnly.add(attachment.id);
     if (convertedImageType(picked) === null) {
       yield attachment;
       return;
@@ -443,53 +445,40 @@ class VisionImageAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const toolOnly =
-      (attachment as PendingAttachment & { mcpToolOnly?: boolean })
-        .mcpToolOnly === true;
     const conversion = this.converted.get(attachment.id);
     this.converted.delete(attachment.id);
-    try {
-      const file = conversion ? await conversion : attachment.file;
-      if ((await this.mcpToolOnlyEnabled()) !== toolOnly) {
-        const reason =
-          "MCP image sharing settings changed. Remove and attach the image again.";
-        toast.error(reason);
-        throw new Error(reason);
-      }
-      if (
-        toolOnly &&
-        (!file ||
-          file.size > MCP_TOOL_ONLY_MAX_BYTES ||
-          !MCP_TOOL_ONLY_MIMES.includes(file.type))
-      ) {
-        throw new Error(MCP_TOOL_ONLY_FORMAT_ERROR);
-      }
-      const flag = toolOnly ? { mcpToolOnly: true } : {};
-      return {
-        id: attachment.id,
-        type: "image",
-        ...flag,
-        name: file?.name ?? attachment.name,
-        contentType: file?.type ?? attachment.contentType,
-        content: file
-          ? [
-              {
-                type: "image",
-                image: await this.fileToBase64DataURL(file),
-                ...flag,
-              },
-            ]
-          : [],
-        status: { type: "complete" },
-      };
-    } finally {
-      this.pendingToolOnly.delete(attachment.id);
+    const file = conversion ? await conversion : attachment.file;
+    const current = await mcpToolOnlyEnabled();
+    if (current !== null && current !== isMcpToolOnly(attachment)) {
+      // Otherwise the image reaches neither the tool nor the model, or the model unasked.
+      const reason =
+        "MCP image settings changed since this image was attached. Remove it and attach it again.";
+      toast.error(reason);
+      throw new Error(reason);
     }
+    // Flagged on the part too: modelVisibleMessage drops it from what the model receives.
+    const toolOnly = isMcpToolOnly(attachment) ? { mcpToolOnly: true } : {};
+    return {
+      id: attachment.id,
+      type: "image",
+      ...toolOnly,
+      name: file?.name ?? attachment.name,
+      contentType: file?.type ?? attachment.contentType,
+      content: file
+        ? [
+            {
+              type: "image",
+              image: await this.fileToBase64DataURL(file),
+              ...toolOnly,
+            },
+          ]
+        : [],
+      status: { type: "complete" },
+    };
   }
 
   async remove(attachment: { id: string }): Promise<void> {
     this.converted.delete(attachment.id);
-    this.pendingToolOnly.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
