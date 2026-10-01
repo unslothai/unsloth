@@ -2208,6 +2208,9 @@ def _ui_request_sync(
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 
     async def _one_shot() -> Any:
+        # The session branch rejects the same race: an edit during discovery must not reach the old endpoint.
+        if config_check is not None and not config_check():
+            raise RuntimeError("MCP server was updated or removed during the call")
         async with _client(url, headers, use_oauth) as client:
             return await dispatch(client)
 

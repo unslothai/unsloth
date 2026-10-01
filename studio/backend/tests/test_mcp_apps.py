@@ -534,3 +534,12 @@ def test_a_widget_read_of_a_multi_block_resource_keeps_every_block():
         {"uri": "ui://w/b.png", "mimeType": "image/png", "blob": blob},
     ]
     assert _resource_contents(blocks[:1], "ui://w/a.txt")["contents"] == []
+
+
+def test_a_one_shot_widget_request_refuses_a_server_edited_meanwhile(monkeypatch):
+    from core.inference import mcp_client
+    monkeypatch.setattr(mcp_client, "_client", lambda *a, **k: pytest.fail("dispatched"))
+    with pytest.raises(RuntimeError, match = "updated or removed"):
+        mcp_client.read_resource_sync(
+            "https://x/mcp", None, UI, timeout = 5, config_check = lambda: False
+        )
