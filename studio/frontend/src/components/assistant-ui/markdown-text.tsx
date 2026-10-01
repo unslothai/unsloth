@@ -858,9 +858,6 @@ function MarkdownTextRenderer({
     [messageTextKey],
   );
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
-  // An audio model's reply is the player tag followed by the text it spoke. The
-  // tag comes out here so the Markdown pipeline below only ever sees the text;
-  // the player is rendered above it. A clip-only reply renders exactly as before.
   const { audioSrc, text: markdownText } = splitAudioReply(displayText);
   const processedText = useMemo(
     () =>
