@@ -57,6 +57,13 @@ def test_managed_account_previews_its_own_workspace_image(studio_home):
     assert _is_image_payload(preview["image"])
 
 
+@pytest.mark.parametrize("path", ["~unsloth-no-such-user-xyz/image.png", "data/bad\x00name.png"])
+def test_managed_account_unresolvable_path_is_not_an_image(studio_home, path):
+    preview = run_as(ALICE, to_preview_jsonable_row, {"image": {"bytes": None, "path": path}})
+
+    assert not _is_image_payload(preview["image"])
+
+
 def test_owner_previews_any_local_path(studio_home):
     image = _png(studio_home / "elsewhere" / "local.png")
 

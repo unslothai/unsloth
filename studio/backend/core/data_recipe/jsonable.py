@@ -56,7 +56,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
 
         try:
             account_path(path_value)
-        except HTTPException:
+        except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
             return None
         try:
             from PIL import Image  # type: ignore
