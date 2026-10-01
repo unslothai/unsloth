@@ -937,7 +937,6 @@ def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monke
     )
     import core.inference.diffusion_memory as mem
 
-    # no pinnable host RAM: everything stays unpinned, record_stream still on
     monkeypatch.delenv(mem.STREAMING_PREFETCH_ENV, raising = False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 0)
@@ -1044,7 +1043,6 @@ def test_streaming_pins_the_transformer_within_the_host_budget(monkeypatch):
     [((9000, 4096), 4096), ((4000, 7500), 0)],
 )
 def test_streaming_top_group_leaves_room_for_planned_encoder_pins(monkeypatch, sizes, reserved):
-    # DiT over budget, encoders pinned: the top group must not take the encoders' share
     top_calls: list = []
     _streaming_apply_kwargs(monkeypatch, 6000, sizes = sizes, top_calls = top_calls)
     assert top_calls == [("transformer", reserved)]
