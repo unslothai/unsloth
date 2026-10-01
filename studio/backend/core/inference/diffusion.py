@@ -125,6 +125,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     release_pinned_host_memory,
     refine_memory_plan_for_components,
+    refine_plan_from_loaded_weights,
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
@@ -6782,6 +6783,15 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
+                    # A measured family re-places from its loaded weights + measured activation peak: residency
+                    # the flat 8 GiB-per-megapixel headroom and the family-table sizes declined (no-op elsewhere).
+                    plan = refine_plan_from_loaded_weights(
+                        pipe,
+                        plan,
+                        family = fam.name,
+                        speed_mode = effective_speed,
+                        logger = logger,
+                    )
 
                     # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the
                     # text-encoder forward. After the TE quant so the key reflects the encoders that run; ``base``

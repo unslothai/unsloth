@@ -564,6 +564,9 @@ class MemoryPlan:
     stream_text_encoders: bool = False
     # False only on the tier keeping the transformer resident and streaming just the text encoders.
     stream_transformer: bool = True
+    # MiB of the streamed denoiser that may stay resident instead (whole offload groups, top-level group first, then
+    # blocks in order); None streams every group, today's behaviour. Set only by refine_plan_from_loaded_weights.
+    resident_transformer_mib: Optional[int] = None
 
     @property
     def engages_offload(self) -> bool:
@@ -580,6 +583,7 @@ class MemoryPlan:
             "reasons": list(self.reasons),
             "stream_text_encoders": self.stream_text_encoders,
             "stream_transformer": self.stream_transformer,
+            "resident_transformer_mib": self.resident_transformer_mib,
         }
 
 
@@ -1688,6 +1692,284 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     )
 
 
+# Measured-activation placement. The load-time planner prices every image family with one flat runtime headroom
+# (estimate_image_runtime_mib: 8192 MiB at 1024x1024) and the transformer / encoder sizes from the family table. For a
+# family whose activation peak has been MEASURED, that over-reserves by several GiB and pushes a load that fits onto a
+# streamed tier: Qwen-Image-2.1 (int8 DiT + fp8 encoder) streams its text encoder on every new prompt on a 24 GB card
+# (resident_required 29870 MiB vs a 21432 MiB budget) although its weights are 16525 MiB and its worst phase needs
+# 1849 MiB more. UNSLOTH_DIFFUSION_MEASURED_ACTIVATION=0 restores the flat plan exactly.
+MEASURED_ACTIVATION_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION"
+# Partial residency of a streamed denoiser (resident_transformer_mib): UNSLOTH_DIFFUSION_PARTIAL_RESIDENT=0 streams
+# every group again.
+PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
+
+# Worst measured CUDA allocation above the resident weights, MiB, one 1024x1024 image, over the text-encoder pass
+# (resident and leaf-streamed), every denoise step (including the prefix-cache extract step) and the VAE decode,
+# first render included. Keyed on (family, compiled speed tier); only torchao int8 / fp8 denoisers, the configuration
+# measured. Qwen-Image-2.1, torch 2.12.1 / torchao 0.18 / diffusers 0.41.dev, speed default and max, guidance 1 and
+# 4: encoder 1267 resident / 1849 streamed, denoise 721 (step 0) / 1442 (guidance 4), decode 1730. Anything else keeps
+# the flat estimate.
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849}
+_MEASURED_PEAK_SPEED_MODES = ("default", "max")
+# Margin on the measured peak (allocator rounding, prompt length, driver variance); the flat base overhead
+# (fragmentation, CUDA workspaces) and the safe-budget reserve stay on top of it.
+_MEASURED_PEAK_MARGIN = 1.15
+_MEASURED_PEAK_ROUND_MIB = 256
+
+
+def _env_off(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def measured_image_runtime_mib(
+    family: Optional[str],
+    speed_mode: Optional[str],
+    *,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    batch_size: int = 1,
+) -> Optional[int]:
+    """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate)."""
+    if _env_off(MEASURED_ACTIVATION_ENV):
+        return None
+    peak = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
+    if peak is None or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES:
+        return None
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    scale = max(1.0, (w * h * max(1, int(batch_size or 1))) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT))
+    need = peak * scale * _MEASURED_PEAK_MARGIN
+    step = _MEASURED_PEAK_ROUND_MIB
+    return int(-(-need // step) * step)
+
+
+def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
+    """name -> (MiB, role) for every loaded torch module, role 'dit' / 'text_encoder' / 'other'. Storage bytes, so a
+    torchao int8 weight counts its int8 data + scales (not a bf16-sized numel). None when unreadable."""
+    try:
+        import torch
+
+        out: dict[str, tuple[int, str]] = {}
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if not isinstance(module, torch.nn.Module):
+                continue
+            seen: set[int] = set()
+            nbytes = 0
+            for tensor in (*module.parameters(), *module.buffers()):
+                if id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                nbytes += sum(_storage_nbytes(tensor))
+            name = str(name)
+            role = (
+                "dit"
+                if name in ("transformer", "transformer_2", "unconditional_transformer")
+                else "text_encoder"
+                if name.startswith("text_encoder")
+                else "other"
+            )
+            out[name] = (-(-nbytes // (1024 * 1024)), role)
+        return out
+    except Exception:  # noqa: BLE001 - an optional refinement
+        return None
+
+
+def refine_plan_from_loaded_weights(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    family: Optional[str],
+    speed_mode: Optional[str],
+    logger: Any = None,
+) -> MemoryPlan:
+    """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
+
+    Runs after the pipeline is built and before placement. Only ever moves toward residency, in speed order: every
+    weight resident; then the denoiser resident with the text encoders streamed (they run once per prompt); then the
+    encoders streamed and as much of the denoiser resident as fits (``resident_transformer_mib``), the rest streamed.
+    Every tier must fit the plan's safe budget (free memory at load minus the reserve) with the measured peak x margin
+    plus the flat base overhead on top of the weights, so the activation side is never priced below what was measured.
+    No-op for explicit modes, unified memory, non-CUDA, unmeasured families / speed tiers, non-torchao denoisers and
+    whole-module (``model``) plans, and with UNSLOTH_DIFFUSION_MEASURED_ACTIVATION=0."""
+    try:
+        if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
+            return plan
+        policy = plan.offload_policy
+        if policy not in (OFFLOAD_GROUP, OFFLOAD_STREAMING):
+            return plan
+        memory = plan.device_memory
+        if memory.is_unified or getattr(memory, "device", None) != "cuda":
+            return plan
+        if not _pipe_denoisers_hold_torchao(pipe):
+            return plan
+        headroom = measured_image_runtime_mib(family, speed_mode)
+        if headroom is None:
+            return plan
+        budget = plan.estimates.get("safe_device_budget_mib")
+        if budget is None:
+            return plan
+        budget = int(budget)
+        sizes = _loaded_component_mib(pipe)
+        if not sizes:
+            return plan
+        dit = sum(m for m, r in sizes.values() if r == "dit")
+        encoders = sum(m for m, r in sizes.values() if r == "text_encoder")
+        other = sum(m for m, r in sizes.values() if r == "other")
+        if dit <= 0:
+            return plan
+        overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
+        floor = headroom + overhead + other
+        estimates = dict(plan.estimates)
+        estimates.update(
+            measured_runtime_headroom_mib = headroom,
+            loaded_transformer_mib = dit,
+            loaded_text_encoder_mib = encoders,
+            loaded_other_mib = other,
+        )
+        if floor + dit + encoders <= budget:
+            new = replace(
+                plan,
+                offload_policy = OFFLOAD_NONE,
+                vae_tiling = False,
+                vae_slicing = False,
+                stream_text_encoders = False,
+                stream_transformer = True,
+                resident_transformer_mib = None,
+                estimates = estimates,
+                reasons = plan.reasons
+                + (
+                    f"loaded weights {dit + encoders + other} MiB + measured peak {headroom} MiB + "
+                    f"{overhead} MiB overhead fit the {budget} MiB budget; everything resident",
+                ),
+            )
+        elif floor + dit <= budget:
+            new = replace(
+                plan,
+                offload_policy = OFFLOAD_GROUP,
+                stream_text_encoders = True,
+                stream_transformer = False,
+                resident_transformer_mib = None,
+                estimates = estimates,
+                reasons = plan.reasons
+                + (
+                    f"loaded transformer {dit} MiB + measured peak {headroom} MiB fit the {budget} MiB budget "
+                    "with the text encoders streamed; every denoise step runs resident",
+                ),
+            )
+        else:
+            if _env_off(PARTIAL_RESIDENT_ENV):
+                return plan
+            # Streamed tiers keep the encoders off the device (group with streamed encoders, or streaming): what is
+            # left after the resident companions, the peak and the overhead holds denoiser groups. The peak already
+            # covers a streamed group in flight (it was measured with the encoder leaf-streamed).
+            if policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False)):
+                room = budget - floor - encoders
+            else:
+                room = budget - floor
+            if room <= 0:
+                return plan
+            new = replace(
+                plan,
+                resident_transformer_mib = int(room),
+                estimates = {**estimates, "resident_transformer_mib": int(room)},
+                reasons = plan.reasons
+                + (
+                    f"{int(room)} MiB of the {dit} MiB transformer stays resident (measured peak {headroom} MiB); "
+                    "only the remaining blocks stream",
+                ),
+            )
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: measured-activation placement %s -> %s (%s)",
+                policy,
+                new.offload_policy,
+                new.reasons[-1],
+            )
+        return new
+    except Exception as exc:  # noqa: BLE001 - keep the flat plan
+        if logger is not None:
+            logger.debug("diffusion.memory: measured-activation placement skipped (%s)", exc)
+        return plan
+
+
+def _keep_groups_resident(module: Any, room_mib: int, device: Any, logger: Any = None) -> int:
+    """Make whole offload groups of a streamed ``module`` resident, within ``room_mib``: the top-level group first (it
+    is uploaded on every forward), then blocks in order. A resident group is moved once and its onload / offload become
+    no-ops; the groups after it keep streaming, and the last resident block prefetches the first streamed one on the
+    copy stream as before. Host copies of resident groups are released. Returns the MiB made resident."""
+    if room_mib is None or int(room_mib) <= 0 or _env_off(PARTIAL_RESIDENT_ENV):
+        return 0
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+
+        groups = _offload_groups(module)
+        if not groups:
+            return 0
+        top = [g for g in groups if getattr(g, "offload_leader", None) is module]
+        ordered = top + [g for g in groups if getattr(g, "offload_leader", None) is not module]
+        is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+        onload = torch.device(device)
+        left = int(room_mib) * 1024 * 1024
+        kept = 0
+
+        def _tensors(group: Any) -> list:
+            out: list = []
+            seen: set[int] = set()
+            for t in (
+                [p for m in group.modules for p in m.parameters()]
+                + [b for m in group.modules for b in m.buffers()]
+                + list(group.parameters or [])
+                + list(group.buffers or [])
+            ):
+                if id(t) not in seen:
+                    seen.add(id(t))
+                    out.append(t)
+            return out
+
+        def _noop(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        for group in ordered:
+            if getattr(group, "offload_to_disk_path", None):
+                break
+            tensors = _tensors(group)
+            need = sum(sum(_storage_nbytes(t)) for t in tensors)
+            if need > left:
+                break  # in order: a later, smaller group would break the prefetch chain's contiguity for no gain
+            cpu = getattr(group, "cpu_param_dict", None) or {}
+            for t in tensors:
+                if t.device.type == onload.type:
+                    continue
+                moved = cpu.get(t, t).to(onload)
+                if is_torchao(t):
+                    go._swap_torchao_tensor(t, moved)
+                else:
+                    t.data = moved
+            group.onload_ = _noop
+            group.offload_ = _noop
+            group._unsloth_resident = True
+            if isinstance(cpu, dict) and cpu:
+                group.cpu_param_dict = {}
+            left -= need
+            kept += need
+        if kept and onload.type == "cuda":
+            torch.cuda.synchronize(onload)
+        if logger is not None and kept:
+            logger.info(
+                "diffusion.memory: %s keeps %d MiB resident (%d of %d offload groups); the rest streams",
+                type(module).__name__,
+                kept >> 20,
+                sum(1 for g in ordered if getattr(g, "_unsloth_resident", False)),
+                len(ordered),
+            )
+        return kept >> 20
+    except Exception as exc:  # noqa: BLE001 - streaming every group is the safe state
+        if logger is not None:
+            logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
+        return 0
+
+
 def apply_memory_plan(
     pipe: Any,
     plan: MemoryPlan,
@@ -1736,6 +2018,9 @@ def apply_memory_plan(
         }
         if not bool(getattr(plan, "stream_transformer", True)):
             group_kwargs["stream_transformer"] = False
+        resident_mib = getattr(plan, "resident_transformer_mib", None)
+        if resident_mib:
+            group_kwargs["resident_transformer_mib"] = int(resident_mib)
         if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
             if "stream_transformer" in group_kwargs and _pipe_denoisers_hold_torchao(pipe):
                 raise RuntimeError(
@@ -1751,7 +2036,13 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
-        _apply_streaming_offload(pipe, placement, logger)
+        resident_mib = getattr(plan, "resident_transformer_mib", None)
+        if resident_mib:
+            _apply_streaming_offload(
+                pipe, placement, logger, resident_transformer_mib = int(resident_mib)
+            )
+        else:
+            _apply_streaming_offload(pipe, placement, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload(device = placement)
@@ -2363,6 +2654,7 @@ def _apply_group_offload(
     stream_text_encoders: bool = False,
     stream_transformer: bool = True,
     background_pin: Optional[bool] = None,
+    resident_transformer_mib: Optional[int] = None,
 ) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
     smaller components resident. Returns False (caller falls back to whole-module) on any failure.
@@ -2478,6 +2770,10 @@ def _apply_group_offload(
             installed += 1
             if use_stream:
                 _pin_top_level_group(module, logger)
+        if resident_transformer_mib:
+            room = int(resident_transformer_mib)
+            for module in streamed.values():
+                room -= _keep_groups_resident(module, room, onload, logger)
         # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A text encoder is a far
         # less well-trodden target for block-level group offloading than a DiT (a family whose encoder exposes no
         # recognisable block list can refuse), and this tier is a rescue: the alternative to streaming an encoder is
@@ -3010,7 +3306,9 @@ def _streaming_prefetch_enabled() -> bool:
     )
 
 
-def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
+def _apply_streaming_offload(
+    pipe: Any, device: str, logger: Any, *, resident_transformer_mib: Optional[int] = None
+) -> None:
     """Stream transformer blocks and text-encoder leaves without whole-component onloads.
 
     This is selected only after measuring a component larger than the safe device budget, so a
@@ -3095,6 +3393,11 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 _pin_top_level_group(module, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
+        if resident_transformer_mib:
+            room = int(resident_transformer_mib)
+            for module, offload_type in streamed.values():
+                if offload_type == "block_level":
+                    room -= _keep_groups_resident(module, room, onload, logger)
     except Exception as exc:
         if logger is not None:
             logger.warning(
