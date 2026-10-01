@@ -2703,6 +2703,7 @@ class InferenceOrchestrator:
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
         caller_image_indexes: "tuple[int, ...]" = (),
+        mcp_image = None,
         deduplicate_tool_calls: bool = True,
         **_unused,
     ):
@@ -2834,6 +2835,7 @@ class InferenceOrchestrator:
             thread_id = thread_id,
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
+            mcp_image = mcp_image,
             bypass_permissions = bypass_permissions,
             permission_mode = permission_mode,
             reasoning_prefilled = reasoning_prefilled,
@@ -3319,6 +3321,7 @@ class InferenceOrchestrator:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         extra_audio_arrays: Optional[list] = None,
@@ -3329,6 +3332,7 @@ class InferenceOrchestrator:
             audio_type = "whisper",
             messages = [],
             system_prompt = "",
+            use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             extra_audio_arrays = extra_audio_arrays,

@@ -608,6 +608,7 @@ def run_safetensors_tool_loop(
     thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
+    mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
@@ -1457,7 +1458,7 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" never
             # prompts (sandbox stays on).
-            from core.inference.tools import never_needs_approval
+            from core.inference.tools import mcp_image_share, never_needs_approval
 
             needs_confirm = (
                 bool(confirm_tool_calls)
@@ -1468,11 +1469,16 @@ def run_safetensors_tool_loop(
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_high_risk_tool_call
                 needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+            needs_confirm = needs_confirm or image_share is not None
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
 
             try:
                 # A gated call has not started: say waiting, not "Running" (GGUF parity).
@@ -1660,6 +1666,8 @@ def run_safetensors_tool_loop(
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
+                    if image_share is not None:
+                        kwargs["mcp_image"] = image_share["image"]
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

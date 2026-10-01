@@ -129,7 +129,7 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
   togglePinned: (repoId, quant) =>
     set((state) => {
       const key = pinKey(repoId, quant);
-      // Newest pin first, so "Pin to top" literally lands on top of the pinned group rather than under earlier pins.
+      // Newest pin first, so a new pin lands on top of the pinned group rather than under earlier pins.
       const next = state.pinned.includes(key)
         ? state.pinned.filter((id) => id !== key)
         : [key, ...state.pinned];

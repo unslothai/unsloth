@@ -2484,6 +2484,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    mcp_image: Optional[str] = Field(
+        None,
+        max_length = 15 * 1024 * 1024,
+        description = (
+            "[x-unsloth] PNG, JPEG or WebP data URL that MCP tools with a mapped image field can "
+            "receive after the user approves each call. Never shown to the model."
+        ),
+    )
     deep_research_armed: Optional[bool] = Field(
         None,
         description = (
@@ -3965,6 +3973,8 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
+    _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
@@ -4345,11 +4355,12 @@ class DiffusionGenerateRequest(BaseModel):
         "after init_image and in this order. The loaded family bounds the total including "
         "init_image (FLUX.2: 4, Qwen-Image-2.1: 10); more is refused, never truncated.",
     )
-    workflow: Optional[Literal["edit", "reference"]] = Field(
+    workflow: Optional[Literal["edit", "reference", "outpaint"]] = Field(
         None,
         description = "Explicit image-conditioned workflow. edit: follow the prompt as an "
         "instruction over init_image (and reference_images); reference: generate a new image "
-        "guided by them. Omitted keeps the workflow implied by the other fields.",
+        "guided by them; outpaint: runs as inpaint over the padded init_image + mask_image and "
+        "is recorded as outpaint. Omitted keeps the workflow implied by the other fields.",
     )
     reference_resolution: Optional[int] = Field(
         None,
@@ -4483,6 +4494,30 @@ class GalleryImage(BaseModel):
         None,
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
+    speed_mode: Optional[str] = Field(
+        None,
+        description = "Speed profile engaged for this generation (eager | default | max | off), after "
+        "any deferred compile. Absent on records written before this existed.",
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged for this generation, or null for default SDPA. "
+        "Absent on records written before this existed.",
+    )
+    transformer_cache: Optional[str] = Field(
+        None,
+        description = "Step cache engaged for this generation (fbcache | static), or null when off. "
+        "Absent on records written before this existed.",
+    )
+    cpu_offload: Optional[bool] = Field(
+        None,
+        description = "Whether CPU offload was active for this generation. Absent on records written "
+        "before this existed.",
+    )
+    schema_version: Optional[int] = Field(
+        None,
+        description = "Recipe format version embedded in the PNG unsloth chunk. Absent on older images.",
     )
     baked_loras: list[str] = Field(
         default_factory = list,
@@ -4692,7 +4727,9 @@ class DiffusionStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
+    supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
@@ -5033,6 +5070,8 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
+    _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
@@ -5535,7 +5574,10 @@ class VideoStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected video family")
+    supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
+    modular_families: List[str] = Field(default_factory = list, description = "Modular families")
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")

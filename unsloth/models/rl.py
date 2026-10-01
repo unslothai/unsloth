@@ -2359,10 +2359,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_ga
 
+        # GRPO evaluates whole groups, so never shrink the eval batch below what num_generations divides.
         eval_changes = (
             "if getattr(args, 'eval_strategy', 'no') != 'no':\n"
             "    eval_bsz = getattr(args, 'per_device_eval_batch_size', 8)\n"
-            "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"
+            "    eval_generations = getattr(args, 'num_generations_eval', None) or getattr(args, 'num_generations', None) or 1\n"
+            "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz and (args.per_device_train_batch_size * args.world_size) % eval_generations == 0: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"
             "    if getattr(args, 'eval_accumulation_steps', None) is None and ga_steps is not None: args.eval_accumulation_steps = ga_steps\n"
             "fp16_full_eval = getattr(args, 'fp16_full_eval', False)\n"
             "if type(fp16_full_eval) is not bool: fp16_full_eval = False\n"
