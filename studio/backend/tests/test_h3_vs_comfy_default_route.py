@@ -109,3 +109,36 @@ def test_the_estimators_size_864x480_below_960x544(families):
     from core.inference.video_minimax_h3 import estimate_h3_diffusers_vram_gb
 
     assert estimate_h3_diffusers_vram_gb(864, 480, 124) < estimate_h3_diffusers_vram_gb(960, 544, 124)
+
+
+@pytest.mark.parametrize(
+    "te_stream, arena, expected",
+    [
+        (None, None, [{"gpu_gb": 11.5, "system_ram_gb": 61.0, "requires_quantised_streaming": True}]),
+        ("0", None, [{"gpu_gb": 30.0, "system_ram_gb": 61.0, "requires_quantised_streaming": True}]),
+        (None, "0", [{"gpu_gb": 11.5, "system_ram_gb": 80.0, "requires_quantised_streaming": True}]),
+        ("0", "0", []),
+    ],
+)
+def test_each_widening_follows_the_kill_switch_of_the_behaviour_it_relies_on(
+    monkeypatch, te_stream, arena, expected
+):
+    # The 12 GB tier is only true while the conditioner streams, the 61 GiB RAM tier only while the streamed denoiser
+    # holds one host copy; turning either behaviour off must withdraw exactly the widening it made possible.
+    monkeypatch.delenv("UNSLOTH_H3_DIFFUSERS_WIDE_TIERS", raising = False)
+    for name, value in (("UNSLOTH_H3_TE_STREAM", te_stream), ("UNSLOTH_DIFFUSION_PIN_ARENA", arena)):
+        if value is None:
+            monkeypatch.delenv(name, raising = False)
+        else:
+            monkeypatch.setenv(name, value)
+    from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
+
+    assert h3_diffusers_fit_tiers() == expected
+
+
+def test_the_ram_tier_is_the_single_count_host_floor_in_gib():
+    from core.inference.video_minimax_h3 import estimate_h3_diffusers_host_ram_gb
+
+    floor_gb = estimate_h3_diffusers_host_ram_gb(0.0, text_encoder_gb = 27.2, transformer_gb = 20.3)
+    assert floor_gb == pytest.approx(64.5)
+    assert 60.0 < floor_gb * 1e9 / 2**30 <= 61.0

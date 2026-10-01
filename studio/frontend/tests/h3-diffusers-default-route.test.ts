@@ -27,8 +27,7 @@ const notDownloaded = () => false;
 // The shape /api/system reports, after normalisation. Values mirror the backend table.
 const EXTRA = {
   "minimaxai/minimax-h3": [
-    { gpuGb: 30, systemRamGb: 60, requiresQuantisedStreaming: true },
-    { gpuGb: 11, systemRamGb: 60, requiresQuantisedStreaming: true },
+    { gpuGb: 11.5, systemRamGb: 61, requiresQuantisedStreaming: true },
   ],
 };
 

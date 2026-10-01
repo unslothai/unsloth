@@ -274,28 +274,54 @@ def h3_host_ram_shortfall(
 # decimal GB the estimators above use. Every tier streams the int8 denoiser, so each needs the quantised-streaming
 # capability the picker already reads.
 #
-# PLACEHOLDER values, to be replaced from the measured host / VRAM peaks:
-#   - 30 GiB / 60 GiB: streamed int8 denoiser with the rotating int8 conditioner, once the streamed denoiser no
-#     longer keeps a second (pinned) host copy. Base needs ~85 GB available (estimate_h3_diffusers_host_ram_gb with
-#     transformer_streamed), which the catalog's 30 / 80 tier encodes.
-#   - 11 GiB / 60 GiB: streamed int8 denoiser AND streamed int8 conditioner (12 GB cards).
+# Derived from the behaviours that make the tier true, so each behaviour's own kill switch also withdraws its tier:
+#   - VRAM: with the conditioner streamed leaf by leaf (UNSLOTH_H3_TE_STREAM) and the denoiser streamed, 960x544x124
+#     renders in under 11 GB reserved (measured 10.0-10.9 GiB at a 12 GB budget), so a 12 GB card qualifies. Without
+#     it the conditioner rotates whole and the floor stays at the catalog's 30 GiB.
+#   - RAM: with the slab-arena pin (UNSLOTH_DIFFUSION_PIN_ARENA) the streamed denoiser holds one host copy, so the
+#     host floor is estimate_h3_diffusers_host_ram_gb with a single count (64.5 GB). Without it the floor is the
+#     double-counted 84.8 GB the catalog's 80 GiB tier already encodes.
 H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
-H3_DIFFUSERS_EXTRA_FIT_TIERS: tuple[dict, ...] = (
-    {"gpu_gb": 30.0, "system_ram_gb": 60.0, "requires_quantised_streaming": True},  # PLACEHOLDER
-    {"gpu_gb": 11.0, "system_ram_gb": 60.0, "requires_quantised_streaming": True},  # PLACEHOLDER
-)
+H3_DIFFUSERS_STREAMED_TIER_GPU_GIB = 11.5
+H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
+H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
+
+
+def _h3_streamed_host_floor_gib(single_host_copy: bool) -> float:
+    from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
+
+    floor_gb = estimate_h3_diffusers_host_ram_gb(
+        0.0,
+        text_encoder_gb = H3_TE_QUANT_RESIDENT_GB["int8"],
+        transformer_gb = H3_TRANSFORMER_PREQUANT_GB["int8"],
+        transformer_streamed = not single_host_copy,
+    )
+    # The picker reads available RAM in GiB; round up to the next whole GiB.
+    return float(math.ceil(floor_gb * 1e9 / 2**30))
 
 
 def h3_diffusers_fit_tiers() -> list[dict]:
     """The extra picker tiers this backend admits for the H3 Diffusers row, or [] when
-    ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0`` turns them off (the picker then keeps the catalog's own
-    tiers, i.e. today's routing). Torch-free: read on the polled /api/system route."""
+    ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0`` turns them off, or when neither widening behaviour is
+    active (the picker then keeps the catalog's own tiers, i.e. today's routing). Torch-free: read
+    on the polled /api/system route."""
     import os
 
     flag = os.environ.get(H3_DIFFUSERS_FIT_TIERS_ENV, "1").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return []
-    return [dict(tier) for tier in H3_DIFFUSERS_EXTRA_FIT_TIERS]
+    from .diffusion_pinned_arena import pin_arena_enabled
+    from .video_minimax_h3_te import h3_te_stream_enabled
+
+    te_streamed = h3_te_stream_enabled()
+    single_copy = pin_arena_enabled()
+    if not te_streamed and not single_copy:
+        return []
+    gpu_gib = H3_DIFFUSERS_STREAMED_TIER_GPU_GIB if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
+    ram_gib = (
+        _h3_streamed_host_floor_gib(True) if single_copy else H3_DIFFUSERS_CATALOG_TIER_RAM_GIB
+    )
+    return [{"gpu_gb": gpu_gib, "system_ram_gb": ram_gib, "requires_quantised_streaming": True}]
 
 
 # torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
