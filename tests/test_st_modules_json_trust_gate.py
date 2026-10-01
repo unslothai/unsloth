@@ -173,13 +173,9 @@ def test_an_untrusted_type_is_not_probed_as_a_transformer_ref(model_dir):
     assert not witness.exists()
 
 
-def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, monkeypatch):
-    """Simulate sentence-transformers < 6, whose Dense loader imports AND CALLS
-    activation_function ungated, by hiding import_module_class."""
-    import sentence_transformers.util as st_util
+def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path):
+    """Dense imports AND CALLS activation_function, on whichever version is installed."""
     from sentence_transformers.models import Dense
-
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
     load_path = tmp_path / "2_Dense"
     load_path.mkdir()
@@ -188,7 +184,7 @@ def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, mo
         encoding = "utf-8",
     )
 
-    with pytest.raises(ValueError, match = "does not gate it"):
+    with pytest.raises(ValueError, match = "executes third-party code"):
         FastSentenceTransformer._check_module_config_class_refs(
             str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
         )
@@ -204,14 +200,12 @@ def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path, mo
     ],
 )
 def test_an_in_namespace_type_cannot_smuggle_a_path_via_its_own_config_file(
-    module_name, config_name, config, model_dir, monkeypatch
+    module_name, config_name, config, model_dir
 ):
     """Through _load_modules, not the helper: the type is an allowed sentence_transformers.* class,
     so the refusal has to come from reading the config file that module's loader reads."""
-    import sentence_transformers.util as st_util
     from sentence_transformers import models as st_models
 
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
     if getattr(st_models, module_name, None) is None:
         pytest.skip(f"installed sentence-transformers has no {module_name}")
 
@@ -232,19 +226,16 @@ def test_an_in_namespace_type_cannot_smuggle_a_path_via_its_own_config_file(
         encoding = "utf-8",
     )
 
-    with pytest.raises(ValueError, match = "does not gate it"):
+    with pytest.raises(ValueError, match = "executes third-party code"):
         _load_modules(model, False)
 
     assert not witness.exists()
 
 
-def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
+def test_a_real_dense_config_is_untouched_by_that_check(tmp_path):
     """embeddinggemma-300m's Dense modules declare torch.nn.modules.linear.Identity, exactly what
     ST >= 6 allows unconsented."""
-    import sentence_transformers.util as st_util
     from sentence_transformers.models import Dense
-
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
     load_path = tmp_path / "2_Dense"
     load_path.mkdir()
@@ -266,25 +257,6 @@ def test_a_real_dense_config_is_untouched_by_that_check(tmp_path, monkeypatch):
         "unsloth/embeddinggemma-300m",
         False,
         Dense,
-    )
-
-
-def test_the_installed_sentence_transformers_gate_is_not_second_guessed(tmp_path):
-    """ST >= 6 gates its own config refs, so the check is a no-op rather than a diverging copy."""
-    import sentence_transformers.util as st_util
-    from sentence_transformers.models import Dense
-
-    if not hasattr(st_util, "import_module_class"):
-        pytest.skip("installed sentence-transformers has no gate of its own")
-
-    load_path = tmp_path / "2_Dense"
-    load_path.mkdir()
-    (load_path / "config.json").write_text(
-        json.dumps({"activation_function": f"{MARKER}.Thing"}), encoding = "utf-8"
-    )
-
-    FastSentenceTransformer._check_module_config_class_refs(
-        str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
     )
 
 
@@ -463,17 +435,17 @@ def _patch_download(monkeypatch, replacement):
 
 
 def _simulate_pre_six(monkeypatch):
-    """Report sentence-transformers 5.x and hide the 6.x helper.
+    """Report sentence-transformers 5.x. The version is the whole simulation.
 
-    Both are needed: the delegated check skips on major >= 6 because upstream gates the
-    name there, and _check_module_config_class_refs on this branch still keys off the
-    helper, which #12444 removes.
+    This used to delete util.import_module_class as well, because the config check keyed
+    off that attribute. #12444 replaced it with a version test, for the reason the
+    attribute was never a good one: 5.5 exports the helper while its Dense and Router
+    loaders still resolve config class references ungated. Deleting it here meant these
+    tests passed for a reason production did not have, and hid that exact gap. Setting
+    only the version is what makes them exercise the real condition.
     """
     import sentence_transformers
-    import sentence_transformers.util as st_util
-
     monkeypatch.setattr(sentence_transformers, "__version__", "5.2.0", raising = False)
-    monkeypatch.delattr(st_util, "import_module_class", raising = False)
 
 
 def _delegated_model(tmp_path, activation_function):
@@ -1254,3 +1226,191 @@ def test_a_failed_commit_lookup_does_not_break_the_load(tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.HfApi", BrokenApi)
 
     assert FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == ""
+
+
+@pytest.mark.parametrize("helper", ["present", "absent", "none"])
+def test_the_check_does_not_key_off_the_import_module_class_attribute(
+    helper, tmp_path, monkeypatch
+):
+    """Not a version test: 5.5 exports it while its WordEmbeddings.load still calls
+    import_from_string on tokenizer_class, so the refusal holds whatever the attribute is."""
+    import sentence_transformers.util as st_util
+    from sentence_transformers.models import Dense
+
+    if helper == "absent":
+        monkeypatch.delattr(st_util, "import_module_class", raising = False)
+    elif helper == "none":
+        monkeypatch.setattr(st_util, "import_module_class", None, raising = False)
+
+    load_path = tmp_path / "2_Dense"
+    load_path.mkdir()
+    (load_path / "config.json").write_text(
+        json.dumps({"activation_function": f"{MARKER}.Thing"}), encoding = "utf-8"
+    )
+
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(load_path), "sentence_transformers.models.Dense", "some/repo", False, Dense
+        )
+
+
+def test_a_legacy_module_class_without_config_file_name_is_still_read(tmp_path):
+    """3.x/4.x WordEmbeddings has no config_file_name and opens its file by name."""
+
+    class WordEmbeddings:  # no config_file_name, like the 3.x/4.x class
+        pass
+
+    load_path = tmp_path / "0_WordEmbeddings"
+    load_path.mkdir()
+    (load_path / "wordembedding_config.json").write_text(
+        json.dumps({"tokenizer_class": f"{MARKER}.Thing"}), encoding = "utf-8"
+    )
+
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(load_path),
+            "sentence_transformers.models.WordEmbeddings",
+            "some/repo",
+            False,
+            WordEmbeddings,
+        )
+
+
+@pytest.mark.parametrize("trusted, expect_refusal", [(False, True), (True, False)])
+def test_the_checkpoint_reload_honours_the_consent_the_model_was_loaded_with(
+    trusted, expect_refusal, tmp_path
+):
+    """The reload takes only a checkpoint path, so hard-coding False left no way to consent."""
+    from sentence_transformers.models import Dense
+
+    load_path = tmp_path / "2_Dense"
+    load_path.mkdir()
+    (load_path / "config.json").write_text(
+        json.dumps({"activation_function": f"{MARKER}.Thing"}), encoding = "utf-8"
+    )
+
+    class FakeModel:
+        _unsloth_trust_remote_code = trusted
+
+    trust = getattr(FakeModel, "_unsloth_trust_remote_code", False)
+    if expect_refusal:
+        with pytest.raises(ValueError, match = "executes third-party code"):
+            FastSentenceTransformer._check_module_config_class_refs(
+                str(load_path), "sentence_transformers.models.Dense", str(tmp_path), trust, Dense
+            )
+    else:
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(load_path), "sentence_transformers.models.Dense", str(tmp_path), trust, Dense
+        )
+
+
+def test_every_load_route_records_the_consent_it_used():
+    """The reload reads the flag off the model, so every route must set it."""
+    import inspect
+
+    source = inspect.getsource(FastSentenceTransformer.from_pretrained)
+    assert source.count("_unsloth_trust_remote_code = trust_remote_code") == source.count(
+        "return st_model"
+    )
+
+
+def _write_module_config(folder, name, payload):
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / name).write_text(json.dumps(payload), encoding = "utf8")
+    return folder
+
+
+def test_a_literal_activation_on_a_pooling_module_is_not_a_class_ref(tmp_path):
+    """SpladePooling's activation_function is an enum it compares, not a path it imports.
+
+    It lists activation_function in its own config_keys and saves "relu" or "log1p_relu"
+    there, then does `if self.activation_function == "log1p_relu"`. Keying the check on
+    the key name alone refused both values for not starting with "torch.", so no SPLADE
+    sparse model could load without the user turning on remote code for no reason.
+    """
+
+    class SpladePooling:
+        config_file_name = "config.json"
+
+    folder = _write_module_config(
+        tmp_path / "1_SpladePooling",
+        "config.json",
+        {"pooling_strategy": "max", "activation_function": "log1p_relu"},
+    )
+    FastSentenceTransformer._check_module_config_class_refs(
+        str(folder),
+        "sentence_transformers.sparse_encoder.models.SpladePooling",
+        "acme/sparse",
+        False,
+        SpladePooling,
+    )
+
+
+def test_dense_still_refuses_an_activation_outside_torch(tmp_path):
+    """Dense.load does `import_from_string(config["activation_function"])()`, so this one
+    is a real import and the scoping must not have let it through."""
+    st_models = pytest.importorskip("sentence_transformers.models")
+
+    folder = _write_module_config(
+        tmp_path / "2_Dense",
+        "config.json",
+        {"in_features": 8, "out_features": 8, "activation_function": "evil_pkg.Boom"},
+    )
+    with pytest.raises(ValueError, match = "evil_pkg.Boom"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(folder),
+            "sentence_transformers.models.Dense",
+            "acme/embedder",
+            False,
+            st_models.Dense,
+        )
+
+
+def test_word_embeddings_still_refuses_a_foreign_tokenizer_class(tmp_path):
+    """WordEmbeddings.load does `import_from_string(config.pop("tokenizer_class"))`."""
+    st_models = pytest.importorskip("sentence_transformers.models")
+    if getattr(st_models, "WordEmbeddings", None) is None:
+        pytest.skip("this sentence-transformers has no WordEmbeddings")
+
+    folder = _write_module_config(
+        tmp_path / "0_WordEmbeddings",
+        "config.json",
+        {"tokenizer_class": "evil_pkg.Tok", "max_seq_length": 8},
+    )
+    with pytest.raises(ValueError, match = "evil_pkg.Tok"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(folder),
+            "sentence_transformers.models.WordEmbeddings",
+            "acme/embedder",
+            False,
+            st_models.WordEmbeddings,
+        )
+
+
+def test_a_subclass_inherits_its_parents_rules(tmp_path):
+    """The rules follow the bases, so a version that subclasses Dense is still gated."""
+    st_models = pytest.importorskip("sentence_transformers.models")
+
+    class TunedDense(st_models.Dense):
+        pass
+
+    assert ("activation_function", "torch.") in FastSentenceTransformer._class_ref_rules(TunedDense)
+
+
+def test_every_config_driven_import_in_sentence_transformers_has_a_rule():
+    """The scoping is only safe if the list of loaders is complete.
+
+    Asym is an alias of Router from 5.0, so it reports Router's name and is covered by
+    that entry rather than its own. This asserts the set of classes, so a version that
+    adds another config-driven import shows up here as a missing key rather than as a
+    silently unchecked path.
+    """
+    covered = set(FastSentenceTransformer._MODULE_CONFIG_CLASS_REFS)
+    assert covered == {"Dense", "WordEmbeddings", "Router", "Asym"}
+
+    st_models = pytest.importorskip("sentence_transformers.models")
+    for name in ("Dense", "WordEmbeddings", "Router"):
+        klass = getattr(st_models, name, None)
+        if klass is None:
+            continue
+        assert FastSentenceTransformer._class_ref_rules(klass), name

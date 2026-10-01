@@ -11,6 +11,12 @@ import {
   trackMcpServerMutation,
 } from "./mcp-server-mutation-tracker";
 
+export type McpImageInputMapping = {
+  tool: string;
+  field: string;
+  encoding: "base64" | "data_url";
+};
+
 export interface McpServerConfig {
   id: string;
   builtin_id: string | null;
@@ -19,6 +25,8 @@ export interface McpServerConfig {
   headers: Record<string, string>;
   is_enabled: boolean;
   use_oauth: boolean;
+  image_input_mappings?: McpImageInputMapping[];
+  image_mappings_active?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -178,6 +186,7 @@ export function createMcpServer(payload: {
   headers?: Record<string, string>;
   isEnabled?: boolean;
   useOauth?: boolean;
+  imageInputMappings?: McpImageInputMapping[];
 }): Promise<McpServerConfig> {
   return trackMcpServerMutation(
     mcpRequest("/", {
@@ -188,6 +197,7 @@ export function createMcpServer(payload: {
         headers: payload.headers ?? null,
         is_enabled: payload.isEnabled ?? true,
         use_oauth: payload.useOauth ?? false,
+        image_input_mappings: payload.imageInputMappings ?? [],
       },
     }),
   );
@@ -202,6 +212,7 @@ export function updateMcpServer(
     headers?: Record<string, string> | null;
     isEnabled?: boolean;
     useOauth?: boolean;
+    imageInputMappings?: McpImageInputMapping[];
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
@@ -211,6 +222,8 @@ export function updateMcpServer(
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;
   if (payload.useOauth !== undefined) body.use_oauth = payload.useOauth;
+  if (payload.imageInputMappings !== undefined)
+    body.image_input_mappings = payload.imageInputMappings;
   return trackMcpServerMutation(
     mcpRequest(`/${serverId}`, { method: "PUT", body }),
   );
@@ -226,6 +239,12 @@ export function refreshMcpServerTools(
   serverId: string,
 ): Promise<McpServerProbeResult> {
   return mcpRequest(`/${serverId}/refresh`, { method: "POST" });
+}
+
+export function listMcpServerTools(
+  serverId: string,
+): Promise<{ name: string; inputSchema?: unknown }[]> {
+  return mcpRequest(`/${serverId}/tools`);
 }
 
 export function testMcpServer(payload: {

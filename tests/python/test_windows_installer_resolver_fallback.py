@@ -1896,7 +1896,7 @@ Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)
 
 
 _INTEGRITY_REPRO = r"""
-param($Source, $FakePython)
+param($Source, $FakePython, $TimeoutMs)
 $ErrorActionPreference = 'Stop'
 $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Source, [ref]$t, [ref]$e)
@@ -1909,7 +1909,7 @@ foreach ($name in @('Get-StudioSystem32Tool', 'Invoke-StudioSystem32ToolBounded'
 }
 if (-not (Get-Command Read-NvidiaLibraryRawViaPython -ErrorAction SilentlyContinue)) { throw "no Python rung in $Source" }
 function Get-NvidiaProbePythonExe { return $FakePython }
-Write-Output "ANSWER:$(Read-NvidiaLibraryRawViaPython -TimeoutMs 1000)"
+Write-Output "ANSWER:$(Read-NvidiaLibraryRawViaPython -TimeoutMs ([int]$TimeoutMs))"
 """
 
 
@@ -1954,7 +1954,20 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
     )
     started = time.monotonic()
     result = run_pwsh(
-        ["pwsh", "-NoProfile", "-File", str(script), str(REPO_ROOT / source), str(python)],
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(script),
+            str(REPO_ROOT / source),
+            str(python),
+            # The hung cases time only the integrity utilities, which carry their own deadlines,
+            # so the child keeps a 1 s budget there. The control asserts the child's answer
+            # arrives; 1 s for a pwsh-launched child is not enough on a loaded xdist runner,
+            # where it came back empty once (#12447's run), so it gets a budget that only a
+            # genuinely hung child would exhaust.
+            "1000" if hung else "10000",
+        ],
         env = env,
         capture_output = True,
         text = True,
