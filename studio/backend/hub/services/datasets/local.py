@@ -233,7 +233,7 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     rows = list(islice(streamed, preview_size))
     if not rows:
         return None
-    return Dataset.from_list(rows), None
+    return Dataset.from_list(rows, features = load_kwargs.get("features")), None
 
 
 def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):

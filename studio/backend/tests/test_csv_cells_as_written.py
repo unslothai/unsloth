@@ -112,26 +112,99 @@ def test_upload_preview_shows_csv_cells_as_written(tmp_path):
 
     assert [row["output"] for row in preview] == WRITTEN[:-1] + [None]
 
+    numbers = tmp_path / "numbers.csv"
+    numbers.write_text("question,answer\nq1,72\nq2,\nq3,00501\n")
+    preview, _ = _load_local_preview_slice(
+        dataset_path = numbers, train_split = "train", preview_size = 10
+    )
+    assert [row["answer"] for row in preview] == ["72", None, "00501"]
+
 
 def test_cpt_csv_still_trains_the_text_column_not_the_id(trainer, tmp_path):
     path = tmp_path / "docs.csv"
-    path.write_text("id,passage\n1,The first document.\n2,The second document.\n")
+    path.write_text(
+        "id,score,is_clean,notes,passage\n1,1e5,True,,NA\n2,.5,False,N/A,The second document.\n"
+    )
 
     dataset_info, _ = trainer.load_and_format_dataset(None, local_datasets = [str(path)], is_cpt = True)
 
-    assert list(dataset_info["dataset"]["text"]) == [
-        "The first document.</s>",
-        "The second document.</s>",
-    ]
+    assert list(dataset_info["dataset"]["text"]) == ["NA</s>", "The second document.</s>"]
 
-
-def test_vision_csv_still_trains_the_caption_not_a_numeric_label(tmp_path):
-    path = tmp_path / "vision.csv"
-    path.write_text(
-        "image,caption,label\nhttps://example.com/a.png,cat,1042\nhttps://example.com/b.png,dog,7\n"
+    mixed = tmp_path / "mixed.csv"
+    mixed.write_text("content,source\n101,corpus\nTrue,corpus\n")
+    dataset_info, _ = trainer.load_and_format_dataset(
+        None, local_datasets = [str(mixed)], is_cpt = True
     )
+    assert list(dataset_info["dataset"]["text"]) == ["101</s>", "True</s>"]
+
+    numbers = tmp_path / "numbers.jsonl"
+    numbers.write_text(
+        '{"content": "101", "source": "corpus"}\n{"content": "102", "source": "corpus"}\n'
+    )
+    dataset_info, _ = trainer.load_and_format_dataset(
+        None, local_datasets = [str(numbers)], is_cpt = True
+    )
+    assert list(dataset_info["dataset"]["text"]) == ["101</s>", "102</s>"]
+
+
+def test_csv_files_missing_a_column_still_load_together(trainer, tmp_path):
+    wide = tmp_path / "a.csv"
+    wide.write_text("instruction,input,output\nZip code?,Holtsville,00501\n")
+    narrow = tmp_path / "b.csv"
+    narrow.write_text("instruction,output\nPrice?,NA\n")
+
+    dataset_info, _ = trainer.load_and_format_dataset(None, local_datasets = [str(wide), str(narrow)])
+
+    assert len(dataset_info["dataset"]) == 2
+
+
+def test_vision_detection_skips_typed_cells_only_in_csv_read_as_text(tmp_path):
+    image = tmp_path / "a.png"
+    image.write_bytes(b"")
+    path = tmp_path / "vision.csv"
+    path.write_text(f"file_name,image,caption,label\n101,{image},cat,False\n102,{image},dog,True\n")
 
     preview, _ = _load_local_preview_slice(dataset_path = path, train_split = "train", preview_size = 10)
 
+    detected = check_dataset_format(preview, is_vlm = True)
+    assert (detected["detected_image_column"], detected["detected_text_column"]) == (
+        "image",
+        "caption",
+    )
+    structure = detect_vlm_dataset_structure(preview)
+    assert (structure["image_column"], structure["text_column"]) == ("image", "caption")
+
+    unresolved = tmp_path / "unresolved.csv"
+    unresolved.write_text("photo,file_name,caption\n101,missing/a.png,cat\n")
+    preview, _ = _load_local_preview_slice(
+        dataset_path = unresolved, train_split = "train", preview_size = 10
+    )
+    assert detect_vlm_dataset_structure(preview)["image_column"] == "file_name"
+
+    vqa = tmp_path / "vqa.jsonl"
+    vqa.write_text(
+        '{"image": "https://example.com/a.png", "question": "How many?", "answer": "2"}\n'
+    )
+    preview, _ = _load_local_preview_slice(dataset_path = vqa, train_split = "train", preview_size = 10)
+    assert check_dataset_format(preview, is_vlm = True)["detected_text_column"] == "answer"
+    assert detect_vlm_dataset_structure(preview)["text_column"] == "answer"
+
+    ocr = tmp_path / "ocr.csv"
+    ocr.write_text(
+        "image,caption\n"
+        + "https://example.com/a.png,12345678\n" * 10
+        + "https://example.com/b.png,hello\n"
+    )
+    preview, _ = _load_local_preview_slice(dataset_path = ocr, train_split = "train", preview_size = 10)
     assert check_dataset_format(preview, is_vlm = True)["detected_text_column"] == "caption"
     assert detect_vlm_dataset_structure(preview)["text_column"] == "caption"
+
+    missing = tmp_path / "missing.csv"
+    missing.write_text(
+        "image,caption,text\nhttps://example.com/a.png,None,hi\nhttps://example.com/b.png,a dog,yo\n"
+    )
+    preview, _ = _load_local_preview_slice(
+        dataset_path = missing, train_split = "train", preview_size = 10
+    )
+    assert check_dataset_format(preview, is_vlm = True)["detected_text_column"] == "text"
+    assert detect_vlm_dataset_structure(preview)["text_column"] == "text"

@@ -2812,7 +2812,7 @@ class UnslothTrainer:
                         loader,
                         data_files = all_files,
                         split = "train",
-                        **csv_as_text_kwargs(all_files, raw_text_mode),
+                        **csv_as_text_kwargs(all_files),
                     )
 
                     if self.should_stop:
@@ -2833,7 +2833,7 @@ class UnslothTrainer:
                             eval_loader,
                             data_files = eval_all_files,
                             split = "train",
-                            **csv_as_text_kwargs(eval_all_files, raw_text_mode),
+                            **csv_as_text_kwargs(eval_all_files),
                         )
                         has_separate_eval_source = True
                         logger.info(

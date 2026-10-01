@@ -5,6 +5,8 @@
 
 import re
 
+from .cells import text_cell_check
+
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
@@ -638,13 +640,6 @@ def _has_image_header(data: bytes) -> bool:
     return False
 
 
-_NUMBER_TEXT = re.compile(r"[+-]?\d+(?:\.\d+)?")
-
-
-def is_number_text(value: str) -> bool:
-    return bool(_NUMBER_TEXT.fullmatch(value.strip()))
-
-
 def detect_vlm_dataset_structure(dataset):
     """Detect which VLM dataset shape this is: standard VLM messages (image objects in content), Llava format (image indices plus a separate images column), or a simple image + text pair needing conversion."""
     try:
@@ -659,6 +654,7 @@ def detect_vlm_dataset_structure(dataset):
         }
 
     column_names = set(sample.keys())
+    is_text = text_cell_check(dataset)
 
     if "messages" in column_names:
         messages = sample["messages"]
@@ -798,7 +794,7 @@ def detect_vlm_dataset_structure(dataset):
         if isinstance(sample_value, dict) and ("bytes" in sample_value or "path" in sample_value):
             return 75
 
-        if isinstance(sample_value, str):
+        if isinstance(sample_value, str) and is_text(col, sample_value):
             if sample_value.startswith(("http://", "https://")):
                 return 70 if not is_metadata_column(col) else 55
             if is_metadata_column(col):
@@ -875,9 +871,13 @@ def detect_vlm_dataset_structure(dataset):
             if any(_keyword_in_column(keyword, col) for keyword in text_keywords):
                 sample_value = sample[col]
 
-                if isinstance(sample_value, str) and len(sample_value) > 0:
-                    # Longer text = higher priority (content, not a label); a number read as text ranks last.
-                    priority = 0 if is_number_text(sample_value) else min(len(sample_value), 1000)
+                if (
+                    isinstance(sample_value, str)
+                    and len(sample_value) > 0
+                    and is_text(col, sample_value)
+                ):
+                    # Longer text = higher priority (content, not a label).
+                    priority = min(len(sample_value), 1000)
                     candidates.append((col, priority))
                 elif (
                     isinstance(sample_value, list)
