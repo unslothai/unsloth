@@ -345,6 +345,14 @@ _FRAME_HTML = r"""<!doctype html>
         page.setAttribute("sandbox", "allow-scripts allow-forms");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
+        // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the
+        // report only names the origin, so the panel can say what happened but not follow it.
+        let blocked = false;
+        document.addEventListener("securitypolicyviolation", (event) => {
+          if (blocked || event.effectiveDirective !== "frame-src") return;
+          blocked = true;
+          parent.postMessage({ source: "unsloth-browser", type: "scriptNavigation" }, "*");
+        });
         const lock = document.createElement("meta");
         lock.httpEquiv = "Content-Security-Policy";
         lock.content = "frame-src 'none'";

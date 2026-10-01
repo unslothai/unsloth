@@ -199,6 +199,7 @@ export const fr = {
       botCheckDescription: "{host} demande aux visiteurs de prouver qu'ils sont humains, ce que l'affichage intégré ne peut pas faire ici. Ouvrez-le plutôt dans votre navigateur.",
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
+      scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",

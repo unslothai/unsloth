@@ -196,6 +196,7 @@ export const en = {
       botCheckDescription: "{host} asks visitors to prove they're human, which the in-app view can't do here. Open it in your browser instead.",
       resubmit: "This page came from a form. Loading it again sends the form again, which could repeat what it did.",
       upload: "File uploads don't work in this view. Open the page in your system browser to send it.",
+      scriptNavigation: "This page tried to go to another address by script, which this view can't follow. Open it in your system browser instead.",
     },
     native: {
       externalPrompt: "{host} wants to open {url}",

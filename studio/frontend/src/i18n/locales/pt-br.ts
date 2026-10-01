@@ -199,6 +199,7 @@ export const ptBR = {
       botCheckDescription: "{host} pede que os visitantes provem que são pessoas, o que a visualização no app não consegue fazer aqui. Abra no seu navegador.",
       resubmit: "Esta página veio de um formulário. Carregá-la de novo reenvia o formulário, o que pode repetir o que ele fez.",
       upload: "O envio de arquivos não funciona nesta visualização. Abra a página no navegador do sistema para enviá-lo.",
+      scriptNavigation: "Esta página tentou ir para outro endereço por script, o que esta visualização não consegue acompanhar. Abra-a no navegador do sistema.",
     },
     native: {
       externalPrompt: "{host} quer abrir {url}",

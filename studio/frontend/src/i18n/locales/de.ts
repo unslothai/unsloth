@@ -199,6 +199,7 @@ export const de = {
       botCheckDescription: "{host} verlangt von Besuchern einen Nachweis, dass sie Menschen sind. Die Ansicht in der App kann das hier nicht. Öffne die Seite stattdessen in deinem Browser.",
       resubmit: "Diese Seite stammt aus einem Formular. Erneutes Laden sendet das Formular noch einmal und kann dessen Aktion wiederholen.",
       upload: "Datei-Uploads funktionieren in dieser Ansicht nicht. Öffne die Seite im Systembrowser, um sie zu senden.",
+      scriptNavigation: "Diese Seite wollte per Skript zu einer anderen Adresse wechseln, was diese Ansicht nicht nachvollziehen kann. Öffne sie stattdessen im Systembrowser.",
     },
     native: {
       externalPrompt: "{host} möchte {url} öffnen",
