@@ -31,8 +31,10 @@ def _hf_transfer_importable() -> bool:
 
 
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
 if (
-    not (
+    "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
+    and not (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
     )

@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-ProviderApiType = Literal["chat_completions", "responses"]
+ProviderApiType = Literal["chat_completions", "responses", "systemone"]
 
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 

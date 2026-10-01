@@ -1268,6 +1268,29 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
 
 
+def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
+    """Live free VRAM via nvidia-smi / amd-smi (no CUDA context here), or None. No pin = sd.cpp's ordinal 0."""
+    if device != "cuda":
+        return None
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+        with gpu_query.fresh_reads():
+            devices = get_visible_gpu_utilization().get("devices", [])
+        want = 0 if ordinal is None else int(ordinal)
+        for entry in devices:
+            if entry.get("visible_ordinal") != want:
+                continue
+            total = entry.get("vram_total_gb")
+            used = entry.get("vram_used_gb")
+            if total is None or used is None:
+                return None
+            return max(0, int((float(total) - float(used)) * 1024**3))
+    except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
+        return None
+    return None
+
+
 def _h3_device_capacity_bytes(device: str) -> Optional[int]:
     """TOTAL VRAM on the card, or None when it cannot be read.
 
@@ -3018,6 +3041,7 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
         # NAMED so a static step-skip ask can be recorded as declined: sd.cpp runs every step itself.
         transformer_cache: Optional[str] = None,
+        speed_mode: Optional[str] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in through _run_load's kwargs,
         # and swallowed it meant the four-file bundle, the sizing metadata and the sd-cli install were all fetched by a
         # load that promised no downloads.
@@ -3053,6 +3077,7 @@ class VideoBackend:
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_supports_graph_cut,
+            sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
@@ -3335,6 +3360,14 @@ class VideoBackend:
             # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose
             # between.
             supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
+            # Lossy (INT8 QK^T), so only on an explicit speed_mode="max".
+            h3_sage = (
+                native_device != "cpu"
+                and str(speed_mode or "").strip().lower() == "max"
+                and os.environ.get("UNSLOTH_H3_SAGE_ATTN", "").strip().lower()
+                not in ("0", "false", "no", "off")
+                and sd_cpp_supports_sage_attn(binary)
+            )
             # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal would outlive the
             # decision and be committed against a runtime that never used it.
             native_ordinal = None if native_device == "cpu" else gpu_ordinal
@@ -3382,6 +3415,13 @@ class VideoBackend:
             native_offload += GRAPH_CUT_VRAM_FLAGS
             if "--offload-to-cpu" in native_offload:
                 native_offload += GRAPH_CUT_STREAM_FLAGS
+        native_env: tuple[tuple[str, str], ...] = ()
+        if h3_sage:
+            native_offload += ("--sage-attn",)
+            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
+            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
+            if H3_QUANT_CUBLAS_ENV not in os.environ:
+                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3400,6 +3440,7 @@ class VideoBackend:
                 audio_vae = str(resolved[3]),
             ),
             offload_flags = native_offload,
+            env = native_env,
         )
 
         with self._lock:
@@ -3433,15 +3474,25 @@ class VideoBackend:
                         offload_policy = policy,
                         vae_tiling = False,
                         memory_mode = requested_mode,
-                        attention_backend = "flash",
+                        attention_backend = "sage" if h3_sage else "flash",
+                        speed_mode = SPEED_MAX if h3_sage else SPEED_OFF,
                         resolved = build_resolved_record(
                             {
                                 "family_override": _family_override_resolved(family_override, fam),
                                 "memory_mode": (memory_mode, policy, "native model offload"),
+                                "speed_mode": (
+                                    speed_mode,
+                                    SPEED_MAX if h3_sage else SPEED_OFF,
+                                    "sd.cpp SageAttention + BF16 cuBLAS"
+                                    if h3_sage
+                                    else "sd.cpp exact kernels",
+                                ),
                                 "attention_backend": (
                                     None,
-                                    "flash",
-                                    "sd.cpp diffusion flash attention",
+                                    "sage" if h3_sage else "flash",
+                                    "sd.cpp SageAttention (speed_mode=max)"
+                                    if h3_sage
+                                    else "sd.cpp diffusion flash attention",
                                 ),
                                 **(
                                     {
@@ -5159,6 +5210,7 @@ class VideoBackend:
                 # would let an offline load fetch the four-file bundle.
                 local_files_only = local_files_only,
                 transformer_cache = transformer_cache,
+                speed_mode = speed_mode,
             )
             return self.status()
 
@@ -8528,12 +8580,33 @@ class VideoBackend:
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
         from .video_minimax_h3 import (
+            h3_native_render_flags,
+            h3_native_resident_bytes,
             inspect_video,
             stage_h3_references,
             transcode_video_to_mp4,
         )
 
         runtime = state.pipe
+        render_flags = list(runtime.offload_flags)
+        render_resident = False
+        if "--offload-to-cpu" in render_flags and state.memory_mode in (None, "auto"):
+            try:
+                files = runtime.files
+                file_bytes = sum(
+                    os.path.getsize(p)
+                    for p in (files.diffusion_model, files.llm, files.vae, files.audio_vae)
+                    if p
+                )
+                need = h3_native_resident_bytes(file_bytes, width, height, frames)
+            except Exception:  # noqa: BLE001 -- unknown size keeps the committed offload
+                need = None
+            render_flags, render_resident = h3_native_render_flags(
+                runtime.offload_flags,
+                memory_mode = state.memory_mode,
+                free_bytes = _h3_card_free_bytes(state.device, state.gpu_ordinal) if need else None,
+                need_bytes = need,
+            )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
         started = time.monotonic()
@@ -8644,7 +8717,8 @@ class VideoBackend:
                                 flow_shift = flow_shift,
                             ),
                             output_path = str(output_path),
-                            offload = list(runtime.offload_flags),
+                            offload = render_flags,
+                            env = dict(runtime.env) or None,
                             on_log = on_log,
                             cancel_event = cancel,
                         )
@@ -8692,7 +8766,7 @@ class VideoBackend:
                     "transformer_quant": state.transformer_quant,
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
-                    "offload_policy": state.offload_policy,
+                    "offload_policy": "none" if render_resident else state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)
