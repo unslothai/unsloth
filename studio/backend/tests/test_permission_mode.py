@@ -2832,6 +2832,27 @@ def test_ask_mode_gates_even_safe_calls():
     assert starts and starts[0]["awaiting_confirmation"] is True
 
 
+@pytest.mark.parametrize(("name", "gated"), [("search_conversation", False), ("web_search", True)])
+def test_ask_mode_never_gates_conversation_recall(name, gated):
+    """Every other tool, read-only ones included, still asks."""
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
+    events = []
+    for ev in run_safetensors_tool_loop(
+        single_turn = _multi_turn([_tool_call(name, '{"query": "the rust code"}'), "final"]),
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": name}}],
+        execute_tool = _FakeExecuteTool(),
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    ):
+        events.append(ev)
+        if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
+            resolve_tool_decision(ev["approval_id"], "allow", session_id = session)
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is gated
+
+
 def test_unset_mode_behaves_as_auto():
     # Unset permission_mode is the product default "auto", so a safe call runs
     # without a prompt (the old "unset behaves as ask" gated even print(1)).

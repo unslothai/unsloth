@@ -31,7 +31,7 @@ import {
   Database02Icon,
   Download01Icon,
   FavouriteIcon,
-  Globe02Icon,
+  InternetIcon,
   LayersLogoIcon,
   LibraryIcon,
   LicenseIcon,
@@ -704,7 +704,7 @@ export const ModelInspector = memo(function ModelInspector({
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
-              mediaRuntime={runsOnMediaRuntime}
+              mediaPage={mediaPage}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
@@ -810,7 +810,7 @@ export const ModelInspector = memo(function ModelInspector({
                   ? `${languages.slice(0, 3).join(", ")} +${languages.length - 3}`
                   : languages.join(", ")
               }
-              icon={Globe02Icon}
+              icon={InternetIcon}
             />
           )}
           <StatRow label="License" value={licenseLabel} icon={LicenseIcon} />

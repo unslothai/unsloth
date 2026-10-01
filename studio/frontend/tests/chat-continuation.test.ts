@@ -264,6 +264,39 @@ test("the adapter marks a finish that rendered nothing", () => {
   assert.match(ending, /yield \{\s*content: finalContent,/);
 });
 
+test("a reply cut mid-quote is reported, and offers a retry rather than a resume", () => {
+  // A lone backtick or quote can be intentional, so the warning stays tentative.
+  assert.equal(incompleteLabel("quote_cut"), "This response may have ended early");
+  assert.match(incompleteRemedy("quote_cut") ?? "", /may have emitted a special token/);
+  assert.match(incompleteRemedy("quote_cut") ?? "", /< \|im_end\|>/);
+  assert.deepEqual(
+    readIncompleteInfo({ custom: { incomplete: { reason: "quote_cut" } } }),
+    { reason: "quote_cut" },
+  );
+  assert.equal(shouldAutoContinue("quote_cut", "parent-1"), false);
+  // A cancelled status would hide the label.
+  assert.deepEqual(
+    restoredAssistantStatus({ custom: { incomplete: { reason: "quote_cut" } } }),
+    { type: "incomplete", reason: "length" },
+  );
+});
+
+test("the adapter stamps a cut the backend reported on a clean finish", () => {
+  assert.match(
+    CHAT_ADAPTER,
+    /if \(chunk\.quote_cut\) \{\s*quoteCut = true;\s*continue;\s*\}/,
+  );
+  const ending = CHAT_ADAPTER.slice(
+    CHAT_ADAPTER.indexOf("const finalIncompleteReason ="),
+  );
+  const reason = ending.slice(0, ending.indexOf("yield {"));
+  // After the reported finish (`length` wins) and before the empty-turn fallback.
+  assert.match(
+    reason,
+    /resolveIncompleteReason\(incompleteReason, contextWindowExceeded\) \?\?\s*\(quoteCut \? "quote_cut" : null\) \?\?/,
+  );
+});
+
 test("the provider's own reason outranks every reason the client infers", () => {
   // The event ends Anthropic's turn, so the model has already stopped. A null reason
   // matters most: it reads as a completed answer.
@@ -2749,7 +2782,11 @@ test("only the gate's own tokens are read as a refusal", () => {
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
   // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
-  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason ="));
+  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const blockAttachmentRun ="));
+  assert.match(
+    CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason =")),
+    /if \(imageGateReason\) \{\n\s*blockAttachmentRun\(imageGateReason\);/,
+  );
   assert.match(
     gate,
     /const gateOwner = createImageGateRunOwner\(\)/,

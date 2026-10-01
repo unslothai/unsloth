@@ -19,7 +19,7 @@ test("research activity reuses Unsloth's standard thought and web icons", () => 
   const icon = between("function ActivityIcon", "const ActivityRow");
 
   assert.match(icon, /<BulbIcon className=\{className\}/);
-  assert.match(icon, /<GlobeIcon className=\{className\}/);
+  assert.match(icon, /<InternetGlyph className=\{className\}/);
   assert.doesNotMatch(icon, /<(?:Brain|BookOpen|Search)\b/);
 });
 

@@ -144,6 +144,9 @@ function sanitizePersistedJob(
     ...(Number.isSafeInteger(value.serverGeneration)
       ? { serverGeneration: Number(value.serverGeneration) }
       : {}),
+    ...(Number.isSafeInteger(value.serverAttempt)
+      ? { serverAttempt: Number(value.serverAttempt) }
+      : {}),
     ...(Array.isArray(value.scopedFiles) &&
     value.scopedFiles.every((f) => typeof f === "string")
       ? { scopedFiles: value.scopedFiles as string[] }
@@ -206,6 +209,9 @@ function toPersistedJob(
     startedAt: job.startedAt,
     ...(job.serverGeneration !== undefined
       ? { serverGeneration: job.serverGeneration }
+      : {}),
+    ...(job.serverAttempt !== undefined
+      ? { serverAttempt: job.serverAttempt }
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
