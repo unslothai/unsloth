@@ -945,13 +945,17 @@ fn browser_views<R: Runtime>(app: &AppHandle<R>) -> Vec<Webview<R>> {
         .collect()
 }
 
-/// Whether pages open in native webviews (needs per-webview proxy: macOS 14+).
+/// Whether pages open in native webviews: macOS 14+ (per-webview proxy) and Windows. On Linux
+/// Tauri packs child webviews into the window's GtkBox, which ignores their bounds, so the panel
+/// uses its proxied frame there.
 #[tauri::command]
 pub fn browser_view_supported() -> bool {
     #[cfg(target_os = "macos")]
     return macos_at_least(14);
-    #[cfg(not(target_os = "macos"))]
-    true
+    #[cfg(target_os = "windows")]
+    return true;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    false
 }
 
 /// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
