@@ -1261,9 +1261,7 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
 
 
 def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
-    """Live free VRAM on the card a native H3 render runs on, read out of process (nvidia-smi / amd-smi, the source the
-    orchestrator's live-free check uses), so the no-torch runtime can answer and no CUDA context is attached here. None
-    when it cannot be read; None keeps the committed offload flags. No pin means sd.cpp's default, ordinal 0."""
+    """Live free VRAM via nvidia-smi / amd-smi (no CUDA context here), or None. No pin = sd.cpp's ordinal 0."""
     if device != "cuda":
         return None
     try:
@@ -3020,8 +3018,6 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
         # NAMED so a static step-skip ask can be recorded as declined: sd.cpp runs every step itself.
         transformer_cache: Optional[str] = None,
-        # NAMED so speed_mode="max" can opt this runtime into SageAttention (see below); every other value keeps the
-        # exact flash-attention path.
         speed_mode: Optional[str] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in through _run_load's kwargs,
         # and swallowed it meant the four-file bundle, the sizing metadata and the sd-cli install were all fetched by a
@@ -3341,9 +3337,7 @@ class VideoBackend:
             # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose
             # between.
             supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
-            # SageAttention (INT8 QK^T, FP16 PV) only on an explicit speed_mode="max": it is lossy. Measured on H3
-            # 960x544x124, UD-Q3_K_XL, 20 steps, same seed: LPIPS 0.069 vs the flash-attention render (B200), and
-            # 7.23 vs 11.80 s/step on an RTX PRO 6000 Blackwell (Colab G4). UNSLOTH_H3_SAGE_ATTN=0 vetoes it.
+            # Lossy (INT8 QK^T), so only on an explicit speed_mode="max".
             h3_sage = (
                 native_device != "cpu"
                 and str(speed_mode or "").strip().lower() == "max"
@@ -3401,11 +3395,7 @@ class VideoBackend:
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
             native_offload += ("--sage-attn",)
-            # The same opt-in takes the fork's BF16 cuBLAS path for the denoiser's large-batch quantized matmuls
-            # (ignored by builds without it, and by non-NVIDIA backends). H3 960x544x124 UD-Q3_K_XL: 11.79 -> 9.97
-            # s/step on an RTX PRO 6000 Blackwell (G4), 64.9 -> 55.2 on an L4; with sage 7.23 -> 5.38 on the G4. Closer
-            # to an F32-dequant reference than the int8 MMQ path on video (PSNR 33.7 vs 30.2 dB, B200, 20 steps). A
-            # value the user already exported wins, 0 included.
+            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
             from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
             if H3_QUANT_CUBLAS_ENV not in os.environ:
                 native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
@@ -8730,7 +8720,6 @@ class VideoBackend:
                     "transformer_quant": state.transformer_quant,
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
-                    # memory auto ran this render resident because the card held the whole bundle
                     "offload_policy": "none" if render_resident else state.offload_policy,
                 }
             finally:

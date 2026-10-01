@@ -1103,18 +1103,13 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
 
 
-# Memory auto commits the native runtime to --offload-to-cpu (the "group" policy), so on a card that holds the whole
-# bundle every render still pins the 17 GB text encoder in host RAM and pages the weights in. Measured on a B200, H3
-# 960x544x124, UD-Q3_K_XL, 4 steps, pinned u1d02858, same seed: offload 111.9 / 118.6 s wall, 32 GB peak RSS; resident
-# 102.7 / 100.2 s, 10 GB RSS, sampling 66 vs 64.5 s, output byte-identical. Resident peak VRAM there was 33.0 GiB (q3)
-# and 44.3 GiB (q8): the four files plus ~1 GiB, because sd.cpp releases the text encoder before the denoiser's compute
-# buffer is allocated. The estimate below still counts that buffer on top of every file, plus a margin.
+# Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
+# the estimate still adds that buffer on top of every file, plus a margin.
 H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
-# Read by the Unsloth sd.cpp fork's ggml-cuda: quantized matmuls with at least this many rows dequantize to BF16 and
-# run on cuBLAS instead of the int8 MMQ kernels. Unset or 0 keeps MMQ.
+# Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
 H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 H3_QUANT_CUBLAS_MIN_BATCH = "1024"
-# The denoiser's compute buffer at 960x544x124 (19108 tokens), from sd-cli's own log; scaled by the pixel volume.
+# Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
 H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
 H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
 H3_NATIVE_RESIDENT_MARGIN_BYTES = 2 * 1024**3
@@ -1122,8 +1117,6 @@ _H3_STREAM_ONLY_FLAGS = ("--offload-to-cpu", "--stream-layers")
 
 
 def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
-    """Conservative device bytes for a fully resident H3 sd-cli render: every file, the denoiser's compute buffer
-    scaled to this clip, and a fixed margin for the CUDA context, the VAE decode and allocator slack."""
     volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
     compute = math.ceil(
         H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
@@ -1139,11 +1132,8 @@ def h3_native_render_flags(
     need_bytes: Optional[int],
     env: Optional[dict] = None,
 ) -> tuple[list[str], bool]:
-    """The sd-cli flags for ONE render, and whether it runs resident.
-
-    Only memory auto is upgraded (balanced / low_vram asked for offload, fast already passes none), only when the
-    load's flags actually stream, and only when the card's live free memory covers the resident estimate. Anything
-    unknown keeps the committed flags. UNSLOTH_H3_NATIVE_RESIDENT=0 keeps them always."""
+    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
+    the estimate; anything unknown keeps the committed flags."""
     flags = list(offload_flags)
     environ = env if env is not None else os.environ
     if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
@@ -1178,7 +1168,6 @@ class MiniMaxH3NativeRuntime:
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
-    # Extra environment for every sd-cli launch of this runtime, as (name, value) pairs.
     env: tuple[tuple[str, str], ...] = ()
 
 

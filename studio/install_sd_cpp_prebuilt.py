@@ -100,8 +100,7 @@ def _raw_install_record(root: Path) -> Optional[str]:
 
 # The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at all: with only half of it remembered, an unwritable record leaves a serverless install looking server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
 _INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
-# The same, for the pin an install was made for: an unwritable record still names the OLD pin, so without this
-# install_is_stale answers True after every successful upgrade and each load re-downloads the bundle.
+# The same for the pin: an unwritable record still names the old one, which re-downloads on every load.
 _INSTALLED_PIN_MEMO: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
 
@@ -122,9 +121,7 @@ def _write_install_record(
 ) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one. The write itself stays best-effort (a metadata failure must not throw away binaries that extracted correctly) but the answer is memoised either way, so this process never re-installs what it just installed."""
     klass = accelerator_class(accelerator)
-    # requested_tag is the pin this install was made FOR, which is not always the tag it got (a host the mirror does not
-    # build falls back upstream or to latest). install_is_stale compares the pin against it, so a fallback install is
-    # not re-downloaded on every load just because its tag can never equal the pin.
+    # The pin this install was FOR: a fallback (upstream / latest) tag never equals it.
     rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
     if ships_server is not None:
         rec["ships_server"] = ships_server
@@ -160,13 +157,7 @@ def _pinned_tag() -> Optional[str]:
 
 
 def install_is_stale(root: Path) -> bool:
-    """True when the managed install in ``root`` was made for a different pin than the one this Studio now ships.
-
-    Studio only (re)installs when a binary is missing, unusable or built for another accelerator, so without this a
-    host keeps the first bundle it ever installed: moving DEFAULT_TAG reaches new installs only, and every fix shipped
-    in a newer prebuilt never reaches the people who already had one. Unknown is not stale: no record, no tag, or a
-    pin that tracks latest (UNSLOTH_SD_CPP_TAG="") all answer False, so this never forces a download it cannot justify.
-    """
+    """True when ``root`` was installed for another pin. Unknown (no record / tag, tracking latest) is not stale."""
     want = _pinned_tag()
     if not want:
         return False
@@ -183,8 +174,7 @@ def install_is_stale(root: Path) -> bool:
     have = rec.get("tag")
     if not isinstance(have, str) or not have:
         return False
-    # Records written before requested_tag existed: the tag it got. Either the mirror's exact tag or, on a host the
-    # mirror does not build, the upstream release that tag names.
+    # Pre-requested_tag records: the mirror tag, or its upstream release on hosts the mirror does not build.
     return have not in (want, upstream_tag_for(want))
 
 

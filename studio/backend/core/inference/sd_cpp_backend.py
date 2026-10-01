@@ -343,9 +343,7 @@ def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
-    """True only when ``binary``'s ``--help`` lists ``--sage-attn``. Fails closed like
-    ``sd_cpp_supports_graph_cut``: the flag is ADDED to the command line, and sd-cli exits non-zero on an option it
-    does not know (the u13b9d92 prebuilt predates it)."""
+    """Fails closed: sd-cli exits non-zero on an unknown option (u13b9d92 predates --sage-attn)."""
     if not binary:
         return False
     text = _sd_cpp_probe_output(binary, "--help")
@@ -813,10 +811,8 @@ def _installer_module():
 _failed_accelerator_upgrades: set[str] = set()
 
 
-# Pins whose upgrade install already failed this process, so a host that cannot fetch the new bundle keeps the old one
-# instead of re-downloading on every load (the _failed_accelerator_upgrades of the pin check).
+# Pins whose upgrade failed this process: keep the old bundle instead of retrying every load.
 _failed_pin_upgrades: set[str] = set()
-# Kill switch for upgrading a managed install whose pin moved: 0/false/no/off keeps whatever bundle is installed.
 _PIN_UPGRADE_ENV = "UNSLOTH_SD_CPP_AUTO_UPGRADE"
 
 
@@ -825,11 +821,7 @@ def _pin_upgrade_disabled() -> bool:
 
 
 def _pin_moved(binary: str) -> bool:
-    """True when ``binary`` is a managed install made for an older pin than the one this Studio ships.
-
-    Only a copy the installer owns, never while the tree is in use (the load retries after its own teardown), never
-    for a pin whose upgrade already failed this process, and never when the record cannot say (see
-    ``install_is_stale``). Answers "should an install run", like ``_accelerator_changed``."""
+    """True when ``binary`` is a managed install made for an older pin. Unknown answers False."""
     if _pin_upgrade_disabled():
         return False
     root = owning_managed_root(binary)
@@ -857,7 +849,6 @@ def _note_failed_pin_upgrade() -> None:
 
 
 def _needs_reinstall(binary: str, accelerator: str) -> bool:
-    """A usable binary that an install should still replace: wrong accelerator, or an older pin."""
     return _accelerator_changed(binary, accelerator) or _pin_moved(binary)
 
 
