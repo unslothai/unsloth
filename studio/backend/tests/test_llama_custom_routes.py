@@ -181,6 +181,17 @@ def test_raw_completion_defaults_merge_without_losing_limits(preset_backend):
     assert (body["max_tokens"], body["stop"]) == (5, ["END"])
 
 
+def test_raw_completion_n_predict_yields_to_client_cap(preset_backend):
+    # llama-server reads n_predict before max_tokens, so the INI's must not ride along a client cap.
+    preset_backend.llama_cpp_config_summary["request_defaults"]["n_predict"] = 40
+    capped = {"max_tokens": 5}
+    routes._fill_recommended_sampling_completions(capped, "model.gguf", client_max_tokens = 5)
+    assert "n_predict" not in capped
+    uncapped = {"max_tokens": 4096}
+    routes._fill_recommended_sampling_completions(uncapped, "model.gguf")
+    assert uncapped["n_predict"] == 40
+
+
 def test_defaults_never_leak_to_other_model(preset_backend):
     assert routes._custom_request_defaults("other.gguf") == {}
 

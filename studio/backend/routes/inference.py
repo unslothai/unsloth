@@ -26265,7 +26265,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
 _COMPLETIONS_SAMPLING_BODY_KEY = {"repetition_penalty": "repeat_penalty"}
 
 
-def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
+def _fill_recommended_sampling_completions(body: dict, model_id, client_max_tokens = None) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a raw
     ``/v1/completions`` body in place, so the legacy (non-chat) endpoint honors the same pins as
     ``/v1/chat/completions``.
@@ -26288,6 +26288,9 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
     for field, value in preset.items():
         if field == "repetition_penalty":
+            continue
+        # llama-server reads n_predict ahead of max_tokens, so a client's own cap must keep it out.
+        if field == "n_predict" and client_max_tokens is not None:
             continue
         if field == "chat_template_kwargs":
             body[field] = {**value, **(body.get(field) or {})}
@@ -32348,7 +32351,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # Apply per-model recommended sampling and any operator UNSLOTH_SAMPLING_* pin to the raw
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
-    _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
+    _fill_recommended_sampling_completions(
+        body,
+        getattr(llama_backend, "model_identifier", None),
+        client_max_tokens = _resolved_max_tokens,
+    )
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
