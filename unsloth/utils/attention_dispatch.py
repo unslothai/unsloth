@@ -26,6 +26,7 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    cover_padded_cu_seqlens,
     move_xformers_attention_bias,
 )
 
@@ -314,7 +315,7 @@ def run_attention(
         backend = SDPA
 
     # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both before
-    # the int32 overflow aborts the process. Integer arithmetic only, no device sync.
+    # the int32 overflow aborts the process. Integer arithmetic plus one cached sync per step.
     if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
         # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v still yields a
         # Q that requires grad. context.requires_grad: gradient checkpointing runs its FIRST forward under
@@ -325,9 +326,13 @@ def run_attention(
         )
         if will_backward:
             seq_info = context.seq_info
-            # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
-            n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
             total_q = context.bsz * context.q_len
+            # Includes the collator's trailing pad segment.
+            n_seqs = (
+                cover_padded_cu_seqlens(seq_info, total_q)[0].numel() - 1
+                if seq_info is not None
+                else context.bsz
+            )
             if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
                 # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2) would keep it
                 # training on wrong logits and gradients, worse than the fault this guard avoids.
@@ -400,7 +405,7 @@ def run_attention(
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
         V_f = V.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
-        _, cu_seqlens, max_seqlen = context.seq_info
+        cu_seqlens, max_seqlen = cover_padded_cu_seqlens(context.seq_info, bsz * q_len)
         return flash_attn_varlen_func(
             Q_f,
             K_f,
@@ -432,6 +437,7 @@ def run_attention(
             context.seq_info,
             sliding_window = sliding_window,
             base_mask = base_mask,
+            total_tokens = K.shape[-2],
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -496,6 +502,7 @@ def run_attention(
                 dtype = Q.dtype,
                 device = Q.device,
                 sliding_window = sliding_window,
+                total_tokens = K.shape[-2],
             )
         else:
             q_len_local = Q.shape[-2]

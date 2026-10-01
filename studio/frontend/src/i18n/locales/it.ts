@@ -1320,20 +1320,13 @@ export const it = {
           wide: "Ampia",
           full: "Larghezza piena",
         },
-        composerAttachments: {
-          label: "Allegati nel campo di testo",
-          description:
-            "Schede grandi che ingrandiscono il campo di testo, oppure una riga compatta di riquadri.",
-          cards: "Schede grandi",
-          compact: "Riquadri compatti",
-        },
         sentAttachments: {
           label: "Allegati nei messaggi inviati",
           description:
-            "Un elenco con il tipo di ogni file, oppure piccole etichette. Automatico passa alle etichette oltre i sei file.",
+            "Standard mostra ogni file con il suo tipo, Compatto ne mette di più su ogni riga. Automatico passa a compatto oltre i sei file.",
           auto: "Automatico",
-          list: "Elenco",
-          chips: "Etichette",
+          list: "Standard",
+          chips: "Compatto",
         },
         reset: "Ripristina",
         resetAll: "Ripristina la personalizzazione",
@@ -1803,9 +1796,6 @@ export const it = {
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      projectsSection: "Mostra la sezione Progetti",
-      projectsSectionDescription:
-        "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       title: "Chat",
       description:
         "Personalizza il comportamento della chat su questo dispositivo.",
@@ -1843,6 +1833,11 @@ export const it = {
       autoScrollManual: "Manuale",
       autoScrollKeywords:
         "scorrimento scorrere automatico seguire fondo saltare streaming generazione vista bloccare scroll autoscroll follow",
+      scrollToBottomButton: "Pulsante per scorrere in fondo",
+      scrollToBottomButtonDescription:
+        "Mostra un pulsante per tornare all'ultimo messaggio dopo aver scorso verso l'alto.",
+      scrollToBottomButtonKeywords:
+        "scorrere fondo saltare ultimo freccia pulsante nascondere scroll bottom button",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
@@ -2221,11 +2216,13 @@ export const it = {
       revoking: "Revoca in corso...",
       decisionApi: {
         title: "API decisionale",
-        description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello Laya locale. Funziona con l'SDK di TypeSafe.",
+        description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
+        enableRemoteDescription: "Gestisce /v1/systemone.",
         lockedByEnv: "Impostato da {name}.",
         model: "Modello",
+        thisMachine: "Questo computer",
         modelMultilingual: "Multilingue",
         modelEnglish: "Inglese",
         modelTypedDecisions: "Decisioni tipizzate",
@@ -2250,6 +2247,10 @@ export const it = {
         downloadFailed: "Impossibile avviare il download.",
         saveFailed: "Impossibile salvare l'impostazione dell'API decisionale.",
         loadError: "Impossibile caricare le impostazioni dell'API decisionale.",
+        sendsTo: "Le richieste vengono inviate a {provider}.",
+        connectionMissing: "Questa connessione non esiste più o non ha modelli decisionali. Scegli un altro modello.",
+        addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
+        openConnections: "Apri Connessioni",
       },
     },
     about: {
