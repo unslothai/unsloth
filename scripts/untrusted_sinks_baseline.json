@@ -42,6 +42,7 @@
     "unsloth/models/_utils.py::resolve_remote_code_model_class::get_class_from_dynamic_module::281f4ae0ed10fad9::e21171dbdef3d324": 1,
     "unsloth/save.py::_quantize_q2_k_l::subprocess.Popen::3f2e8083a35892d6::cda7dd79725d3f8b": 1,
     "unsloth/save.py::_quantize_q2_k_l::subprocess.run::60b0be277de013cd::cda7dd79725d3f8b": 1,
+    "unsloth/save.py::_unsloth_save_compressed_tensors::subprocess.check_call::d48dd18ae7f491f2::d6bf29b1c67c9cda": 1,
     "unsloth/save.py::_unsloth_save_lora_gguf::subprocess.Popen::8db1c22b28eda848::2478956368a06813": 1,
     "unsloth_cli/_studio_deps.py::_requirements_root_in::subprocess.check_output::2f063ff51a6531cd::d5ccd623d5d766f3": 1,
     "unsloth_cli/_studio_deps.py::_venv_site_packages::subprocess.check_output::2f063ff51a6531cd::83388fb5335364a5": 1,

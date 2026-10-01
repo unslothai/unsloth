@@ -403,20 +403,30 @@ def test_a_stale_baseline_allowance_fails_the_gate(tmp_path, monkeypatch):
 
     The key is the path, the qualname and a hash of the call, so restoring the identical
     call in the same place would consume it silently.
+
+    The allowance is keyed to the file being scanned. It used to name an unrelated file,
+    which passed for the wrong reason: the check compared against every entry in the
+    baseline regardless of what the run had looked at, so any allowance anywhere failed
+    any scan. That is what made --paths unusable, and the scope filter means a test of
+    staleness has to put the stale entry inside the scope to be testing staleness at all.
     """
+    clean = tmp_path / "clean.py"
+    clean.write_text("VALUE = 1\n", encoding = "utf-8")
+
     baseline = tmp_path / "untrusted_sinks_baseline.json"
     baseline.write_text(
         json.dumps(
             {
                 "comment": "test",
-                "entries": {"nowhere.py::gone::importlib.import_module::deadbeefdeadbeef": 1},
+                "entries": {
+                    f"{L._relative(clean.resolve())}::gone::importlib.import_module"
+                    f"::deadbeefdeadbeef::cafecafecafecafe": 1
+                },
             }
         ),
         encoding = "utf-8",
     )
     monkeypatch.setattr(L, "BASELINE_PATH", baseline)
-    clean = tmp_path / "clean.py"
-    clean.write_text("VALUE = 1\n", encoding = "utf-8")
 
     assert L.main(["--paths", str(clean)]) == 1
 
@@ -888,3 +898,119 @@ def test_an_incomplete_analysis_cannot_be_baselined(tmp_path, monkeypatch):
         encoding = "utf-8",
     )
     assert "analysis did not converge" in {f["sink"] for f in L._unbaselined(findings)}
+
+
+def test_a_bare_call_resolves_a_nested_helper(tmp_path):
+    """A helper defined inside a function is indexed under its qualified name.
+
+    `def execute` inside `def run` is `run.execute`, while the call to it is the bare
+    `execute`, so looking the bare name up on its own found nothing: taint neither entered
+    the helper nor came back out, and a sink inside it was invisible.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def run(blob):\n"
+        "    def execute(command):\n"
+        "        return subprocess.run(command)\n"
+        "    return execute(json.loads(blob)['cmd'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_inner_helper_is_preferred_to_a_module_level_namesake(tmp_path):
+    """Innermost first, which is how Python resolves the name.
+
+    Resolving outwards-in would attribute the call to the module-level function and look
+    for the sink in the wrong body.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command):\n"
+        "    return command\n"
+        "def run(blob):\n"
+        "    def execute(command):\n"
+        "        return subprocess.run(command)\n"
+        "    return execute(json.loads(blob)['cmd'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_taint_survives_an_await(tmp_path):
+    """`body = await request.json()` is Await(Call(...)), not a bare Call.
+
+    Only the top-level Call was recognised, so every async read of a request body or a
+    file came out clean and a dynamic import below it was accepted.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib\n"
+        "async def handle(request):\n"
+        "    body = await request.json()\n"
+        "    return importlib.import_module('x.' + body['model_type'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_stronger_attribute_reason_survives_a_later_method(tmp_path):
+    """Two methods assigning the same attribute, and method order decided the tier.
+
+    The pending write was unconditional, so a tier-B assignment in a method visited later
+    overwrote a tier-A one from another method, purely alphabetically, and the sink
+    reading that attribute stopped gating. a_config and z_parameter are named so the
+    weaker one is visited second, which is the order that used to lose.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def a_config(self, blob):\n"
+        "        self.command = json.loads(blob)['cmd']\n"
+        "    def z_parameter(self, model_path):\n"
+        "        self.command = model_path\n"
+        "    def go(self):\n"
+        "        return subprocess.run(self.command)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_expanded_dictionary_binds_the_named_parameters(tmp_path):
+    """`execute(**json.loads(blob))` can supply any named parameter.
+
+    The keyword's arg is None, and the only branch that handled that needed the callee to
+    declare **kwargs. A callee declaring `command` directly bound nothing, so it ran a
+    value out of the parsed dictionary with nothing reported anywhere.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command, timeout = 5):\n"
+        "    return subprocess.run(command, timeout = timeout)\n"
+        "def load(blob):\n"
+        "    return execute(**json.loads(blob))\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_partial_scan_does_not_call_every_other_allowance_stale(tmp_path, monkeypatch):
+    """--paths on one clean file must not exit 1 over files it never looked at.
+
+    The stale check ran against the whole baseline, so scanning a single file reported
+    every allowance belonging to every other file as unused. That makes the option
+    useless for the one thing it is for, checking a file you just edited.
+    """
+    sample = tmp_path / "sample.py"
+    sample.write_text("x = 1\n", encoding = "utf-8")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps({"entries": {"somewhere/else.py::f::subprocess.run::abc::def": 1}}),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(L, "BASELINE_PATH", baseline)
+
+    findings = L.scan([sample], roots = [tmp_path])
+    scoped = L._stale_allowances(findings, scope = {L._relative(sample.resolve())})
+    assert scoped == []
+    # Unscoped is the old behaviour, and it is what made the option unusable.
+    assert L._stale_allowances(findings) != []

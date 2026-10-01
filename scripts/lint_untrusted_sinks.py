@@ -540,10 +540,28 @@ class _FileFacts:
         """One spelling, for a message. Matching goes through `canonicals`."""
         return self.canonicals(name)[0]
 
+    def _local_function(self, name: str, scope: str) -> str | None:
+        """A bare name, resolved against the scopes enclosing `scope`.
+
+        A nested helper is indexed under its qualified name, so `def execute` inside
+        `def run` is `run.execute` while the call to it is the bare `execute`. Looking the
+        bare name up on its own therefore missed every nested helper: taint neither
+        entered one nor came back out, and a sink inside it was invisible. Innermost
+        first, then outwards, then module level, which is how Python resolves it.
+        """
+        parts = scope.split(".") if scope else []
+        while parts:
+            candidate = ".".join(parts + [name])
+            if candidate in self.functions:
+                return candidate
+            parts.pop()
+        return name if name in self.functions else None
+
     def target_of(
         self,
         callee: ast.AST,
         class_name: str = "",
+        scope: str = "",
     ) -> tuple[Path, str] | None:
         """Resolve a call target to a first-party (file, qualname), or None.
 
@@ -555,9 +573,11 @@ class _FileFacts:
         if not name:
             return None
         head, _, tail = name.partition(".")
-        # Bare call to a function defined in this file.
-        if not tail and name in self.functions:
-            return (self.path, name)
+        # Bare call to a function defined in this file, nested helpers included.
+        if not tail:
+            local = self._local_function(name, scope)
+            if local is not None:
+                return (self.path, local)
         # `self.method(...)` and `cls.method(...)`. Without this an instance method is
         # outside the analysis entirely: taint neither enters it nor returns from it, so
         # a class that parses an untrusted config in one method and dynamically imports
@@ -570,8 +590,10 @@ class _FileFacts:
         # `from pkg.mod import f` then `f(...)`.
         targets = self._targets(head)
         if not targets:
-            if not tail and f"{name}" in self.functions:
-                return (self.path, name)
+            if not tail:
+                local = self._local_function(name, scope)
+                if local is not None:
+                    return (self.path, local)
             return None
         for dotted in targets:
             full = f"{dotted}.{tail}" if tail else dotted
@@ -644,6 +666,10 @@ class _TaintPass(ast.NodeVisitor):
         if isinstance(node, ast.Subscript):
             return self.tainted(node.value)
         if isinstance(node, ast.Starred):
+            return self.tainted(node.value)
+        if isinstance(node, ast.Await):
+            # `body = await request.json()` is Await(Call(...)), and only a bare Call was
+            # recognised, so every async read of a request body or a file came out clean.
             return self.tainted(node.value)
         if isinstance(node, ast.Call):
             return self._tainted_call(node)
@@ -776,7 +802,7 @@ class _TaintPass(ast.NodeVisitor):
                     return reason
             return None
         # A first-party callee that returns tainted data.
-        target = self.facts.target_of(node.func, self.class_name)
+        target = self.facts.target_of(node.func, self.class_name, scope = self.qualname)
         if target is not None:
             returned = self.state.returns_tainted.get(target)
             if returned:
@@ -820,7 +846,11 @@ class _TaintPass(ast.NodeVisitor):
         elif isinstance(target, ast.Attribute):
             key = self._attr_key(target)
             if key:
-                self.state.pending_attrs[key] = reason
+                # Same tier-A-wins rule as locals and parameters. Writing unconditionally
+                # let one method's tier-B assignment to self.command overwrite another
+                # method's tier-A one, purely on the order the methods are visited, and
+                # the sink reading that attribute then did not gate.
+                self._bind(self.state.pending_attrs, key, reason)
         elif isinstance(target, (ast.Tuple, ast.List)):
             for element in target.elts:
                 self._assign(element, reason)
@@ -905,7 +935,7 @@ class _TaintPass(ast.NodeVisitor):
 
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
-        target = self.facts.target_of(node.func, self.class_name)
+        target = self.facts.target_of(node.func, self.class_name, scope = self.qualname)
         if target is None:
             return
         params = self.state.params.get(target)
@@ -927,7 +957,19 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.tainted(keyword.value)
             if not reason:
                 continue
-            if keyword.arg and keyword.arg in params:
+            if keyword.arg is None:
+                # `execute(**json.loads(blob))`. Which named parameter the dict supplies is
+                # not knowable here, so all of them are bound. Deliberately conservative:
+                # the alternative was binding none at all, and a callee that declares
+                # `command` rather than `**kwargs` then ran a value out of that dict with
+                # nothing reported anywhere.
+                if star_kwargs:
+                    self._bind(bound, star_kwargs, reason)
+                for parameter in params:
+                    if parameter not in ("self", "cls"):
+                        self._bind(bound, parameter, reason)
+                continue
+            if keyword.arg in params:
                 self._bind(bound, keyword.arg, reason)
             elif star_kwargs:
                 # A keyword the callee does not name by hand still arrives, in **kwargs.
@@ -1507,13 +1549,23 @@ def _unbaselined(findings: list[dict], baseline: dict | None = None) -> list[dic
     return new
 
 
-def _stale_allowances(findings: list[dict], baseline: dict | None = None) -> list[str]:
+def _stale_allowances(
+    findings: list[dict],
+    baseline: dict | None = None,
+    scope: set | None = None,
+) -> list[str]:
     """Allowances for a sink that is no longer there.
 
     A loaded gun: the key is the path, the qualname, a hash of the call and the enclosing
     function, so a later change that restores the identical call in the same place
     inherits the allowance and is never reported. Removing a sink therefore has to be
     accompanied by --update.
+
+    `scope` is the set of relative paths this run actually looked at. Without it a
+    `--paths` run on one file called every allowance for every other file stale and exited
+    1 on a clean file, which makes the option useless for the thing it is for: checking
+    one file you just edited. An allowance for a file nobody scanned is not evidence of
+    anything.
     """
     if baseline is None:
         baseline = _load_baseline()
@@ -1521,7 +1573,7 @@ def _stale_allowances(findings: list[dict], baseline: dict | None = None) -> lis
     return sorted(
         f"{key} ({count - counted.get(key, 0)} unused)"
         for key, count in baseline.items()
-        if count > counted.get(key, 0)
+        if count > counted.get(key, 0) and (scope is None or key.split("::", 1)[0] in scope)
     )
 
 
@@ -1695,7 +1747,9 @@ def main(argv: list[str] | None = None) -> int:
 
     baseline = _load_baseline()
     new = _unbaselined(findings, baseline = baseline)
-    stale = _stale_allowances(findings, baseline = baseline)
+    # The stale check only means something for files this run looked at.
+    scanned = {_relative(path) for path in _python_files(targets)}
+    stale = _stale_allowances(findings, baseline = baseline, scope = scanned)
 
     shown = [
         f
