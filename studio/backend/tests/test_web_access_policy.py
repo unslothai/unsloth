@@ -335,8 +335,6 @@ def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
 
 
 def _raise_if_search_backend(monkeypatch):
-    """Fail if an empty/invalid call would have reached DuckDuckGo or a page fetch."""
-
     def boom(*_args, **_kwargs):
         raise AssertionError("web_search backend must not run without query or url")
 
@@ -355,8 +353,6 @@ def _raise_if_search_backend(monkeypatch):
     ],
 )
 def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, arguments):
-    # The schema allows {} and local models emit it. The result string is main's, and
-    # already a TOOL_ERROR_PREFIXES entry; what is new is that no backend call is made.
     _raise_if_search_backend(monkeypatch)
     result = tools.execute_tool("web_search", arguments)
     assert result == "No query provided."
@@ -364,15 +360,12 @@ def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, argumen
 
 
 def test_web_search_description_names_the_usable_arguments():
-    # Asserted in fragments: the sentence around them is prompt text and gets reworded.
     description = tools.WEB_SEARCH_TOOL["function"]["description"]
     assert "non-empty `query`" in description
     assert "non-empty `url`" in description
     assert "no usable arguments" in description
 
 
-# The truthy values are the point: a falsy non-string was already short-circuited by
-# `not query`, while 123 or {"a": 1} reached .strip() and raised out of _web_search.
 @pytest.mark.parametrize("key", ["query", "url"])
 @pytest.mark.parametrize("value", [False, 0, [], {}, 123, {"a": 1}])
 def test_web_search_rejects_non_string_arguments(monkeypatch, key, value):

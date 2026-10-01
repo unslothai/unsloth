@@ -11980,9 +11980,6 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
-# local models often emit q/search_query instead of query, or uri/href instead of url.
-_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
-_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
 # edit_file. Without it, changing a file means a whole-file `cat > f <<'EOF'` or open(...).write(...): ~7.7k output
 # tokens to rewrite a 500-line file that a patch does in ~45, and anything the model fails to retype is lost.
 # Exact-string replacement, not a unified diff: models corrupt @@ hunk headers far more often than they mis-copy a
@@ -12626,22 +12623,20 @@ WEB_SEARCH_TOOL = {
 }
 
 
+# Local models often emit q/search_query instead of query, or uri/href instead of url.
+_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
+_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
+
+
 def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
-    """First non-empty string among ``keys`` in a tool-call argument object."""
     for key in keys:
-        if key not in arguments:
-            continue
         value = arguments.get(key)
-        if not isinstance(value, str):
-            continue
-        text = value.strip()
-        if text:
-            return text
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
 def _resolve_web_search_args(arguments) -> tuple[str, str]:
-    """Return ``(query, url)``, healing common aliases from local models."""
     args = arguments if isinstance(arguments, dict) else {}
     return (
         _first_nonempty_arg(args, _WEB_SEARCH_QUERY_ALIASES),
@@ -12650,7 +12645,7 @@ def _resolve_web_search_args(arguments) -> tuple[str, str]:
 
 
 def canonicalize_web_search_arguments(arguments) -> dict:
-    """Rewrite alias keys to ``query`` / ``url`` for duplicate detection and status."""
+    # URL mode returns before _web_search reads query or image_queries, so they are dropped from the key.
     args = dict(arguments) if isinstance(arguments, dict) else {}
     query, url = _resolve_web_search_args(args)
     if url:
