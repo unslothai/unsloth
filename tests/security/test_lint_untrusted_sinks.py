@@ -1581,3 +1581,107 @@ def test_a_path_passed_to_open_by_keyword_still_taints_the_handle(tmp_path):
         "        return pickle.load(handle)\n",
     )
     assert "pickle.load" in _sinks(findings)
+
+
+def test_a_module_scope_instance_of_an_imported_class_resolves(tmp_path):
+    """`from producer import Parser` then a module-level `parser = Parser()`.
+
+    The module-scope collector accepted only classes declared in the same file, so this
+    instance carried no type, `parser.parse(blob)` resolved to nothing and the sink fed
+    by its return value was reported nowhere. The function-local form was already handled,
+    which is exactly the drift the shared resolver removes.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import json\n"
+        "class Parser:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['module']\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import importlib\nfrom producer import Parser\n"
+        "parser = Parser()\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(parser.parse(blob))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_unbound_method_call_does_not_shift_its_arguments(tmp_path):
+    """`Runner.execute(runner, "safe", command)` passes the receiver by hand.
+
+    Attribute syntax alone shifted every argument one place right, so the tainted third
+    argument landed past the end of the parameter list and was dropped, and the
+    subprocess call reading it was reported nowhere.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, prefix, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    return Runner.execute(runner, 'safe', json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_bound_method_call_still_shifts_its_arguments(tmp_path):
+    """The ordinary form has an implicit receiver, so the offset has to stay.
+
+    Dropping it everywhere would have bound the first real argument to `self` and shifted
+    the rest left, which loses the finding just as surely in the shape nearly all of this
+    tree is written in.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, prefix, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    return runner.execute('safe', json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_alias_of_a_first_party_callable_is_followed(tmp_path):
+    """`runner = execute` then `runner(...)`.
+
+    The alias is neither an indexed local function named `runner` nor an import target,
+    so the callee did not resolve, taint never entered the helper and the subprocess call
+    inside it walked past the gate.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = execute\n"
+        "    return runner(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_alias_of_an_imported_callable_is_followed(tmp_path):
+    """The same alias, on a helper imported from another first-party module."""
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import execute\n"
+        "runner = execute\n"
+        "def load(blob):\n"
+        "    return runner(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)

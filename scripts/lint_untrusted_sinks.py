@@ -476,6 +476,8 @@ class _FileFacts:
         # the identical local alias was caught.
         self.module_sink_aliases: dict = {}
         self.module_instances: dict = {}
+        # Module-scope `runner = execute`, for the same reason.
+        self.module_callable_aliases: dict = {}
         self._collect()
         self._collect_module_bindings()
 
@@ -556,12 +558,15 @@ class _FileFacts:
             if not names:
                 continue
             if isinstance(value, ast.Call):
-                constructed = _call_name(value.func)
-                for candidate in (constructed, constructed.rpartition(".")[2]):
-                    if candidate and candidate in self.classes:
-                        for name in names:
-                            self.module_instances.setdefault(name, candidate)
-                        break
+                # Through the shared resolver, so an imported first-party class is
+                # accepted here too. Taking only classes declared in this file left
+                # `from producer import Parser; parser = Parser()` at module scope
+                # without a type, so a function calling `parser.parse(blob)` resolved
+                # to nothing and a sink inside that method was reported nowhere.
+                constructed = self.resolve_construction(_call_name(value.func))
+                if constructed:
+                    for name in names:
+                        self.module_instances.setdefault(name, constructed)
                 continue
             referenced = _call_name(value)
             if not referenced:
@@ -572,6 +577,11 @@ class _FileFacts:
             if sink is not None:
                 for name in names:
                     self.module_sink_aliases.setdefault(name, sink)
+                continue
+            alias = self.callable_alias(referenced)
+            if alias:
+                for name in names:
+                    self.module_callable_aliases.setdefault(name, alias)
 
     def _bind_import(self, alias: str, target: str) -> None:
         self.imports.setdefault(alias, set()).add(target)
@@ -644,12 +654,52 @@ class _FileFacts:
             parts.pop()
         return name if name in self.functions else None
 
+    def resolve_construction(self, constructed: str) -> str | None:
+        """What `parser = Parser()` built: a local class name, or a dotted import target.
+
+        Shared by the module-scope collector and the per-function one so the two cannot
+        drift: an instance built at module scope has to resolve the same way one built
+        inside a function does. The dotted form is what the resolver tells apart from a
+        local class name.
+        """
+        if not constructed:
+            return None
+        for candidate in (constructed, constructed.rpartition(".")[2]):
+            if candidate and candidate in self.classes:
+                return candidate
+        head, _, tail = constructed.partition(".")
+        for dotted in self._targets(head):
+            full = f"{dotted}.{tail}" if tail else dotted
+            file, _module = self.index.resolve_module(full)
+            if file is not None:
+                return full
+        return None
+
+    def callable_alias(
+        self,
+        referenced: str,
+        scope: str = "",
+    ) -> str | None:
+        """`runner = execute`: a reference to a first-party callable, not a call to one.
+
+        Only a spelling that already resolves to something first-party is kept, so an
+        ordinary constant assignment does not enter the table.
+        """
+        if not referenced:
+            return None
+        if self._local_function(referenced, scope) is not None:
+            return referenced
+        if self._targets(referenced.partition(".")[0]):
+            return referenced
+        return None
+
     def targets_of(
         self,
         callee: ast.AST,
         class_name: str = "",
         scope: str = "",
         instances: dict | None = None,
+        aliases: dict | None = None,
     ) -> list:
         """Every first-party (file, qualname) a call can reach.
 
@@ -677,6 +727,13 @@ class _FileFacts:
         name = _call_name(callee)
         if not name:
             return []
+        if aliases:
+            # `runner = execute` then `runner(json.loads(blob))`. The alias is neither an
+            # indexed local function named `runner` nor an import target, so the callee
+            # did not resolve at all and taint never entered the helper: a subprocess or
+            # dynamic import sink inside it walked past the gate. One substitution, so a
+            # pair of names bound to each other cannot loop.
+            name = aliases.get(name, name)
         head, _, tail = name.partition(".")
         # Bare call to a function defined in this file, nested helpers included.
         if not tail:
@@ -768,6 +825,8 @@ class _TaintPass(ast.NodeVisitor):
         self.instance_types: dict[str, str] = dict(facts.module_instances)
         # local name -> the sink it refers to, for `loader = importlib.import_module`
         self.sink_aliases: dict[str, str] = dict(facts.module_sink_aliases)
+        # local name -> the first-party callable it refers to, for `runner = execute`
+        self.callable_aliases: dict[str, str] = dict(facts.module_callable_aliases)
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
@@ -961,7 +1020,11 @@ class _TaintPass(ast.NodeVisitor):
         # A first-party callee that returns tainted data. Any of them: an alias bound
         # twice resolves to more than one callee, and only one of them need be dirty.
         for target in self.facts.targets_of(
-            node.func, self.class_name, scope = self.qualname, instances = self.instance_types
+            node.func,
+            self.class_name,
+            scope = self.qualname,
+            instances = self.instance_types,
+            aliases = self.callable_aliases,
         ):
             returned = self.state.returns_tainted.get(target)
             if returned:
@@ -1062,6 +1125,7 @@ class _TaintPass(ast.NodeVisitor):
                 self._assign(target, reason)
         self._note_construction(node)
         self._note_sink_alias(node)
+        self._note_callable_alias(node)
         self.generic_visit(node)
 
     def _note_sink_alias(self, node: ast.Assign) -> None:
@@ -1082,6 +1146,20 @@ class _TaintPass(ast.NodeVisitor):
             if isinstance(target, ast.Name):
                 self.sink_aliases.setdefault(target.id, sink)
 
+    def _note_callable_alias(self, node: ast.Assign) -> None:
+        """`runner = execute`: a reference to a first-party helper, not a call to one."""
+        if isinstance(node.value, ast.Call):
+            return
+        referenced = _call_name(node.value)
+        if self.sink_aliases.get(referenced):
+            return
+        alias = self.facts.callable_alias(referenced, self.qualname)
+        if not alias:
+            return
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self.callable_aliases.setdefault(target.id, alias)
+
     def _note_construction(self, node: ast.Assign) -> None:
         """`parser = Parser()`, so `parser.parse(...)` resolves to `Parser.parse`.
 
@@ -1092,28 +1170,15 @@ class _TaintPass(ast.NodeVisitor):
         """
         if not isinstance(node.value, ast.Call):
             return
-        constructed = _call_name(node.value.func)
+        # Including `from producer import Parser` then `parser = Parser()`: an imported
+        # first-party class resolves to its dotted target, so its methods are inside the
+        # analysis exactly as a locally declared class's are.
+        constructed = self.facts.resolve_construction(_call_name(node.value.func))
         if not constructed:
             return
-        for candidate in (constructed, constructed.rpartition(".")[2]):
-            if candidate and candidate in self.facts.classes:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        self.instance_types.setdefault(target.id, candidate)
-                return
-        # `from producer import Parser` then `parser = Parser()`. Accepting only classes
-        # declared in this file left an imported first-party class unresolvable, so its
-        # methods were outside the analysis exactly as local ones had been. Stored as the
-        # dotted target, which the resolver tells apart from a local class name.
-        for dotted in self.facts._targets(constructed.partition(".")[0]):
-            full = dotted if "." not in constructed else f"{dotted}.{constructed.partition('.')[2]}"
-            file, module = self.facts.index.resolve_module(full)
-            if file is None:
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.instance_types.setdefault(target.id, full)
-            return
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self.instance_types.setdefault(target.id, constructed)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
@@ -1126,6 +1191,7 @@ class _TaintPass(ast.NodeVisitor):
             synthetic = ast.Assign(targets = [node.target], value = node.value)
             self._note_construction(synthetic)
             self._note_sink_alias(synthetic)
+            self._note_callable_alias(synthetic)
         self.generic_visit(node)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
@@ -1228,7 +1294,11 @@ class _TaintPass(ast.NodeVisitor):
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
         for target in self.facts.targets_of(
-            node.func, self.class_name, scope = self.qualname, instances = self.instance_types
+            node.func,
+            self.class_name,
+            scope = self.qualname,
+            instances = self.instance_types,
+            aliases = self.callable_aliases,
         ):
             self._propagate_into_one(node, target)
 
@@ -1238,7 +1308,11 @@ class _TaintPass(ast.NodeVisitor):
             return
         bound = self.state.pending_params.setdefault(target, {})
         offset = (
-            1 if self.state.is_method.get(target) and isinstance(node.func, ast.Attribute) else 0
+            1
+            if self.state.is_method.get(target)
+            and isinstance(node.func, ast.Attribute)
+            and not self._receiver_spelled_out(node.func, target)
+            else 0
         )
         for position, argument in enumerate(node.args):
             reason = self.tainted(argument)
@@ -1290,6 +1364,21 @@ class _TaintPass(ast.NodeVisitor):
                 self._bind(bound, star_kwargs, reason)
             elif keyword.arg:
                 self._bind(bound, keyword.arg, reason)
+
+    def _receiver_spelled_out(self, func: ast.Attribute, target) -> bool:
+        """`Runner.execute(runner, ...)`: the receiver is already in `node.args`.
+
+        Attribute syntax alone used to shift every argument one place right, so on an
+        explicit unbound call the last argument was mapped past the end of the parameter
+        list and dropped, and a sink inside the method reading it was reported nowhere.
+        The receiver is written out exactly when the head names the class the method was
+        found on, which is what tells `Runner.execute(...)` from `runner.execute(...)`.
+        """
+        head = _call_name(func.value)
+        if not head or head in ("self", "cls") or head in self.instance_types:
+            return False
+        owner = target[1].rpartition(".")[0]
+        return bool(owner) and head.rpartition(".")[2] == owner.rpartition(".")[2]
 
     def _check_sink(self, node: ast.Call) -> None:
         names = self.facts.canonicals(_call_name(node.func))
@@ -1653,23 +1742,27 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     # the object would otherwise never resolve on any pass.
     instances: dict[str, str] = {}
     aliases: dict[str, str] = {}
+    callables: dict[str, str] = {}
     visitor = None
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)
+        visitor.callable_aliases.update(callables)
         for child in nodes:
             visitor.visit(child)
         if (
             visitor.local_reasons == reasons
             and visitor.instance_types == instances
             and visitor.sink_aliases == aliases
+            and visitor.callable_aliases == callables
         ):
             return visitor, True
         reasons = dict(visitor.local_reasons)
         instances = dict(visitor.instance_types)
         aliases = dict(visitor.sink_aliases)
+        callables = dict(visitor.callable_aliases)
     return visitor, False
 
 
