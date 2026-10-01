@@ -255,7 +255,7 @@ export function syncEdgesForConfigPatch(
         return true;
       }
       if (isTextFormat) {
-        return !isTextFormatValidatorTarget(other);
+        return edge.source === current.id || !isTextFormatValidatorTarget(other);
       }
       return !(other.kind === "llm" && other.llm_type === "code");
     });

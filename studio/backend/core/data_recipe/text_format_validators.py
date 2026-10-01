@@ -217,10 +217,10 @@ def _has_unclosed_markdown_fence(text: str) -> bool:
 
 
 def _validate_markdown_text(value: Any) -> dict[str, Any]:
-    stripped = str(value).strip()
-    if not stripped:
+    text = str(value)
+    if not text.strip():
         return _invalid_result("Markdown value is empty.")
-    if _has_unclosed_markdown_fence(stripped):
+    if _has_unclosed_markdown_fence(text):
         return _invalid_result("Markdown has an unclosed code fence.")
     return _valid_result()
 

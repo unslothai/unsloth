@@ -41,9 +41,6 @@ export function isSemanticRelation(
   if (isTextFormatValidator(target) && isTextFormatValidatorTarget(source)) {
     return true;
   }
-  if (isTextFormatValidator(source) && isTextFormatValidatorTarget(target)) {
-    return true;
-  }
   return (
     source.kind === "validator" &&
     target.kind === "llm" &&

@@ -88,3 +88,7 @@ def test_validate_json_text_accepts_native_scalars():
     for value in (True, False, 0, 2.5):
         assert _validate_json_text(value)["is_valid"] is True, value
     assert _validate_json_text(float("nan"))["is_valid"] is False
+
+
+def test_validate_markdown_text_keeps_leading_indented_code_block():
+    assert _validate_markdown_text("    ```\n    literal backticks")["is_valid"] is True

@@ -303,19 +303,6 @@ function normalizeValidatorSemanticConnection(
 ): Connection {
   if (
     source.kind === "validator" &&
-    isTextFormatValidator(source) &&
-    isTextFormatValidatorTarget(target)
-  ) {
-    return {
-      ...connection,
-      source: target.id,
-      target: source.id,
-      sourceHandle: HANDLE_IDS.dataOut,
-      targetHandle: HANDLE_IDS.dataIn,
-    };
-  }
-  if (
-    source.kind === "validator" &&
     target.kind === "llm" &&
     target.llm_type === "code"
   ) {
