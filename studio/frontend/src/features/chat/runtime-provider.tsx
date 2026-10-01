@@ -450,13 +450,9 @@ class VisionImageAdapter implements AttachmentAdapter {
       if (!this.converted.has(attachment.id)) {
         return;
       }
-      this.toolOnlyIds.delete(attachment.id);
       toast.error(error instanceof Error ? error.message : String(error));
+      this.toolOnlyIds.delete(attachment.id);
       throw error;
-    }
-    // Removed while converting: yielding again would put it back.
-    if (!this.converted.has(attachment.id)) {
-      return;
     }
     if (mcpToolOnly && file.size > 10 * 1024 * 1024) {
       const reason =
@@ -464,6 +460,10 @@ class VisionImageAdapter implements AttachmentAdapter {
       this.toolOnlyIds.delete(attachment.id);
       toast.error(reason);
       throw new Error(reason);
+    }
+    // Removed while converting: yielding again would put it back.
+    if (!this.converted.has(attachment.id)) {
+      return;
     }
     yield { ...attachment, name: file.name, contentType: file.type, file };
   }
