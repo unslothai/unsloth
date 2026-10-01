@@ -156,7 +156,6 @@ class LocalModelCapabilities(BaseModel):
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
-    # Registered scan folder a custom row came from; never serialised.
     _scan_root: Optional[str] = PrivateAttr(None)
 
     id: str = Field(..., description = "Identifier to use for loading/training")
