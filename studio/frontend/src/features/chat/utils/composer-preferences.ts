@@ -17,8 +17,7 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
-// WebKit fires compositionend BEFORE the committing key's keydown (keyCode 229), as a separate task
-// (WebKit bug 165004); same window as ProseMirror's compositionEndedAt check.
+// WebKit fires compositionend before the committing keydown (keyCode 229, WebKit bug 165004); ProseMirror's window.
 const IME_COMMIT_KEYDOWN_MS = 500;
 
 /** False only for a plain IME-marked Enter outside any composition, e.g. idle macOS Pinyin (#12137). */
@@ -36,7 +35,6 @@ export function imeKeydownBlocksComposerSubmit(
   );
 }
 
-/** The IME-marked Enter `imeKeydownBlocksComposerSubmit` let through, as a plain Enter. */
 export function composerKeyEventForImeSubmit(
   event: ComposerKeyEvent,
 ): ComposerKeyEvent {
