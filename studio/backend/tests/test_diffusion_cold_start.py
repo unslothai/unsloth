@@ -62,31 +62,70 @@ def _whole_compiled(counter):
 # ---------------------------------------------------------------------------------------------- background compile
 
 
+_REAL_COMPILE = r"""
+import torch
+from core.inference import diffusion_bg_compile as bg
+
+
+class Counter:
+    def __init__(self):
+        self.compiles = 0
+
+    def __call__(self, gm, example_inputs):
+        self.compiles += 1
+        return gm.forward
+
+
+class Net(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(8, 8)
+
+    def forward(self, x, *, scale = 1.0, return_dict = True):
+        return self.lin(x) * scale
+
+
+counter = Counter()
+net = Net().eval()
+net.compile(backend = counter, fullgraph = True, dynamic = False)
+job = bg.arm(net)
+assert job is not None and job.pending()
+
+x = torch.randn(2, 8)
+with torch.no_grad(), bg.force_eager():
+    eager_out = net(x, scale = 2.0, return_dict = False)
+assert counter.compiles == 0, "a render under force_eager compiled the denoiser"
+assert len(job.samples) == 1
+
+assert job.kick() is True
+job._thread.join(60)
+assert job.state == "done", job.error
+assert counter.compiles >= 1, "the background thread never compiled"
+compiled_after_bg = counter.compiles
+
+with torch.no_grad():
+    out = net(x, scale = 2.0, return_dict = False)
+assert counter.compiles == compiled_after_bg, "the first compiled render recompiled what the background built"
+assert torch.equal(out, eager_out)
+job.close()
+assert not hasattr(net._compiled_call_impl, "_unsloth_bg_gate"), "close() left the gate in front of the compile"
+print("BG_COMPILE_OK")
+"""
+
+
 def test_force_eager_never_reaches_dynamo_and_the_background_compile_does(monkeypatch):
+    # Own interpreter: a dynamo compile on a worker thread leaves torch state that crashes a later make_fx trace in
+    # the same process (seen with test_video_minimax_h3_adaln.py, also with plain torch and no Studio code).
+    import os
+    import subprocess
+    from pathlib import Path
+
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
-    counter = _Counter()
-    net = _whole_compiled(counter)
-    job = bg.arm(net)
-    assert job is not None and job.pending()
-
-    x = torch.randn(2, 8)
-    with torch.no_grad(), bg.force_eager():
-        eager_out = net(x, scale = 2.0, return_dict = False)
-    assert counter.compiles == 0, "a render under force_eager compiled the denoiser"
-    assert len(job.samples) == 1
-
-    assert job.kick() is True
-    job._thread.join(60)
-    assert job.state == "done", job.error
-    assert counter.compiles >= 1, "the background thread never compiled"
-    compiled_after_bg = counter.compiles
-
-    with torch.no_grad():
-        out = net(x, scale = 2.0, return_dict = False)
-    assert counter.compiles == compiled_after_bg, "the first compiled render recompiled what the background built"
-    assert torch.equal(out, eager_out)
-    job.close()
-    assert not hasattr(net._compiled_call_impl, "_unsloth_bg_gate"), "close() left the gate in front of the compile"
+    backend = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", PYTHONPATH = str(backend))
+    r = subprocess.run([sys.executable, "-c", _REAL_COMPILE], cwd = str(backend), env = env,
+                       capture_output = True, text = True, timeout = 300)
+    assert r.returncode == 0 and "BG_COMPILE_OK" in r.stdout, r.stdout[-2000:] + r.stderr[-4000:]
 
 
 def test_recording_dedups_by_input_shape_and_ignores_unforced_calls():
@@ -196,7 +235,8 @@ class _UNet2DConditionModel(torch.nn.Module):
         ({}, True),
         ({"transformer_quant": "int8"}, False),
         ({"gguf_transformer": True}, False),
-        ({"offload_policy": "group"}, False),
+        ({"offload_policy": "group", "_hooked": True}, False),
+        ({"offload_policy": "group"}, True),  # encoders streamed, denoiser resident
         ({"speed_mode": "max"}, False),
         ({"speed_optims": ("cuda_graph",)}, False),
         ({"transformer_cache": "fbcache"}, False),
@@ -211,6 +251,8 @@ def test_only_dense_resident_default_tier_cuda_loads_compile_in_the_background(m
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
     monkeypatch.setattr(speed, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}), raising = False)
     unet = _UNet2DConditionModel()
+    if override.pop("_hooked", False):
+        unet._hf_hook = object()
     pipe = types.SimpleNamespace(unet = unet)
     kwargs = dict(
         speed_optims = ("compiled", "cuda_graph"),

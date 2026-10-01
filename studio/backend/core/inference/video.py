@@ -964,6 +964,21 @@ def _ensure_mp4_encoder_available() -> None:
         ) from exc
 
 
+def _video_denoiser_hooked(pipe: Any) -> bool:
+    """Whether an offload hook moves one of ``pipe``'s denoisers (encoders streamed alone leave it resident)."""
+    for name in ("transformer", "transformer_2"):
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        if getattr(module, "_hf_hook", None) is not None:
+            return True
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
 @dataclass(frozen = True)
 class _VideoLoadState:
     """Everything about the currently-loaded video pipeline, swapped as one unit."""
@@ -1021,6 +1036,8 @@ class _VideoLoadState:
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
     resolved: Optional[dict] = None
+    # diffusion_bg_compile.BackgroundCompile while the dense denoiser's compile runs between renders, else None.
+    bg_compile: Any = None
 
 
 @dataclass(frozen = True)
@@ -6355,6 +6372,21 @@ class VideoBackend:
                 },
                 logger = logger,
             )
+            # A dense default-tier denoiser compiles between renders instead of inside the first one.
+            from . import diffusion_bg_compile as bg_compile
+
+            bg_module = bg_compile.select_module(
+                pipe,
+                speed_optims = speed_optims,
+                default_tier = effective_speed == SPEED_DEFAULT,
+                quantized = transformer_quant_engaged is not None,
+                gguf = kind == "gguf",
+                step_cache = bool(cache_engaged) or bool(cache_may_toggle),
+                device = getattr(target, "device", device),
+                backend = getattr(target, "backend", None),
+                denoiser_hooked = offload_policy != "none" and _video_denoiser_hooked(pipe),
+            )
+            load_bg_compile = bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
                     del pipe
@@ -6404,6 +6436,7 @@ class VideoBackend:
                         phase = "decode",
                     ),
                     resolved = resolved,
+                    bg_compile = load_bg_compile,
                 )
                 self._precommit_globals = None
         logger.info(
@@ -7778,6 +7811,13 @@ class VideoBackend:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
+            # A background compile of the denoiser still running (it runs between renders): wait it out rather than
+            # render beside it, outside the state lock so status polls keep answering.
+            pending_bg = getattr(self._state, "bg_compile", None)
+            if pending_bg is not None and pending_bg.compiling():
+                logger.info("video.bg_compile: render waits for the background compile to finish")
+                waited = pending_bg.wait(cancel)
+                logger.info("video.bg_compile: render waited %.1f s for the background compile", waited)
             with self._lock:
                 # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise
                 # against a pipeline that is already being torn down.
@@ -7792,6 +7832,13 @@ class VideoBackend:
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
+            # While the denoiser's compile is still pending, this render runs eager (compile guards and graph wrappers
+            # read the flag) and records the denoiser inputs the background compile then replays.
+            from . import diffusion_bg_compile as bg_compile
+
+            bg = getattr(state, "bg_compile", None)
+            bg_eager = bg is not None and bg.pending()
+            bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -8339,6 +8386,9 @@ class VideoBackend:
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                if bg_eager:
+                    bg.note_eager_generation()
+                    bg.kick()
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
@@ -8386,6 +8436,8 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                if bg_token is not None:
+                    bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
@@ -8883,6 +8935,12 @@ class VideoBackend:
         cannot observe a half-torn-down backend."""
         state, self._state = self._state, None
         if state is not None:
+            # An in-flight background compile still runs the denoiser: wait for it before the teardown frees it.
+            if getattr(state, "bg_compile", None) is not None:
+                try:
+                    state.bg_compile.close()
+                except Exception:  # noqa: BLE001 -- teardown is best effort
+                    pass
             restore_backend_flags(state.backend_flags)
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
@@ -9026,6 +9084,7 @@ class VideoBackend:
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
+            "bg_compile": state.bg_compile.describe() if getattr(state, "bg_compile", None) is not None else None,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": (

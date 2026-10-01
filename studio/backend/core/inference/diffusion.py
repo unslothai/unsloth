@@ -1872,26 +1872,19 @@ def _bg_compile_module(
     cache_auto: bool,
     target: Any,
 ) -> Any:
-    """The denoiser whose compile may run in the background (diffusion_bg_compile), or None.
-
-    Dense, resident, default tier, one denoiser, CUDA: a torchao denoiser is far slower eager than the compile costs,
-    an offload hook moves weights per block (two concurrent forwards would fight over it), a step cache toggles graphs
-    per step, and max-autotune is an explicit request to pay the compile."""
-    if not bg_compile.enabled():
-        return None
-    if "compiled" not in tuple(speed_optims or ()) or speed_mode != SPEED_DEFAULT:
-        return None
-    if transformer_quant is not None or gguf_transformer:
-        return None
-    if offload_policy != OFFLOAD_NONE or transformer_cache or cache_auto:
-        return None
-    if getattr(target, "device", None) != "cuda" or getattr(target, "backend", None) == "rocm":
-        return None
-    try:
-        modules = cuda_graph._denoiser_modules(pipe)
-    except Exception:  # noqa: BLE001
-        return None
-    return modules[0] if len(modules) == 1 else None
+    """The denoiser whose compile may run in the background (``diffusion_bg_compile.select_module``), or None."""
+    return bg_compile.select_module(
+        pipe,
+        speed_optims = speed_optims,
+        default_tier = speed_mode == SPEED_DEFAULT,
+        quantized = transformer_quant is not None,
+        gguf = bool(gguf_transformer),
+        step_cache = bool(transformer_cache) or bool(cache_auto),
+        device = getattr(target, "device", None),
+        backend = getattr(target, "backend", None),
+        # An offload policy that leaves the denoiser resident (encoders streamed) still qualifies.
+        denoiser_hooked = offload_policy != OFFLOAD_NONE and _denoiser_hooked(pipe),
+    )
 
 
 class DiffusionBackend:

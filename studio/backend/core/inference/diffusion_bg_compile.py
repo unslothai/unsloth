@@ -291,14 +291,14 @@ class BackgroundCompile:
                     return
                 if device is not None:
                     torch.cuda.set_device(device)
-                side = torch.cuda.Stream() if torch.cuda.is_available() else None
                 args, kwargs = _rebuild(spec, clones)
+                # The default stream, like a render: no render runs beside this (a render waits for it), and offload
+                # hooks synchronise against the current stream.
                 mode = torch.inference_mode() if inference else torch.set_grad_enabled(grad)
-                stream_ctx = torch.cuda.stream(side) if side is not None else contextlib.nullcontext()
-                with mode, stream_ctx:
+                with mode:
                     self.module(*args, **kwargs)
-                if side is not None:
-                    side.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
             self.compile_s = time.perf_counter() - t0
             self._finish("done")
             if self.logger is not None:
@@ -345,6 +345,41 @@ class BackgroundCompile:
             "eager_generations": self.eager_generations,
             "error": self.error,
         }
+
+
+def select_module(
+    pipe: Any,
+    *,
+    speed_optims: Any,
+    default_tier: bool,
+    quantized: bool,
+    gguf: bool,
+    step_cache: bool,
+    device: Any,
+    backend: Any,
+    denoiser_hooked: bool,
+) -> Any:
+    """The denoiser whose compile may move off the render, or None.
+
+    One dense, resident, regionally or whole-module compiled denoiser on the default tier of a CUDA load: a torchao
+    denoiser is ~30x slower eager than the compile costs, GGUF compiles only its dequant chain, a step cache toggles
+    graphs per step, max-autotune is an explicit request to pay the compile, and a denoiser an offload hook moves is
+    not the module a warm forward would compile against."""
+    if not enabled():
+        return None
+    if "compiled" not in tuple(speed_optims or ()) or not default_tier:
+        return None
+    if quantized or gguf or step_cache or denoiser_hooked:
+        return None
+    if device != "cuda" or backend == "rocm":
+        return None
+    try:
+        from .diffusion_cuda_graph import _denoiser_modules
+
+        modules = _denoiser_modules(pipe)
+    except Exception:  # noqa: BLE001
+        return None
+    return modules[0] if len(modules) == 1 else None
 
 
 def arm(module: Any, *, logger: Any = None) -> Optional[BackgroundCompile]:
