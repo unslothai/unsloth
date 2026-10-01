@@ -230,8 +230,7 @@ export function budgetImpliesTruncation({
   );
 }
 
-/** Match the backend's continuation guard. Tool calls cannot be replayed in a sibling run;
- *  reasoning-only turns require `thought` support. */
+/** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
   { thought = false }: { thought?: boolean } = {},
@@ -261,8 +260,7 @@ export function isContinuableContent(
   return hasText || (thought && hasReasoning);
 }
 
-/** Join answer parts without inserting separators. Keep reasoning only when it all precedes
- *  the answer, matching the backend's reasoning_content/content order. */
+/** Reasoning is kept only when it all precedes the answer, as reasoning_content does. */
 export function readContinuationSource(
   content: readonly unknown[] | undefined,
 ): { partial: string; reasoning: string } {
@@ -359,13 +357,11 @@ export const CONTINUE_INSTRUCTION =
 export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 
 export type ContinuationRequest = {
-  /** The partial answer to resume, exactly as it was rendered. Empty when the turn stopped
-   *  mid-thought. */
+  /** The partial answer exactly as rendered; empty when stopped mid-thought. */
   partial: string;
-  /** The thought before the partial, from `readContinuationSource`. Carried only to
-   *  llama-server. */
+  /** Carried only to llama-server. */
   reasoning?: string;
-  /** How long that thought took, in seconds, so the resumed turn keeps its timer. */
+  /** Seconds, so the resumed turn keeps its timer. */
   reasoningDuration?: number;
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */

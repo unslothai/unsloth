@@ -7588,7 +7588,6 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
-        # Set from resumes_thoughts() at load, like the flag above.
         self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
@@ -37530,8 +37529,7 @@ class LlamaCppBackend:
                                 _cand_l,
                                 {
                                     "role": "assistant",
-                                    # A resumed thought streams only its tail; the note covers
-                                    # the whole thought, which replaces the hidden original.
+                                    # The stream holds only the resumed thought's tail.
                                     "content": _unfinished_thought_progress(
                                         _resumed_reasoning + reasoning_accum
                                     ),
@@ -38896,8 +38894,7 @@ class LlamaCppBackend:
                         content_text or assistant_msg.get("reasoning_content") or _resumed_reasoning
                     ):
                         if assistant_msg.get("reasoning_content") or _resumed_reasoning:
-                            # A resumed thought streams only its tail; fold in the whole
-                            # thought, since the nudge below hides the original's field.
+                            # Whole thought: the nudge below hides the original's field.
                             assistant_msg["content"] = neutralize_control_markup(
                                 _resumed_reasoning + reasoning_accum,
                                 self.markup_profile,

@@ -7374,7 +7374,6 @@ const CancelledIndicator: FC = () => {
   );
 };
 
-/** Read the duration of the leading thought carried by a continuation. */
 function readThoughtDuration(metadata: unknown): number | undefined {
   const custom = (metadata as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
@@ -7440,7 +7439,6 @@ function useContinuation() {
       : stamped?.reason;
   const carriedReasoning = thoughtResumable ? reasoning : "";
 
-  // Every gate resuming answers to, whether the user asked or not.
   const canResume =
     isLast &&
     !isRunning &&
@@ -7481,13 +7479,11 @@ function useContinuation() {
     reason,
     completed: status?.type === "complete",
     canResume,
-    // What resuming replays as the final assistant turn, for the fit estimate below.
     resumedChars: partial.length + carriedReasoning.length,
     startContinuation,
   };
 }
 
-/** Offer Resume on the newest reply when generation stopped early. */
 const ContinueMessageBar: FC = () => {
   // Mount the full subscriptions only for the newest message to keep typing responsive.
   const isLast = useAuiState(({ message }) => message.isLast);
@@ -7502,7 +7498,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const { messageId, reason, canResume, resumedChars, startContinuation } =
     useContinuation();
 
-  // Automatic continuation uses the same eligibility checks as manual Resume.
   const resumable = Boolean(reason) && canResume;
 
   // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
@@ -8358,7 +8353,6 @@ const EditAssistantMessageButton: FC = () => {
 
 /** Continue the newest finished reply; incomplete replies use the Resume bar. */
 const ContinueResponseButton: FC = () => {
-  // Asked first for the same reason as ContinueMessageBar: only the newest reply can continue.
   const isLast = useAuiState(({ message }) => message.isLast);
   if (!isLast) {
     return null;

@@ -3097,7 +3097,6 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        # A resumed thought is extended, not replaced: the new reasoning joins the old.
         added_reasoning = assistant_msg.get("reasoning_content")
         if (
             isinstance(added_reasoning, str)

@@ -5454,7 +5454,6 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      // Seed the bubble with the original thought and answer before appending streamed deltas.
       const continuationPartial = continuation
         ? continuationSeed(continuation.partial, resumedThought)
         : "";
@@ -8213,7 +8212,6 @@ export function createOpenAIStreamAdapter(
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
-        // Explain why a continuation produced an unchanged sibling.
         if (continuation && !producedReplyText && !finalIncompleteReason) {
           toast("The model had nothing to add", {
             description: "It ended the reply where it already stopped.",
