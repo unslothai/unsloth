@@ -27,8 +27,9 @@ const MAX_VIEWS = 4;
 const DOCK_GAP = 8;
 // Catches moves that resize nothing.
 const RECHECK_MS = 300;
-// Pages can open tabs without a click here, so at most one per this long.
-const NEW_TAB_INTERVAL_MS = 1000;
+// Pages can open tabs without a click here: a few a minute across all pages, then the user decides.
+const NEW_TABS_PER_WINDOW = 3;
+const NEW_TAB_WINDOW_MS = 60_000;
 
 type NativeEvent =
   | { kind: "load"; tabId: string; url: string; loading: boolean }
@@ -62,7 +63,7 @@ const icons = new Map<string, string>();
 const pages = new Map<string, { url: string; title: string; favicon: string | null }>();
 // Where a closed view's page had got to, so it reopens there rather than at the entry's address.
 const resume = new Map<string, { entry: number; url: string }>();
-const lastNewTab = new Map<string, number>();
+let newTabTimes: number[] = [];
 // Bumped when the panel unmounts, so a call still in flight leaves the closed views alone.
 let generation = 0;
 
@@ -146,11 +147,19 @@ function onNativeEvent(event: NativeEvent): void {
       }
       break;
     }
-    case "newTab":
-      if (Date.now() - (lastNewTab.get(tab.id) ?? 0) < NEW_TAB_INTERVAL_MS) break;
-      lastNewTab.set(tab.id, Date.now());
-      store.openUrl(event.url, { newTab: true });
+    case "newTab": {
+      const now = Date.now();
+      newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
+      if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
+        newTabTimes.push(now);
+        store.openUrl(event.url, { newTab: true });
+      } else {
+        toast(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
+          action: { label: t("browser.native.open"), onClick: () => store.openUrl(event.url, { newTab: true }) },
+        });
+      }
       break;
+    }
     case "external":
       // Pages can ask without a click, so the user decides.
       toast(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
