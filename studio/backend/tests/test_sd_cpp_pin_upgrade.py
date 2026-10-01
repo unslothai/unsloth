@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """A managed sd.cpp install made for an older pin is upgraded to the pin this Studio ships.
 
 Before this, ensure_sd_cpp_binary / ensure_sd_server_binary reinstalled only a missing, unrunnable or
