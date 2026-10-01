@@ -1729,3 +1729,25 @@ def test_a_date_note_that_would_overflow_the_fit_is_not_moved():
     assert info is not None and info["dropped_messages"] == 2
     assert fitted[0] is kept and kept["content"] == "C" * 200
     assert info["prompt_tokens_after"] == counter(fitted)
+
+
+def test_the_date_note_neither_makes_nor_quotes_a_standing_instruction():
+    from core.inference import checkpoint, instruction_pin
+
+    short = "Explain how photosynthesis works in C4 plants, in brief."
+    noted = {"role": "user", "content": f"[Current date: 2026-10-01]\n\n{short}"}
+    assert not instruction_pin.is_substantive(noted)
+    assert (
+        instruction_pin.last_substantive_instruction([noted, {"role": "user", "content": "ok"}])
+        is None
+    )
+
+    long = "Always answer in French and keep every reply under three short sentences, please."
+    evicted = [
+        {"role": "user", "content": f"[Current date: 2026-10-01]\n\n{long}"},
+        {"role": "assistant", "content": "D'accord."},
+    ]
+    items = checkpoint._select_items(
+        evicted, max_tokens = 4096, max_items = 8, min_chars = instruction_pin.INSTRUCTION_MIN_CHARS
+    )
+    assert items == [long]
