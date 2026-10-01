@@ -316,9 +316,10 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 
 const MCP_TOOL_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
 
-let lastMcpImageMappingsEnabled: boolean | null = null;
+const MCP_LOOKUP_FAILED =
+  "Could not read your MCP servers, so the image was not attached. Try again.";
 
-/** Whether images go to mapped MCP tool fields instead of the model; null when never known. */
+/** Whether images go to mapped MCP tool fields instead of the model; null when the server list could not be read. */
 async function mcpToolOnlyEnabled(): Promise<boolean | null> {
   const state = useChatRuntimeStore.getState();
   const checkpoint = state.params.checkpoint;
@@ -333,13 +334,10 @@ async function mcpToolOnlyEnabled(): Promise<boolean | null> {
       });
   if (!toolsSupported || !state.mcpEnabledForChat) return false;
   try {
-    lastMcpImageMappingsEnabled = mcpImageMappingsEnabled(
-      await listMcpServers(),
-    );
+    return mcpImageMappingsEnabled(await listMcpServers());
   } catch {
-    // A failed read keeps the last answer, so a configured mapping still holds.
+    return null;
   }
-  return lastMcpImageMappingsEnabled;
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
@@ -388,8 +386,13 @@ class VisionImageAdapter implements AttachmentAdapter {
           visionDisabledByUser: state.loadedVisionDisabledByUser,
           mmprojFallbackReason: state.mmprojFallbackReason,
         });
-    // Unknown (the server list failed) keeps the ordinary image path.
-    const mcpToolOnly = (await mcpToolOnlyEnabled()) === true;
+    const mcpToolOnlyState = await mcpToolOnlyEnabled();
+    // Fail closed: a configured mapping may be what this read missed.
+    if (mcpToolOnlyState === null) {
+      toast.error(MCP_LOOKUP_FAILED);
+      throw new Error(MCP_LOOKUP_FAILED);
+    }
+    const mcpToolOnly = mcpToolOnlyState;
     if (unavailableReason && !mcpToolOnly) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
@@ -460,10 +463,12 @@ class VisionImageAdapter implements AttachmentAdapter {
     this.converted.delete(attachment.id);
     const file = conversion ? await conversion : attachment.file;
     const current = await mcpToolOnlyEnabled();
-    if (current !== null && current !== isMcpToolOnly(attachment)) {
+    if (current !== isMcpToolOnly(attachment)) {
       // Otherwise the image reaches neither the tool nor the model, or the model unasked.
       const reason =
-        "MCP image settings changed since this image was attached. Remove it and attach it again.";
+        current === null
+          ? MCP_LOOKUP_FAILED
+          : "MCP image settings changed since this image was attached. Remove it and attach it again.";
       toast.error(reason);
       throw new Error(reason);
     }
