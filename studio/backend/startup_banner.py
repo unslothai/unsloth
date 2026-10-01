@@ -88,9 +88,8 @@ def print_studio_access_banner(
     banner must say where else it answers. ``network_host`` is the address printed under "another
     device on your network", defaulting to ``display_host``. A wildcard-bind caller passes both:
     ``display_host`` can be a public WAN IP, which is the reachability probe's business and not what
-    a LAN peer can open (#8868). ``wsl_windows_browser_hint`` adds a line for WSL2 NAT launches
-    where no LAN URL can be advertised: open ``http://localhost:<port>`` from the Windows host
-    (#11187)."""
+    a LAN peer can open (#8868). ``wsl_windows_browser_hint``: WSL2 NAT has no LAN URL, but Windows
+    reaches a wildcard bind through localhost forwarding (#11187)."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -140,12 +139,11 @@ def print_studio_access_banner(
     if (listen_all or loopback_bind) and primary_url != alt_local:
         lines.append(style(f"    (same as {alt_local})", dim))
 
-    show_lan_share_line = (
+    if (
         listen_all
         and not is_wildcard_host(resolved_network_host)
         and resolved_network_host not in ("127.0.0.1", "localhost", "::1")
-    )
-    if show_lan_share_line:
+    ):
         lines.extend(
             [
                 "",

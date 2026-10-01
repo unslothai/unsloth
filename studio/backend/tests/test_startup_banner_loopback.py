@@ -71,6 +71,28 @@ def test_wsl_windows_browser_hint_yields_to_lan_share_line(capsys):
     assert "From the Windows host (WSL2):" not in out
 
 
+@pytest.mark.parametrize(
+    "host,mode,expected",
+    [
+        ("0.0.0.0", "nat", True),
+        ("0.0.0.0", "mirrored", False),
+        ("0.0.0.0", None, False),
+        ("127.0.0.1", "nat", False),
+    ],
+)
+def test_startup_output_wsl_hint_gating(capsys, monkeypatch, host, mode, expected):
+    import lan_access
+    import run
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: mode)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output(host, 8888, host)
+    assert ("From the Windows host (WSL2):" in capsys.readouterr().out) is expected
+
+
 def test_banner_prints_on_strict_cp1252_stdout(monkeypatch):
     buf = io.BytesIO()
     stdout = io.TextIOWrapper(buf, encoding = "cp1252", errors = "strict")
