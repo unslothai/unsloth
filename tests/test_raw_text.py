@@ -830,8 +830,11 @@ def test_tokenized_chunks_reserve_space_for_the_final_eos():
                 assert chunks[-1]["input_ids"][-1] == 99
                 restored = list(chunks[0]["input_ids"])
                 for chunk in chunks[1:]:
-                    restored.extend(chunk["input_ids"][stride:])
+                    restored.extend(t for t in chunk["input_ids"] if t not in restored)
                 assert restored == list(range(count)) + [99]
+                # A chunk's first token is never a label: the last content token must still be one.
+                labelled = {t for chunk in chunks for t in chunk["input_ids"][1:]}
+                assert count < 2 or count - 1 in labelled
                 dataset = loader.create_causal_dataset(chunks)
                 assert dataset["labels"] == dataset["input_ids"]
 
@@ -851,8 +854,10 @@ def test_text_chunks_reserve_space_for_the_final_eos():
                 assert pieces[-1][-1] == "</s>"
                 restored = list(pieces[0])
                 for piece in pieces[1:]:
-                    restored.extend(piece[stride:])
+                    restored.extend(t for t in piece if t not in restored)
                 assert restored == [str(i) for i in range(count)] + ["</s>"]
+                labelled = {t for piece in pieces for t in piece[1:]}
+                assert count < 2 or str(count - 1) in labelled
 
 
 def test_chunk_size_one_keeps_the_final_eos_overflow():
