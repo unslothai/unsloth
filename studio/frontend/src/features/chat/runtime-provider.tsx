@@ -143,6 +143,7 @@ import {
   generationChunkHasSubstantiveDelta,
   generationIsCorroboratedLive,
   generationIsSettled,
+  generationReplayMetadata,
   createRecoveryPublishSchedule,
   registerRecoveredRunStop,
   threadHasDurableGenerationRun,
@@ -1563,7 +1564,13 @@ function scheduleGenerationRecovery(
           {
             ...currentMetadata,
             // Catch-up can advance content past the last published cursor.
-            generationSeq: cursor,
+            ...generationReplayMetadata({
+              cursor,
+              firstChunkAt,
+              totalChunks,
+              usage: recoveryUsage,
+              timings: recoveryTimings,
+            }),
             incomplete: { reason: "interrupted" as const },
             // The run row may still be non-terminal, so without this marker generationNeedsRecovery stays
             // true and the next trigger starts another follower. history.load clears it if

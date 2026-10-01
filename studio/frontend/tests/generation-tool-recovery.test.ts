@@ -327,8 +327,11 @@ async function recoverRun(
     cursor?: number;
     viewContent?: unknown[];
     metadata?: Record<string, unknown>;
+    /** Stall the follow after the payloads, short of this snapshot lastEventSeq. */
+    stallBefore?: number;
   } = {},
 ) {
+  class ChatGenerationStalledError extends Error {}
   let shown = {
     messages: [
       { message: { id: "msg", content: options.viewContent ?? content } },
@@ -356,8 +359,8 @@ async function recoverRun(
     id: "run",
     threadId: "thread",
     assistantMessageId: "msg",
-    status: "completed",
-    lastEventSeq: payloads.length,
+    status: options.stallBefore ? "running" : "completed",
+    lastEventSeq: options.stallBefore ?? payloads.length,
     requestPayload: { model: "test", session_id: "saved-session" },
     createdAt: 1,
     startedAt: 1,
@@ -393,11 +396,12 @@ async function recoverRun(
         yield update;
         yield update;
       }
+      if (options.stallBefore) throw new ChatGenerationStalledError();
     },
     restoredAssistantStatus: () => ({ type: "complete", reason: "stop" }),
-    isTerminalChatGenerationRun: () => true,
+    isTerminalChatGenerationRun: () => !options.stallBefore,
     forgetServerActiveGenerationRun() {},
-    ChatGenerationStalledError: class extends Error {},
+    ChatGenerationStalledError,
   });
   vm.runInContext(executable, context);
   context.scheduleGenerationRecovery(
@@ -428,7 +432,9 @@ async function recoverRun(
   await generationRecoveries.get("run").promise;
   const final = snapshots.at(-1);
   assert.ok(final);
-  assert.equal(final.metadata.generationSettled, true);
+  if (!options.stallBefore) {
+    assert.equal(final.metadata.generationSettled, true);
+  }
   assert.equal(final.metadata.generationSeq, payloads.length);
   return {
     content: final.content,
@@ -476,6 +482,27 @@ test("reopening a run that finished without the tab saves and renders only its e
     assert.equal(snapshot.content.map((part) => part.text).join(""), text);
   }
   assert.ok(imports.length <= 2, `rendered ${imports.length} times`);
+});
+
+test("a follow that stalls during catch-up saves its cursor with the replayed usage", async () => {
+  const payloads = [
+    { choices: [{ delta: { content: "partial" } }] },
+    {
+      choices: [],
+      usage: { completion_tokens: 7 },
+      timings: { predicted_n: 7 },
+    },
+  ];
+  const { snapshots } = await recoverRun([], payloads, { stallBefore: 10 });
+  assert.equal(snapshots.length, 1, "nothing is published before catch-up");
+  const { metadata, content } = snapshots[0];
+  assert.deepEqual(metadata.incomplete, { reason: "interrupted" });
+  assert.equal(content.map((part) => part.text).join(""), "partial");
+  // A later recovery resumes after seq 2, so the usage chunk must be saved with that cursor.
+  assert.deepEqual(metadata.generationRecoveryUsage, { completion_tokens: 7 });
+  assert.deepEqual(metadata.generationRecoveryTimings, { predicted_n: 7 });
+  assert.equal(metadata.generationChunkCount, 1);
+  assert.equal(metadata.generationFirstChunkAt, 1);
 });
 
 test("a recovered turn keeps the reasoning cut the backend reported", async () => {

@@ -596,6 +596,32 @@ export function generationNeedsRecovery(
   );
 }
 
+/** The replay cursor with the state accumulated behind it. The usage chunk arrives before the
+ *  terminal event, so a cursor saved past it without these resumes after it and loses the token
+ *  counts and server timings for good. */
+export function generationReplayMetadata(state: {
+  cursor: number;
+  firstChunkAt?: number;
+  totalChunks?: number;
+  usage?: unknown;
+  timings?: unknown;
+}): Record<string, unknown> {
+  const next: Record<string, unknown> = { generationSeq: state.cursor };
+  if (state.firstChunkAt !== undefined) {
+    next.generationFirstChunkAt = state.firstChunkAt;
+  }
+  if (state.totalChunks !== undefined) {
+    next.generationChunkCount = state.totalChunks;
+  }
+  if (state.usage !== undefined) {
+    next.generationRecoveryUsage = state.usage;
+  }
+  if (state.timings !== undefined) {
+    next.generationRecoveryTimings = state.timings;
+  }
+  return next;
+}
+
 export function generationRecoveryMetadata(options: {
   current: Record<string, unknown>;
   runId: string;
@@ -625,8 +651,14 @@ export function generationRecoveryMetadata(options: {
   const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
     ...current,
+    ...generationReplayMetadata({
+      cursor,
+      firstChunkAt,
+      totalChunks,
+      usage,
+      timings,
+    }),
     generationRunId: runId,
-    generationSeq: cursor,
     generationStatus: status,
     generationSettled: settled,
     serverManaged: true,
@@ -644,21 +676,6 @@ export function generationRecoveryMetadata(options: {
     next.incomplete = { reason: "interrupted" };
   } else {
     next.incomplete = { reason: "cancelled" };
-  }
-  if (firstChunkAt !== undefined) {
-    next.generationFirstChunkAt = firstChunkAt;
-  }
-  if (totalChunks !== undefined) {
-    next.generationChunkCount = totalChunks;
-  }
-  // Carried with the cursor for the same reason as the two above: the usage chunk arrives before
-  // the terminal event, so a cursor published past it and reloaded would resume after it and
-  // lose the token counts and server timings for good.
-  if (usage !== undefined) {
-    next.generationRecoveryUsage = usage;
-  }
-  if (timings !== undefined) {
-    next.generationRecoveryTimings = timings;
   }
   return next;
 }
