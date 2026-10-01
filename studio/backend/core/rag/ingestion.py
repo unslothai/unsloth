@@ -521,8 +521,7 @@ def start_ingestion(
         # RESERVED lock that long fails concurrent writers with "database is locked".
         effective_model = model_name or config.effective_embedding_model()
         effective_identity = embeddings.embedding_identity(effective_model)
-        # Read a reuse donor's vectors before BEGIN IMMEDIATE: a cold read scans the whole vec0 partition,
-        # and holding RESERVED that long fails other writers (lease heartbeats) with "database is locked".
+        # Prefetch before BEGIN IMMEDIATE: a cold read scans the vec0 partition and would starve other writers.
         prefetched = None
         if reuse_identical and not dedupe:
             candidate = store.reusable_document_by_hash(conn, scope, sha, ext, effective_identity)

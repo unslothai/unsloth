@@ -422,8 +422,7 @@ def reusable_document_by_hash(
 ) -> dict | None:
     """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
     copied. Extension must match (parsers branch on it) and so must the embedding identity."""
-    # rowid DESC walks idx_documents_hash backwards (no sort over every copy) and stops at the
-    # first eligible row; a live row's rowid only grows with insertion, so this is the newest.
+    # rowid DESC is served by idx_documents_hash (no sort over every copy) and is newest-first.
     for row in conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
@@ -570,9 +569,8 @@ def _copy_chunk_rows(
     return chunk_ids
 
 
-# chunks_vec rowids this process wrote, per (database, document). chunk_id is not indexed in vec0, so
-# finding a donor's vectors by it scans the whole scope partition; the donor for a run of identical
-# files is the copy just written, so its rowids are usually here. Rows are verified on read.
+# chunks_vec rowids this process wrote, per (db, document): chunk_id is unindexed in vec0, and the next
+# copy's donor is usually the one just written. Verified on read.
 _VEC_ROWIDS_MAX = 256
 _vec_rowids: OrderedDict[tuple[str, str], list[int]] = OrderedDict()
 _vec_rowids_lock = threading.Lock()
