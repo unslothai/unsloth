@@ -1382,6 +1382,25 @@ class FastSentenceTransformer(FastModel):
                 with open(config_path, encoding = "utf8") as f:
                     config = json.load(f)
             except (OSError, ValueError) as exception:
+                # The file is there and cannot be read, which is not the same as not being
+                # there: the loader opens this same path next and its read may succeed, so
+                # skipping here meant a Dense activation, a WordEmbeddings tokenizer or a
+                # Router type could be imported with nothing having checked it. The
+                # refusal the caller's message promised was only ever about the fetch;
+                # this is the read.
+                import sentence_transformers
+
+                if Version(sentence_transformers.__version__).major < 6:
+                    raise ValueError(
+                        f"Unsloth: Could not read {config_path} to check the class the "
+                        f"module {class_ref} of {model_name} names "
+                        f"({type(exception).__name__}: {exception}). The installed "
+                        f"sentence-transformers "
+                        f"({getattr(sentence_transformers, '__version__', 'unknown')}) "
+                        f"resolves that name without checking it, so this refuses rather "
+                        f"than loading unchecked. Retry, or pass the argument "
+                        f"`trust_remote_code=True` to allow custom code to be run."
+                    ) from exception
                 logging.debug(
                     "Unsloth: Could not read module config %s: %s", config_path, exception
                 )
@@ -1418,6 +1437,13 @@ class FastSentenceTransformer(FastModel):
                     f"code. Please pass the argument `trust_remote_code=True` to allow custom code to "
                     f"be run."
                 )
+
+    @staticmethod
+    def _is_commit(revision):
+        """Is this revision already an immutable commit, rather than a branch or tag."""
+        if not isinstance(revision, str) or len(revision) != 40:
+            return False
+        return all(c in "0123456789abcdef" for c in revision.lower())
 
     @staticmethod
     def _commit_of_response(exception):
@@ -1618,11 +1644,36 @@ class FastSentenceTransformer(FastModel):
             # exactly the commit whose answer was "no modules.json", and it costs nothing.
             if resolved is not None:
                 sha = FastSentenceTransformer._commit_of_response(exception)
+                if not sha and FastSentenceTransformer._is_commit(revision):
+                    # The caller already named an immutable commit, so the 404 was
+                    # answered at it and there is nothing for a second resolution to
+                    # disagree with. No header needed.
+                    sha = revision.lower()
                 if sha:
                     resolved["revision"] = sha
                 else:
+                    # No commit from the response and none from the caller, so there is no
+                    # way to make the load match the absence that was just established:
+                    # the delegated request resolves the branch again and can get one that
+                    # has since gained a modules.json. Fail closed below 6.0, the same
+                    # rule as every other branch that cannot establish an answer.
+                    import sentence_transformers
+                    if Version(sentence_transformers.__version__).major < 6:
+                        raise ValueError(
+                            f"Unsloth: {model_name} reports no modules.json at "
+                            f"{revision or 'the default revision'}, and the response named "
+                            f"no commit, so the load cannot be pinned to the revision that "
+                            f"was checked. The installed sentence-transformers "
+                            f"({getattr(sentence_transformers, '__version__', 'unknown')}) "
+                            f"imports a module class named in modules.json without checking "
+                            f"it, so this refuses rather than loading whatever the next "
+                            f"request returns. Pass an explicit `revision` naming a commit, "
+                            f"or pass the argument `trust_remote_code=True` to allow custom "
+                            f"code to be run."
+                        ) from exception
                     logging.debug(
-                        "Unsloth: the 404 for %s carried no commit, so the load is not pinned.",
+                        "Unsloth: the 404 for %s carried no commit; sentence-transformers "
+                        "gates the module class itself on this version.",
                         model_name,
                     )
             return None

@@ -1249,12 +1249,12 @@ def test_a_confirmed_absent_modules_json_still_pins_the_load(tmp_path, monkeypat
     )
 
 
-def test_a_404_without_a_commit_header_does_not_break_the_load(tmp_path, monkeypatch):
-    """The pin is an improvement, not a dependency.
+def test_a_404_without_a_commit_header_is_tolerated_where_upstream_gates_it(tmp_path, monkeypatch):
+    """From 6.0 upstream refuses the type itself, so an unpinnable absence is not fatal.
 
-    A proxy that strips x-repo-commit, or an older hub whose error carries no response at
-    all, leaves the previous behaviour: an unpinned load, not an exception out of a guard
-    that had already decided there was nothing to check.
+    Below 6.0 it is: see the refusal test beside this one. A proxy that strips
+    x-repo-commit, or an older hub whose error carries no response at all, leaves nothing
+    to pin to, and on a version where nothing else checks the type that has to refuse.
     """
     from huggingface_hub.errors import EntryNotFoundError
 
@@ -1571,4 +1571,94 @@ def test_a_manifest_that_is_not_a_list_is_not_a_refusal(tmp_path, monkeypatch):
 
     assert (
         FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False) == "c" * 40
+    )
+
+
+def test_a_404_without_a_commit_header_refuses_below_six(tmp_path, monkeypatch):
+    """No commit from the response and none from the caller means no pin is possible.
+
+    The delegated request resolves the branch again and can get one that has since gained
+    a modules.json, so accepting the absence unpinned let that through.
+    """
+    from huggingface_hub.errors import EntryNotFoundError
+
+    _simulate_pre_six(monkeypatch)
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(EntryNotFoundError("no modules.json")),
+    )
+
+    with pytest.raises(ValueError, match = "named no commit"):
+        FastSentenceTransformer._check_modules_json_types(
+            "acme/embedder", None, False, revision = "main"
+        )
+
+
+def test_an_explicit_commit_needs_no_commit_header(tmp_path, monkeypatch):
+    """A caller who named a commit has already answered the question the header answers.
+
+    The 404 was answered at that commit and there is nothing for a second resolution to
+    disagree with, so this must not refuse for want of a header.
+    """
+    from huggingface_hub.errors import EntryNotFoundError
+
+    commit = "a" * 40
+    _simulate_pre_six(monkeypatch)
+    monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
+    _patch_download(
+        monkeypatch,
+        lambda *a, **k: (_ for _ in ()).throw(EntryNotFoundError("no modules.json")),
+    )
+
+    assert (
+        FastSentenceTransformer._check_modules_json_types(
+            "acme/embedder", None, False, revision = commit
+        )
+        == commit
+    )
+
+
+def test_an_unreadable_module_config_refuses_rather_than_skipping(tmp_path, monkeypatch):
+    """A config that is present and unreadable is unverifiable, not absent.
+
+    The loader opens this same path next and its read may succeed, so skipping meant a
+    Dense activation could be imported with nothing having checked it. The refusal the
+    fetch path promised was only ever about the fetch; this is the read.
+    """
+    st_models = pytest.importorskip("sentence_transformers.models")
+    _simulate_pre_six(monkeypatch)
+
+    folder = tmp_path / "2_Dense"
+    folder.mkdir()
+    (folder / "config.json").write_text("{not json", encoding = "utf8")
+
+    with pytest.raises(ValueError, match = "Could not read"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(folder),
+            "sentence_transformers.models.Dense",
+            "acme/embedder",
+            False,
+            st_models.Dense,
+        )
+
+
+def test_an_unreadable_module_config_is_tolerated_where_upstream_gates_it(tmp_path, monkeypatch):
+    """From 6.0 upstream resolves these through its own gate, so refusing would only break
+    a load that is already safe."""
+    import sentence_transformers
+
+    st_models = pytest.importorskip("sentence_transformers.models")
+    monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
+
+    folder = tmp_path / "2_Dense"
+    folder.mkdir()
+    (folder / "config.json").write_text("{not json", encoding = "utf8")
+
+    FastSentenceTransformer._check_module_config_class_refs(
+        str(folder),
+        "sentence_transformers.models.Dense",
+        "acme/embedder",
+        False,
+        st_models.Dense,
     )
