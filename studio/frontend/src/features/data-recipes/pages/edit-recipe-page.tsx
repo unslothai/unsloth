@@ -59,22 +59,29 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     let active = true;
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
+      // A later server read would replace edits already made in the open editor.
       setLoadState({ status: "ready", record: cachedRecipe });
-    } else {
-      setLoadState({ status: "loading" });
+      return;
     }
+    setLoadState({ status: "loading" });
 
-    void getRecipe(recipeId).then((record) => {
-      if (!active) {
-        return;
-      }
-      if (!record) {
-        setLoadState({ status: "missing" });
-        return;
-      }
-      primeRecipeCache(record);
-      setLoadState({ status: "ready", record });
-    });
+    getRecipe(recipeId)
+      .then((record) => {
+        if (!active) {
+          return;
+        }
+        if (!record) {
+          setLoadState({ status: "missing" });
+          return;
+        }
+        primeRecipeCache(record);
+        setLoadState({ status: "ready", record });
+      })
+      .catch((error) => {
+        // biome-ignore lint/suspicious/noConsole: the load state below is what the user sees
+        console.error("Load recipe failed:", error);
+        if (active) setLoadState({ status: "missing" });
+      });
     return () => {
       active = false;
     };

@@ -13,6 +13,7 @@ const listeners = new Set<(recipes: RecipeRecord[]) => void>();
 let cachedRecipeList: RecipeRecord[] = [];
 let recipeListReady = false;
 let recipeListRequest: Promise<RecipeRecord[]> | null = null;
+let mutationVersion = 0;
 
 function publishRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
   cachedRecipeList = [...recipes].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -26,13 +27,20 @@ function publishRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
   return cachedRecipeList;
 }
 
+async function fetchRecipeList(): Promise<RecipeRecord[]> {
+  await importLegacyRecipes();
+  for (;;) {
+    // A save or delete that lands while the GET is in flight makes its answer stale.
+    const version = mutationVersion;
+    const { recipes } = await recipeRequest<{ recipes: RecipeRecord[] }>("");
+    if (version === mutationVersion) return publishRecipeList(recipes);
+  }
+}
+
 export function listRecipes(): Promise<RecipeRecord[]> {
-  recipeListRequest ??= importLegacyRecipes()
-    .then(() => recipeRequest<{ recipes: RecipeRecord[] }>(""))
-    .then(({ recipes }) => publishRecipeList(recipes))
-    .finally(() => {
-      recipeListRequest = null;
-    });
+  recipeListRequest ??= fetchRecipeList().finally(() => {
+    recipeListRequest = null;
+  });
   return recipeListRequest;
 }
 
@@ -88,6 +96,7 @@ export async function saveRecipe(
       }),
     },
   );
+  mutationVersion += 1;
   recentRecipeCache.set(id, record);
   if (recipeListReady) {
     publishRecipeList([
@@ -102,6 +111,7 @@ export async function deleteRecipe(id: string): Promise<void> {
   await recipeRequest<void>(`/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+  mutationVersion += 1;
   recentRecipeCache.delete(id);
   if (recipeListReady) {
     publishRecipeList(cachedRecipeList.filter((recipe) => recipe.id !== id));

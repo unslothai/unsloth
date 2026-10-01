@@ -4,9 +4,6 @@
 import { authFetch } from "@/features/auth";
 import type { RecipeExecutionRecord } from "../execution-types";
 
-const latest = new Map<string, RecipeExecutionRecord>();
-const writes = new Map<string, Promise<void>>();
-
 function executionsUrl(recipeId: string): string {
   return `/api/data-recipe/recipes/${encodeURIComponent(recipeId)}/executions`;
 }
@@ -34,25 +31,40 @@ async function putExecution(record: RecipeExecutionRecord): Promise<void> {
   if (!res.ok) throw new Error(`Save execution failed (${res.status})`);
 }
 
+type Waiter = { resolve: () => void; reject: (error: unknown) => void };
+type Queue = { record: RecipeExecutionRecord | null; waiters: Waiter[] };
+
+const queues = new Map<string, Queue>();
+
+async function drain(id: string, queue: Queue): Promise<void> {
+  while (queue.record) {
+    const { record, waiters } = queue;
+    queue.record = null;
+    queue.waiters = [];
+    try {
+      await putExecution(record);
+      for (const waiter of waiters) waiter.resolve();
+    } catch (error) {
+      for (const waiter of waiters) waiter.reject(error);
+    }
+  }
+  queues.delete(id);
+}
+
 // Progress events save the same run many times a second: keep one write per run in flight and
-// send only the newest record after it, so a slow older PUT can never land last.
+// send only the newest record after it, so a slow older PUT can never land last. Each caller
+// settles with the PUT that carried its record (or a newer one).
 export function saveRecipeExecution(
   execution: RecipeExecutionRecord,
 ): Promise<void> {
-  const { id } = execution;
-  latest.set(id, execution);
-  const write = (writes.get(id) ?? Promise.resolve())
-    .catch(() => undefined)
-    .then(() => {
-      const record = latest.get(id);
-      if (!record) return;
-      latest.delete(id);
-      return putExecution(record);
-    });
-  writes.set(id, write);
-  const settle = () => {
-    if (writes.get(id) === write) writes.delete(id);
-  };
-  write.then(settle, settle);
-  return write;
+  return new Promise((resolve, reject) => {
+    const running = queues.get(execution.id);
+    const queue = running ?? { record: null, waiters: [] };
+    queue.record = execution;
+    queue.waiters.push({ resolve, reject });
+    if (!running) {
+      queues.set(execution.id, queue);
+      void drain(execution.id, queue);
+    }
+  });
 }

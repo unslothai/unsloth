@@ -68,6 +68,32 @@ test("a run saved many times sends one write in flight and then only the newest"
   );
 });
 
+test("every coalesced caller hears about the failed write that carried its record", async () => {
+  let status = 204;
+  const server = fakeServer(() => status);
+  const { saveRecipeExecution } = loadWithStubs<{
+    saveRecipeExecution: (record: Record<string, unknown>) => Promise<void>;
+  }>(
+    new URL(
+      "../src/features/recipe-studio/data/executions-db.ts",
+      import.meta.url,
+    ),
+    { "@/features/auth": { authFetch: server.authFetch } },
+  );
+  const first = saveRecipeExecution({ id: "e1", recipeId: "r1", done: 1 });
+  const later = [2, 3].map((done) =>
+    saveRecipeExecution({ id: "e1", recipeId: "r1", done }),
+  );
+  const settled = Promise.allSettled([first, ...later]);
+  status = 503;
+  await server.flush();
+  const outcomes = await settled;
+  assert.deepEqual(
+    outcomes.map((o) => o.status),
+    ["fulfilled", "rejected", "rejected"],
+  );
+});
+
 test("legacy import isolates a rejected record, keeps the rest, and runs once", async () => {
   const storage = new Map<string, string>();
   globalThis.localStorage = {
@@ -145,4 +171,63 @@ test("legacy import isolates a rejected record, keeps the rest, and runs once", 
   }
   assert.deepEqual(imported, ["a", "e1"]);
   assert.ok(storage.get("unsloth-data-recipes:server-import.v1"));
+});
+
+test("an auth or throttling failure leaves the legacy import to retry", async () => {
+  const storage = new Map<string, string>();
+  globalThis.localStorage = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => void storage.set(k, v),
+  } as Storage;
+  class RecipeApiError extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+      super(message);
+      this.status = status;
+    }
+  }
+  let calls = 0;
+  const recipeRequest = () => {
+    calls += 1;
+    return Promise.reject(new RecipeApiError("Unauthorized", 401));
+  };
+  class FakeDexie {
+    static exists = () => Promise.resolve(true);
+    tables = [{ name: "recipes" }];
+    open = () => Promise.resolve();
+    close = () => undefined;
+    table = () => ({
+      toArray: () =>
+        Promise.resolve([
+          { id: "a", name: "A", payload: {}, createdAt: 1, updatedAt: 2 },
+          { id: "b", name: "B", payload: {}, createdAt: 1, updatedAt: 2 },
+        ]),
+    });
+  }
+  const { importLegacyRecipes } = loadWithStubs<{
+    importLegacyRecipes: () => Promise<void>;
+  }>(
+    new URL(
+      "../src/features/data-recipes/data/legacy-import.ts",
+      import.meta.url,
+    ),
+    {
+      "@/lib/account-transition": {
+        accountDatabaseName: (name: string) => name,
+      },
+      "@/utils": { normalizeNonEmptyName: (name: string) => name },
+      dexie: { default: FakeDexie, __esModule: true },
+      "./recipes-api": { recipeRequest, RecipeApiError },
+    },
+  );
+  const error = console.error;
+  console.error = () => undefined;
+  try {
+    await importLegacyRecipes();
+    await importLegacyRecipes();
+  } finally {
+    console.error = error;
+  }
+  assert.equal(calls, 2);
+  assert.equal(storage.get("unsloth-data-recipes:server-import.v1"), undefined);
 });

@@ -50,8 +50,6 @@ const isId = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 128;
 const toTime = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) ? Math.round(value) : 0;
-const optionalText = (value: unknown, max: number): string | undefined =>
-  typeof value === "string" ? value.slice(0, max) : undefined;
 
 function toRecipe(row: Row): Row | null {
   if (!isId(row.id) || !row.payload || typeof row.payload !== "object") {
@@ -60,16 +58,17 @@ function toRecipe(row: Row): Row | null {
   const createdAt = toTime(row.createdAt);
   return {
     id: row.id,
-    name: normalizeNonEmptyName(
-      typeof row.name === "string" ? row.name : "",
-    ).slice(0, 500),
+    name: normalizeNonEmptyName(typeof row.name === "string" ? row.name : ""),
     payload: row.payload,
     createdAt,
     updatedAt: toTime(row.updatedAt) || createdAt,
     learningRecipeId: isId(row.learningRecipeId)
       ? row.learningRecipeId
       : undefined,
-    learningRecipeTitle: optionalText(row.learningRecipeTitle, 500),
+    learningRecipeTitle:
+      typeof row.learningRecipeTitle === "string"
+        ? row.learningRecipeTitle
+        : undefined,
   };
 }
 
@@ -94,25 +93,42 @@ function* batches(rows: Row[]): Generator<Row[]> {
   if (batch.length > 0) yield batch;
 }
 
-async function submit(kind: ImportKind, rows: Row[]): Promise<void> {
+// Statuses that describe the records themselves; auth, throttling and server errors retry later.
+const RECORD_REJECTED = new Set([400, 413, 422]);
+
+async function submit(
+  account: string,
+  kind: ImportKind,
+  rows: Row[],
+): Promise<void> {
+  // A same-tab account switch must not push one account's browser data into the next.
+  if (accountDatabaseName(RECIPES_DB) !== account) {
+    throw new Error("Account changed during legacy Data Recipe import");
+  }
   try {
     await recipeRequest("/import", {
       method: "POST",
       body: JSON.stringify({ [kind]: rows }),
     });
   } catch (error) {
-    // A 4xx is about the records themselves: isolate it so one bad row does not block the rest.
-    if (!(error instanceof RecipeApiError) || error.status >= 500) throw error;
+    if (
+      !(error instanceof RecipeApiError) ||
+      !RECORD_REJECTED.has(error.status)
+    ) {
+      throw error;
+    }
     if (rows.length === 1) {
       // biome-ignore lint/suspicious/noConsole: the record stays in IndexedDB
       console.warn(`Skipped legacy Data Recipe ${kind} record:`, error.message);
       return;
     }
-    for (const row of rows) await submit(kind, [row]);
+    for (const row of rows) await submit(account, kind, [row]);
   }
 }
 
 async function runImport(): Promise<void> {
+  const account = accountDatabaseName(RECIPES_DB);
+  const key = doneKey();
   const recipes = (await readStore(RECIPES_DB, "recipes"))
     .map(toRecipe)
     .filter((row): row is Row => row !== null);
@@ -122,7 +138,13 @@ async function runImport(): Promise<void> {
         .filter((row): row is Row => row !== null)
     : [];
   // Recipes first: the server drops runs whose recipe it does not hold.
-  for (const batch of batches(recipes)) await submit("recipes", batch);
-  for (const batch of batches(executions)) await submit("executions", batch);
-  localStorage.setItem(doneKey(), String(Date.now()));
+  for (const batch of batches(recipes)) {
+    await submit(account, "recipes", batch);
+  }
+  for (const batch of batches(executions)) {
+    await submit(account, "executions", batch);
+  }
+  if (accountDatabaseName(RECIPES_DB) === account) {
+    localStorage.setItem(key, String(Date.now()));
+  }
 }

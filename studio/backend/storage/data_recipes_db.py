@@ -8,18 +8,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from typing import Any, Iterable
+from typing import Iterable
 
 from storage.studio_db import get_connection
-
-
-def strip_api_keys(value: Any) -> Any:
-    # Recipes saved before the frontend stripped keys can still carry them in legacy IndexedDB.
-    if isinstance(value, dict):
-        return {k: strip_api_keys(v) for k, v in value.items() if k != "api_key"}
-    if isinstance(value, list):
-        return [strip_api_keys(v) for v in value]
-    return value
 
 
 def _recipe_from_row(row: sqlite3.Row) -> dict:
@@ -41,7 +32,7 @@ def _recipe_params(recipe: dict) -> tuple:
     return (
         recipe["id"],
         recipe["name"],
-        json.dumps(strip_api_keys(recipe["payload"])),
+        json.dumps(recipe["payload"]),
         recipe.get("learningRecipeId"),
         recipe.get("learningRecipeTitle"),
         int(recipe["createdAt"]),
@@ -96,11 +87,13 @@ def upsert_recipe(recipe: dict) -> dict | None:
             """,
             _recipe_params(recipe),
         )
+        row = None
+        if cur.rowcount:
+            row = conn.execute(
+                "SELECT * FROM data_recipes WHERE id = ?", (recipe["id"],)
+            ).fetchone()
         conn.commit()
-        if cur.rowcount == 0:
-            return None
-        row = conn.execute("SELECT * FROM data_recipes WHERE id = ?", (recipe["id"],)).fetchone()
-        return _recipe_from_row(row)
+        return _recipe_from_row(row) if row else None
     finally:
         conn.close()
 

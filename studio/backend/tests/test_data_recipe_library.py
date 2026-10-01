@@ -36,16 +36,15 @@ def _execution(
     return {"id": execution_id, "recipeId": recipe_id, "createdAt": 1000, **extra}
 
 
-def test_recipe_round_trip_strips_api_keys_and_keeps_learning_fields():
+def test_recipe_round_trip_keeps_payload_and_learning_fields():
     client = _client()
-    body = _recipe(
-        model_providers = [{"name": "p", "api_key": "sk-secret", "api_key_env": "OPENAI_API_KEY"}]
-    )
+    providers = [{"name": "p", "api_key": "sk-inline", "api_key_env": "OPENAI_API_KEY"}]
+    body = _recipe(model_providers = providers)
     body["learningRecipeId"] = "text-to-sql"
     assert client.put("/recipes/r1", json = body).status_code == 200
 
     stored = client.get("/recipes/r1").json()
-    assert stored["payload"]["model_providers"] == [{"name": "p", "api_key_env": "OPENAI_API_KEY"}]
+    assert stored["payload"]["model_providers"] == providers
     assert stored["learningRecipeId"] == "text-to-sql"
     assert "learningRecipeTitle" not in stored
     assert [r["id"] for r in client.get("/recipes").json()["recipes"]] == ["r1"]
@@ -117,3 +116,10 @@ def test_legacy_import_is_insert_only_and_idempotent():
     assert client.get("/recipes/r1").json()["name"] == "Server copy"
     assert client.get("/recipes/r2").status_code == 200
     assert [e["id"] for e in client.get("/recipes/r2/executions").json()["executions"]] == ["e2"]
+
+
+def test_out_of_range_timestamp_is_a_validation_error_not_a_server_error():
+    client = _client()
+    huge = {**_recipe(), "createdAt": 10**20}
+    assert client.put("/recipes/r1", json = huge).status_code == 422
+    assert client.post("/recipes/import", json = {"recipes": [huge]}).status_code == 422

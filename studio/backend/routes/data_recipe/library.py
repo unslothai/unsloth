@@ -15,16 +15,18 @@ from storage import data_recipes_db as db
 router = APIRouter(prefix = "/recipes")
 
 _ID = Field(min_length = 1, max_length = 128)
+# JS millisecond timestamps; also keeps values inside SQLite INTEGER.
+_TIME = Field(ge = 0, le = 2**53)
 
 
 class RecipeRecord(BaseModel):
     id: str = _ID
-    name: str = Field(max_length = 500)
+    name: str = Field(max_length = 10_000)
     payload: dict[str, Any]
-    createdAt: int
-    updatedAt: int
+    createdAt: int = _TIME
+    updatedAt: int = _TIME
     learningRecipeId: str | None = Field(default = None, max_length = 128)
-    learningRecipeTitle: str | None = Field(default = None, max_length = 500)
+    learningRecipeTitle: str | None = Field(default = None, max_length = 10_000)
 
 
 class ExecutionRecord(BaseModel):
@@ -32,7 +34,7 @@ class ExecutionRecord(BaseModel):
     model_config = ConfigDict(extra = "allow")
     id: str = _ID
     recipeId: str = _ID
-    createdAt: int
+    createdAt: int = _TIME
 
 
 class LegacyImportRequest(BaseModel):
