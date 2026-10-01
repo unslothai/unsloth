@@ -1639,7 +1639,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
     try:
         mod = _installer_module()
         want = mod.accelerator_class(accelerator)
-        if not _record_mismatch(mod, root, want) or _record_mismatch(mod, current, want):
+        # Superseded = built for another accelerator, or (with the pin upgrade on) for an older pin.
+        legacy_stale = _record_mismatch(mod, root, want) or (
+            not _pin_upgrade_disabled() and mod.install_is_stale(root)
+        )
+        if (
+            not legacy_stale
+            or _record_mismatch(mod, current, want)
+            or mod.install_is_stale(current)
+        ):
             return False
         return mod.installed_ships_server(current) is False
     except Exception:  # noqa: BLE001 -- cannot tell
@@ -1979,7 +1987,7 @@ def ensure_sd_server_binary(
         # None, not the fallback: an install just completed, so the router's next step resolves the sd-cli it landed,
         # and a one-shot run on the right build beats a resident server on the wrong one. The fallback stays for the
         # failure path above, where no matching binary was fetched at all.
-        if installed and _accelerator_changed(installed, accelerator):
+        if installed and _needs_reinstall(installed, accelerator):
             return None
         return installed or fallback
 

@@ -4032,12 +4032,14 @@ def test_h3_native_sage_attention_only_on_speed_max(monkeypatch, tmp_path):
     )
     assert offload[-1] == "--sage-attn"
     assert state.attention_backend == "sage"
+    assert state.speed_mode == "max" and state.resolved["speed_mode"]["value"] == "max"
     for mode in (None, "default", "off"):
         state, offload = _load_h3_native_offload(
             monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
         )
         assert "--sage-attn" not in offload, mode
         assert state.attention_backend == "flash"
+        assert state.speed_mode == "off"
 
 
 def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatch, tmp_path):

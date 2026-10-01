@@ -3451,9 +3451,17 @@ class VideoBackend:
                         vae_tiling = False,
                         memory_mode = requested_mode,
                         attention_backend = "sage" if h3_sage else "flash",
+                        speed_mode = SPEED_MAX if h3_sage else SPEED_OFF,
                         resolved = build_resolved_record(
                             {
                                 "memory_mode": (memory_mode, policy, "native model offload"),
+                                "speed_mode": (
+                                    speed_mode,
+                                    SPEED_MAX if h3_sage else SPEED_OFF,
+                                    "sd.cpp SageAttention + BF16 cuBLAS"
+                                    if h3_sage
+                                    else "sd.cpp exact kernels",
+                                ),
                                 "attention_backend": (
                                     None,
                                     "sage" if h3_sage else "flash",
