@@ -101,6 +101,14 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_small_host import (
+    decide_small_host,
+    engaged_on as small_host_engaged_on,
+    host_ram_mib,
+    resolve_snapshot_dir,
+    stored_components,
+    torch_dtype_map as small_host_torch_dtype_map,
+)
 from .model_ids import hf_cache_repo_id
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
@@ -6238,11 +6246,28 @@ class DiffusionBackend:
                                     )
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
+                                # Host-RAM pre-check: a bf16 repo loaded at fp16 materialises every converted weight
+                                # in host RAM (35 GB for FLUX.1); route it through memory-mapped storage instead.
+                                small_host = self._small_host_decision(
+                                    _base_local_dir or fetch_base,
+                                    pipe_kwargs,
+                                    target,
+                                    dtype,
+                                    lora_active = _has_active_lora(loras),
+                                )
+                                if small_host is not None and small_host.engaged:
+                                    pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
+                                        small_host, dtype
+                                    )
                                 # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                 # otherwise)
                                 pipe = pipeline_cls.from_pretrained(
                                     _base_local_dir or fetch_base, **pipe_kwargs
                                 )
+                                if small_host is not None and small_host.engaged:
+                                    plan = self._apply_small_host_route(
+                                        pipe, plan, small_host, target, dtype, fam, logger, _load_token
+                                    )
                         elif kind == "single_file" and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
                             # class with ``config`` on the base repo.
@@ -6873,6 +6898,9 @@ class DiffusionBackend:
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.
                     self._raise_if_load_cancelled(_load_token)
+                    # A refinement above may have re-tiered the plan; the routed encoders only run from their
+                    # memory-mapped storage under group offload.
+                    plan = self._small_host_plan(pipe, plan, fam, logger)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
                         plan,
@@ -7785,6 +7813,141 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 -- failed sizing must not refuse a load
             return None
         return unified_memory_shortfall_message(plan, family = fam.name)
+
+    def _small_host_decision(
+        self,
+        source: Any,
+        pipe_kwargs: dict,
+        target: Any,
+        dtype: Any,
+        *,
+        lora_active: bool,
+    ) -> Any:
+        """Host-RAM pre-check for a diffusers pipeline load (see diffusion_small_host). Raises the refusal when even
+        the low-memory route cannot fit; None when the decision cannot be made (no local snapshot)."""
+        snapshot = resolve_snapshot_dir(source, hub_cache_dir())
+        if snapshot is None:
+            return None
+        comps = {
+            name: comp
+            for name, comp in stored_components(snapshot).items()
+            # components handed in pre-built (a hosted fp8 encoder, a seeded prequant denoiser) are not loaded here
+            if name not in pipe_kwargs
+        }
+        total, available = host_ram_mib()
+        decision = decide_small_host(
+            comps,
+            dtype,
+            device = str(getattr(target, "backend", None) or getattr(target, "device", "")),
+            host_total_mib = total,
+            host_available_mib = available,
+            lora_active = lora_active,
+        )
+        if decision.engaged or decision.refuse:
+            logger.info(
+                "diffusion.small_host: engaged=%s (%s); stored-dtype components=%s",
+                decision.engaged,
+                decision.reason,
+                decision.storage_dtypes,
+            )
+        if decision.refuse:
+            raise RuntimeError(decision.refuse)
+        return decision
+
+    def _apply_small_host_route(
+        self,
+        pipe: Any,
+        plan: Any,
+        decision: Any,
+        target: Any,
+        dtype: Any,
+        fam: Any,
+        logger: Any,
+        load_token: Any = None,
+    ) -> Any:
+        """Convert the memory-mapped components the decision loaded at their stored dtype, and pin the plan to the
+        placement that keeps them memory-mapped (group offload, encoders streamed unpinned)."""
+        import torch
+
+        from .diffusion_small_host import (
+            cast_resident_,
+            mark,
+            prepare_streamed_encoder_,
+            quantize_int8_weight_,
+        )
+
+        device = target.torch_device
+        resident = plan.offload_policy == OFFLOAD_NONE
+        info: dict[str, Any] = {"reason": decision.reason, "components": {}}
+        for name in decision.storage_dtypes:
+            module = getattr(pipe, name, None)
+            if not isinstance(module, torch.nn.Module):
+                continue
+            if resident:
+                cast_resident_(module, device, dtype)
+                info["components"][name] = "cast on device"
+            elif name.startswith("text_encoder"):
+                mib = prepare_streamed_encoder_(module, dtype)
+                info["components"][name] = f"memory-mapped, layerwise cast ({mib} MiB)"
+            else:
+                # Pageable: torch's pinned allocator rounds each block to a power of two (11.3 GB of FLUX.1 int8
+                # weights held 18 GB pinned), more than the route saves.
+                stats = quantize_int8_weight_(
+                    module, compute_dtype = dtype, work_device = device, keep_device = "cpu"
+                )
+                info["components"][name] = (
+                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears)"
+                )
+            if load_token is not None:
+                self._raise_if_load_cancelled(load_token)
+        mark(pipe, info)
+        logger.info("diffusion.small_host: %s", info["components"])
+        return self._small_host_plan(pipe, plan, fam, logger)
+
+    def _small_host_plan(self, pipe: Any, plan: Any, fam: Any, logger: Any) -> Any:
+        """Group offload with every routed encoder streamed from its memory-mapped storage; the int8 denoiser keeps as
+        many whole groups resident as the device budget leaves after the runtime reserve."""
+        info = small_host_engaged_on(pipe)
+        if not info or plan.offload_policy == OFFLOAD_NONE:
+            return plan
+        from .diffusion_memory import (
+            DEFAULT_BASE_OVERHEAD_MIB,
+            OFFLOAD_GROUP,
+            _loaded_component_mib,
+        )
+
+        sizes = _loaded_component_mib(pipe) or {}
+        dit = sum(m for m, r in sizes.values() if r == "dit")
+        other = sum(m for m, r in sizes.values() if r == "other")
+        est = dict(plan.estimates)
+        budget = est.get("safe_device_budget_mib")
+        headroom = int(est.get("runtime_headroom_mib") or 0)
+        overhead = int(est.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
+        room = None if budget is None else int(budget) - headroom - overhead - other
+        stream_dit = room is None or dit <= 0 or room < dit
+        resident_dit = None if not stream_dit or room is None or room <= 0 else int(room)
+        new = replace(
+            plan,
+            offload_policy = OFFLOAD_GROUP,
+            stream_text_encoders = True,
+            stream_transformer = stream_dit,
+            resident_transformer_mib = resident_dit
+            if plan.resident_transformer_mib is None
+            else plan.resident_transformer_mib,
+            estimates = {**est, "small_host_loaded_transformer_mib": dit},
+            reasons = plan.reasons
+            + (
+                f"small-host route: encoders stream from memory-mapped storage; transformer {dit} MiB "
+                + ("resident" if not stream_dit else f"streams with {resident_dit or 0} MiB resident"),
+            ),
+        )
+        if (
+            new.offload_policy != plan.offload_policy
+            or new.stream_transformer != plan.stream_transformer
+            or new.resident_transformer_mib != plan.resident_transformer_mib
+        ):
+            logger.info("diffusion.small_host: placement %s", new.reasons[-1])
+        return new
 
     def _plan_memory(
         self,

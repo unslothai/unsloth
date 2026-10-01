@@ -3093,6 +3093,11 @@ def _apply_group_offload(
                 logger,
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
+        if getattr(pipe, "_unsloth_small_host", None) and "low_cpu_mem_usage" in _params:
+            # Small-host route: a pinned copy of the memory-mapped encoders or of the int8 denoiser puts back into host
+            # RAM the very bytes the route keeps out of it.
+            pin_streamed = (False, False)
+            gkwargs["low_cpu_mem_usage"] = True
         # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
         # starts with start_background_pins once the load has committed.
         if background_pin is None:
