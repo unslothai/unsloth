@@ -280,8 +280,7 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
     threads: list[threading.Thread] = []
     now = time.monotonic()
     for path in paths:
-        # A probe already stuck past the timeout (hard NFS mount) answers unreadable; starting
-        # another per request would pile up threads that never return.
+        # Probe stuck past the timeout (hard NFS mount): unreadable, never restarted.
         with _probes_lock:
             started = _probes_started.get(path)
             if started is not None and now - started >= timeout:
