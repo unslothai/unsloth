@@ -46,6 +46,9 @@ _SDPA_MASK_CACHE: dict = {}
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
+# Cache per device for cover_padded_cu_seqlens to avoid repeated D2H sync across layers
+_PADDED_CU_SEQLENS_CACHE: dict = {}
+
 
 def _window_cache_key(sliding_window: Optional[int]) -> int:
     if sliding_window is None or sliding_window <= 0:
@@ -589,11 +592,46 @@ def get_packed_info_from_kwargs(
     return result
 
 
+def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
+    # TRL pads the flattened padding-free row to pad_to_multiple_of after the lengths are
+    # taken; the tail gets its own block, since a row outside every block softmaxes to NaN.
+    if total_tokens is None:
+        return lengths
+    padding = total_tokens - sum(lengths)
+    if padding <= 0:
+        return lengths
+    return lengths + (padding,)
+
+
+def cover_padded_cu_seqlens(
+    seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: int
+) -> Tuple[torch.Tensor, int]:
+    """Flash varlen leaves rows past cu_seqlens[-1] unwritten, so the pad tail gets a segment."""
+    _, cu_seqlens, max_seqlen = seq_info
+    device = cu_seqlens.device
+    entry = _PADDED_CU_SEQLENS_CACHE.get(device)
+    if entry is not None and entry["cu_seqlens"] is cu_seqlens and entry["total"] == total_tokens:
+        return entry["result"]
+
+    padding = total_tokens - int(cu_seqlens[-1].item())
+    result = (cu_seqlens, max_seqlen)
+    if padding > 0:
+        tail = torch.tensor([total_tokens], dtype = cu_seqlens.dtype, device = device)
+        result = (torch.cat([cu_seqlens, tail]), max(max_seqlen, padding))
+    _PADDED_CU_SEQLENS_CACHE[device] = {
+        "cu_seqlens": cu_seqlens,
+        "total": total_tokens,
+        "result": result,
+    }
+    return result
+
+
 def build_xformers_block_causal_mask(
     seq_info: Optional[Tuple[torch.Tensor, torch.Tensor, int]],
     *,
     sliding_window: Optional[int] = None,
     base_mask: Optional[Any] = None,
+    total_tokens: Optional[int] = None,
 ):
     if _XFormersBlockMask is None:
         return None
@@ -601,7 +639,7 @@ def build_xformers_block_causal_mask(
         seq_lengths, _, _ = seq_info
         # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
-        params = (sliding_window,)
+        params = (sliding_window, total_tokens)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
@@ -610,6 +648,7 @@ def build_xformers_block_causal_mask(
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
+        lengths = _with_padding_segment(lengths, total_tokens)
         mask = _get_cached_block_mask(lengths, sliding_window, device)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
@@ -636,15 +675,20 @@ def build_sdpa_packed_attention_mask(
     dtype: torch.dtype,
     device: torch.device,
     sliding_window: Optional[int] = None,
+    total_tokens: Optional[int] = None,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
 
-    params = (dtype, sliding_window)
+    params = (dtype, sliding_window, total_tokens)
     entry = _SDPA_MASK_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
 
-    total_tokens = int(seq_lengths.sum().item())
+    lengths = _with_padding_segment(
+        tuple(int(length) for length in seq_lengths.tolist()),
+        total_tokens,
+    )
+    total_tokens = sum(lengths)
     mask = torch.full(
         (total_tokens, total_tokens),
         float("-inf"),
@@ -652,8 +696,7 @@ def build_sdpa_packed_attention_mask(
         device = device,
     )
     offset = 0
-    for length in seq_lengths.tolist():
-        length = int(length)
+    for length in lengths:
         if length <= 0:
             continue
         block = torch.zeros((length, length), dtype = dtype, device = device)
@@ -761,6 +804,7 @@ def clear_packed_caches():
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
+    _PADDED_CU_SEQLENS_CACHE.clear()
 
 
 __all__ = [
@@ -773,6 +817,7 @@ __all__ = [
     "get_packed_info_from_kwargs",
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
+    "cover_padded_cu_seqlens",
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",

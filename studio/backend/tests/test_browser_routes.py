@@ -31,7 +31,7 @@ def test_the_shell_is_isolated():
         name, *sources = part.split()
         if name.endswith("-src"):
             assert "http:" not in sources and "ws:" not in sources, name
-    assert browser_mod.BROWSER_FRAME_PATH in main._FRAMEABLE_PATHS
+    assert browser_mod.BROWSER_FRAME_PATH in main._FRAME_SHELL_PATHS
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 

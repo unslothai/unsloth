@@ -97,3 +97,29 @@ class McpServerImportResult(BaseModel):
     created: list[McpServerResponse] = Field(default_factory = list)
     skipped: list[str] = Field(default_factory = list)
     errors: list[str] = Field(default_factory = list)
+
+
+class McpUiResourceResponse(BaseModel):
+    uri: str
+    mime_type: str
+    text: str
+    # Base64, only for a resource that is not UTF-8 text.
+    blob: Optional[str] = None
+    ui: dict = Field(default_factory = dict)
+    contents: list[dict] = Field(default_factory = list)
+
+
+class McpUiToolCallRequest(BaseModel):
+    tool_name: str
+    arguments: dict = Field(default_factory = dict)
+    thread_id: Optional[str] = None
+    session_id: Optional[str] = None
+    permission_mode: Optional[str] = None
+    approved: bool = False
+
+
+class McpUiToolCallResult(BaseModel):
+    content: list[dict] = Field(default_factory = list)
+    structured_content: Optional[dict] = None
+    is_error: bool = False
+    meta: Optional[dict] = None

@@ -1066,8 +1066,14 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
-# Sandbox shells with their own frame-ancestors, exempt from X-Frame-Options: DENY.
-_FRAMEABLE_PATHS = frozenset({_ARTIFACT_PREVIEW_FRAME_PATH, _browser_routes.BROWSER_FRAME_PATH})
+# Framed shells: their own CSP frame-ancestors governs embedding, so no X-Frame-Options DENY.
+_FRAME_SHELL_PATHS = frozenset(
+    {
+        _ARTIFACT_PREVIEW_FRAME_PATH,
+        "/api/inference/mcp-app-frame",
+        _browser_routes.BROWSER_FRAME_PATH,
+    }
+)
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
@@ -1211,7 +1217,7 @@ class SecurityHeadersMiddleware:
                     _build_csp(nonce, docs = path in _DOCS_PATHS),
                 )
                 # Omit X-Frame-Options in Colab: DENY would block serve_kernel_port_as_iframe regardless of CSP.
-                if not _IS_COLAB and path not in _FRAMEABLE_PATHS:
+                if not _IS_COLAB and path not in _FRAME_SHELL_PATHS:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")

@@ -36,6 +36,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths import path_utils as _path_utils
 from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
@@ -78,6 +79,23 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+_WSL_WINDOWS_SYSTEM_DIRS = ("windows", "program files", "program files (x86)")
+
+
+def _is_wsl_windows_system_path(path: str) -> bool:
+    """``/mnt/<drive>/Windows`` and ``Program Files`` under WSL: the native-Windows denylist, case-folded like DrvFs."""
+    root = _path_utils._WSL_AUTOMOUNT_ROOT
+    if not _path_utils._IS_WSL or not path.startswith(root):
+        return False
+    parts = path[len(root) :].split("/")
+    return (
+        len(parts) >= 2
+        and len(parts[0]) == 1
+        and parts[0].isalpha()
+        and parts[1].casefold() in _WSL_WINDOWS_SYSTEM_DIRS
+    )
+
+
 def is_denied_system_path(path: str) -> bool:
     """True if *path* is, or descends from, a denied system directory.
 
@@ -108,7 +126,7 @@ def is_denied_system_path(path: str) -> bool:
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             return True
-    return False
+    return system == "Linux" and _is_wsl_windows_system_path(path)
 
 
 def _contains_sensitive_path_component(path: str) -> bool:
