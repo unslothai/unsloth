@@ -397,6 +397,28 @@ def test_decision_settings_are_read_off_the_event_loop(upstream, studio, monkeyp
     assert read_on_loop == []
 
 
+def test_a_managed_caller_keeps_its_egress_policy_on_an_owner_connection(upstream):
+    from utils.account_context import arun_as
+
+    _client().put("/api/settings/systemone", json = {"model": _connection()})
+    providers_db.update_provider("deciders", base_url = "http://127.0.0.1:9/v1")
+    alice = AccountContext("a" * 32, "alice")
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(
+            arun_as(
+                alice,
+                systemone._decide(
+                    catalog.Connection("deciders", "jev-latest"),
+                    "x",
+                    {name: systemone.QuestionIn(**q) for name, q in QUESTIONS.items()},
+                ),
+            )
+        )
+    assert refused.value.status_code == 503
+    assert "removed" not in refused.value.detail["message"]
+    assert upstream.calls == []
+
+
 def test_managed_accounts_lose_the_decisions_mcp_bypass_for_a_connection():
     from core.inference.mcp_client import validate_mcp_address
 

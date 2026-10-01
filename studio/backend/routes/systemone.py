@@ -184,13 +184,10 @@ async def _decide(
         _validate(name, question)
 
     if isinstance(checkpoint, catalog.Connection):
-        return await arun_as(
-            OWNER,
-            _connection_decide(
-                checkpoint,
-                state,
-                {name: q.model_dump(exclude_unset = True) for name, q in questions.items()},
-            ),
+        return await _connection_decide(
+            checkpoint,
+            state,
+            {name: q.model_dump(exclude_unset = True) for name, q in questions.items()},
         )
     try:
         result = await run_in_threadpool(
@@ -214,8 +211,10 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
+    # The connection and its key are the owner's; the URL check and the request run as the caller,
+    # so a managed account keeps its egress policy.
     provider_id = connection.provider_id
-    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:
         raise _error(
             503,
@@ -235,23 +234,10 @@ async def _connection_decide(
     if not config["is_enabled"]:
         raise _error(503, "api_usage_error", f"Connection '{config['display_name']}' is disabled.")
     try:
-        base_url = validate_provider_base_url(config["base_url"])
+        base_url = await asyncio.to_thread(validate_provider_base_url, config["base_url"])
     except ValueError as exc:
         raise _error(503, "api_usage_error", str(exc)) from None
-    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
-    async with provider_config_guard(provider_id):
-        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
-        if current is None or any(current.get(f) != config.get(f) for f in routing_fields):
-            raise _error(409, "api_usage_error", "The connection changed while starting; retry.")
-        try:
-            api_key = await asyncio.to_thread(
-                resolve_provider_api_key_or_400, provider_id, None, prefer_saved_key = True
-            )
-        except HTTPException as exc:
-            raise _error(500, "api_error", exc.detail) from None
-        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
-        if latest is None or any(latest.get(f) != current.get(f) for f in routing_fields):
-            raise _error(409, "api_usage_error", "The connection changed while starting; retry.")
+    api_key = await arun_as(OWNER, _connection_key(provider_id, config))
     client = ExternalProviderClient(config["provider_type"], base_url, api_key)
     try:
         result = await client.create_decision(connection.model, state, questions)
@@ -266,6 +252,24 @@ async def _connection_decide(
             502, "api_error", f"'{config['display_name']}' did not answer in the System One format."
         )
     return result
+
+
+async def _connection_key(provider_id: str, config: dict) -> str:
+    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if current is None or any(current.get(f) != config.get(f) for f in routing_fields):
+            raise _error(409, "api_usage_error", "The connection changed while starting; retry.")
+        try:
+            api_key = await asyncio.to_thread(
+                resolve_provider_api_key_or_400, provider_id, None, prefer_saved_key = True
+            )
+        except HTTPException as exc:
+            raise _error(500, "api_error", exc.detail) from None
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(latest.get(f) != current.get(f) for f in routing_fields):
+            raise _error(409, "api_usage_error", "The connection changed while starting; retry.")
+    return api_key
 
 
 async def refresh_listed_decision_models() -> None:
