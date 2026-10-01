@@ -75,6 +75,8 @@ def test_wsl_windows_browser_hint_yields_to_lan_share_line(capsys):
     "host,mode,expected",
     [
         ("0.0.0.0", "nat", True),
+        ("0.0.0.0", "unknown", True),
+        ("0.0.0.0", "none", False),
         ("0.0.0.0", "mirrored", False),
         ("0.0.0.0", None, False),
         ("127.0.0.1", "nat", False),

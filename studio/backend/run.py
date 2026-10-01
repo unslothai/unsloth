@@ -538,7 +538,9 @@ def _network_share_host_for_bind(host: str) -> str:
 
 def _is_wsl_nat() -> bool:
     from lan_access import _wsl_networking_mode
-    return _wsl_networking_mode() not in (None, "mirrored")
+
+    # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all
+    return _wsl_networking_mode() in ("nat", "unknown")
 
 
 def _loopback_bind_host_for(host: str) -> str:
