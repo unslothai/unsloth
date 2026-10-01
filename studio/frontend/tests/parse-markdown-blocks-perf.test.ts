@@ -16,6 +16,8 @@ const SAMPLES = [
   "$$\na=b\n\n$$\n\nafter\n",
   "<div>\n\nhi\n\n</div>\n\nafter\n",
   "<details><summary>s</summary>\n\nbody\n\n</details>\n",
+  "<br/>\n<div>\n\ninside\n\n</div>",
+  "<my-tag>\n\nx\n\n</my-tag>\n",
   "| a | b |\n|---|---|\n| 1 | 2 |\n\n- x\n- y\n",
   "line\r\nwith crlf\r\n\r\nnext\r\n",
   "text[^1]\n\n[^1]: note\n",

@@ -8,7 +8,7 @@ import { Lexer, type Token } from "marked";
 
 const footnoteReferencePattern = /\[\^[\w-]{1,200}\](?!:)/;
 const footnoteDefinitionPattern = /\[\^[\w-]{1,200}\]:/;
-const openingTagPattern = /<([A-Za-z][\w:-]*)[\s>/]/;
+const openingTagPattern = /<(\w+)[\s>]/;
 
 const voidElements = new Set([
   "area",
