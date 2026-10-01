@@ -11,7 +11,7 @@ import platform
 import string
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
 from utils.paths.sensitive import (
@@ -50,12 +50,6 @@ def _is_linux_media_mount_path(
     *,
     min_parts: int = 2,
 ) -> bool:
-    """True when *path* is at least *min_parts* components under *media_root*.
-
-    udisks uses two components under ``/run/media`` (``<user>/<volume>``). Ubuntu
-    also still automounts at ``/media/<user>/<volume>`` or a single
-    ``/media/<volume>`` / ``/mnt/<volume>`` component.
-    """
     normalized = os.path.normpath(os.path.realpath(os.path.expanduser(path)))
     root = os.path.normpath(os.path.realpath(os.path.expanduser(str(media_root))))
     try:
@@ -91,62 +85,27 @@ def _contains_sensitive_media_component(path: Path, media_root: Path) -> bool:
     return contains_sensitive_path_component(str(rel))
 
 
-def _is_udisks_run_media_realpath(path: str) -> bool:
-    """True when *path*'s real location is ``.../run/media/<user>/<volume>``.
-
-    Production mounts live at ``/run/media/...``. Ubuntu's ``/media`` tree is
-    often a compatibility symlink into that layout, and tests use a fake prefix.
-    """
-    if _is_linux_media_mount_path(path, "/run/media", min_parts = 2):
-        return True
-    parts = Path(os.path.normpath(os.path.realpath(os.path.expanduser(path)))).parts
-    for i, part in enumerate(parts):
-        if (
-            part == "media"
-            and i > 0
-            and parts[i - 1] == "run"
-            and len(parts) >= i + 3
-            and parts[i + 1] not in (".", "..")
-            and parts[i + 2] not in (".", "..")
-        ):
-            return True
-    return False
-
-
-def _try_resolve_dir(path: Path) -> Path | None:
-    try:
-        resolved = path.resolve()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    try:
-        if resolved.is_dir() and os.access(resolved, os.R_OK | os.X_OK):
-            return resolved
-    except OSError:
-        return None
-    return None
-
-
 def _accept_linux_volume(
     volume_dir: Path,
     scanned_base: Path,
     *,
     min_parts: int,
     seen: set[str],
-    also_ok: Callable[[str], bool] | None = None,
+    alias_root: Path | str | None = None,
 ) -> Path | None:
-    """Return *volume_dir*'s real path when it is a safe, readable mount root."""
+    """*volume_dir*'s real path when it is a readable, non-sensitive mount root under *scanned_base* (or *alias_root*)."""
     if is_sensitive_path_component(volume_dir.name):
         return None
-    resolved = _try_resolve_dir(volume_dir)
-    if resolved is None:
+    try:
+        resolved = volume_dir.resolve()
+        if not (resolved.is_dir() and os.access(resolved, os.R_OK | os.X_OK)):
+            return None
+    except (OSError, RuntimeError, ValueError):
         return None
-    under_scanned = _is_linux_media_mount_path(str(resolved), scanned_base, min_parts = min_parts)
-    under_alias = bool(also_ok and also_ok(str(resolved)))
-    if not under_scanned and not under_alias:
+    if not _is_linux_media_mount_path(str(resolved), scanned_base, min_parts = min_parts) and not (
+        alias_root is not None and _is_linux_media_mount_path(str(resolved), alias_root)
+    ):
         return None
-    # Credential dirs: relative to the scanned tree, or the full path when
-    # /media resolved into /run/media (relative_to fails, so the full path
-    # is checked and still matches .ssh / .aws / ...).
     if _contains_sensitive_media_component(resolved, scanned_base):
         return None
     key = os.path.normcase(os.path.realpath(str(resolved)))
@@ -187,14 +146,13 @@ def linux_run_media_mount_roots(
     return roots
 
 
-def linux_media_mount_roots(base: Path | str = "/media", *, user: str | None = None) -> list[Path]:
-    """Readable Ubuntu/udev automounts under ``/media``.
-
-    Layouts: ``/media/<user>/<volume>`` (current udisks) and
-    ``/media/<volume>`` (legacy). ``/media`` itself is never returned.
-    When ``/media`` is a symlink into ``/run/media``, resolved volumes still
-    count so the folder browser can show a drive that only appeared there.
-    """
+def linux_media_mount_roots(
+    base: Path | str = "/media",
+    *,
+    user: str | None = None,
+    run_media: Path | str = "/run/media",
+) -> list[Path]:
+    """Readable ``/media/<user>/<volume>`` and legacy ``/media/<volume>`` roots; entries may symlink into *run_media*."""
     if platform.system() != "Linux":
         return []
     user = user or _current_username()
@@ -207,56 +165,27 @@ def linux_media_mount_roots(base: Path | str = "/media", *, user: str | None = N
 
     roots: list[Path] = []
     seen: set[str] = set()
-
-    def _also_run_media(resolved: str) -> bool:
-        return _is_udisks_run_media_realpath(resolved)
-
     for child in children:
         if is_sensitive_path_component(child.name):
             continue
         try:
-            is_dir = child.is_dir()
-        except OSError:
-            continue
-        if not is_dir:
-            continue
-        # User-scoped udisks: only walk the current user's folder; do not treat
-        # that folder itself as a volume (it is the parent of the mounts).
-        if user and child.name == user:
-            try:
-                volume_dirs = list(child.iterdir())
-            except (OSError, RuntimeError, ValueError):
+            if not child.is_dir():
                 continue
-            for volume_dir in volume_dirs:
-                accepted = _accept_linux_volume(
-                    volume_dir,
-                    resolved_base,
-                    min_parts = 1,
-                    seen = seen,
-                    also_ok = _also_run_media,
-                )
-                if accepted is not None:
-                    roots.append(accepted)
+            # The current user's folder is the parent of their mounts, not a volume.
+            volume_dirs = list(child.iterdir()) if user and child.name == user else [child]
+        except (OSError, RuntimeError, ValueError):
             continue
-        accepted = _accept_linux_volume(
-            child,
-            resolved_base,
-            min_parts = 1,
-            seen = seen,
-            also_ok = _also_run_media,
-        )
-        if accepted is not None:
-            roots.append(accepted)
+        for volume_dir in volume_dirs:
+            accepted = _accept_linux_volume(
+                volume_dir, resolved_base, min_parts = 1, seen = seen, alias_root = run_media
+            )
+            if accepted is not None:
+                roots.append(accepted)
     return roots
 
 
 def linux_mnt_mount_roots(base: Path | str = "/mnt") -> list[Path]:
-    """Readable named mounts under ``/mnt`` (not ``/mnt`` itself).
-
-    Temporary and manual mounts often land here (``/mnt/ssd``, ``/mnt/usb``)
-    instead of ``/run/media``. Immediate children only; a stale network
-    mount is skipped if it does not answer the bounded readability probe.
-    """
+    """Readable ``/mnt/<name>`` roots; probed with a timeout so a stale network mount cannot stall the browser."""
     if platform.system() != "Linux":
         return []
     base_path = Path(base)
@@ -265,14 +194,10 @@ def linux_mnt_mount_roots(base: Path | str = "/mnt") -> list[Path]:
         children = list(base_path.iterdir())
     except (OSError, RuntimeError, ValueError):
         return []
-
-    # Bound the isdir/access probe: a disconnected NFS entry under /mnt can
-    # stall the folder browser the same way a mapped Windows drive can.
-    candidate_paths = [
-        str(child) for child in children if not is_sensitive_path_component(child.name)
-    ]
-    readable = _readable_dirs_within(candidate_paths, _DRIVE_PROBE_TIMEOUT_S)
-
+    readable = _readable_dirs_within(
+        [str(c) for c in children if not is_sensitive_path_component(c.name)],
+        _DRIVE_PROBE_TIMEOUT_S,
+    )
     roots: list[Path] = []
     seen: set[str] = set()
     for child in children:
@@ -285,13 +210,7 @@ def linux_mnt_mount_roots(base: Path | str = "/mnt") -> list[Path]:
 
 
 def linux_external_mount_roots() -> list[Path]:
-    """Linux automount locations the model folder browser should expose.
-
-    Union of ``/run/media/<user>/<volume>``, ``/media/...``, and ``/mnt/<name>``,
-    deduped by real path so a ``/media`` symlink into udisks is not listed twice.
-    """
-    if platform.system() != "Linux":
-        return []
+    """``/run/media``, ``/media`` and ``/mnt`` roots, deduped by real path."""
     roots: list[Path] = []
     seen: set[str] = set()
     for root in (
@@ -300,10 +219,9 @@ def linux_external_mount_roots() -> list[Path]:
         *linux_mnt_mount_roots(),
     ):
         key = os.path.normcase(os.path.realpath(str(root)))
-        if key in seen:
-            continue
-        seen.add(key)
-        roots.append(root)
+        if key not in seen:
+            seen.add(key)
+            roots.append(root)
     return roots
 
 
