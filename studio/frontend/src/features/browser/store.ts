@@ -428,7 +428,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
             tab,
             webEntry(request.url, request.method, request.body),
             // A native page keeps its own history.
-            options?.replace || (nativeWebHistory && currentEntry(tab).kind === "web"),
+            options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web"),
           ),
         ),
       }));

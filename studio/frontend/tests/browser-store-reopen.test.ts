@@ -6,7 +6,9 @@ import { register } from "node:module";
 import { test } from "node:test";
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
-const { browserFile, currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
+const { browserFile, currentEntry, setNativeWebHistory, useBrowserStore } = await import(
+  "../src/features/browser/store.ts"
+);
 
 test("reopening a rewritten file shows its new bytes; an unchanged one keeps its viewer", async () => {
   const store = useBrowserStore.getState();
@@ -37,4 +39,20 @@ test("reopening a rewritten file shows its new bytes; an unchanged one keeps its
   store.closeTab(useBrowserStore.getState().tabs[1]?.id ?? "");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(await browserFile(shown() ?? "")?.text(), "version 5");
+});
+
+test("a native tab's navigations replace its entry unless asked to keep it", () => {
+  setNativeWebHistory(true);
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/", { newTab: true });
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === id);
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  store.navigate(id, { url: "https://b.example/" });
+  assert.equal(tab()?.history.length, 1);
+  store.navigate(id, { url: "https://c.example/" }, { replace: false });
+  assert.deepEqual(
+    tab()?.history.map((entry) => (entry.kind === "web" ? entry.url : "")),
+    ["https://b.example/", "https://c.example/"],
+  );
+  setNativeWebHistory(false);
 });

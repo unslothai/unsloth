@@ -76,7 +76,19 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+// The view's own history closes with it: keep the page it reached as a tab entry, so Back still
+// leads to where the tab was.
+function keepReachedPage(tabId: string): void {
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  const shown = pages.get(tabId);
+  if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
+  store.navigate(tabId, { url: shown.url }, { replace: false });
+  store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
+}
+
 function closeView(tabId: string): void {
+  keepReachedPage(tabId);
   views.delete(tabId);
   zooms.delete(tabId);
   icons.delete(tabId);
