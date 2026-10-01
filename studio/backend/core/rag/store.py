@@ -648,6 +648,8 @@ def copy_document_index(
         rows is None
         or len(rows) != len(chunk_ids)
         or {r["chunk_id"] for r in rows} != chunk_ids.keys()
+        # chunks_vec may have been recreated at another width since the prefetch.
+        or (rows and len(rows[0]["embedding"]) != 4 * (rag_db.vec_table_dim(conn) or 0))
     ):
         rows = _donor_vectors(conn, source, chunk_ids)
     rowids = [

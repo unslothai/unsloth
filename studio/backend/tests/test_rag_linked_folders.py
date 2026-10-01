@@ -2847,3 +2847,34 @@ def test_donor_vectors_are_read_before_the_write_lock(rag_home, stub_embeddings,
         (source / name).write_text("shared duplicate content", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
     assert in_transaction == [False, False]
+
+
+@requires_sqlite_vec
+def test_a_vec_table_resized_after_the_prefetch_falls_back_to_a_normal_ingest(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    original = store.prefetch_donor_vectors
+
+    def resize_after_prefetch(conn, donor):
+        rows = original(conn, donor)
+        with _connection() as other:
+            dim = rag_db.vec_table_dim(other)
+            rag_db.ensure_vec(other, dim + 1)
+            other.commit()
+        return rows
+
+    monkeypatch.setattr(store, "prefetch_donor_vectors", resize_after_prefetch)
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["failed"] == 0
+    with _connection() as conn:
+        b_id = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()["document_id"]
+    assert _vectors(b_id)
