@@ -1348,20 +1348,13 @@ export const ptBR = {
           wide: "Ampla",
           full: "Largura total",
         },
-        composerAttachments: {
-          label: "Anexos no campo de texto",
-          description:
-            "Cartões grandes que aumentam o campo de texto ou uma fileira compacta de miniaturas.",
-          cards: "Cartões grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Anexos nas mensagens enviadas",
           description:
-            "Uma lista com o tipo de cada arquivo ou pequenas etiquetas. O modo automático muda para etiquetas com mais de seis arquivos.",
+            "Padrão mostra cada arquivo com seu tipo e Compacto cabe mais em cada linha. O modo automático muda para compacto com mais de seis arquivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Padrão",
+          chips: "Compacto",
         },
         reset: "Redefinir",
         resetAll: "Redefinir personalização",
@@ -1822,9 +1815,6 @@ export const ptBR = {
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      projectsSection: "Mostrar a seção Projetos",
-      projectsSectionDescription:
-        "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
       title: "Chat",
       description: "Personalize o funcionamento do chat neste dispositivo.",
       modelSelection: {

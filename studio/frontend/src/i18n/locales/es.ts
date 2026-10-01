@@ -1356,20 +1356,13 @@ export const es = {
           wide: "Amplio",
           full: "Ancho completo",
         },
-        composerAttachments: {
-          label: "Adjuntos en el cuadro de texto",
-          description:
-            "Tarjetas grandes que agrandan el cuadro de texto o una fila compacta de miniaturas.",
-          cards: "Tarjetas grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Adjuntos en los mensajes enviados",
           description:
-            "Una lista con el tipo de cada archivo o pequeñas etiquetas. Automático cambia a etiquetas con más de seis archivos.",
+            "Estándar muestra cada archivo con su tipo y Compacto cabe más en cada línea. Automático cambia a compacto con más de seis archivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Estándar",
+          chips: "Compacto",
         },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
@@ -1835,9 +1828,6 @@ export const es = {
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
-      projectsSection: "Mostrar la sección Proyectos",
-      projectsSectionDescription:
-        "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
       title: "Chat",
       description: "Personaliza cómo funciona el chat en este dispositivo.",
       modelSelection: {

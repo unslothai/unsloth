@@ -653,7 +653,13 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
     # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
-    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border",' in decoration
+    assert (
+        '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border dark:border-transparent",'
+        in decoration
+    )
+    # Dark draws no seam: a border lighter than both surfaces reads as a white line on Windows.
+    assert "dark:border-white" not in decoration
+    assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
     assert re.search(
         r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
@@ -688,6 +694,29 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert "window.history.forward()" in titlebar
     assert 'src="/circle-logo-small.png"' in header
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
+
+
+def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
+    label = chat_page.index('aria-label="New chat"')
+    start = chat_page.rindex("<Button", 0, label)
+    # First `>` outside braces and quotes: arrow functions in props hold `>`.
+    depth, quote, end = 0, "", start
+    for end in range(start, len(chat_page)):
+        ch = chat_page[end]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == ">" and depth == 0:
+            break
+    assert label < end, "aria-label=\"New chat\" is not on the <Button> opening tag"
+    match = re.search(r'className="([^"]*)"', chat_page[start:end])
+    assert match, "the New chat button has no static className"
+    return match.group(1).split()
 
 
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
@@ -732,8 +761,12 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     }
     assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
     assert set(insets.values()) == {188}, insets
-    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
+    # Token by token, not the exact string: #12355 added `shrink-0` beside the same look.
+    new_chat_tokens = _new_chat_button_class_tokens(chat_page)
+    assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
+    assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
+    assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
 

@@ -1336,20 +1336,13 @@ export const en = {
           wide: "Wide",
           full: "Full width",
         },
-        composerAttachments: {
-          label: "Attachments in the composer",
-          description:
-            "Large cards that grow the message box, or a compact row of tiles.",
-          cards: "Large cards",
-          compact: "Compact tiles",
-        },
         sentAttachments: {
           label: "Attachments in sent messages",
           description:
-            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+            "Standard shows each file with its type, compact fits more on each line. Auto switches to compact past six files.",
           auto: "Auto",
-          list: "List",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Reset",
         resetAll: "Reset customization",
@@ -1803,9 +1796,6 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      projectsSection: "Projects section",
-      projectsSectionDescription:
-        "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {

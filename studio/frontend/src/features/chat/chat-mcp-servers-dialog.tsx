@@ -57,7 +57,6 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
-import { BlenderMcpSetup } from "./blender-mcp-setup";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 
 type HeaderRow = { id: string; key: string; value: string };
@@ -359,7 +358,6 @@ export function ChatMcpServersDialog({
 }: ChatMcpServersDialogProps) {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [loading, setLoading] = useState(false);
-  const [blenderBusy, setBlenderBusy] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -491,7 +489,6 @@ export function ChatMcpServersDialog({
   }
 
   async function startEdit(server: McpServerConfig) {
-    if (blenderBusy) return;
     const generation = formGenerationRef.current + 1;
     formGenerationRef.current = generation;
     activeEditIdRef.current = server.id;
@@ -574,7 +571,7 @@ export function ChatMcpServersDialog({
 
   function handleOpenChange(next: boolean) {
     // once crud starts, dismissal must wait for the authoritative refresh
-    if (!next && (blenderBusy || (saving && !codecPending) || busyIdsRef.current.size > 0))
+    if (!next && ((saving && !codecPending) || busyIdsRef.current.size > 0))
       return;
     if (!next) {
       formGenerationRef.current += 1;
@@ -886,7 +883,7 @@ export function ChatMcpServersDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-w-2xl max-h-[85dvh] overflow-y-auto"
-        showCloseButton={!blenderBusy && !(saving && !codecPending) && busyIds.size === 0}
+        showCloseButton={!(saving && !codecPending) && busyIds.size === 0}
         aria-busy={decodingCommand}
       >
         <DialogHeader>
@@ -1100,19 +1097,18 @@ export function ChatMcpServersDialog({
           </div>
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
-            {open && <BlenderMcpSetup servers={servers} disabled={importing} onBusyChange={setBlenderBusy} />}
             <div className="flex justify-end gap-2">
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={importing || blenderBusy}
+                disabled={importing}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
                 {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                 Import config
               </Button>
-              <Button size="sm" onClick={startCreate} disabled={importing || blenderBusy}>
+              <Button size="sm" onClick={startCreate} disabled={importing}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
@@ -1168,7 +1164,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => void startEdit(server)}
                         aria-label="Edit server"
-                        disabled={importing || blenderBusy || busyIds.has(server.id)}
+                        disabled={importing || busyIds.has(server.id)}
                       >
                         <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>

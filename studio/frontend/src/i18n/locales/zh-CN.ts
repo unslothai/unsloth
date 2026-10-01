@@ -1318,20 +1318,13 @@ export const zhCN = {
           wide: "宽",
           full: "全宽",
         },
-        composerAttachments: {
-          label: "输入框中的附件",
-          description:
-            "使用会撑大输入框的大卡片，或紧凑的一行小图块。",
-          cards: "大卡片",
-          compact: "紧凑图块",
-        },
         sentAttachments: {
           label: "已发送消息中的附件",
           description:
-            "显示各文件类型的列表，或小标签。超过六个文件时，“自动”会切换为小标签。",
+            "标准会显示每个文件及其类型，紧凑会在每行显示更多文件。超过六个文件时，“自动”会切换为紧凑。",
           auto: "自动",
-          list: "列表",
-          chips: "小标签",
+          list: "标准",
+          chips: "紧凑",
         },
         reset: "重置",
         resetAll: "重置自定义",
@@ -1767,9 +1760,6 @@ export const zhCN = {
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      projectsSection: "显示项目分区",
-      projectsSectionDescription:
-        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {

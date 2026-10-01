@@ -9,6 +9,7 @@ import {
   defaultsFor,
   defaultsKeyFor,
   residentDefaultsKey,
+  resolutionFor,
 } from "../src/features/images/image-generation-defaults.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -119,4 +120,41 @@ test("failed image and video picks release their recipe hydration claims", () =>
   assert.match(hook, /formClaim\.current = previousClaim/);
   assert.match(hook, /hydrateSavedSettings\(deferred\)/);
   assert.match(hook, /source === "claiming"\s*\? "claimed" : source/);
+});
+
+test("an auto-engaged Qwen-Image-2.1 quant keeps the 1024 canvas; a picked quant still shrinks it", () => {
+  const repo = "Qwen/Qwen-Image-2.1";
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8", transformerQuantSource: "auto" }),
+    { width: 1024, height: 1024 },
+  );
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "fp8", transformerQuantSource: "auto" }),
+    { width: 1024, height: 1024 },
+  );
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8", transformerQuantSource: "explicit" }),
+    { width: 512, height: 512 },
+  );
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8" }),
+    { width: 512, height: 512 },
+  );
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "gguf", transformerQuant: "int8", transformerQuantSource: "explicit" }),
+    { width: 1024, height: 1024 },
+  );
+  assert.deepEqual(resolutionFor(repo, { modelKind: "pipeline", transformerQuant: null }), {
+    width: 1024,
+    height: 1024,
+  });
+});
+
+test("every images-page canvas seed passes the quant provenance", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const calls = source.split("resolutionFor(").slice(1);
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.match(call.slice(0, 400), /transformerQuantSource: status\??\.resolved\?\.transformer_quant\?\.source/);
+  }
 });

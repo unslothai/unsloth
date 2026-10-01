@@ -816,15 +816,18 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["server"] == "unsloth-studio"
         assert "content-security-policy" in r.headers
 
-    def test_artifact_preview_frame_omits_x_frame_options(self, main_module):
+    @pytest.mark.parametrize(
+        "path", ["/api/inference/artifact-preview-frame", "/api/inference/mcp-app-frame"]
+    )
+    def test_frame_shells_omit_x_frame_options(self, main_module, path):
         app = FastAPI()
         app.add_middleware(main_module.SecurityHeadersMiddleware)
 
-        @app.get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        @app.get(path)
         async def frame():
             return Response(content = b"<html></html>", media_type = "text/html")
 
-        r = TestClient(app).get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        r = TestClient(app).get(path)
         assert r.status_code == 200
         assert "x-frame-options" not in {k.lower() for k in r.headers.keys()}
         assert r.headers["referrer-policy"] == "no-referrer"

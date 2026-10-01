@@ -179,7 +179,7 @@ def _run_cuda_repair(
         if probe:
             mock_pip.probe_answer = stack_mod._cuda_torch_needs_dependency_pass()
         else:
-            _ensure_cuda_torch()
+            mock_pip.repair_ok = _ensure_cuda_torch()
     return mock_pip
 
 
@@ -534,6 +534,26 @@ class TestPreTuringWheelFamily:
             compute_caps = ("7.0", "12.0"),
         )
         mock_pip.assert_not_called()
+
+    def test_query_mirror_keeps_a_partial_family_when_no_replacement_covers(self):
+        with patch.object(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc"):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu126|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("7.0", "12.0"),
+            )
+        mock_pip.assert_not_called()
+        assert mock_pip.repair_ok is not False
+
+    def test_query_mirror_fails_when_a_replacement_would_cover(self):
+        with patch.object(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc"):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu126|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("12.0",),
+            )
+        mock_pip.assert_not_called()
+        assert mock_pip.repair_ok is False
 
     def test_cu118_kepler_build_is_kept(self):
         # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement would strand the GPU that
@@ -2379,10 +2399,10 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
         """One read of the pair, so the precedence cannot be bypassed by a second one."""
         body = inspect.getsource(stack_mod._expected_torch_flavor_was_pinned)
         assert "UNSLOTH_TORCH_INDEX_FAMILY" not in body, (
-            "the family has to come through _explicit_torch_index_url(), which applies "
+            "the family has to come through _explicit_torch_index_family(), which applies "
             "install.sh's precedence; a direct read here reintroduces the bug"
         )
-        assert "_explicit_torch_index_url()" in body
+        assert "_explicit_torch_index_family()" in body
 
     def test_asking_without_a_flavor_answers_as_it_always_did(self, monkeypatch):
         assert self._pinned(monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4") is True
@@ -2665,7 +2685,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
             stack_mod._nvidia_smi_usable_candidates
         )
         assert "_nvidia_smi_usable_candidates()" in inspect.getsource(
-            stack_mod._detect_cuda_torch_index_url
+            stack_mod._detect_cuda_torch_index_family
         )
 
     def test_a_which_result_is_trusted_without_an_isfile_check(self, monkeypatch):
@@ -2758,7 +2778,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         # about the host, which is how the family came off the wrong driver twice.
         assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
         assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(
-            stack_mod._detect_cuda_torch_index_url
+            stack_mod._detect_cuda_torch_index_family
         )
 
     def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
@@ -2801,19 +2821,10 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu118"
 
     def test_the_driver_family_probe_mirrors_the_index_url(self, monkeypatch):
-        # The helper reads _detect_cuda_torch_index_url's leaf, so an ancient-driver "cpu"
-        # URL has to come back as "" rather than as a family named "cpu".
-        monkeypatch.setattr(
-            stack_mod,
-            "_detect_cuda_torch_index_url",
-            lambda: "https://download.pytorch.org/whl/cpu",
-        )
+        # An ancient-driver "cpu" family is "", not a CUDA family.
+        monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "cpu")
         assert stack_mod._driver_cuda_torch_flavor_tag() == ""
-        monkeypatch.setattr(
-            stack_mod,
-            "_detect_cuda_torch_index_url",
-            lambda: "https://download.pytorch.org/whl/cu126/",
-        )
+        monkeypatch.setattr(stack_mod, "_detect_cuda_torch_index_family", lambda: "CU126")
         assert stack_mod._driver_cuda_torch_flavor_tag() == "cu126"
 
     def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):

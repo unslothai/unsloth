@@ -8746,7 +8746,7 @@ const EditComposer: FC = () => {
           submitEdit();
         }}
       >
-        <ComposerAttachments className="mb-0 px-3 pt-3 [&_.aui-pasted-text-chip:not(:hover)]:bg-background" />
+        <ComposerAttachments className="mb-0 px-3 pt-3" />
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"

@@ -1361,20 +1361,13 @@ export const de = {
           wide: "Breit",
           full: "Volle Breite",
         },
-        composerAttachments: {
-          label: "Anhänge im Eingabefeld",
-          description:
-            "Große Karten, die das Eingabefeld vergrößern, oder eine kompakte Reihe von Kacheln.",
-          cards: "Große Karten",
-          compact: "Kompakte Kacheln",
-        },
         sentAttachments: {
           label: "Anhänge in gesendeten Nachrichten",
           description:
-            "Eine Liste mit dem Typ jeder Datei oder kleine Chips. „Automatisch“ wechselt ab sieben Dateien zu Chips.",
+            "Standard zeigt jede Datei mit ihrem Typ, Kompakt passt mehr in eine Zeile. „Automatisch“ wechselt ab sieben Dateien zu Kompakt.",
           auto: "Automatisch",
-          list: "Liste",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Kompakt",
         },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
@@ -1844,9 +1837,6 @@ export const de = {
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      projectsSection: "Projektbereich anzeigen",
-      projectsSectionDescription:
-        "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       title: "Chat",
       description: "Passen Sie an, wie sich der Chat auf diesem Gerät verhält.",
       modelSelection: {
