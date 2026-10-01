@@ -10,12 +10,22 @@ Route-level tests stub ``generate_chat_response`` entirely, so these call
 import importlib
 import importlib.machinery
 import json
+import re
 import sys
 import threading
 import types
 from unittest.mock import MagicMock
 
 import pytest
+
+
+# #12382: with the date setting on and no system prompt, the chat's first message opens with
+# this note. It is the only rewrite of the user's text these assertions allow.
+_DATE_NOTE = re.compile(r"\A\[Current date: \d{4}-\d{2}-\d{2}\]\n\n")
+
+
+def _without_date_note(text):
+    return _DATE_NOTE.sub("", text, count = 1) if isinstance(text, str) else text
 
 
 def _shared_setup_1(__file__):
@@ -1011,7 +1021,7 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
     earlier, owning, later = [m for m in sent if m.get("role") == "user"]
     assert [p.get("type") for p in owning["content"]] == ["image", "text"]
     assert owning["content"][1]["text"] == "IMAGE_QUESTION about the picture"
-    assert earlier["content"] == "EARLIER_QUESTION with no picture"
+    assert _without_date_note(earlier["content"]) == "EARLIER_QUESTION with no picture"
     assert later["content"] == "LATER_QUESTION unrelated to it"
 
 

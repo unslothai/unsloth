@@ -27,11 +27,16 @@ import sys
 
 import pytest
 
-# sentence-transformers is an extra (`huggingfacenotorch`), not a core dependency, and
-# one CI shard installs the core set only. Without this the whole file errors there with
-# ModuleNotFoundError instead of skipping. The workflow installs the package for this
-# shard so these tests do run rather than quietly skipping everywhere, which would make
-# the gate unfailable in CI.
+# sentence-transformers is an extra (`huggingfacenotorch`), not a core dependency, so
+# without this the whole file errors with ModuleNotFoundError in the shard that installs
+# the core set only, rather than skipping.
+#
+# Skipping is not sufficient on its own. The only shard that collects this file is
+# "Repo tests (CPU, rest)", and version-compat-ci's zoo-imports job installs
+# sentence-transformers but runs two named tests/vllm_compat files, not this one, so an
+# importorskip by itself leaves the gate skipped in every job and unable to fail
+# anywhere. studio-backend-ci installs the package for that shard, which is what makes
+# these tests actually run.
 pytest.importorskip("sentence_transformers")
 
 from unsloth import FastSentenceTransformer  # noqa: E402
