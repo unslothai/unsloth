@@ -446,3 +446,138 @@ def test_unreachable_is_tolerated_where_upstream_gates_it_anyway(tmp_path, monke
     monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
 
     assert FastSentenceTransformer._modules_json_for_gating("acme/embedder", None) is None
+
+
+def _delegated_model(tmp_path, activation_function):
+    """A local model whose Dense module config names a class, as the Hub form would."""
+    model = tmp_path / "model"
+    (model / "1_Dense").mkdir(parents = True)
+    (model / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "1_Dense",
+                    "type": "sentence_transformers.models.Dense",
+                }
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    (model / "1_Dense" / "config.json").write_text(
+        json.dumps(
+            {"in_features": 8, "out_features": 8, "activation_function": activation_function}
+        ),
+        encoding = "utf-8",
+    )
+    return model
+
+
+def test_a_delegated_route_also_checks_the_module_config_class_ref(tmp_path, monkeypatch):
+    """An allowed type is not the whole check.
+
+    Dense is a permitted sentence_transformers class, and below 6.0 its loader resolves and
+    calls whatever activation_function the config names. _load_modules checks this from the
+    files it downloaded; the delegated routes hand the load straight to
+    sentence-transformers, so without this they validated the type and nothing else.
+
+    Hiding import_module_class simulates sentence-transformers < 6, which is where the
+    ungated loader lives; on this branch the config check still keys off that attribute,
+    and #12444 removes the fork so it runs on every version.
+    """
+    import sentence_transformers.util as st_util
+
+    monkeypatch.delattr(st_util, "import_module_class", raising = False)
+
+    model = _delegated_model(tmp_path, f"{MARKER}.Thing")
+
+    with pytest.raises(ValueError, match = "executes third-party code"):
+        FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_a_delegated_route_leaves_a_real_dense_config_alone(tmp_path, monkeypatch):
+    """embeddinggemma-300m's Dense modules name torch.nn.modules.linear.Identity."""
+    import sentence_transformers.util as st_util
+
+    monkeypatch.delattr(st_util, "import_module_class", raising = False)
+
+    model = _delegated_model(tmp_path, "torch.nn.modules.linear.Identity")
+
+    FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_an_ordinary_embedder_fetches_no_module_configs(tmp_path, monkeypatch):
+    """The cost rule: Transformer, Pooling and Normalize read no class ref out of their
+    configs, so gating them must not add a request per module to every load."""
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Transformer",
+                },
+                {
+                    "idx": 1,
+                    "name": "1",
+                    "path": "1_Pooling",
+                    "type": "sentence_transformers.models.Pooling",
+                },
+                {
+                    "idx": 2,
+                    "name": "2",
+                    "path": "2_Normalize",
+                    "type": "sentence_transformers.models.Normalize",
+                },
+            ]
+        ),
+        encoding = "utf-8",
+    )
+
+    requested = []
+
+    def fake_download(repo_id, filename, **kwargs):
+        requested.append(filename)
+        raise AssertionError(f"unexpected fetch of {filename}")
+
+    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", fake_download)
+
+    FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+    assert requested == []
+
+
+def test_the_cached_absence_lookup_uses_the_cache_the_download_uses(tmp_path, monkeypatch):
+    """HUGGINGFACE_HUB_CACHE is the legacy constant and does not follow HF_HUB_CACHE, so
+    naming it searched a different cache from the one hf_hub_download writes."""
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "active"))
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    monkeypatch.setattr(
+        FastSentenceTransformer,
+        "_module_path",
+        staticmethod(lambda *a, **k: None),
+    )
+
+    seen = {}
+
+    def fake_try_to_load_from_cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+        revision = None,
+    ):
+        seen["cache_dir"] = cache_dir
+        # The sentinel the hub returns when it has recorded that the file does not exist.
+        return object()
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_try_to_load_from_cache)
+
+    FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
+
+    assert (
+        seen["cache_dir"] is None
+    ), "a cache of our own choosing is not the cache hf_hub_download reads"

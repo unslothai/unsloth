@@ -1366,14 +1366,17 @@ class FastSentenceTransformer(FastModel):
             pass
 
         from huggingface_hub import try_to_load_from_cache
-        from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
         try:
+            # No default of our own: HUGGINGFACE_HUB_CACHE is the legacy constant and does
+            # not follow HF_HUB_CACHE, so naming it searched a different cache from the one
+            # hf_hub_download writes, and a recorded absence there was missed. Passing None
+            # lets the hub apply the same default it applies to the download below.
             cached = try_to_load_from_cache(
                 model_name,
                 "modules.json",
-                cache_dir = cache_dir or HUGGINGFACE_HUB_CACHE,
+                cache_dir = cache_dir,
                 revision = revision,
             )
         except Exception:
@@ -1463,13 +1466,91 @@ class FastSentenceTransformer(FastModel):
             class_ref = module_config.get("type")
             if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                 continue
-            FastSentenceTransformer._resolve_module_class(
+            module_class = FastSentenceTransformer._resolve_module_class(
                 class_ref,
                 model_name,
                 trust_remote_code,
                 token = token,
                 cache_dir = cache_dir,
                 revision = revision,
+            )
+            FastSentenceTransformer._check_delegated_module_config(
+                model_name,
+                module_config,
+                class_ref,
+                module_class,
+                token = token,
+                cache_dir = cache_dir,
+                revision = revision,
+            )
+
+    # The module classes whose own loader resolves a dotted path out of their config: Dense
+    # reads activation_function, WordEmbeddings reads tokenizer_class, Router and Asym read
+    # types. Every other shipped class reads plain values only, so an ordinary embedder
+    # (Transformer, Pooling, Normalize) costs no extra request below.
+    _CONFIG_REF_MODULE_CLASSES = frozenset({"Asym", "Dense", "Router", "WordEmbeddings"})
+
+    @staticmethod
+    def _check_delegated_module_config(
+        model_name,
+        module_config,
+        class_ref,
+        module_class,
+        token = None,
+        cache_dir = None,
+        revision = None,
+    ):
+        """Check a module's own config on a delegated route, where nothing is local yet.
+
+        An allowed type is not enough: sentence-transformers below 6 lets Dense name any
+        activation_function and Router any types entry, and resolves that dotted path itself.
+        _load_modules checks this already, from files it has just downloaded; the delegated
+        routes hand the whole load to sentence-transformers and so never reached it.
+
+        Scoped to the classes that actually read a class ref, so the usual load adds no
+        request. A config that cannot be fetched is left to the gate above, which has already
+        established whether the repo is readable at all.
+        """
+        if getattr(module_class, "__name__", "") not in (
+            FastSentenceTransformer._CONFIG_REF_MODULE_CLASSES
+        ):
+            return
+
+        folder = module_config.get("path")
+        if not isinstance(folder, str) or not folder:
+            return
+
+        config_names = []
+        config_file_name = getattr(module_class, "config_file_name", None)
+        if isinstance(config_file_name, str):
+            config_names.append(config_file_name)
+        config_names.append("config.json")
+
+        try:
+            is_local = os.path.isdir(model_name)
+        except (OSError, TypeError, ValueError):
+            is_local = False
+
+        folders = []
+        if is_local:
+            folders.append(os.path.join(model_name, *folder.strip("/").split("/")))
+        else:
+            for config_name in dict.fromkeys(config_names):
+                try:
+                    downloaded = hf_hub_download(
+                        model_name,
+                        f"{folder.strip('/')}/{config_name}",
+                        token = token,
+                        cache_dir = cache_dir,
+                        revision = revision,
+                    )
+                except Exception:
+                    continue
+                folders.append(os.path.dirname(downloaded))
+
+        for load_path in dict.fromkeys(folders):
+            FastSentenceTransformer._check_module_config_class_refs(
+                load_path, class_ref, model_name, False, module_class
             )
 
     @staticmethod
