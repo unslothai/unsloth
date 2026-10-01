@@ -278,7 +278,6 @@ export interface McpUiResource {
   text: string;
   blob?: string | null;
   ui: { csp?: Partial<Record<McpUiCspField, string[]>> };
-  /** Every block resources/read returned, for a widget's own reads. */
   contents?: { uri: string; mimeType?: string; text?: string; blob?: string }[];
 }
 

@@ -2208,7 +2208,7 @@ def _ui_request_sync(
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 
     async def _one_shot() -> Any:
-        # The session branch rejects the same race: an edit during discovery must not reach the old endpoint.
+        # As the session branch: an edit during discovery must not reach the old endpoint.
         if config_check is not None and not config_check():
             raise RuntimeError("MCP server was updated or removed during the call")
         async with _client(url, headers, use_oauth) as client:
@@ -2260,7 +2260,7 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
         except UnicodeDecodeError:
             text = ""
     text = str(text)
-    # A widget's own resources/read gets every block, as the protocol returns them; one block is the fields above.
+    # Every block for a widget's own multi-block read; a single block is the fields above.
     contents = []
     for item in items if len(items) > 1 else ():
         entry = {"uri": str(getattr(item, "uri", "") or uri)}

@@ -108,8 +108,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
   const { serverId, toolName, ui, threadId, sessionId, className } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { resolved: theme } = useTheme();
-  // The scope the template was fetched for travels with it: a reused component's new props must
-  // never redirect the old widget's requests to another server or conversation.
+  // Fetch scope rides with the template: new props must not redirect the old widget's requests.
   const [resource, setResource] = useState<
     (McpUiResource & { scope: FrameScope }) | null
   >(null);
