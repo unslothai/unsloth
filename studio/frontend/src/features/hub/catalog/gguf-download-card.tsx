@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHubDownloadPlan } from "../download-manager/use-hub-download-queue";
+import { HubPlanProgress } from "../download-manager/hub-plan-progress";
+import { useRequiredAssetsDownload } from "./use-required-assets-download";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
@@ -840,6 +843,12 @@ export function GgufDownloadCard({
     );
   }, [loading, error, refreshError, variants]);
 
+  const assets = useRequiredAssetsDownload({
+    repoId,
+    filename: selected?.filename,
+    runtime: selected ? mediaPage : undefined,
+    modelLabel: `${repoId} · ${selectedQuant ?? ""}`,
+  });
   const selectedLiveState = selectedQuant
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
@@ -985,9 +994,10 @@ export function GgufDownloadCard({
       ...(presentation ? { presentation } : {}),
     });
   }, [updateTarget, updateTargetVariant, repoId]);
+  const hubPlan = useHubDownloadPlan(repoId, selected?.filename);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
-  const showUpdateAction =
+  const showUpdateAction = !hubPlan &&
     selected?.downloaded === true &&
     online &&
     updateAvailable &&
@@ -997,12 +1007,12 @@ export function GgufDownloadCard({
     !cancelling &&
     !downloadAction.starting &&
     !downloadingThisVariant;
-  const showDownloadAction =
+  const showDownloadAction = !hubPlan && (
     !selected?.downloaded ||
     downloadingThisVariant ||
     cancelling ||
-    downloadAction.starting;
-  const showRunAction =
+    downloadAction.starting);
+  const showRunAction = !hubPlan &&
     Boolean(onRun) &&
     selected?.downloaded === true &&
     selected.partial !== true &&
@@ -1058,6 +1068,7 @@ export function GgufDownloadCard({
   return (
     <div className="flex w-full flex-col gap-2">
       <DownloadCard
+        footer={hubPlan ? <HubPlanProgress plan={hubPlan} /> : undefined}
         job={job}
         progress={downloadingThisVariant ? progress : null}
         dialogs={
@@ -1267,8 +1278,8 @@ export function GgufDownloadCard({
         {showDownloadAction && (
           <button
             type="button"
-            disabled={downloadAction.disabled}
-            onClick={downloadAction.onClick}
+            disabled={downloadAction.disabled || assets.checking}
+            onClick={() => downloadingThisVariant ? downloadAction.onClick() : void assets.request(downloadAction.onClick)}
             aria-label={
               selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
             }
@@ -1308,12 +1319,13 @@ export function GgufDownloadCard({
             ) : (
               <>
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                {downloadAction.downloadLabel}
+                {assets.checking ? "Checking…" : downloadAction.downloadLabel}
               </>
             )}
           </button>
         )}
 
+        {hubPlan && <span className="px-3 text-ui-12 text-muted-foreground">Downloading…</span>}
         {showRunAction && onRun && selected && (
           <ModelRunActionButton
             label={`Configure and run ${repoId} ${selectedLabel ?? selected.quant}`}
@@ -1332,6 +1344,7 @@ export function GgufDownloadCard({
           />
         )}
       </DownloadCard>
+      {assets.dialog}
       {/* Only a quant actually on disk gets charted: an undownloaded one has no
           weights to measure, and the fit badge already tiers those. */}
       {selected?.downloaded && showMemoryBar ? (
