@@ -993,3 +993,7 @@ jobs:
         env:
           UNSLOTH_NO_TORCH: '1'
         run: python -m pytest unsloth_cli/tests/test_start.py -q --tb=short
+
+      - name: Why a failure here might already be fixed on the base branch
+        if: failure() && github.event_name == 'pull_request'
+        uses: ./.github/actions/merge-ref-age
