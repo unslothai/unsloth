@@ -546,8 +546,8 @@ def test_print_asset_resolves_like_install(monkeypatch, tmp_path, capsys):
     asked, resolve = _resolve_recording(release)
     monkeypatch.setattr(M, "resolve", resolve)
     monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
-    # A CUDA host with NCCL, whatever the runner has (an NCCL-less Linux runner resolves CPU only).
-    monkeypatch.setattr(M, "_linux_nccl_available", lambda: True)
+    # A CUDA host with its CUDA runtime, whatever the runner has (one without resolves CPU only).
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: True)
     assert M.main(["--print-asset"]) == M.EXIT_OK
     assert asked == ["cuda", "cpu"]
     assert capsys.readouterr().out.strip().endswith(CPU_ZIP)
