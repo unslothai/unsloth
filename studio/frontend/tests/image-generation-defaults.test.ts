@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { defaultsFor } from "../src/features/images/image-generation-defaults.ts";
+import { defaultsFor, resolutionFor } from "../src/features/images/image-generation-defaults.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -96,4 +96,44 @@ test("failed image and video picks release their recipe hydration claims", () =>
   assert.match(hook, /formClaim\.current = previousClaim/);
   assert.match(hook, /hydrateSavedSettings\(deferred\)/);
   assert.match(hook, /source === "claiming"\s*\? "claimed" : source/);
+});
+
+test("an auto-engaged Qwen-Image-2.1 quant keeps the 1024 canvas; a picked quant still shrinks it", () => {
+  const repo = "Qwen/Qwen-Image-2.1";
+  // Auto precision takes the hosted int8 checkpoint on every card, so it says nothing about VRAM.
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8", transformerQuantSource: "auto" }),
+    { width: 1024, height: 1024 },
+  );
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "fp8", transformerQuantSource: "auto" }),
+    { width: 1024, height: 1024 },
+  );
+  // An explicit pick (or an older backend without provenance) keeps the smaller quantised canvas.
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8", transformerQuantSource: "explicit" }),
+    { width: 512, height: 512 },
+  );
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "pipeline", transformerQuant: "int8" }),
+    { width: 512, height: 512 },
+  );
+  // GGUF and dense builds are unchanged.
+  assert.deepEqual(
+    resolutionFor(repo, { modelKind: "gguf", transformerQuant: "int8", transformerQuantSource: "explicit" }),
+    { width: 1024, height: 1024 },
+  );
+  assert.deepEqual(resolutionFor(repo, { modelKind: "pipeline", transformerQuant: null }), {
+    width: 1024,
+    height: 1024,
+  });
+});
+
+test("every images-page canvas seed passes the quant provenance", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const calls = source.split("resolutionFor(").slice(1);
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.match(call.slice(0, 400), /transformerQuantSource: status\??\.resolved\?\.transformer_quant\?\.source/);
+  }
 });

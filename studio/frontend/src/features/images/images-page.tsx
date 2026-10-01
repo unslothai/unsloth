@@ -1575,6 +1575,7 @@ export function ImagesPage({
     const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
       modelKind: status?.model_kind,
       transformerQuant: status?.transformer_quant,
+      transformerQuantSource: status?.resolved?.transformer_quant?.source,
     });
     return {
       negativePrompt: "",
@@ -1591,6 +1592,7 @@ export function ImagesPage({
     status?.repo_id,
     status?.model_kind,
     status?.transformer_quant,
+    status?.resolved?.transformer_quant?.source,
   ]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
@@ -2667,6 +2669,7 @@ export function ImagesPage({
     const size = resolutionFor(status?.base_repo ?? repoId, {
       modelKind: status?.model_kind,
       transformerQuant: status?.transformer_quant,
+      transformerQuantSource: status?.resolved?.transformer_quant?.source,
     });
     setWidth(size.width);
     setHeight(size.height);
@@ -2680,6 +2683,7 @@ export function ImagesPage({
     status?.base_repo,
     status?.model_kind,
     status?.transformer_quant,
+    status?.resolved?.transformer_quant?.source,
   ]);
 
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
@@ -3713,6 +3717,7 @@ export function ImagesPage({
         status.base_repo,
         status.model_kind,
         status.transformer_quant,
+        status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
       ].join("|")
     : null;
@@ -3723,6 +3728,7 @@ export function ImagesPage({
       const tier = resolutionFor(status.base_repo ?? status.repo_id ?? "", {
         modelKind: status.model_kind,
         transformerQuant: status.transformer_quant,
+        transformerQuantSource: status.resolved?.transformer_quant?.source,
       }).width;
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
