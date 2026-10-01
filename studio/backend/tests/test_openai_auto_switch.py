@@ -5931,7 +5931,8 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
     mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
     Injecting a placeholder system turn would add a system block to the count for Qwen3
-    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show. Templates
+    that raise on no messages (Qwen3.5+) are re-priced only after refusing; see below."""
     seen = {}
 
     class _FakeResponse:
@@ -5972,6 +5973,132 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     count = _CountBackend().count_chat_tokens([], None, None, strict = True)
     assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
     assert count > 0, "a fresh chat still prices the template preamble"
+
+
+class _RefusingEmptyRenderClient:
+    """llama-server with a Qwen3.5+ template that raises on no messages; strips a trailing assistant."""
+
+    sent = []
+    down = False
+    empty_status = 500
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def post(
+        self,
+        url,
+        json = None,
+    ):
+        body = json or {}
+        if url.endswith(("/apply-template", "/input_tokens")):
+            messages = body.get("messages")
+            type(self).sent.append((url.rsplit("/", 1)[-1], messages))
+            if type(self).down:
+                raise RuntimeError("timed out")
+            rendered = list(messages or [])
+            if rendered and rendered[-1].get("role") == "assistant":
+                rendered = rendered[:-1]
+            if not rendered:
+                status = type(self).empty_status
+                return _CountResponse(
+                    {"error": {"code": status, "message": "No messages provided."}},
+                    status_code = status,
+                )
+            if url.endswith("/input_tokens"):
+                return _CountResponse({"input_tokens": 7})
+            return _CountResponse(
+                {"prompt": "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n"}
+            )
+        return _CountResponse({"tokens": str(body.get("content", "")).split()})
+
+
+class _CountResponse:
+    def __init__(
+        self,
+        payload,
+        status_code = 200,
+    ):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def refusing_client(monkeypatch):
+    _RefusingEmptyRenderClient.sent = []
+    _RefusingEmptyRenderClient.down = False
+    _RefusingEmptyRenderClient.empty_status = 500
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _RefusingEmptyRenderClient)
+    return _RefusingEmptyRenderClient
+
+
+@pytest.mark.parametrize("prefer_native", [False, True])
+@pytest.mark.parametrize(
+    "messages",
+    [[], [{"role": "assistant", "content": '{"name": "terminal"}'}]],
+    ids = ["new_chat", "lone_pending_call"],
+)
+def test_a_template_refusing_an_empty_render_is_priced_behind_one_empty_user_turn(
+    refusing_client, prefer_native, messages
+):
+    """#12327: an empty render the template refuses is priced behind one empty user turn, once per load."""
+    backend = _CountBackend()
+    count = backend.count_chat_tokens(
+        messages, None, None, strict = True, prefer_native = prefer_native
+    )
+    assert count > 0, "a refused empty render must still be priced, not refused"
+    assert refusing_client.sent[0][1] == messages, "what the caller sent is still tried first"
+    assert refusing_client.sent[-1][1] == [{"role": "user", "content": ""}] + messages
+
+    refusing_client.sent = []
+    assert (
+        backend.count_chat_tokens(messages, None, None, strict = True, prefer_native = prefer_native)
+        == count
+    )
+    assert all(
+        sent == [{"role": "user", "content": ""}] + messages for _, sent in refusing_client.sent
+    ), "a known refusal must not be re-sent on every recount"
+
+
+def test_a_conversation_the_template_renders_costs_one_request(refusing_client):
+    """The chat path counts real conversations on every turn; the fallback must add nothing there."""
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = True
+    conversation = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "Read ./README.md"},
+    ]
+    backend.count_chat_tokens(conversation, None, None, strict = True)
+    assert refusing_client.sent == [("apply-template", conversation)]
+
+
+def test_an_unreachable_server_is_not_retried_or_taken_for_a_refusal(refusing_client):
+    """A timeout says nothing about the template: no second round trip, and no remembered refusal."""
+    refusing_client.down = True
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert len(refusing_client.sent) == 1
+    assert backend._empty_chat_render_refused is False
+
+
+def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
+    """llama-server answers 503 while loading or out of slots; only a 500 is a template refusal."""
+    refusing_client.empty_status = 503
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert [m for _, m in refusing_client.sent] == [[]], "a busy server is not retried"
+    assert backend._empty_chat_render_refused is False
 
 
 def test_a_count_never_spawns_mcp_servers():
@@ -9981,7 +10108,16 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     # The Images and Video backends own these; /v1/chat/completions cannot serve them.
 
     pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
-    (pipeline / "model_index.json").write_text("{}")
+    manifest = {
+        "_class_name": "DiffusionPipeline",
+        "transformer": ["diffusers", "Transformer2DModel"],
+    }
+    (pipeline / "model_index.json").write_text(json.dumps(manifest))
+    (pipeline / "transformer").mkdir()
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
+        _safetensors_bytes()
+    )
     info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
     assert resolver.local_servable_model(info) is None
 
@@ -10831,11 +10967,11 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
         audio.setframerate(16000)
         audio.writeframes(b"\x00\x00" * 16)
     preflight = {
-        "b64": f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}",
+        "clips": [f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}"],
         "continue_final": True,
     }
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
-    assert preflight["prepared"][1] == "wav"
+    assert preflight["prepared"][0][1] == "wav"
     assert "decoded" not in preflight
 
     # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
@@ -10888,7 +11024,7 @@ def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
             require_image = True,
             require_audio_input = True,
             audio_preflight = {
-                "b64": "valid",
+                "clips": ["valid"],
                 "continue_final": False,
                 "has_image": False,
             },
@@ -11348,7 +11484,7 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
                 require_image = True,
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": False,
                     "has_image": True,
                 },
@@ -11393,7 +11529,7 @@ def test_audio_beside_a_clip_is_rejected_before_a_non_gguf_switch(monkeypatch):
                 require_audio_input = True,
                 require_video = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": True,
                     "has_image": True,
                     "has_video": True,
@@ -11433,7 +11569,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         try:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": encoded, "continue_final": False}, True
+                    {"clips": [encoded], "continue_final": False}, True
                 )
             )
         except HTTPException:
@@ -11443,7 +11579,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": bad, "continue_final": False}, True
+                    {"clips": [bad], "continue_final": False}, True
                 )
             )
         assert exc.value.status_code == 400, bad
@@ -11468,7 +11604,7 @@ def test_non_audio_bytes_are_rejected_before_a_gguf_switch(monkeypatch):
                 "tester",
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": _b64.b64encode(b"not audio").decode(),
+                    "clips": [_b64.b64encode(b"not audio").decode()],
                     "continue_final": False,
                 },
             )
@@ -11487,7 +11623,7 @@ def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
@@ -11508,14 +11644,14 @@ def test_non_audio_bytes_are_rejected_before_a_non_gguf_switch(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
 
-    preflight = {"b64": "GOOD", "continue_final": False}
+    preflight = {"clips": ["GOOD"], "continue_final": False}
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, False))
-    assert preflight["decoded"] == "pcm"
+    assert preflight["decoded"] == ["pcm"]
 
 
 def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):
