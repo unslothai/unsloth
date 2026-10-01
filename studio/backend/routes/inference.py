@@ -24763,6 +24763,12 @@ async def _proxy_to_external_provider(
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
     _ui_events = _ui_stream_events_enabled(request)
     _mcp_image = await _request_mcp_image(payload, _ui_events)
+    if _mcp_image is not None and not studio_tool_loop:
+        # Only Studio's tool loop can hand the image to an MCP tool; the direct proxy would drop it silently.
+        raise HTTPException(
+            status_code = 400,
+            detail = "This model and tool selection cannot run MCP tools, so the attached image cannot be sent.",
+        )
     _drop_keepalive = _DroppedFrameKeepalive()
     # One per request: carries the withheld-call state across the lines of a turn.
     _tool_call_stripper = ServerToolCallStripper()
