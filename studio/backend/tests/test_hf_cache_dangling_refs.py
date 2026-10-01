@@ -4731,3 +4731,34 @@ def test_a_whole_split_quant_is_still_complete(tmp_path):
         (snapshot / f"Model-Q4_K_M-0000{index}-of-00002.gguf").write_bytes(b"GGUF" + b"\0" * 252)
 
     assert inventory_scan._completed_gguf_variants(snapshot) == {"Q4_K_M"}
+
+
+@pytest.mark.parametrize("bad_repo_name", ["datasets--Org--Broken", "models--Org--Broken"])
+def test_oserror_in_one_repo_does_not_hide_healthy_models(tmp_path, monkeypatch, bad_repo_name):
+    from huggingface_hub import scan_cache_dir
+
+    healthy = _build_repo(tmp_path, ref = SNAPSHOT)
+    broken = _build_repo(tmp_path, ref = SNAPSHOT, name = bad_repo_name)
+    bad_file = broken / "snapshots" / SNAPSHOT / "README.md"
+    bad_file.write_text("unreadable", encoding = "utf-8")
+    original_stat = Path.stat
+
+    def stat_with_windows_error(path, *args, **kwargs):
+        if path == bad_file:
+            raise OSError(1920, "The file cannot be accessed by the system", str(path))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_with_windows_error)
+    with pytest.raises(OSError):
+        scan_cache_dir(tmp_path)
+
+    scans = _scan(tmp_path, monkeypatch)
+    repos = {repo.repo_id: repo for scan in scans for repo in scan.repos}
+    assert "Org/Model" in repos
+    assert repos["Org/Model"].size_on_disk == 11
+    assert repos["Org/Model"].repo_path == healthy
+    assert (healthy / "refs" / "main").read_text() == SNAPSHOT
+    assert bad_file.read_text() == "unreadable"
+    assert all(
+        f.file_path != bad_file for r in repos.values() for rev in r.revisions for f in rev.files
+    )

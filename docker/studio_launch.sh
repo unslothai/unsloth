@@ -55,9 +55,10 @@ export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
 # SSH login shells lack the `docker run -e` vars. Secrets are excluded on purpose,
 # and every value is shlex.quote()d because this file is sourced by every login shell.
+# The ROCm prefixes are the image's ROCBLAS_USE_HIPBLASLT and a user's HSA_OVERRIDE_GFX_VERSION.
 python - > /etc/profile.d/unsloth_env.sh <<'PY' || true
 import os, re, shlex
-keep   = re.compile(r"^(HF_|CUDA_|NCCL_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
+keep   = re.compile(r"^(HF_|CUDA_|NCCL_|HSA_|HIP_|ROCM_|ROCR_|ROCBLAS_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
 secret = re.compile(r"(_TOKEN|_API_KEY|_PASSWORD|_SECRET|_LICENSE)$")
 for key, value in sorted(os.environ.items()):
     if keep.search(key) and not secret.search(key):

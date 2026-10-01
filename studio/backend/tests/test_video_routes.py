@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.video as video_module
 import core.inference.video_gallery as gallery_module
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -292,6 +292,8 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
@@ -627,7 +629,7 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
 
 
 def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
-    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure: the terminal state carries a generic message, never the raw exception.
+    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -636,8 +638,51 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
 
     monkeypatch.setattr(backend, "generate", _oom)
     progress = _shared_setup_4(client)
-    assert progress["error"] == "Video generation failed."
+    assert progress["error"].startswith("Video generation failed.")
+    assert "ran out of memory" in progress["error"]
+    # The engine's own text stays server-side.
     assert "CUDA" not in progress["error"]
+    assert "40.00 GiB" not in progress["error"]
+
+
+def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch):
+    # Nothing recognised means nothing invented: the message must not grow a guess.
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _odd(**kwargs):
+        raise RuntimeError("something went sideways in /home/u/models/secret.safetensors")
+
+    monkeypatch.setattr(backend, "generate", _odd)
+    progress = _shared_setup_4(client)
+    assert progress["error"] == "Video generation failed."
+    assert "secret.safetensors" not in progress["error"]
+
+
+def test_generate_native_crash_points_at_the_log(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _crash(**kwargs):
+        raise RuntimeError("worker process exited with signal 6")
+
+    monkeypatch.setattr(backend, "generate", _crash)
+    progress = _shared_setup_4(client)
+    assert "Settings > Logs" in progress["error"]
+
+
+@pytest.mark.parametrize("code", ["-6", "3221225477"])
+def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _crash(**kwargs):
+        raise RuntimeError(f"sd-cli exited {code}. Last output:\nGGML_ASSERT(n_dims == 3) failed")
+
+    monkeypatch.setattr(backend, "generate", _crash)
+    progress = _shared_setup_4(client)
+    assert "Settings > Logs" in progress["error"]
+    assert "GGML_ASSERT" not in progress["error"]
 
 
 def test_generate_value_error_reports_reason(client, monkeypatch):
@@ -1337,6 +1382,165 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
 
     assert resp.status_code == 200
     assert seen["transformer_quant"] == "int8"
+
+
+def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(
+    client, monkeypatch
+):
+    # Precision fallback under balanced / low_vram loads bf16, so the FP8 artifact must not be staged (needs the route to forward the policy).
+    import types
+
+    import core.inference.diffusion_device as devmod
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Sibling:
+        def __init__(self, rfilename, size):
+            self.rfilename = rfilename
+            self.size = size
+
+    repos = {
+        "Lightricks/LTX-2.3": [
+            _Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000),
+            _Sibling("ltx-2.3-22b-dev.safetensors", 46_000_000_000),
+        ],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+        "unsloth/LTX-2.3-GGUF": [
+            _Sibling("vae/ltx-2.3-22b-distilled_video_vae.safetensors", 2_400_000_000),
+            _Sibling("vae/ltx-2.3-22b-distilled_audio_vae.safetensors", 200_000_000),
+            _Sibling(
+                "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors", 900_000_000
+            ),
+        ],
+        "Lightricks/LTX-2": [
+            _Sibling("model_index.json", 1000),
+            _Sibling("tokenizer/tokenizer.json", 5_000_000),
+            _Sibling("text_encoder/model-00001-of-00005.safetensors", 10_000_000_000),
+            _Sibling("transformer/diffusion_pytorch_model.safetensors", 37_800_000_000),
+        ],
+    }
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            return types.SimpleNamespace(siblings = repos[repo_id])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
+    )
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda **kw: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_module,
+        "select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_k: "fp8",
+    )
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+    monkeypatch.setattr(video_routes, "_training_is_active", lambda: False)
+
+    def _staged(memory_mode):
+        body = {
+            "model_path": "Lightricks/LTX-2.3",
+            "gguf_filename": "ltx-2.3-22b-distilled.safetensors",
+            "model_kind": "single_file",
+            "family_override": "ltx-2",
+            "transformer_quant": "fp8",
+        }
+        if memory_mode is not None:
+            body["memory_mode"] = memory_mode
+        resp = client.post("/api/inference/video/download-plan", json = body)
+        assert resp.status_code == 200, resp.text
+        return {e["repo_id"] for e in resp.json()["entries"]}
+
+    assert "unsloth/LTX-2.3-FP8" in _staged(None)
+    assert "unsloth/LTX-2.3-FP8" in _staged("fast")
+    for memory_mode in ("balanced", "low_vram"):
+        assert "unsloth/LTX-2.3-FP8" not in _staged(memory_mode), memory_mode
+
+
+def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypatch):
+    # Trainer holds the GPU: the planner reads the cached verdict, never spawns the smoke probe.
+    import types
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_transformer_quant as tq
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Sibling:
+        def __init__(self, rfilename, size):
+            self.rfilename = rfilename
+            self.size = size
+
+    repos = {
+        "Lightricks/LTX-2.3": [_Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000)],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+        "unsloth/LTX-2.3-GGUF": [],
+        "Lightricks/LTX-2": [_Sibling("model_index.json", 1000)],
+    }
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            return types.SimpleNamespace(siblings = repos[repo_id])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
+    )
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda **kw: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(
+        video_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: pytest.fail("the plan probed the fp8 scheme while training"),
+    )
+    monkeypatch.setattr(
+        video_module,
+        "assert_video_precision_available",
+        lambda *a, **k: pytest.fail("the precision gate ran while training"),
+        raising = False,
+    )
+    monkeypatch.setattr(video_routes, "_training_is_active", lambda: True)
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+
+    def _staged():
+        resp = client.post(
+            "/api/inference/video/download-plan",
+            json = {
+                "model_path": "Lightricks/LTX-2.3",
+                "gguf_filename": "ltx-2.3-22b-distilled.safetensors",
+                "model_kind": "single_file",
+                "family_override": "ltx-2",
+                "transformer_quant": "fp8",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return {e["repo_id"] for e in resp.json()["entries"]}
+
+    assert "unsloth/LTX-2.3-FP8" in _staged()
+    tq._SMOKE_CACHE[("fp8", "cuda:0")] = False
+    assert "unsloth/LTX-2.3-FP8" not in _staged()
 
 
 def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):

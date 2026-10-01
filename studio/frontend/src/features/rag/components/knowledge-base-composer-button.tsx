@@ -113,12 +113,12 @@ export function KnowledgeBaseComposerButton({
               <HugeiconsIcon
                 icon={FileDatabaseIcon}
                 strokeWidth={2}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
               <XIcon className="composer-pill-x" />
             </span>
             <span>RAG</span>
-            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -126,7 +126,7 @@ export function KnowledgeBaseComposerButton({
           align="start"
           sideOffset={2}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[232px]"
+          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
           <DropdownMenuItem

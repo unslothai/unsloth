@@ -10,6 +10,38 @@ import {
 
 export type WindowLayoutGuard = () => boolean;
 
+export async function prepareSetupWindow(options: {
+  resetLayout: () => Promise<unknown>;
+  unmaximize: () => Promise<void>;
+  clearConstraints: () => Promise<void>;
+  enableResize: () => Promise<void>;
+  resizeForSetup: () => Promise<boolean>;
+  disableResize: () => Promise<void>;
+  isCurrent: WindowLayoutGuard;
+}): Promise<boolean> {
+  const {
+    resetLayout,
+    unmaximize,
+    clearConstraints,
+    enableResize,
+    resizeForSetup,
+    disableResize,
+    isCurrent,
+  } = options;
+  await resetLayout();
+  if (!isCurrent()) return false;
+  await unmaximize();
+  if (!isCurrent()) return false;
+  await clearConstraints();
+  if (!isCurrent()) return false;
+  // GTK can ignore a size change on a non-resizable restored window.
+  await enableResize();
+  if (!isCurrent()) return false;
+  if (!(await resizeForSetup()) || !isCurrent()) return false;
+  await disableResize();
+  return isCurrent();
+}
+
 type WorkAreaMonitor = {
   scaleFactor: number;
   workArea: {
@@ -91,9 +123,9 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
 }
 
 export function shouldFinishWindowLayoutWait(
-  sawPostShowChange: boolean,
+  sawNativeChange: boolean,
 ): boolean {
-  return sawPostShowChange;
+  return sawNativeChange;
 }
 
 type ResolutionQuery = {
@@ -136,6 +168,8 @@ export function observeDevicePixelRatio(
 }
 type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   restored: boolean;
+  /** Geometry was restored natively while hidden; settle after the reveal instead. */
+  nativeRestored?: boolean;
   measured: MeasuredWindowLayout<Monitor>;
   show: () => Promise<boolean>;
   waitForSettled?: () => Promise<void>;
@@ -145,9 +179,10 @@ type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   isCurrent: WindowLayoutGuard;
 };
 
-/** Shows the app window, then applies bounds from the visible monitor. */
+/** Reveals the settled app window, then applies bounds from the visible monitor. */
 export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   restored,
+  nativeRestored = false,
   measured,
   show,
   waitForSettled,
@@ -157,16 +192,20 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
+  // restoreState returns before native resize lands; showing now flashes the setup size.
+  if (restored && !nativeRestored) {
+    await waitForSettled?.();
+    if (!isCurrent()) return;
+  }
   const shown = await show();
   if (!isCurrent()) return;
   // A restored hidden autostart cannot reliably resolve its saved monitor yet.
   // Keep the plugin-restored geometry untouched until native tray reveal.
   if (restored && !shown) return;
-
-  // Native restore calls complete before GTK/Cocoa move and resize events have
-  // necessarily updated Tauri's cached geometry.
+  // Showing can change the resolved monitor (e.g. a compact secondary).
   if (restored) {
-    await waitForSettled?.();
+    // A hidden GTK window only refreshes its cached size once mapped.
+    if (nativeRestored) await waitForSettled?.();
     if (!isCurrent()) return;
     measured = (await measure()) ?? measured;
     if (!isCurrent()) return;

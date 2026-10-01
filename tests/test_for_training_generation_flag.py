@@ -19,6 +19,27 @@ class _Namespace(dict):
         return getattr(builtins, name, None)
 
 
+def _helpers_used_by(method, tree):
+    """Module-level functions the lifted method calls, so they run for real.
+
+    Without this they fall to `_Namespace.__missing__` and become None, and the
+    first call raises `TypeError: 'NoneType' object is not callable`: the test
+    then fails for a reason that has nothing to do with what it asserts.
+    """
+    defined = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and not node.decorator_list
+    }
+    wanted, pending = {}, [method]
+    while pending:
+        for node in ast.walk(pending.pop()):
+            if isinstance(node, ast.Name) and node.id in defined and node.id not in wanted:
+                wanted[node.id] = defined[node.id]
+                pending.append(defined[node.id])
+    return list(wanted.values())
+
+
 def _for_training(module, class_name):
     path = Path(__file__).parents[1] / "unsloth" / "models" / module
     tree = ast.parse(path.read_text(encoding = "utf-8"))
@@ -31,7 +52,7 @@ def _for_training(module, class_name):
         if isinstance(node, ast.FunctionDef) and node.name == "for_training"
     )
     method.decorator_list = []
-    compiled = ast.Module(body = [method], type_ignores = [])
+    compiled = ast.Module(body = _helpers_used_by(method, tree) + [method], type_ignores = [])
     namespace = _Namespace(os = os)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
