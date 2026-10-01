@@ -1728,9 +1728,8 @@ class _InferenceRuntimeFields(BaseModel):
             "load this model the way speculation needs), also when a later drafter "
             "or n-gram copies stood in for the one asked for. Under auto an MLX load "
             "reports no refusal; it reports 'auto_context_cost' (a found drafter would "
-            "shrink the fitted context), 'auto_span_drafter' (a cached DFlash, DSpark or "
-            "EAGLE-3 companion is left to its explicit mode, since it slows concurrent "
-            "replies), or the drafter codes above for a named or unbuildable drafter. "
+            "shrink the fitted context) or the drafter codes above for a named or "
+            "unbuildable drafter. "
             "None when the requested strategy engaged or was not requested."
         ),
     )

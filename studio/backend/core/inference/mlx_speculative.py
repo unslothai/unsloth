@@ -43,7 +43,6 @@ DRAFTER_NO_MEMORY = "drafter_no_memory"
 RUNTIME_ERROR = "runtime_error"
 KV_QUANT = "kv_quant"
 AUTO_CONTEXT_COST = "auto_context_cost"
-AUTO_SPAN_DRAFTER = "auto_span_drafter"
 
 
 def mlx_spec_mode(value) -> str:
@@ -84,12 +83,15 @@ def _read_config(path) -> dict:
 
 
 def companion_kind(config: dict) -> Optional[str]:
-    """``dflash2``, ``dflash``, ``dspark``, ``eagle3`` or ``mtp`` (a Gemma assistant) for a companion drafter config."""
+    """``dflash2``, ``dflash``, ``dspark``, ``eagle3`` or ``mtp`` (a separate MTP head or a Gemma assistant) for a companion drafter config."""
     architectures = " ".join(str(name) for name in config.get("architectures") or ())
     # mlx-vlm loads EAGLE-3 only in the speculators format, not e.g. llama-typed Eagle3 exports.
     if "eagle3" in (config.get("model_type"), config.get("speculators_model_type")):
         return "eagle3"
-    if str(config.get("model_type", "")).endswith("_assistant") and "Assistant" in architectures:
+    model_type = str(config.get("model_type", ""))
+    if model_type.endswith("_mtp") or (
+        model_type.endswith("_assistant") and "Assistant" in architectures
+    ):
         return "mtp"
     if "dflash_config" in config:
         return (
@@ -194,8 +196,7 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
 def resolve_speculation(
     speculative_type, spec_draft_model: Optional[str], *, model_dir: Optional[str], target_name: str
 ) -> SpecResolution:
-    """The drafters an MLX load tries, in order: a named ``spec_draft_model``, the built-in MTP head, then
-    cached companions of the mode's kind. Auto skips span companions, which slow concurrent replies."""
+    """The drafters an MLX load tries: a named ``spec_draft_model``, then cached companions (any kind under auto) and the built-in head, in ``_COMPANION_ORDER``."""
     mode = mlx_spec_mode(speculative_type)
     if mode == "off":
         return SpecResolution(mode)
@@ -212,12 +213,18 @@ def resolve_speculation(
             reason = DRAFTER_INCOMPATIBLE
         else:
             sources.append(named)
-    if kind == "mtp" and has_builtin_head(model_dir):
-        sources.append(DrafterSource("mtp", str(model_dir), True))
     companions = discover_companions(target_name, _read_config(model_dir) if model_dir else {})
-    sources += [source for source in companions if source.kind == kind and source not in sources]
+    companions = [
+        source for source in companions if (auto or source.kind == kind) and source not in sources
+    ]
+    heads = next(
+        (at for at, source in enumerate(companions) if source.kind == "mtp"), len(companions)
+    )
+    if kind == "mtp" and has_builtin_head(model_dir):
+        companions.insert(heads, DrafterSource("mtp", str(model_dir), True))
+    sources += companions
     if not sources and auto:
-        return SpecResolution(mode, reason = reason or (AUTO_SPAN_DRAFTER if companions else None))
+        return SpecResolution(mode, reason = reason)
     if not sources and reason is None:
         reason = DRAFTER_NOT_FOUND
     return SpecResolution(mode, tuple(sources), copies = copies, reason = reason)

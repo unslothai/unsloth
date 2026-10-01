@@ -34,8 +34,6 @@ export function mlxSpecFallbackMessage(
       return "Speculative decoding cannot run with KV cache quantization, which this load asked for. Setting KV Cache Dtype to Auto in this model's settings removes that obstacle.";
     case "auto_context_cost":
       return `Auto left out a drafter that does not fit beside this model at its full context length, ${outcome}. To try it anyway, choose its mode in this model's settings, with a shorter or automatic context length.`;
-    case "auto_span_drafter":
-      return "Auto uses only MTP drafters, since the others slow down concurrent replies, so the cached drafter for this model was not used. Choose its mode (DFlash, DSpark or EAGLE-3) in this model's settings to try it.";
     default:
       return null;
   }

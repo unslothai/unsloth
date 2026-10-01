@@ -16,7 +16,7 @@ test("an MLX fallback notice says what runs in the passed-over drafter's place",
 
 test("an MLX fallback notice claims no more than every path behind its code", () => {
   // No code guarantees its remedy works, and drafter_no_memory also covers an unpriced fit.
-  for (const code of ["drafter_not_found", "drafter_incompatible", "drafter_no_memory", "runtime_error", "kv_quant", "auto_context_cost", "auto_span_drafter"]) {
+  for (const code of ["drafter_not_found", "drafter_incompatible", "drafter_no_memory", "runtime_error", "kv_quant", "auto_context_cost"]) {
     assert.doesNotMatch(mlxSpecFallbackMessage(code, null) ?? "missing", /to use it|missing/);
   }
   assert.doesNotMatch(mlxSpecFallbackMessage("drafter_no_memory", null) ?? "", /does not fit/);

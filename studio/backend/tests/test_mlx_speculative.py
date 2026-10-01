@@ -68,13 +68,25 @@ def test_an_explicit_kind_tries_the_named_drafter_then_the_head_then_cached_comp
     assert _resolve("dspark+ngram").speculative
 
 
-def test_auto_takes_heads_and_assistants_and_leaves_span_companions(cache):
-    _resolve = cache({"a/Qwen3.5-4B-DFlash": _DFLASH})
-    assert (_resolve("auto").reason, _resolve("off").speculative) == (spec.AUTO_SPAN_DRAFTER, False)
+def test_auto_takes_every_cached_kind_in_preference_order(cache):
+    _resolve = cache(
+        {
+            "h/Qwen3.5-4B-MTP-bf16": {"model_type": "qwen3_5_mtp"},
+            "b/Qwen3.5-4B-Eagle3": _EAGLE3,
+            "a/Qwen3.5-4B-DFlash": _DFLASH,
+        }
+    )
+    assert [s.kind for s in _resolve("auto").sources] == ["dflash", "eagle3", "mtp"] and not (
+        _resolve("auto").reason or _resolve("off").speculative
+    )
     assert [spec.speculates_on_route("auto", vision) for vision in (False, True)] == [False, True]
     _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
     for mode in (None, "bogus", "auto"):
-        assert [s.builtin for s in _resolve(mode).sources] == [True, False]
+        assert [(s.builtin, s.kind) for s in _resolve(mode).sources] == [
+            (False, "dflash"),
+            (False, "eagle3"),
+            (True, "mtp"),
+        ] + [(False, "mtp")] * 2
     assert _resolve("ngram-mod").speculative
 
 
