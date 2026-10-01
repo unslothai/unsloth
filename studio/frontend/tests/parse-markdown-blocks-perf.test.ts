@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// Regression for unslothai/unsloth#11376: long single-line backslash runs must not
-// invoke marked's inline tokenizer during block splitting.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -11,34 +8,34 @@ import { parseMarkdownIntoBlocks as streamdownSplit } from "streamdown";
 
 import { parseMarkdownIntoBlocks } from "../src/lib/parse-markdown-blocks.ts";
 
-const BACKSLASH_RUN = "\\".repeat(1500);
+const longBackslashLine = (chars: number): string =>
+  `[${"\\".repeat(1500)}]: `.repeat(Math.ceil(chars / 1504)).slice(0, chars);
 
-function longBackslashLine(chars: number): string {
-  const unit = BACKSLASH_RUN;
-  const repeats = Math.ceil(chars / unit.length);
-  return unit.repeat(repeats).slice(0, chars);
-}
+const SAMPLES = [
+  "# Title\n\npara with *em* and `code`\n\n```py\nprint('$$')\n```\n",
+  "$$\na=b\n\n$$\n\nafter\n",
+  "<div>\n\nhi\n\n</div>\n\nafter\n",
+  "<details><summary>s</summary>\n\nbody\n\n</details>\n",
+  "| a | b |\n|---|---|\n| 1 | 2 |\n\n- x\n- y\n",
+  "line\r\nwith crlf\r\n\r\nnext\r\n",
+  "text[^1]\n\n[^1]: note\n",
+  "C:\\Users\\a\\b \\* \\_ \\(x\\) \\[y\\]\n\n$$ unclosed\n",
+  longBackslashLine(5_000),
+];
 
-test("block split matches streamdown on a long backslash line", () => {
-  const markdown = longBackslashLine(200_000);
-  assert.deepEqual(parseMarkdownIntoBlocks(markdown), streamdownSplit(markdown));
+test("block split matches streamdown", () => {
+  for (const markdown of SAMPLES) {
+    assert.deepEqual(
+      parseMarkdownIntoBlocks(markdown),
+      streamdownSplit(markdown),
+    );
+  }
 });
 
-test("block split stays fast on a long backslash line", () => {
+test("block split stays fast on a long backslash line (#11376)", () => {
   const markdown = longBackslashLine(200_000);
   const start = performance.now();
   parseMarkdownIntoBlocks(markdown);
   const elapsed = performance.now() - start;
-  assert.ok(
-    elapsed < 500,
-    `expected block split under 500ms, got ${elapsed.toFixed(1)}ms`,
-  );
-});
-
-test("newlines keep backslash lines cheap", () => {
-  const markdown = `${longBackslashLine(1504)}\n`.repeat(Math.ceil(200_000 / 1505));
-  const start = performance.now();
-  parseMarkdownIntoBlocks(markdown);
-  const elapsed = performance.now() - start;
-  assert.ok(elapsed < 500, `expected chunked line under 500ms, got ${elapsed.toFixed(1)}ms`);
+  assert.ok(elapsed < 500, `block split took ${elapsed.toFixed(1)}ms`);
 });

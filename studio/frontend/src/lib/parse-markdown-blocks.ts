@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-//
-// Block splitter aligned with vercel/streamdown#608 (blockTokens only). Vendored from
-// streamdown `lib/parse-blocks.tsx` until a published release includes that change.
-// Incremental reuse from the same PR is omitted here so splits stay identical to
-// streamdown 2.5 while streaming; drop this file once streamdown ships #608.
+
+// streamdown 2.5 parseMarkdownIntoBlocks with blockTokens instead of Lexer.lex (vercel/streamdown#608):
+// inline lexing of one long backslash line costs seconds (#11376). Drop when streamdown is bumped past #608.
 
 import { Lexer, type Token } from "marked";
 
