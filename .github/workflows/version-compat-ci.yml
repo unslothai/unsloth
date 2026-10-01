@@ -36,6 +36,9 @@ on:
       - 'unsloth/**'
       - 'tests/vllm_compat/**'
       - 'tests/version_compat/**'
+      # zoo-imports-under-spoof is the only job that runs the modules.json trust gate (the CPU
+      # repo-test shards have no sentence-transformers and skip it), so an edit to it must run here.
+      - 'tests/test_st_modules_json_trust_gate.py'
       - 'pyproject.toml'
       - '.github/workflows/version-compat-ci.yml'
       # Every pytest run here loads tests/conftest.py and the tests/_shared helpers it
