@@ -769,6 +769,42 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS data_recipes (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            learning_recipe_id TEXT,
+            learning_recipe_title TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    # Deleted ids stay here so a stale tab or a re-run legacy import cannot bring them back.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_tombstones (
+            id TEXT NOT NULL PRIMARY KEY,
+            deleted_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_executions (
+            id TEXT NOT NULL PRIMARY KEY,
+            recipe_id TEXT NOT NULL REFERENCES data_recipes(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
+        " ON data_recipe_executions(recipe_id, created_at)"
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS research_runs (
             id TEXT NOT NULL PRIMARY KEY,
             owner_subject TEXT NOT NULL,

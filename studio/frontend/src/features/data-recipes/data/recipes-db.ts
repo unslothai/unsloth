@@ -2,61 +2,58 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
-import { accountDatabaseName } from "@/lib/account-transition";
 import { normalizeNonEmptyName } from "@/utils";
-import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
-
-const db = new Dexie(accountDatabaseName("unsloth-data-recipes")) as Dexie & {
-  recipes: EntityTable<RecipeRecord, "id">;
-};
-
-db.version(1).stores({
-  recipes: "id, name, updatedAt, createdAt",
-});
+import { importLegacyRecipes } from "./legacy-import";
+import { RecipeApiError, recipeRequest } from "./recipes-api";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
+const listeners = new Set<(recipes: RecipeRecord[]) => void>();
 let cachedRecipeList: RecipeRecord[] = [];
 let recipeListReady = false;
 let recipeListRequest: Promise<RecipeRecord[]> | null = null;
 
-export function listRecipes(): Promise<RecipeRecord[]> {
-  return db.recipes.orderBy("updatedAt").reverse().toArray();
-}
-
-function cacheRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
-  for (const recipe of recipes) {
-    writeRecipeCache(recipe);
-  }
-  cachedRecipeList = recipes;
+function publishRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
+  cachedRecipeList = [...recipes].sort((a, b) => b.updatedAt - a.updatedAt);
   recipeListReady = true;
-  return recipes;
+  for (const recipe of cachedRecipeList) {
+    recentRecipeCache.set(recipe.id, recipe);
+  }
+  for (const listener of listeners) {
+    listener(cachedRecipeList);
+  }
+  return cachedRecipeList;
 }
 
-export function preloadRecipes(): Promise<RecipeRecord[]> {
-  if (recipeListReady) {
-    return Promise.resolve(cachedRecipeList);
-  }
-  if (recipeListRequest) {
-    return recipeListRequest;
-  }
-
-  const request = listRecipes()
-    .then(cacheRecipeList)
+export function listRecipes(): Promise<RecipeRecord[]> {
+  recipeListRequest ??= importLegacyRecipes()
+    .then(() => recipeRequest<{ recipes: RecipeRecord[] }>(""))
+    .then(({ recipes }) => publishRecipeList(recipes))
     .finally(() => {
       recipeListRequest = null;
     });
-  recipeListRequest = request;
-  return request;
+  return recipeListRequest;
 }
 
-export function getRecipe(id: string): Promise<RecipeRecord | undefined> {
-  return db.recipes.get(id);
+export function preloadRecipes(): Promise<RecipeRecord[]> {
+  return recipeListReady ? Promise.resolve(cachedRecipeList) : listRecipes();
 }
 
-function writeRecipeCache(record: RecipeRecord): void {
-  recentRecipeCache.set(record.id, record);
+export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
+  await importLegacyRecipes();
+  try {
+    const record = await recipeRequest<RecipeRecord>(
+      `/${encodeURIComponent(id)}`,
+    );
+    recentRecipeCache.set(id, record);
+    return record;
+  } catch (error) {
+    if (error instanceof RecipeApiError && error.status === 404) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 export function getCachedRecipe(id: string): RecipeRecord | null {
@@ -64,7 +61,7 @@ export function getCachedRecipe(id: string): RecipeRecord | null {
 }
 
 export function primeRecipeCache(record: RecipeRecord): void {
-  writeRecipeCache(record);
+  recentRecipeCache.set(record.id, record);
 }
 
 export async function saveRecipe(
@@ -72,33 +69,42 @@ export async function saveRecipe(
 ): Promise<RecipeRecord> {
   const now = Date.now();
   const id = input.id ?? crypto.randomUUID();
-  const existing = input.id ? await db.recipes.get(input.id) : undefined;
-  const record: RecipeRecord = {
-    id,
-    name: normalizeNonEmptyName(input.name),
-    payload: input.payload,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
-    learningRecipeTitle:
-      input.learningRecipeTitle ?? existing?.learningRecipeTitle,
-  };
-  await db.recipes.put(record);
-  writeRecipeCache(record);
+  const existing = input.id
+    ? (recentRecipeCache.get(input.id) ?? (await getRecipe(input.id)))
+    : undefined;
+  const record = await recipeRequest<RecipeRecord>(
+    `/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        id,
+        name: normalizeNonEmptyName(input.name),
+        payload: input.payload,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
+        learningRecipeTitle:
+          input.learningRecipeTitle ?? existing?.learningRecipeTitle,
+      }),
+    },
+  );
+  recentRecipeCache.set(id, record);
   if (recipeListReady) {
-    cachedRecipeList = [
+    publishRecipeList([
       record,
-      ...cachedRecipeList.filter((recipe) => recipe.id !== record.id),
-    ].sort((a, b) => b.updatedAt - a.updatedAt);
+      ...cachedRecipeList.filter((recipe) => recipe.id !== id),
+    ]);
   }
   return record;
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
-  await db.recipes.delete(id);
+  await recipeRequest<void>(`/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
   recentRecipeCache.delete(id);
   if (recipeListReady) {
-    cachedRecipeList = cachedRecipeList.filter((recipe) => recipe.id !== id);
+    publishRecipeList(cachedRecipeList.filter((recipe) => recipe.id !== id));
   }
 }
 
@@ -122,7 +128,7 @@ export function createRecipeFromLearningRecipe(input: {
   });
 }
 
-export function useRecipes(): {
+export function useRecipes(enabled = true): {
   recipes: RecipeRecord[];
   ready: boolean;
 } {
@@ -130,19 +136,21 @@ export function useRecipes(): {
   const [ready, setReady] = useState(recipeListReady);
 
   useEffect(() => {
-    const sub = liveQuery(() => listRecipes()).subscribe({
-      next: (value) => {
-        cacheRecipeList(value);
-        setRecipes(value);
-        setReady(true);
-      },
-      error: (error) => {
-        console.error("data-recipes liveQuery:", error);
-        setReady(true);
-      },
+    if (!enabled) return;
+    const listener = (value: RecipeRecord[]) => {
+      setRecipes(value);
+      setReady(true);
+    };
+    listeners.add(listener);
+    listRecipes().catch((error) => {
+      // biome-ignore lint/suspicious/noConsole: the page keeps its cached list
+      console.error("Load data recipes failed:", error);
+      setReady(true);
     });
-    return () => sub.unsubscribe();
-  }, []);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, [enabled]);
 
   return { recipes, ready };
 }
