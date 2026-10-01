@@ -691,9 +691,7 @@ async def get_gguf_download_progress_response(
             manifest is None
             or not snapshot_progress.manifest_matches_download(manifest, job_metadata)
         ):
-            # The new worker has not published its manifest yet. Its registry
-            # hashes already identify the current files; the previous scope's
-            # manifest must not supply either bytes or completion evidence.
+            # Until this job's worker publishes a manifest, an older scope's must not supply bytes or completion.
             return (
                 0,
                 frozenset(getattr(job_metadata, "progress_blob_hashes", ()) or ()),

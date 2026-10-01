@@ -393,10 +393,7 @@ def compute_snapshot_progress(
     # Unavailable metadata falls back to the caller's estimate.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
     meta_total = max(0, meta_total)
-    # A resolved variant describes its exact file set. A caller's hint may be
-    # left over from an earlier scoped pick; feeding that maximum back into the
-    # next poll would prevent the total from ever shrinking. Full snapshots
-    # retain their existing conservative sizing policy.
+    # A resolved variant's total is exact: max() with a hint left over from an earlier scoped pick never shrinks.
     expected_total = (
         meta_total if variant is not None and meta_total > 0 else max(expected_total, meta_total)
     )
@@ -516,8 +513,7 @@ def compute_snapshot_progress(
                         frozenset(partial_bytes),
                     )
                     for snap in snapshot_dirs.get()
-                    # A rejected manifest is positive evidence of an old pick,
-                    # not permission to count its same-named snapshot files.
+                    # A rejected manifest means an old pick: its same-named snapshot files are not ours.
                     if manifest_matches_download(raw_manifest.get(), metadata)
                     and (
                         not expected_hashes
