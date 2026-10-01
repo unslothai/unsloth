@@ -499,3 +499,204 @@ def _meta_tensor_names(module: Any) -> list[str]:
         for name, tensor in chain(module.named_parameters(), module.named_buffers())
         if getattr(tensor, "is_meta", False)
     ]
+
+
+# ── Streaming the conditioner on small cards. Under ``enable_auto_cpu_offload`` the 27.2 GB int8 conditioner moves onto
+# the device WHOLE for the encode, which is what put the H3 Diffusers floor at ~29 GB even with the denoiser streamed.
+# Group offloading pages it in leaf by leaf instead, on a copy stream that prefetches the next projection while the
+# current one runs, so the encode needs about one projection plus the embedding table on the device.
+H3_TE_STREAM_ENV = "UNSLOTH_H3_TE_STREAM"
+# Device footprint of the streamed conditioner during the encode: the largest leaf (the 1.56 GB bfloat16 embedding
+# table) plus the prefetched next leaf and a short prompt's activations. Measured peak allocated on a B200 at the
+# 12 / 16 / 24 GB budgets (outputs/h3_vs_comfy/lowvram): see H3_TE_STREAMED_GB's users in video_minimax_h3.py.
+H3_TE_STREAMED_GB = 3.0
+# Host arenas the streamed conditioner is packed into. torch's pinned allocator rounds EVERY allocation up to a power
+# of two, so pinning the 51 x 7 projections one by one costs 13% extra (a 41.9 MB q_proj takes 67 MB). Packing them into
+# power-of-two arenas wastes only each arena's tail.
+_PIN_ARENA_BYTES = 1 << 31
+_PIN_ALIGN = 512
+
+
+def h3_te_stream_enabled() -> bool:
+    """Kill switch: ``UNSLOTH_H3_TE_STREAM=0`` keeps the conditioner in the CPU-offload rotation (the old behaviour)."""
+    import os
+
+    return str(os.environ.get(H3_TE_STREAM_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def h3_te_pin_allowed() -> bool:
+    """Whether to pin the streamed conditioner. Pinning in place CONVERTS the pageable copy (net cost one arena), so the
+    test is room for an arena above the usual pinned-RAM reserve, not room for the whole module. Honours the group
+    offload pin switch and the ~1 GiB pinned cap of Windows / WSL. Never raises."""
+    try:
+        import os
+
+        from .diffusion_memory import GROUP_OFFLOAD_PIN_ENV, _pin_budget_mib, _pinned_memory_capped
+
+        forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+        if forced in ("0", "off", "false", "no"):
+            return False
+        if forced in ("1", "on", "true", "yes"):
+            return True
+        if _pinned_memory_capped():
+            return False
+        budget = _pin_budget_mib()
+        return budget is not None and budget >= (_PIN_ARENA_BYTES >> 20)
+    except Exception:  # noqa: BLE001 -- unanswerable: stream unpinned
+        return False
+
+
+def _round_up(value: int, multiple: int) -> int:
+    return (value + multiple - 1) // multiple * multiple
+
+
+def pin_module_in_place(
+    module: Any, *, arena_bytes: int = _PIN_ARENA_BYTES, _arena_factory: Any = None
+) -> int:
+    """Move every CPU parameter / buffer of ``module`` into pinned host arenas, in place.
+
+    Each tensor is REPLACED in its module (``_parameters`` / ``_buffers``) by a view into a pinned arena, so the
+    pageable original is released as it goes and the host peak is the module plus ONE arena rather than two copies
+    (diffusers' stream path otherwise keeps the pageable original beside its pinned copy). Replaced rather than
+    re-pointed through ``.data``: the hosted safetensors tensors are views of one memory-mapped file, and ``.data =``
+    keeps a view's ``_base`` alive, which pinned 27 GB of the mapping for the life of the load (measured: RssFile
+    stayed at 27.0 GB beside the 27.3 GB pinned copy). A tensor that is already pinned, off the CPU, or a tensor
+    subclass is left alone; tied tensors stay tied. Returns the pinned payload bytes. Raises on an allocation failure;
+    the tensors moved so far stay valid (pinned memory is ordinary host memory to every reader)."""
+    import torch
+
+    slots: dict[int, list] = {}  # id(tensor) -> [tensor, [(owner dict, name, is_param)]]
+    for sub in module.modules():
+        for table, is_param in ((sub._parameters, True), (sub._buffers, False)):
+            for name, tensor in list(table.items()):
+                if tensor is None:
+                    continue
+                entry = slots.setdefault(id(tensor), [tensor, []])
+                entry[1].append((table, name, is_param))
+    todo = []
+    for tensor, owners in slots.values():
+        if tensor.device.type != "cpu" or type(tensor.data) is not torch.Tensor:
+            continue
+        if tensor.numel() == 0 or (_arena_factory is None and tensor.is_pinned()):
+            continue
+        todo.append((tensor, owners))
+    # Largest first, first fit: the big MLP projections fill arenas, the small norms fill the tails.
+    todo.sort(key = lambda item: item[0].numel() * item[0].element_size(), reverse = True)
+    arenas: list[list] = []  # [arena tensor, used bytes]
+    pinned = 0
+    for tensor, owners in todo:
+        nbytes = tensor.numel() * tensor.element_size()
+        need = _round_up(nbytes, _PIN_ALIGN)
+        slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
+        if slot is None:
+            size = max(int(arena_bytes), 1 << (need - 1).bit_length())
+            arena = (
+                _arena_factory(size)
+                if _arena_factory is not None
+                else torch.empty(size, dtype = torch.uint8, pin_memory = True)
+            )
+            slot = [arena, 0]
+            arenas.append(slot)
+        offset = slot[1]
+        view = slot[0][offset : offset + nbytes].view(tensor.dtype).view(tensor.shape)
+        view.copy_(tensor.detach())
+        replacement = (
+            torch.nn.Parameter(view, requires_grad = tensor.requires_grad)
+            if isinstance(tensor, torch.nn.Parameter)
+            else view
+        )
+        for table, name, _is_param in owners:
+            table[name] = replacement
+        slot[1] = offset + need
+        pinned += nbytes
+    return pinned
+
+
+def stream_h3_text_encoder(
+    manager: Any,
+    text_encoder: Any,
+    device: Any,
+    *,
+    pin: Optional[bool] = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Stream MiniMax-H3's conditioner leaf by leaf via group offloading, outside the ComponentsManager rotation.
+
+    The hooks go on ``text_encoder.model``, the submodule the H3 encode step calls directly (it never runs the
+    top-level forward), so diffusers' lazy prefetch learns the execution order on the first encode and overlaps every
+    later copy. ``pin`` packs the weights into pinned arenas first (``pin_module_in_place``); unpinned, each onload
+    re-pins its leaf (slower, no extra host RAM). None decides from ``h3_te_pin_allowed``.
+
+    Returns ``"stream"`` (pinned) / ``"stream_lazy"`` (unpinned), or None with nothing changed: the conditioner then
+    stays in the rotation, which is the behaviour before this existed."""
+    import torch
+
+    onload = torch.device(device)
+    target = getattr(text_encoder, "model", None)
+    if onload.type != "cuda" or target is None or not h3_te_stream_enabled():
+        return None
+    try:
+        import inspect
+
+        from diffusers.hooks import apply_group_offloading
+    except Exception:  # noqa: BLE001 -- no group offloading in this diffusers
+        return None
+    from .diffusion_memory import _remove_group_offload_hooks, install_group_offload_buffer_restore
+    from .diffusion_prequant import _evict_rotation_hook, _unhook_from_manager
+
+    params = inspect.signature(apply_group_offloading).parameters
+    if pin is None:
+        pin = h3_te_pin_allowed()
+    if pin:
+        try:
+            pin_module_in_place(text_encoder)
+        except Exception as exc:  # noqa: BLE001 -- pinned host RAM refused: stream unpinned
+            if logger is not None:
+                logger.warning("video.h3_te_stream: pinning failed, streaming unpinned: %s", exc)
+            pin = False
+    kwargs: dict[str, Any] = {
+        "onload_device": onload,
+        "offload_device": torch.device("cpu"),
+        "offload_type": "leaf_level",
+        "use_stream": True,
+    }
+    if "non_blocking" in params:
+        kwargs["non_blocking"] = True
+    if "record_stream" in params:
+        kwargs["record_stream"] = True
+    if "low_cpu_mem_usage" in params:
+        # Already pinned in place: diffusers' up-front "pinned copy" is then the same tensor (pin_memory() returns self
+        # for a pinned tensor), so no second host copy is made.
+        kwargs["low_cpu_mem_usage"] = not pin
+    elif not pin:
+        return None
+    try:
+        text_encoder.requires_grad_(False)
+        # The int8 projections hold their weights as BUFFERS, which stock diffusers leaves on the device after offload.
+        install_group_offload_buffer_restore()
+        apply_group_offloading(target, **kwargs)
+    except Exception as exc:  # noqa: BLE001 -- keep the rotation
+        _remove_group_offload_hooks(target)
+        if logger is not None:
+            logger.warning("video.h3_te_stream: group offloading refused, keeping the rotation: %s", exc)
+        return None
+    if not _unhook_from_manager(manager, text_encoder, logger = logger, what = "te_stream:hook"):
+        # Still in the rotation: its pre_forward would move the whole module under the group hooks.
+        _remove_group_offload_hooks(target)
+        return None
+    # The manager only evicts inside another managed pre_forward, so a VAE left on the device by the previous decode
+    # would otherwise sit beside the encode.
+    target.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
+    mode = "stream" if pin else "stream_lazy"
+    if logger is not None:
+        logger.info(
+            "video.h3_te_stream: conditioner streamed leaf by leaf on %s (%s host copy)",
+            device,
+            "pinned" if pin else "pageable",
+        )
+    return mode
