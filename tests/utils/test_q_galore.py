@@ -271,20 +271,18 @@ class TestGaLoreProjector:
         proj = GaLoreProjector(
             rank = 2, update_proj_gap = 1, cos_threshold = cos_threshold, gamma_proj = 2.0, queue_size = 2
         )
-        grad = torch.zeros(8, 8)  # square, so the right-side basis of shape (rank, 8) applies
+        grad = torch.zeros(8, 8)  # square -> right-side basis (rank, 8)
         for step in range(len(bases)):
             if step % proj.update_proj_gap == 0:
                 proj.project(grad, step = step)
         return proj.update_proj_gap
 
     def test_adaptive_scheduling_ignores_a_sign_flipped_basis(self, monkeypatch):
-        # torch.linalg.svd may return the same subspace with its vectors negated. That is the
-        # same subspace, so the gap must still grow; a raw dot product reads it as cos = -1.
+        # A negated basis is the same subspace; a raw dot product reads it as cos = -1.
         basis = torch.eye(8)[:2]
         assert self._scheduled_gap(monkeypatch, [basis, -basis, basis], cos_threshold = 0.9) == 2
 
     def test_adaptive_scheduling_still_rejects_a_rotated_basis(self, monkeypatch):
-        # Orthogonal successive bases are a genuinely moving subspace: the gap must not grow.
         eye = torch.eye(8)
         assert (
             self._scheduled_gap(monkeypatch, [eye[:2], eye[2:4], eye[4:6]], cos_threshold = 0.4) == 1
