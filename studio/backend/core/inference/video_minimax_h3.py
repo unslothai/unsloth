@@ -117,8 +117,7 @@ def estimate_h3_diffusers_vram_gb(
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
         text_encoder_gb = H3_TE_STREAMED_GB
         if transformer_streamed:
-            # Nothing big is resident: the floor is the largest PHASE (encode window, denoise window + activations,
-            # VAE decode) plus the denoiser's top-level group, on the device for the whole denoise.
+            # Nothing big is resident: the largest phase plus the top-level group.
             from .video_minimax_h3_residency import H3_TOP_LEVEL_GB, h3_phase_need_gb
             return h3_phase_need_gb(
                 width,
@@ -177,14 +176,8 @@ def _proc_status_kb(fields: tuple[str, ...]) -> Optional[dict[str, int]]:
 
 
 def h3_process_held_host_bytes() -> int:
-    """Host bytes this process holds that a render can reuse: anonymous + shared resident pages.
-
-    The loaded pipeline's weights live here -- pageable components as anonymous memory, the streamed
-    denoiser's pinned copy (cudaHostAlloc) as shared memory -- so the next render needs them again
-    without asking the system for more. File-backed resident pages (an mmap'd checkpoint not yet
-    copied) are left out: the kernel already reports them as reclaimable page cache in
-    MemAvailable, and adding them again counted the same bytes twice. Off Linux this is the whole
-    RSS, the reading the guard always used."""
+    """Host bytes this process holds that a render reuses: RssAnon + RssShmem (pinned copies are shmem). File-backed
+    pages are left out: MemAvailable already counts them as reclaimable. Off Linux, the whole RSS."""
     import psutil
 
     fields = _proc_status_kb(("RssAnon", "RssShmem"))
@@ -194,17 +187,13 @@ def h3_process_held_host_bytes() -> int:
 
 
 def h3_host_capacity_bytes() -> int:
-    """Host memory an H3 render can use: what the system can still hand out plus what this process
-    already holds and will reuse. The render's floor is the process TOTAL at its peak, so the memory the
-    loaded pipeline holds must be counted as available to it, never demanded a second time."""
+    """What the system can still hand out plus what this process already holds and the render reuses."""
     import psutil
     return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
 
 
-# Host floor when the int8 conditioner streams (pinned in place) beside the streamed int8 denoiser, the pinned VAE swap
-# and the resident-block bookkeeping. Measured, not summed: peak system RAM in use on a Colab G4 at 24 / 16 / 12 GB
-# budgets was 63.6 GiB with ~2.2 GiB of it idle baseline, i.e. ~66 GB for the process, above the 64.5 GB the component
-# sum gives. 70 keeps ~4 GB of margin over that peak.
+# Host floor while the int8 conditioner streams too: measured ~66 GB process peak on a Colab G4 (12 / 16 / 24 GB
+# budgets), above the 64.5 GB component sum; 70 keeps ~4 GB of margin.
 H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 70.0
 
 
@@ -230,11 +219,8 @@ def estimate_h3_diffusers_host_ram_gb(
     A pinned denoiser is still counted here. It lives on the device during the generation, but it
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
     would have fitted rather than admitting one that will not.
-    ``transformer_streamed`` means the streamed denoiser keeps a pageable source beside its pinned staging copy
-    and counts twice (measured 80.2 GB peak vs 64.5 GB single count). A load whose pinned copy went through
-    the slab arena (``diffusion_pinned_arena``) holds one copy and passes False: measured at 960x544x124 on a
-    48 GB tier, peak RSS 66.8 GB on the first render (10.8 GB of it clean mmap'd page cache) and 58.3 GB on
-    the repeat, against this function's 64.5 GB."""
+    ``transformer_streamed``: the streamed denoiser keeps a pageable source beside its pinned copy and counts twice
+    (80.2 GB measured peak). A slab-arena pin holds one copy and passes False."""
     # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
     if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
@@ -256,11 +242,8 @@ def h3_host_ram_shortfall(
     transformer_streamed: bool = False,
     text_encoder_streamed: bool = False,
 ) -> Optional[str]:
-    """The refusal for a generation whose host-RAM floor exceeds what this host can give it, else None.
-
-    The floor is the process total at the render's peak, so it is compared against the memory the system
-    can still hand out PLUS what the loaded pipeline already holds (``h3_host_capacity_bytes``): a repeat
-    render reuses those bytes and must not be asked for them again as new free RAM."""
+    """The refusal message when the host-RAM floor exceeds ``h3_host_capacity_bytes`` (free + already held), else
+    None."""
     required_host_gb = estimate_h3_diffusers_host_ram_gb(
         available_vram_gb,
         text_encoder_gb = text_encoder_gb,
@@ -278,21 +261,12 @@ def h3_host_ram_shortfall(
     return None
 
 
-# Picker fit tiers for the Diffusers row (MiniMaxAI/MiniMax-H3), published on /api/system so the catalog's static
-# offloadFitTiers can only be WIDENED by the backend that actually runs the load. Units are the picker's: total VRAM of
-# the load device in GiB (nvidia-smi MiB / 1024) and AVAILABLE system RAM in GiB (psutil available / 1024**3), not the
-# decimal GB the estimators above use. Every tier streams the int8 denoiser, so each needs the quantised-streaming
-# capability the picker already reads.
-#
-# Derived from the behaviours that make the tier true, so each behaviour's own kill switch also withdraws its tier:
-#   - VRAM: with the conditioner streamed leaf by leaf (UNSLOTH_H3_TE_STREAM) and the denoiser streamed, the floor is
-#     the generate guard's own estimate for the page's DEFAULT request (first preset, default length; 13.5 GiB at
-#     1344x768x124), so the row the picker selects can render what the page asks for first. 960x544 still renders on
-#     a 12 GB card when chosen. Without streaming the conditioner rotates whole and the floor stays at the catalog's 30.
-#   - RAM: with the slab-arena pin (UNSLOTH_DIFFUSION_PIN_ARENA) the streamed denoiser holds one host copy, so the
-#     host floor is estimate_h3_diffusers_host_ram_gb with a single count (64.5 GB), or the measured 70 GB streamed-set
-#     floor while the conditioner streams too. Without it the floor is the double-counted 84.8 GB the catalog's 80 GiB
-#     tier already encodes.
+# Extra picker tiers for the H3 Diffusers row, published on /api/system and unioned with the catalog's (widen only).
+# Picker units: total VRAM GiB, available RAM GiB. Each follows the kill switch of the behaviour it relies on:
+#   - VRAM (UNSLOTH_H3_TE_STREAM): the generate guard's floor for the page's default request, so the selected row
+#     renders it; 960x544 still renders on 12 GB when chosen. Without it, the catalog's 30.
+#   - RAM (UNSLOTH_DIFFUSION_PIN_ARENA): the single-copy host floor (64.5 GB, or 70 GB with the conditioner streamed).
+#     Without it, the catalog's 80.
 H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
 H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
 H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0

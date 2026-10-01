@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One pinned host copy of a streamed module, packed into slabs instead of one pinned block per tensor.
+"""One pinned host copy of a streamed module, packed into power-of-two slabs instead of one pin per tensor.
 
-Group offloading pins every weight of a streamed module up front with ``tensor.pin_memory()``. torch's
-caching host allocator rounds each request up to the next power of two, so a 115.6 MB projection takes a
-128 MiB block and a 28.9 MB one takes 32 MiB. Measured on MiniMax-H3's streamed int8 denoiser: 19.45 GB
-of weights held 33.8 GB of pinned host memory, a 14.4 GB tax on the host the streaming tier exists to
-spare. This packs the same tensors into exactly power-of-two sized slabs (so the allocator rounds
-nothing) and hands group offloading views into them: same values, same dtype, same pinned-ness, one host
-copy plus at most one partly filled slab.
-
-The pinned copy also replaces the parameter's own pageable storage on the spot, so the pageable source is
-released while the module is being set up instead of surviving until each group's first onload, which is
-what made the load peak hold both copies at once.
+torch's host allocator rounds each pin up to a power of two (H3's 19.45 GB int8 denoiser held 33.8 GB pinned), and the
+pageable source survived until each group's first onload. The slab copy replaces the parameter's storage on the spot.
 
 Kill switch: ``UNSLOTH_DIFFUSION_PIN_ARENA=0`` restores per-tensor ``pin_memory()``.
 """
@@ -25,7 +16,6 @@ import os
 from typing import Any, Iterator, Optional
 
 PIN_ARENA_ENV = "UNSLOTH_DIFFUSION_PIN_ARENA"
-# A power of two, so the caching host allocator hands back exactly this many bytes.
 DEFAULT_SLAB_BYTES = 1 << 30
 _ALIGN = 512
 

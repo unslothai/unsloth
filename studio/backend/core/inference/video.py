@@ -1012,11 +1012,9 @@ class _VideoLoadState:
     vram_decode_floor_mib: Optional[int] = None
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
-    # MiniMax-H3: the conditioner streams leaf by leaf (group offload) instead of rotating onto the device whole, so
-    # the VRAM floor counts its streamed footprint, not its 27.2 GB.
+    # MiniMax-H3: conditioner streamed leaf by leaf (VRAM floor counts its streamed footprint).
     te_streamed: bool = False
-    # MiniMax-H3: the resident part of a streamed denoiser (video_minimax_h3_residency.H3Residency), re-fitted per
-    # request. None when the denoiser is not streamed or residency is off.
+    # MiniMax-H3: video_minimax_h3_residency.H3Residency of a streamed denoiser, re-fitted per request.
     h3_residency: Any = None
     resolved: Optional[dict] = None
 
@@ -1308,9 +1306,8 @@ def _h3_residency_budget_bytes(
     fragmentation: bool = True,
     top_gb: float = 0.0,
 ) -> int:
-    """Device bytes a streamed H3 denoiser's resident set may occupy for a ``width`` x ``height`` x ``frames`` render:
-    what is available (free + allocator cache + what the resident set already holds) minus the request's largest
-    phase need. Negative means not even a fully streamed render fits. Never raises: unreadable is 0 (all streamed)."""
+    """Device bytes the resident set may occupy for this request: free + allocator cache + resident, minus the
+    request's largest phase. Negative = not even fully streamed fits. Unreadable is 0 (all streamed)."""
     try:
         import torch
 
@@ -6844,7 +6841,6 @@ class VideoBackend:
         offload_policy = "none"
         denoiser_pinned = False
         denoiser_streamed: Optional[str] = None
-        # The streamed denoiser's pinned copy went through the slab arena, which released the pageable source.
         denoiser_single_host_copy = False
         te_streamed: Optional[str] = None
         residency = None
@@ -6931,11 +6927,8 @@ class VideoBackend:
                     )
 
                     if text_encoder_quant_engaged is not None:
-                        # The conditioner streams leaf by leaf instead of rotating onto the card whole (27.2 GB, the
-                        # floor that kept 24 GB and smaller cards out). The denoiser's tier below is still sized with
-                        # the conditioner ROTATING, so pinned stays exactly where it was; a card that streams the
-                        # denoiser now keeps as many of its blocks resident as each request leaves room for (see
-                        # video_minimax_h3_residency). None (switch off, no group offload, refused) keeps the rotation.
+                        # Stream the conditioner instead of rotating it on whole; the denoiser tier below is still sized
+                        # with it rotating, so pinning is unchanged. None keeps the rotation.
                         from .video_minimax_h3_te import stream_h3_text_encoder
                         te_streamed = stream_h3_text_encoder(
                             manager, getattr(pipe, "text_encoder", None), device, logger = logger
@@ -6985,9 +6978,7 @@ class VideoBackend:
                             sum(pinned_sizes) / 1e9,
                             transformer_quant_engaged,
                         )
-                        # Spend whatever the card has left on residency: the top-level group, then a prefix of the
-                        # blocks, so the copy stream only carries the tail. Sized for the family's largest preset at
-                        # its default length and re-fitted per request in generate().
+                        # Residency sized for the largest preset at the default length; re-fitted per request.
                         from .video_minimax_h3_residency import (
                             H3Residency,
                             h3_dit_resident_enabled,
@@ -7028,10 +7019,8 @@ class VideoBackend:
                                     "video.h3_residency: staying fully streamed: %s", exc
                                 )
                                 if residency is not None:
-                                    # A fit that failed partway left a prefix resident with no-op hooks; without the
-                                    # controller nothing would ever demote it.
+                                    # A partial fit left resident groups no controller would ever demote.
                                     from .video_minimax_h3_residency import release_all
-
                                     release_all(residency, logger = logger)
                                 residency = None
                     else:
@@ -7150,8 +7139,6 @@ class VideoBackend:
             )
             speed_optims = tuple(k for k, v in applied.items() if v)
             if denoiser_streamed and "compiled" in speed_optims:
-                # The group-offload hooks stay eager and only the block's own forward is compiled (no hook state in
-                # the guards, so no recompile per resident-set change or per prefetch chain).
                 from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
@@ -7179,8 +7166,7 @@ class VideoBackend:
                 logger.warning("video.h3_audio_vae: keeping the stock audio VAE: %s", exc)
 
         if offload_policy != "none" and (te_streamed or denoiser_streamed):
-            # With the conditioner and / or the denoiser out of the rotation, the VAEs are what rotates, and they evict
-            # each other inside every render. Installed last: the VAE levers above replace weights.
+            # Only the VAEs rotate now, evicting each other every render. Installed last: the levers above replace weights.
             from .video_minimax_h3_residency import install_pinned_swap
             for vae_name in ("vae", "audio_vae"):
                 try:
@@ -7307,7 +7293,7 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant_engaged,
                 denoiser_pinned = denoiser_pinned,
                 denoiser_streamed = bool(denoiser_streamed),
-                # A slab-arena pin replaces the pageable source on the spot, so that copy is the only one.
+                # A slab-arena pin released the pageable source, so the pinned copy is the only one.
                 denoiser_host_copy = denoiser_streamed == "stream" and not denoiser_single_host_copy,
                 te_streamed = bool(te_streamed),
                 h3_residency = residency,
@@ -7976,9 +7962,8 @@ class VideoBackend:
                         )
                         residency = getattr(state, "h3_residency", None)
                         if residency is not None and getattr(state, "denoiser_streamed", False):
-                            # The resident part of the streamed denoiser is demotable, so it is available to this
-                            # request; the floor is the request's largest phase plus the top-level group (on the device
-                            # for the whole denoise either way). Then the resident set is re-fitted to what is left.
+                            # Resident blocks are demotable, so they count as available. The floor omits the
+                            # fragmentation slack (a fully streamed render fits as before); the resident set keeps it.
                             fit_kwargs = dict(
                                 width = width,
                                 height = height,
@@ -7986,8 +7971,6 @@ class VideoBackend:
                                 te_streamed = bool(getattr(state, "te_streamed", False)),
                                 te_scheme = state.text_encoder_quant,
                             )
-                            # The floor leaves out the fragmentation slack (a fully streamed render runs in what is
-                            # left, as before); the resident set is sized with it.
                             floor_room = _h3_residency_budget_bytes(
                                 residency,
                                 state.device,
