@@ -24,9 +24,8 @@ _PACKAGE = Path(__file__).resolve().parent.parent / "vendor" / "truststore"
 
 
 def _load_vendored(name, monkeypatch):
-    # A private name keeps an installed truststore from standing in. An earlier import may have
-    # injected truststore into ssl (native TLS is on by default on macOS / Windows), so put the
-    # stdlib class back first, or this copy captures the injected one as its original.
+    # Private name: an installed truststore must not stand in. Restore the stdlib class first,
+    # since native TLS may already have injected truststore into ssl (macOS / Windows default).
     stdlib = next(c for c in ssl._SSLContext.__subclasses__() if c.__module__ == "ssl")
     monkeypatch.setattr(ssl, "SSLContext", stdlib)
     spec = importlib.util.spec_from_file_location(
