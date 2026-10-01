@@ -669,3 +669,16 @@ test("a message whose content was stored as a plain string keeps its text", asyn
     [],
   ]);
 });
+
+test("backup import preserves estimated-time provenance and marks missing dates", async () => {
+  const data = backup();
+  delete (data.messages[0] as Partial<MessageRecord>).createdAt;
+  data.messages[1].metadata = { createdAtEstimated: true };
+  const { module, messages } = harness();
+  await module.importConversationsFromSource(sourceOf("backup.json", data));
+  const restored = [...messages.values()].flat();
+  const byText = (text: string) => restored.find(({ content }) => (content[0] as { text: string }).text === text);
+  assert.equal(byText("Where to?")?.metadata?.createdAtEstimated, true);
+  assert.equal(byText("Lisbon")?.metadata?.createdAtEstimated, true);
+  assert.notEqual(byText("Porto")?.metadata?.createdAtEstimated, true);
+});

@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+PARALLEL_DEFAULT = 4
+
+
+def clamp_parallel_slots(n_parallel) -> int:
+    if n_parallel is None:
+        return PARALLEL_DEFAULT
+    try:
+        asked = int(n_parallel)
+    except (TypeError, ValueError):
+        return PARALLEL_DEFAULT
+    return max(PARALLEL_MIN, min(PARALLEL_MAX, asked))
+
+
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
@@ -39,7 +52,7 @@ CACHE_RAM_MAX_MIB = 1024 * 1024
 # llama.cpp allocates this default even when Studio emits no flag.
 LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
 
-# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+# Checkpoints live in host RAM: a hybrid's whole recurrent state, or an SWA model's window.
 CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
 CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
 # Keep rollback available; zero forces a full prompt re-ingest after divergence.
@@ -69,7 +82,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hfv", "-hfrv", "--hf-repo-v"}),
     frozenset({"-hffv", "--hf-file-v"}),
     frozenset({"-hft", "--hf-token"}),
-    frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
     # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
@@ -1802,13 +1814,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_UI_CONFIG_FILE",
     "LLAMA_ARG_UI_MCP_PROXY",
     "LLAMA_ARG_STATIC_PATH",
-    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is refused in the box because Unsloth
-    # resolves the projector itself, but the environment twin is an INPUT here: _launch_has_mmproj reads both to know
-    # the launch has a projector at all, which is what keeps the vision and audio state of a model loaded through an
-    # inherited one. Only the paravirtual CPU recovery drops them, where an unpinned projector is the corrupt path it
-    # is undoing. The pooling twins are absent for the opposite reason: load_model already pops LLAMA_ARG_POOLING /
-    # _RERANKING / _EMBEDDINGS itself. The multi-model server mode is absent too: a child holding its own model
-    # directory, preset and autoload policy is not the single model Unsloth launched and accounts for.
+    # LLAMA_ARG_MMPROJ / _URL stay allowed: _launch_has_mmproj reads them as launch inputs.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",

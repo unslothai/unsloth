@@ -86,7 +86,7 @@ export const WORKFLOW_TABS: Array<{
   },
 ];
 
-/** Starter prompt per workflow, showing what each one is for. */
+/** Placeholder hint per workflow, showing what each one is for. */
 export const WORKFLOW_EXAMPLE_PROMPTS: Record<WorkflowId, string> = {
   create:
     "A cozy wooden cabin on a snowy mountain at dusk, warm light glowing from the windows, pine trees and gently falling snow. Cinematic photo, soft golden light.",

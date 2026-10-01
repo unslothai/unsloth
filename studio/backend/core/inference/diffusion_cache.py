@@ -11,9 +11,8 @@ diffusers ships it natively (``transformer.enable_cache(FirstBlockCacheConfig(..
 Measured on Flux.1-dev (28 steps, 1024px, B200): ~1.4x on top of torch.compile (2.83 -> 2.03 s)
 at LPIPS ~0.08 -- deep inside the speed-for-quality bar.
 
-OFF by default: the win scales with step count, so a few-step distilled model (Z-Image-Turbo
-~8 steps) has almost no headroom and caching is for many-step models (Flux / Qwen-Image). It
-composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
+Explicit ``fbcache`` works on every tier; unset / ``auto`` engages only on ``max`` with 20+ steps.
+It composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
 is a graph break), which the speed layer switches to automatically. Best-effort: an incompatible
 model is caught and the load proceeds uncached. torch / diffusers imported lazily.
 """
@@ -25,7 +24,9 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-TC_MODES = (TC_FBCACHE,)
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit opt-in only, auto never picks it.
+TC_STATIC = "static"
+TC_MODES = (TC_FBCACHE, TC_STATIC)
 
 # FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the
 # residual distribution, so they need a higher threshold.
@@ -35,6 +36,25 @@ QUANT_FBCACHE_THRESHOLD = 0.12
 # Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules
 # qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
+
+# == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
+AUTO_STEP_CACHE_TIER = "max"
+
+
+def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
+    """Takes the EFFECTIVE speed tier."""
+    return speed_mode == AUTO_STEP_CACHE_TIER
+
+
+def resolve_auto_step_cache(speed_mode: Optional[str], default_steps: int) -> Optional[str]:
+    if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
+        return TC_FBCACHE
+    return None
+
+
+def cache_breaks_graph(mode: Optional[str]) -> bool:
+    """Whether an engaged mode decides inside the forward (FBCache), costing fullgraph and the CUDA graph."""
+    return bool(mode) and mode != TC_STATIC
 
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
@@ -301,6 +321,47 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
     return "cache_context(" in src
 
 
+def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool:
+    """True when the registry cannot be read, so enable_cache stays the judge."""
+    try:
+        import torch
+        from diffusers.hooks._common import _ALL_TRANSFORMER_BLOCK_IDENTIFIERS
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry to ask
+        return True
+    named_children = getattr(transformer, "named_children", None)
+    if not callable(named_children):
+        return True
+    register_unregistered_transformer_blocks(logger)
+    blocks = [
+        getattr(block, "_orig_mod", block)
+        for name, child in named_children()
+        if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
+        for block in child
+    ]
+    # FBCache needs a head and a tail block.
+    if len(blocks) < 2:
+        return False
+    try:
+        for cls in {type(block) for block in blocks}:
+            TransformerBlockRegistry.get(cls)
+    except Exception:  # noqa: BLE001 - unregistered, or the registry itself failed to load
+        return False
+    return True
+
+
+def step_cache_supported(pipe: Any, *, logger: Any = None) -> bool:
+    """Mirrors apply_step_cache's refusals for an auto request, without engaging the cache."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or not callable(getattr(transformer, "enable_cache", None)):
+        return False
+    if not _pipeline_opens_cache_context(pipe):
+        return False
+    if _reuses_prefix_kv(pipe, transformer):
+        return False
+    return _transformer_blocks_registered(transformer, logger)
+
+
 def install_fbcache_length_guard() -> bool:
     """Make First-Block-Cache recompute, instead of raise, when the block sequence length changes.
 
@@ -404,6 +465,9 @@ def apply_step_cache(
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO is resolved by the loader before this; treat a stray auto as off.
+        return None
+    if mode == TC_STATIC:
+        _warn(logger, mode, RuntimeError("static step skip is not supported on this backend"))
         return None
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:

@@ -11,7 +11,8 @@ Worker subprocesses call install_torchao_windows_rocm_stub() before importing
 transformers / unsloth_zoo.
 
 xformers hits the same absent backend and takes diffusers with it, so the diffusion paths
-install both stubs before importing diffusers.
+install both stubs before importing diffusers. They also hide an xformers built for a newer
+torch than the venv has, which fails the same import on any platform.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import re
 import sys
 import types
 import importlib.abc
+import importlib.metadata
 import importlib.machinery
 import importlib.util
 from typing import Optional
@@ -226,6 +228,71 @@ def install_torchao_windows_rocm_stub() -> None:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
 
 
+def _load_torchao_nodist():
+    """unsloth/_torchao_nodist.py, loaded by path: importing unsloth here would start its GPU
+    stack before the worker is ready. None on an unsloth that predates it."""
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        path = os.path.join(locations[0], "_torchao_nodist.py") if locations else None
+        if not path or not os.path.isfile(path):
+            return None
+        module_spec = importlib.util.spec_from_file_location("_studio_torchao_nodist", path)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+_TORCHAO_EXPORT_MIN = (0, 15)
+
+
+def torchao_export_loadable() -> bool:
+    """Whether an export worker can get real torchao: always off Windows ROCm; there, torchao must
+    be installed and unsloth must ship the shim. Searches sys.path, so a stub already in
+    sys.modules does not count, and imports nothing."""
+    if not _is_windows_rocm():
+        return True
+    try:
+        if importlib.machinery.PathFinder.find_spec("torchao") is None:
+            return False
+        # transformers 5's TorchAoConfig minimum; torch <= 2.9 is paired with torchao 0.14.
+        found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
+        if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
+            return False
+        spec = importlib.util.find_spec("unsloth")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        return bool(locations) and os.path.isfile(os.path.join(locations[0], "_torchao_nodist.py"))
+    except Exception:
+        return False
+
+
+_STUB_CONSUMERS = ("transformers", "peft", "diffusers", "accelerate", "unsloth", "unsloth_zoo")
+
+
+def install_torchao_windows_rocm_real_or_stub() -> bool:
+    """Export worker: real torchao on Windows ROCm when it is installed and unsloth can import it
+    without torch.distributed, else the stub. True iff real torchao is loaded. No-op elsewhere."""
+    if not _is_windows_rocm():
+        return False
+    # A spawn child re-runs run.py as __mp_main__, which stubs torchao first. Drop that stub
+    # while nothing that could have bound it is loaded yet.
+    if is_stubbed("torchao") and not any(m in sys.modules for m in _STUB_CONSUMERS):
+        for name in [n for n in sys.modules if n == "torchao" or n.startswith("torchao.")]:
+            if getattr(sys.modules[name], "_unsloth_stub", None) is _STUB_SENTINEL:
+                del sys.modules[name]
+    if "torchao" not in sys.modules and torchao_export_loadable():
+        module = _load_torchao_nodist()
+        try:
+            if module is not None and module.fix_torchao_without_torch_distributed():
+                return True
+        except Exception:
+            pass
+    install_torchao_windows_rocm_stub()
+    return not is_stubbed("torchao") and "torchao" in sys.modules
+
+
 def install_xformers_windows_rocm_stub() -> None:
     """Pre-stub xformers on Windows ROCm so diffusers can import at all. No-op elsewhere, and must
     precede diffusers: the Windows xformers pin is CUDA-only, so against a ROCm torch (no
@@ -236,3 +303,27 @@ def install_xformers_windows_rocm_stub() -> None:
         for _xf_name in ("xformers", "xformers.ops"):
             if _xf_name not in sys.modules:
                 sys.modules[_xf_name] = _make_mod_stub(_xf_name)
+
+
+def hide_xformers_built_for_another_torch() -> None:
+    """Hide an xFormers whose torch requirement is unmet (#11545); None, not a stub, so nothing sees usable attention."""
+    if "xformers" in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec("xformers") is None:
+            return
+        from utils.wheel_utils import xformers_torch_requirement_unmet
+        mismatch = xformers_torch_requirement_unmet()
+    except Exception:  # noqa: BLE001 -- a check that cannot answer leaves xformers alone
+        return
+    if mismatch is None:
+        return
+    sys.modules["xformers"] = None
+    xformers_version, requirement, torch_version = mismatch
+    print(
+        f"Unsloth: xformers {xformers_version} requires torch{requirement} but torch "
+        f"{torch_version} is installed, so it cannot be imported. Using PyTorch attention "
+        "instead.",
+        file = sys.stderr,
+        flush = True,
+    )

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   SHORTCUT_SLOTS,
   type ShortcutBinding,
@@ -115,6 +115,71 @@ export interface UseShortcutOptions {
   claims?: () => boolean;
 }
 
+/** A mounted handler, for running an action without its chord (the desktop menu). */
+export interface ShortcutTrigger {
+  /** The handler's `claims`, asked the same way a key press asks it. */
+  claims: () => boolean;
+  run: () => void;
+}
+
+/** Newest last. */
+const triggers = new Map<ShortcutId, ShortcutTrigger[]>();
+const triggerListeners = new Set<() => void>();
+const notifyTriggerListeners = () => triggerListeners.forEach((listener) => listener());
+
+/** Exported for the test. Returns the unregister. */
+export function registerShortcutTrigger(
+  id: ShortcutId,
+  trigger: ShortcutTrigger,
+): () => void {
+  triggers.set(id, [...(triggers.get(id) ?? []), trigger]);
+  notifyTriggerListeners();
+  return () => {
+    triggers.set(id, (triggers.get(id) ?? []).filter((t) => t !== trigger));
+    notifyTriggerListeners();
+  };
+}
+
+/** Run `id` as if its chord were pressed, minus the key checks. False when nothing took it. */
+export function triggerShortcut(id: ShortcutId): boolean {
+  const trigger = [...(triggers.get(id) ?? [])].reverse().find((t) => t.claims());
+  trigger?.run();
+  return trigger !== undefined;
+}
+
+// Claims mostly ask whether a modal covers the surface, which shows as aria-hidden or inert.
+let modalObserver: MutationObserver | null = null;
+function subscribeTriggers(listener: () => void, watchModals: boolean): () => void {
+  triggerListeners.add(listener);
+  if (watchModals && !modalObserver && typeof MutationObserver !== "undefined") {
+    modalObserver = new MutationObserver(notifyTriggerListeners);
+    modalObserver.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-hidden", "inert"],
+    });
+  }
+  return () => {
+    triggerListeners.delete(listener);
+    if (triggerListeners.size === 0) {
+      modalObserver?.disconnect();
+      modalObserver = null;
+    }
+  };
+}
+
+/** Whether a mounted handler would take `id` right now, claims included. `watchModals` also
+ *  re-asks when a modal opens or closes; the desktop menu passes it, the web has no use for it. */
+export function useShortcutAvailable(id: ShortcutId, watchModals: boolean): boolean {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeTriggers(listener, watchModals),
+    [watchModals],
+  );
+  return useSyncExternalStore(subscribe, () =>
+    (triggers.get(id) ?? []).some((t) => t.claims()),
+  );
+}
+
 /** The chords `id` answers to now, joined so the effect re-runs only on a real change. */
 function useBindingValues(id: ShortcutId): string {
   return useKeyboardShortcutsStore((s) =>
@@ -166,6 +231,15 @@ export function useShortcut(
   // tearing down and re-adding the listener on every render.
   const latestRef = useRef({ handler, claims });
   latestRef.current = { handler, claims };
+
+  // Registered even with no chord bound: the menu still reaches the action.
+  useEffect(() => {
+    if (!enabled) return;
+    return registerShortcutTrigger(id, {
+      claims: () => latestRef.current.claims?.() !== false,
+      run: () => latestRef.current.handler(new KeyboardEvent("keydown")),
+    });
+  }, [id, enabled]);
 
   useEffect(() => {
     if (bindings.length === 0 || !enabled) return;

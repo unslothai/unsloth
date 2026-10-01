@@ -87,6 +87,8 @@ import {
   activeDownloadState,
   applyLiveGgufVariantStates,
   createLiveGgufVariantStatesSelector,
+  createScopedLiveGgufFilesSelector,
+  isScopedLiveVariant,
 } from "./gguf-live-variant-states";
 import {
   GgufDownloadStatusCard,
@@ -510,7 +512,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             <TooltipTrigger asChild={true}>
               <span className="inline-flex">
                 <DotTag
-                  tone="warning"
+                  tone={liveActive ? "downloading" : "warning"}
                   label={liveActive ? "Downloading" : "Partial"}
                 />
               </span>
@@ -601,13 +603,14 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
-  const localVariantPath = cachePath?.trim() || null;
+  const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
       preferLocalCache,
       localPath: localVariantPath,
+      includeCacheLocations: showMemoryBar,
     });
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
@@ -660,6 +663,11 @@ export function GgufDownloadCard({
   const liveVariantStates = useDownloadManagerStore(
     selectLiveGgufVariantStates,
   );
+  const selectScopedLiveFiles = useMemo(
+    () => createScopedLiveGgufFilesSelector(repoId),
+    [repoId],
+  );
+  const scopedLiveFiles = useDownloadManagerStore(selectScopedLiveFiles);
   const sortedVariants = useMemo(() => {
     if (!rawSortedVariants) return null;
     const withLive = applyLiveGgufVariantStates(
@@ -762,9 +770,13 @@ export function GgufDownloadCard({
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
   const selectedPresentation = pendingDrafterPresentation(selected);
-  const selectedLiveActive = activeDownloadState(selectedLiveState?.state);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
+  // Images/Video stage quants as scoped jobs with no quant-keyed job.
+  const selectedScopedLive =
+    !downloadingThisVariant && isScopedLiveVariant(selected, scopedLiveFiles);
+  const selectedLiveActive =
+    activeDownloadState(selectedLiveState?.state) || selectedScopedLive;
   const ctaDisabled = isLoadingThisModel || !selected;
   const selectedIsActive =
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
@@ -818,7 +830,7 @@ export function GgufDownloadCard({
       ? true
       : downloadingThisVariant
         ? false
-        : ctaDisabled,
+        : ctaDisabled || selectedScopedLive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
     partialResumable: selected?.partial_resumable === true,
@@ -832,7 +844,13 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
+  // The same identity the delete below sends, so the preview measures the copy that goes.
+  const deleteImpact = useDeleteImpact(
+    deleteTarget !== null,
+    repoId,
+    deleteTarget,
+    deleteTargetVariant?.cache_ref ?? deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
+  );
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -840,7 +858,12 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        cachePath ?? undefined,
+        // Redaction clears the path and leaves the reference: forwarding it keeps the
+        // delete on this row instead of whichever duplicate the server ranks first.
+        deleteTargetVariant?.cache_ref ??
+          deleteTargetVariant?.cache_path ??
+          cachePath ??
+          undefined,
       );
     },
     successMessage: () =>
@@ -1050,7 +1073,7 @@ export function GgufDownloadCard({
                     <TooltipTrigger asChild={true}>
                       <span className="inline-flex">
                         <DotTag
-                          tone="warning"
+                          tone={selectedLiveActive ? "downloading" : "warning"}
                           label={selectedLiveActive ? "Downloading" : "Partial"}
                         />
                       </span>
@@ -1058,9 +1081,11 @@ export function GgufDownloadCard({
                     <TooltipContent side="top" sideOffset={4}>
                       {/* The badge rides inside the quant trigger, so clicking
                           it opens the menu. Name the button that acts. */}
-                      {selectedLiveActive
-                        ? "Download is running. Use the button on the right to stop it."
-                        : downloadAction.partialHint}
+                      {selectedScopedLive
+                        ? "Download is running. Progress is in the downloads panel."
+                        : selectedLiveActive
+                          ? "Download is running. Use the button on the right to stop it."
+                          : downloadAction.partialHint}
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -1090,7 +1115,9 @@ export function GgufDownloadCard({
             <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
                 const liveState = liveVariantStates.get(item.key);
-                const liveActive = activeDownloadState(liveState?.state);
+                const liveActive =
+                  activeDownloadState(liveState?.state) ||
+                  isScopedLiveVariant(item, scopedLiveFiles);
                 return (
                   <GgufVariantMenuRow
                     key={item.filename}
@@ -1161,7 +1188,9 @@ export function GgufDownloadCard({
             type="button"
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}
-            aria-label={downloadAction.ariaLabel}
+            aria-label={
+              selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
+            }
             className={cn(
               "hub-action-btn w-24",
               ctaDisabled &&
@@ -1190,6 +1219,10 @@ export function GgufDownloadCard({
               <span className="inline-flex items-center gap-2">
                 <Spinner />
                 Starting…
+              </span>
+            ) : selectedScopedLive ? (
+              <span className="inline-flex items-center gap-2 text-muted-foreground">
+                <Spinner />
               </span>
             ) : (
               <>

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
   TooltipContent,
@@ -76,6 +76,7 @@ function ViewRepositoryButton({
 }) {
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
+  const hubName = useHubName();
   const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
@@ -116,7 +117,7 @@ function ViewRepositoryButton({
         )}
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
-        {online ? "Open on Hugging Face" : "Unavailable offline"}
+        {online ? `Open on ${hubName}` : "Unavailable offline"}
       </TooltipContent>
     </Tooltip>
   );
@@ -707,6 +708,7 @@ export const ModelInspector = memo(function ModelInspector({
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
+              companionPrefetch={model.companionPrefetch === true}
               modelFormat={model.modelFormat}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}

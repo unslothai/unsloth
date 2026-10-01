@@ -204,6 +204,12 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     ),
 }
 
+# Declined at load so status says "off" instead of arming a wrapper that refuses every step.
+_UNCAPTURABLE: dict[str, str] = {
+    "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
+    "on every step and its forward syncs the host",
+}
+
 _CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -223,6 +229,11 @@ def resolve(cls: type) -> tuple[Optional[Callable], Optional[str]]:
 
     Never raises. Cheap for an unknown class: a name lookup, no torch import."""
     owner = _defining_class(cls)
+    if owner is not None and owner.__name__ in _UNCAPTURABLE and owner.__name__ not in _REWRITES:
+        return (
+            None,
+            f"{owner.__name__} forward is not capture-safe ({_UNCAPTURABLE[owner.__name__]})",
+        )
     if owner is None or owner.__name__ not in _REWRITES:
         return None, None
     why, rewrite = _REWRITES[owner.__name__]

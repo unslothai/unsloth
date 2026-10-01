@@ -71,6 +71,34 @@ import shutil
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 
 
+def _ensure_sentence_attention_masks(model):
+    """Match Gemma3's advertised backend to its patched SDPA implementation."""
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) != "gemma3_text" or "flash" not in str(
+        getattr(config, "_attn_implementation", "")
+    ):
+        return False
+    # Zoo's Gemma3 attention preserves FP32 Q/K but consumes SDPA masks. With
+    # a Flash backend, Transformers omits those masks and ST can flatten rows;
+    # that implementation does not consume the resulting sequence boundaries.
+    patched = any(
+        getattr(module.forward, "__module__", "").startswith("unsloth_zoo.temporary_patches.gemma")
+        for module in model.modules()
+        if type(module).__name__ == "Gemma3Attention"
+    )
+    if patched:
+        if hasattr(model, "set_attn_implementation"):
+            model.set_attn_implementation("sdpa")
+        else:
+            config._attn_implementation = "sdpa"
+        logging.warning(
+            "Unsloth: Using SDPA for patched Gemma3 sentence attention to preserve "
+            "padding, sequence boundaries and bidirectional window masks."
+        )
+        return True
+    return False
+
+
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
@@ -857,12 +885,16 @@ class FastSentenceTransformer(FastModel):
         modeling_distilbert.DistilBertModel.forward = forward
 
     @staticmethod
-    def _has_add_pooling_layer(config, auto_model_class = None):
+    def _has_add_pooling_layer(
+        config,
+        auto_model_class = None,
+        **hub_kwargs,
+    ):
         """Check if the model class accepts the `add_pooling_layer` argument."""
         try:
             if auto_model_class is None:
                 auto_model_class = AutoModel
-            model_class = resolve_model_class(auto_model_class, config)
+            model_class = resolve_model_class(auto_model_class, config, **hub_kwargs)
 
             if model_class:
                 sig = inspect.signature(model_class.__init__)
@@ -1443,6 +1475,16 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        # Remote-class probes must use this load's trust, revision and hub options.
+        _remote_class_probe_kwargs = dict(
+            trust_remote_code = trust_remote_code,
+            revision = revision,
+            token = token,
+            cache_dir = kwargs.get("cache_folder", kwargs.get("cache_dir", None)),
+            local_files_only = kwargs.get("local_files_only", None),
+            proxies = kwargs.get("proxies", None),
+        )
+
         # The other leaf loaders resolve the "unsloth" sentinel by planning; this one declines. st_device below hands device_map to SentenceTransformer(device=), which ends in self.to(device): the sentinel raises there, and that same .to() would pull a split model back onto one card. The env-var opt-in is resolved too, or UNSLOTH_AUTO_DEVICE_MAP=1 asks for a plan without naming the sentinel.
         device_map = requested_device_map(device_map)
         # Always "sequential", never the asked-for name's own declined value: the st_device blocks normalise only dicts, "auto" and "sequential", so "balanced" would reach .to("balanced"). isinstance first, since a caller's explicit dict is unhashable and `in` alone raises.
@@ -1524,6 +1566,11 @@ class FastSentenceTransformer(FastModel):
                 st_kwargs["cache_folder"] = _st_cache
 
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            if _ensure_sentence_attention_masks(
+                getattr(st_model[0], "auto_model", None)
+            ) and hasattr(st_model[0], "unpad_inputs"):
+                # Refresh ST's cached capability decision after changing the backend.
+                st_model[0].unpad_inputs = st_model[0].unpad_inputs
             return st_model
 
         if "auto_model" not in kwargs:
@@ -1569,6 +1616,7 @@ class FastSentenceTransformer(FastModel):
                 config,
                 model_type = model_type,
                 disable_sdpa_model_names = DISABLE_SDPA_MODEL_NAMES,
+                **_remote_class_probe_kwargs,
             )
             supports_sdpa = encoder_attn_impl == "sdpa"
             if encoder_attn_impl is not None:
@@ -1709,7 +1757,7 @@ class FastSentenceTransformer(FastModel):
 
         if "add_pooling_layer" not in kwargs:
             supported = FastSentenceTransformer._has_add_pooling_layer(
-                config, kwargs.get("auto_model", AutoModel)
+                config, kwargs.get("auto_model", AutoModel), **_remote_class_probe_kwargs
             )
             if supported:
                 kwargs["add_pooling_layer"] = False
@@ -1795,6 +1843,8 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
+
+        _ensure_sentence_attention_masks(model)
 
         from sentence_transformers import SentenceTransformer
 

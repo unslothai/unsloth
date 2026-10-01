@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -19,11 +21,11 @@ import {
   composerSubmitIntent,
   composerShortcutLabels,
 } from "./utils/composer-preferences";
-import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -65,6 +67,11 @@ import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  CHAT_IMAGE_ACCEPT,
+  isChatImageFile,
+  normalizeChatImage,
+} from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -114,14 +121,23 @@ import {
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
-import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
+import {
+  listPromptEntries,
+  listPromptLists,
+  type PromptEntry,
+  type PromptListEntry,
+} from "./api/prompts-api";
+import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
+import { currentDictationEntryMode } from "./utils/dictation-entry";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -165,6 +181,7 @@ import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useT } from "@/i18n";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
@@ -209,6 +226,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -232,7 +250,6 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
-const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
@@ -573,7 +590,6 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -584,9 +600,11 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [convertingImages, setConvertingImages] = useState(0);
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;
     base64: string;
@@ -595,6 +613,19 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  const setCurrentText = useCallback(
+    (value: string | ((previous: string) => string)) => {
+      const next =
+        typeof value === "function" ? value(textRef.current) : value;
+      textRef.current = next;
+      setText(next);
+    },
+    [],
+  );
+  // Audio files still being read into base64, which pendingAudio cannot see yet.
+  const audioDecodingRef = useRef(0);
+  // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
+  const attachingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -606,15 +637,30 @@ export function SharedComposer({
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Clear, don't keep: a stale list row would run its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
+    }
+    try {
+      const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
+      setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
+    } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -628,6 +674,20 @@ export function SharedComposer({
   const compareStepSucceededRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    setCurrentText((current) =>
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Not the selector: a single chat's composer stays mounted, hidden, ahead of this one.
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -676,7 +736,7 @@ export function SharedComposer({
 
   const skillMentions = useTextareaSkillMentions({
     text,
-    setText,
+    setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
     enabled: supportsTools,
@@ -907,9 +967,36 @@ export function SharedComposer({
   const {
     isDictating,
     isFinalizing: isDictationFinalizing,
-    start: startDictation,
+    start: startDictationSession,
     stop: stopDictation,
-  } = useDictation(setText);
+  } = useDictation(setCurrentText);
+  const chatActive = useChatActive();
+  const compareUploadInstanceId = useId();
+  const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
+  const readAudioUploadDraft = useCallback(() => textRef.current, []);
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => setCurrentText(value),
+    [setCurrentText],
+  );
+  const focusAudioUploadDraft = useCallback(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+  const audioUpload = useChatAudioUpload({
+    owner: audioUploadOwner,
+    chatId: null,
+    disabled: isDictating || !chatActive,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
+  });
+  const startDictation = useCallback(() => {
+    if (audioUpload.busy || !chatActive) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
+    startDictationSession();
+  }, [audioUpload, chatActive, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -944,7 +1031,7 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
-    setText(next);
+    setCurrentText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
@@ -989,7 +1076,7 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback(
+  const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
       if (!input?.length) return;
       // Compare takes audio, so an audio-only 3GP must not be read off its
@@ -999,6 +1086,7 @@ export function SharedComposer({
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
       let videoUnsupported = false;
+      let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -1008,10 +1096,18 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
-            setPendingAudioStore(base64, file.name);
-          });
+          audioDecodingRef.current += 1;
+          fileToBase64(file)
+            .then((base64) => {
+              setPendingAudio({ name: file.name, base64, contentType: file.type });
+              setPendingAudioStore(base64, file.name);
+            })
+            .catch(() => {
+              toast.error("Could not read that audio file.");
+            })
+            .finally(() => {
+              audioDecodingRef.current -= 1;
+            });
           continue;
         }
         // video_base64 targets the single loaded GGUF, so at most one side of a compare could answer. Say
@@ -1020,19 +1116,33 @@ export function SharedComposer({
           videoUnsupported = true;
           continue;
         }
-        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+        if (!isChatImageFile(file)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
           continue;
         }
-        next.push({ id: crypto.randomUUID(), file });
+        let image: File;
+        setConvertingImages((count) => count + 1);
+        try {
+          image = await normalizeChatImage(file);
+        } catch (error) {
+          conversionError ??=
+            error instanceof Error ? error.message : String(error);
+          continue;
+        } finally {
+          setConvertingImages((count) => count - 1);
+        }
+        next.push({ id: crypto.randomUUID(), file: image });
       }
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (conversionError) {
+        toast.error(conversionError);
       }
       if (videoUnsupported) {
         toast.error("Video can't be attached in compare mode", {
@@ -1044,31 +1154,46 @@ export function SharedComposer({
     [setPendingAudioStore, attachUnavailableReason],
   );
 
+  const trackAttaching = useCallback(async (work: () => Promise<void>) => {
+    attachingRef.current += 1;
+    try {
+      await work();
+    } finally {
+      attachingRef.current -= 1;
+    }
+  }, []);
+
+  const addFiles = useCallback(
+    (input: FileList | readonly File[] | null) =>
+      trackAttaching(() => addFilesUntracked(input)),
+    [trackAttaching, addFilesUntracked],
+  );
+
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
         event,
-        async (pasted) => {
-          // Classify before the check, so a pasted audio-only 3GP is not read
-          // as unsupported on its extension alone.
-          const files = await classifiedAttachmentFiles(pasted);
-          // Let addFiles report audio size errors.
-          const supported = files.some(
-            (file) =>
-              isAudioAttachmentFile(file) ||
-              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
-                file.size <= MAX_IMAGE_SIZE),
-          );
-          if (!supported) throw new Error("Unsupported compare attachment");
-          await addFiles(files);
-        },
+        (pasted) =>
+          trackAttaching(async () => {
+            // Classify before the check, so a pasted audio-only 3GP is not read
+            // as unsupported on its extension alone.
+            const files = await classifiedAttachmentFiles(pasted);
+            // Let addFiles report audio size errors.
+            const supported = files.some(
+              (file) =>
+                isAudioAttachmentFile(file) ||
+                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+            );
+            if (!supported) throw new Error("Unsupported compare attachment");
+            await addFilesUntracked(files);
+          }),
         () =>
           toast.error("Could not paste files.", {
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
     },
-    [addFiles],
+    [trackAttaching, addFilesUntracked],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1110,7 +1235,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) {
+    if (composingRef.current || convertingImages > 0) {
       resetPromptQueue();
       return;
     }
@@ -1229,7 +1354,7 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
-      setText("");
+      setCurrentText("");
       setPendingImages([]);
       setPendingAudio(null);
       clearPendingAudioStore();
@@ -1303,6 +1428,7 @@ export function SharedComposer({
         keepChangedDraft();
         return;
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
@@ -1601,7 +1727,7 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1614,6 +1740,7 @@ export function SharedComposer({
               : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
+          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1623,9 +1750,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                n_parallel: ownConfig.nParallel ?? null,
-                // Only when this panel has read the stored value: omitted, the load inherits it, which keeps
-                // CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1648,6 +1772,13 @@ export function SharedComposer({
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
         // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
+        const compareOffload = offloadWarning(offloadCountsFrom(resp));
+        if (compareOffload) {
+          toast.warning(
+            `${compareModelDisplayName(sel.id)} loaded${compareOffload.titleSuffix}`,
+            { description: compareOffload.description, duration: 8000 },
+          );
+        }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1686,7 +1817,7 @@ export function SharedComposer({
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          ((resp.is_gguf ?? false) && !(resp.is_diffusion ?? false)) || (resp.is_mlx ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
         // same rule for the batch sizes
@@ -1942,6 +2073,7 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       for (const handle of handles) {
         handle.append(content);
@@ -1981,7 +2113,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut)) {
+    if (composerSubmitIntent(e, sendShortcut, text)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -1996,11 +2128,11 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating &&
+    convertingImages === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
   // chords register in both. Both gate on the chat tab being visible: off-route the pane is hidden.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -2056,6 +2188,75 @@ export function SharedComposer({
     { enabled: chatActive },
   );
 
+  const runPromptList = useCallback(
+    (items: string[]) => {
+      const filtered = items.filter((p) => p.trim());
+      if (!filtered.length) return;
+      // `running` lags the 200ms poll, so ask the handles directly like the poll does.
+      const liveRunning =
+        busy || Object.values(handlesRef.current).some((h) => h.isRunning());
+      if (liveRunning || isQueueRunningRef.current) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      // A compare send holds the loading lease while it prepares, before `comparing` is set.
+      if (useChatRuntimeStore.getState().modelLoading) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      if (isDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
+      // send() cancels an in-flight transcription, which would discard it.
+      if (audioUpload.busy) {
+        toast.error("Wait for the transcription to finish before running a list");
+        return;
+      }
+      // Only the first send would carry staged attachments; refuse rather than clear.
+      if (
+        pendingImagesRef.current.length > 0 ||
+        pendingAudioRef.current ||
+        audioDecodingRef.current > 0 ||
+        attachingRef.current > 0
+      ) {
+        toast.error("Remove the staged attachment before running a list", {
+          description: "Only the first prompt in the list would carry it.",
+        });
+        return;
+      }
+      const hasCompareHandles = Boolean(
+        handlesRef.current["model1"] || handlesRef.current["model2"],
+      );
+      const isGeneralizedCompare =
+        hasCompareHandles && Boolean(model1?.id && model2?.id);
+      if (hasCompareHandles && !isGeneralizedCompare) {
+        toast.error("Pick a model in each pane to compare", {
+          description:
+            "Use the model dropdown above each pane, then send your prompt.",
+        });
+        return;
+      }
+      setPromptStorageOpen(false);
+      queueRef.current = filtered;
+      queueIndexRef.current = 0;
+      isQueueRunningRef.current = true;
+      setIsQueueRunning(true);
+      setQueueProgress({ current: 1, total: filtered.length });
+      toast(`Prompt 1 / ${filtered.length}`, {
+        description:
+          filtered[0].length > 80 ? `${filtered[0].slice(0, 80)}…` : filtered[0],
+      });
+      setCurrentText(filtered[0]);
+      setTimeout(() => {
+        sendRef.current?.();
+      }, 100);
+    },
+    [busy, isDictating, audioUpload.busy, handlesRef, model1?.id, model2?.id, setCurrentText],
+  );
+
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
   // the "More" overflow submenu. Core items and "More" itself live outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
@@ -2070,7 +2271,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2083,7 +2284,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
         MCP
         {mcpEnabledForChat ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2105,16 +2306,24 @@ export function SharedComposer({
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => {
-                setText(p.text);
+                setCurrentText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
           ))}
-          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          {recentLists.map((l) => (
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
+              <span className="truncate">{l.name}</span>
+              <PromptCountBadge count={l.items.length} />
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 || recentLists.length > 0 ? (
+            <DropdownMenuSeparator />
+          ) : null}
           <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
             All saved prompts…
           </DropdownMenuItem>
@@ -2129,7 +2338,7 @@ export function SharedComposer({
       >
         <Columns2Icon />
         Compare chat
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
     ),
     exportChat: (
@@ -2184,7 +2393,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
         Canvas
         {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ) : null,
@@ -2244,41 +2453,16 @@ export function SharedComposer({
       }}
     >
       <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
         onUse={(t) => {
-          setText(t);
+          setCurrentText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
-        onRunList={(items) => {
-          const filtered = items.filter((p) => p.trim());
-          if (!filtered.length) return;
-          const hasCompareHandles = Boolean(
-            handlesRef.current["model1"] || handlesRef.current["model2"],
-          );
-          const isGeneralizedCompare =
-            hasCompareHandles && Boolean(model1?.id && model2?.id);
-          if (hasCompareHandles && !isGeneralizedCompare) {
-            toast.error("Pick a model in each pane to compare", {
-              description:
-                "Use the model dropdown above each pane, then send your prompt.",
-            });
-            return;
-          }
-          setPromptStorageOpen(false);
-          queueRef.current = filtered;
-          queueIndexRef.current = 0;
-          isQueueRunningRef.current = true;
-          setIsQueueRunning(true);
-          setQueueProgress({ current: 1, total: filtered.length });
-          toast(`Prompt 1 / ${filtered.length}`, {
-            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
-          });
-          setText(filtered[0]);
-          setTimeout(() => { sendRef.current?.(); }, 100);
-        }}
+        onRunList={runPromptList}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
@@ -2341,7 +2525,7 @@ export function SharedComposer({
           // must match the DOM at all times, else an unrelated parent re-render reconciles the textarea back
           // to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
-          setText(e.target.value);
+          setCurrentText(e.target.value);
           skillMentions.update(
             e.target.value,
             e.target.selectionStart ?? e.target.value.length,
@@ -2363,7 +2547,7 @@ export function SharedComposer({
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           setCompositionState(false);
-          setText(e.currentTarget.value);
+          setCurrentText(e.currentTarget.value);
         }}
         onKeyDown={(event) => {
           if (!skillMentions.onKeyDown(event)) onKeyDown(event);
@@ -2395,7 +2579,7 @@ export function SharedComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
+            accept={CHAT_IMAGE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {
@@ -2474,7 +2658,7 @@ export function SharedComposer({
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2498,7 +2682,7 @@ export function SharedComposer({
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2518,7 +2702,7 @@ export function SharedComposer({
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
                     <HugeiconsIcon
-                      icon={Tick02Icon}
+                      icon={MenuTickIcon}
                       strokeWidth={2}
                       className="ml-auto"
                     />
@@ -2880,17 +3064,34 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
+                audioUpload.busy ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-full px-2 text-muted-foreground"
+                    aria-label={t("settings.voice.dictation.audioUploadCancel")}
+                    title={t("settings.voice.dictation.audioUploadCancel")}
+                    onClick={audioUpload.cancel}
+                  >
+                    <Spinner className="size-3.5" />
+                    <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+                    <XIcon className="size-3" aria-hidden="true" />
+                  </Button>
+                ) : (
+                  <TooltipIconButton
+                    tooltip="Dictate"
+                    side="bottom"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-muted-foreground"
+                    disabled={!chatActive}
+                    onClick={startDictation}
+                    aria-label="Dictate"
+                  >
+                    <MicIcon className="unsloth-dictate-icon size-4" />
+                  </TooltipIconButton>
+                )
               ) : (
                 <TooltipIconButton
                   tooltip={

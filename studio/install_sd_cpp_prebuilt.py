@@ -272,6 +272,39 @@ def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0)
     return _fetch_release(None, token = token, timeout = timeout)
 
 
+class GitHubRateLimited(RuntimeError):
+    pass
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    """Same rule as freshness_flow.rate_limit_wait, which this stdlib-only installer cannot import."""
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    if code != 403:
+        return False
+    headers = getattr(exc, "headers", None) or {}
+    if (
+        str(headers.get("Retry-After") or "").strip()
+        or str(headers.get("X-RateLimit-Remaining") or "").strip() == "0"
+    ):
+        return True
+    try:
+        body = exc.read(2048).decode("utf-8", errors = "replace").lower()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - an unreadable body names nothing
+        return False
+    return "rate limit" in body or "abuse detection" in body
+
+
+def _rate_limit_message() -> str:
+    hint = (
+        ""
+        if (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+        else "; set GH_TOKEN or GITHUB_TOKEN to lift the 60 requests/hour unauthenticated limit"
+    )
+    return f"GitHub API is rate limiting release lookups{hint}"
+
+
 def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
     """Verify ``path`` against a GitHub asset ``digest`` ('sha256:<hex>'), an integrity check against a corrupted or tampered download before we extract and execute the binary. When the release publishes no digest (older releases), warn and proceed rather than hard-fail."""
     if not expected_digest:
@@ -627,10 +660,12 @@ def _resolve_repo_asset(
     *,
     allow_latest: bool = True,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back."""
+    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
-    except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
+    except Exception as exc:  # noqa: BLE001 - network -> fall back
+        if _is_rate_limited(exc):
+            raise GitHubRateLimited(_rate_limit_message()) from exc
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
         return None, None
     if release is None:
@@ -833,7 +868,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.print_asset:
         # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a false miss.
-        _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        try:
+            _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        except GitHubRateLimited as exc:
+            print(f"error: {exc}", file = sys.stderr)
+            return 2
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2
 

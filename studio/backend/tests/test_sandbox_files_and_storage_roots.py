@@ -1419,7 +1419,7 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert sorted(p.name for p in workdir.iterdir()) == [
+    assert sorted(p.name for p in workdir.iterdir() if p.name != ".cache") == [
         tools._SANDBOX_MARKER,
         tools._SANDBOX_TEMP_DIRNAME,
     ]
@@ -1920,7 +1920,8 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     assert sorted(
         p.name
         for p in workdir.iterdir()
-        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
+        if p.name not in tools._INTERNAL_SANDBOX_FILES
+        and p.name not in (tools._SANDBOX_TEMP_DIRNAME, ".cache")
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -2000,7 +2001,8 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     assert sorted(
         p.name
         for p in workdir.iterdir()
-        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
+        if p.name not in tools._INTERNAL_SANDBOX_FILES
+        and p.name not in (tools._SANDBOX_TEMP_DIRNAME, ".cache")
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
@@ -3267,6 +3269,101 @@ def test_an_interrupted_move_is_not_read_as_a_collision(tmp_path, monkeypatch):
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(str(root))
     assert (root / "__LOCALID_part111" / "second.csv").is_file(), "the retry never happened"
+
+
+@pytest.mark.parametrize("dir_fd_writes", [True, False])
+def test_attachments_are_copied_into_the_sandbox_once(tmp_path, monkeypatch, dir_fd_writes):
+    from core import chat_originals
+
+    tools = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setattr(tools, "_DIR_FD_WRITES", tools._DIR_FD_WRITES and dir_fd_writes)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    sheet, _ = chat_originals.save([b"a,b\n"])
+    deck, _ = chat_originals.save([b"slides"], chat_originals.max_bytes("deck.odp"))
+    session = "__LOCALID_attach1"
+    tools.materialize_sandbox_attachments(
+        session, [(sheet, "data.csv"), (deck, "../deck.odp"), ("0" * 64, "gone.csv")]
+    )
+    long_name = "季度" * 45 + ".xlsx"
+    tools.materialize_sandbox_attachments(session, [(sheet, long_name)])
+    workdir = Path(tools.get_sandbox_workdir(session))
+    copy = workdir / tools.sandbox_attachment_path(sheet, "data.csv")
+    assert copy.read_bytes() == b"a,b\n"
+    assert tools.sandbox_attachment_path(deck, "../deck.odp").endswith(f"{deck[:12]}/_deck.odp")
+    assert (workdir / tools.sandbox_attachment_path(deck, "../deck.odp")).read_bytes() == b"slides"
+    long_copy = workdir / tools.sandbox_attachment_path(sheet, long_name)
+    assert long_copy.read_bytes() == b"a,b\n" and long_copy.suffix == ".xlsx"
+    assert 70 < len(long_copy.name.encode()) <= 80
+    assert tools.session_sandbox_has_files(session) is False
+    copy.write_bytes(b"edited")
+    tools.materialize_sandbox_attachments(session, [(sheet, "data.csv")])
+    assert copy.read_bytes() == b"edited"
+    assert tools.session_sandbox_has_files(session) is True
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    other = "__LOCALID_attach2"
+    linked = Path(tools.get_sandbox_workdir(other)) / tools._ATTACHMENTS_DIR
+    linked.symlink_to(outside, target_is_directory = True)
+    tools.materialize_sandbox_attachments(other, [(sheet, "data.csv")])
+    assert list(outside.iterdir()) == []
+
+
+def test_sandbox_attachment_paths_match_the_frontend():
+    """Same table as sandbox-attachments.test.ts: the client notes these paths to the model."""
+    from core.inference.tools import sandbox_attachment_path
+
+    sha = "ab" * 32
+    for name, base in (
+        ("data.csv", "data.csv"),
+        ("../deck?.pptx", "_deck_.pptx"),
+        (" .hidden. ", "hidden"),
+        ("季度" * 45 + ".xlsx", "季度" * 12 + "季.xlsx"),
+        ("a" * 79 + " ." + "x" * 20, "a" * 79),
+        ("b" * 10 + "." + "x" * 100, "b" * 10),
+        ("..", "attachment"),
+        ("e" * 100, "e" * 80),
+        ("c" * 78 + ". ." + "z" * 20, "c" * 78),
+        ("CON.csv", "_CON.csv"),
+        ("nul.tar.gz", "_nul.tar.gz"),
+        ("com1", "_com1"),
+        ("CONSOLE.txt", "CONSOLE.txt"),
+    ):
+        path = sandbox_attachment_path(sha, name)
+        assert path == f".unsloth_attachments/abababababab/{base}", name
+        assert sandbox_attachment_path(sha, base) == path, name
+
+
+def test_attachments_are_copied_only_for_the_python_tool(monkeypatch):
+    import asyncio
+    import inspect
+    from types import SimpleNamespace
+
+    from core.inference import tools
+    from routes import inference
+
+    calls = []
+    monkeypatch.setattr(tools, "materialize_sandbox_attachments", lambda *args: calls.append(args))
+    item = SimpleNamespace(sha256 = "a" * 64, name = "data.csv")
+    for enable_tools, enabled_tools, attachments in (
+        (True, None, [item]),
+        (True, ["python"], [item]),
+        (True, ["web_search"], [item]),
+        (False, None, [item]),
+        (True, None, None),
+    ):
+        payload = SimpleNamespace(
+            enable_tools = enable_tools,
+            enabled_tools = enabled_tools,
+            sandbox_attachments = attachments,
+            session_id = "s",
+        )
+        asyncio.run(inference._materialize_sandbox_attachments(payload))
+    assert calls == [("s", [("a" * 64, "data.csv")])] * 2
+    source = inspect.getsource(inference.produce_openai_chat_completions)
+    assert source.count("await _materialize_sandbox_attachments(payload)") == 1
+    assert source.index("_materialize_sandbox_attachments") < source.index(
+        "_proxy_to_external_provider"
+    )
 
 
 def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):

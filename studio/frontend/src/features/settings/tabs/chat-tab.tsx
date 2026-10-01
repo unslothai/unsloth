@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -27,16 +28,19 @@ import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
+  LibrariesIcon,
   McpServerIcon,
   PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -144,6 +148,7 @@ const PLUS_MENU_SETTINGS: {
 
 export function ChatTab() {
   const t = useT();
+  const navigate = useNavigate();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -233,8 +238,26 @@ export function ChatTab() {
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );
+  const showInlineReadAloud = useChatPreferencesStore(
+    (state) => state.showInlineReadAloud,
+  );
+  const setShowInlineReadAloud = useChatPreferencesStore(
+    (state) => state.setShowInlineReadAloud,
+  );
+  const showInlineEditResponse = useChatPreferencesStore(
+    (state) => state.showInlineEditResponse,
+  );
+  const setShowInlineEditResponse = useChatPreferencesStore(
+    (state) => state.setShowInlineEditResponse,
+  );
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
+  );
+  const autoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.autoScrollWhileGenerating,
+  );
+  const setAutoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.setAutoScrollWhileGenerating,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -326,12 +349,31 @@ export function ChatTab() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.chat.title")}
         </h1>
       </header>
+
+      <SettingsSection title={t("settings.chat.library.label")} hideHeading>
+        <SettingsRow
+          label={t("settings.chat.library.label")}
+          description={t("settings.chat.library.description")}
+        >
+          <Button
+            variant="outline"
+            className="px-3.5"
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              void navigate({ to: "/library", search: { show: "chats" } });
+            }}
+          >
+            <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
+            {t("settings.chat.library.action")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <ComposerSettings embedded={true} />
@@ -379,6 +421,37 @@ export function ChatTab() {
             checked={autoCompactEnabled}
             onCheckedChange={setAutoCompactEnabled}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
+            aria-label={t("settings.chat.autoScroll")}
+          >
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
         </SettingsRow>
       </SettingsSection>
 
@@ -533,6 +606,26 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.inlineReadAloud")}
+          description={t("settings.chat.inlineReadAloudDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.inlineReadAloud")}
+            checked={showInlineReadAloud}
+            onCheckedChange={setShowInlineReadAloud}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.inlineEditResponse")}
+          description={t("settings.chat.inlineEditResponseDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.inlineEditResponse")}
+            checked={showInlineEditResponse}
+            onCheckedChange={setShowInlineEditResponse}
           />
         </SettingsRow>
         <SettingsRow
