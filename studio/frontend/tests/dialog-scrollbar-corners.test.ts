@@ -55,6 +55,11 @@ test("dialogs flag their overflow so Firefox clips them only while they scroll",
   const lib = readSrc("lib/scroll-overflow.ts");
   assert.match(lib, /element\.setAttribute\("data-overflow-watched", ""\);/);
   assert.match(lib, /element\.toggleAttribute\("data-overflowing", overflowing\);/);
+  // Any overflow counts: one pixel over already draws a scrollbar.
+  assert.match(
+    lib,
+    /element\.scrollHeight > element\.clientHeight \|\|\s*element\.scrollWidth > element\.clientWidth;/,
+  );
   // Content growing inside a capped box leaves the box the same size, so the children are watched.
   assert.match(lib, /for \(const child of element\.children\) sizes\.observe\(child\);/);
   assert.match(lib, /children\.observe\(element, \{ childList: true \}\);/);

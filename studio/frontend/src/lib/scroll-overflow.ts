@@ -18,9 +18,11 @@ import { useCallback } from "react";
 export function observeScrollOverflow(element: HTMLElement): () => void {
   element.setAttribute("data-overflow-watched", "");
   const sync = () => {
+    // No tolerance: a single pixel over is enough for overflow:auto to draw a scrollbar. A rounding
+    // false positive only clips a shadow; a miss squares the corners.
     const overflowing =
-      element.scrollHeight > element.clientHeight + 1 ||
-      element.scrollWidth > element.clientWidth + 1;
+      element.scrollHeight > element.clientHeight ||
+      element.scrollWidth > element.clientWidth;
     if (overflowing !== element.hasAttribute("data-overflowing")) {
       element.toggleAttribute("data-overflowing", overflowing);
     }
