@@ -1236,3 +1236,67 @@ def test_taint_survives_a_decode(tmp_path):
         "    return importlib.import_module('x.' + name)\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_locally_aliased_sink_is_still_a_sink(tmp_path):
+    """`loader = importlib.import_module` then `loader(name)`.
+
+    Matched only under the textual name `loader`, so an ordinary local alias walked past
+    the gate. A reference to a sink is recorded, as distinct from a call to one.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    loader = importlib.import_module\n"
+        "    return loader('x.' + json.loads(blob)['model_type'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_aliased_getattr_is_still_the_getattr_sink(tmp_path):
+    """`from builtins import getattr as resolve`.
+
+    The holder alias was already handled; the alias of this sink itself was checked
+    against the raw spelling and skipped.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, transformers\n"
+        "from builtins import getattr as resolve\n"
+        "def build(blob):\n"
+        "    return resolve(transformers, json.loads(blob)['cls'])\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_a_locally_aliased_getattr_is_still_the_getattr_sink(tmp_path):
+    """The same alias made locally rather than at the import."""
+    findings = _scan(
+        tmp_path,
+        "import json, transformers\n"
+        "def build(blob):\n"
+        "    resolve = getattr\n"
+        "    return resolve(transformers, json.loads(blob)['cls'])\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_taint_enters_an_inherited_method_through_super(tmp_path):
+    """`super().execute(tainted)` reduces to the bare method name.
+
+    None of the handled shapes matched, so taint never entered an inherited method and an
+    overridden helper that passes its argument to a sink was invisible from every
+    subclass call site.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Base:\n"
+        "    def execute(self, name):\n"
+        "        return importlib.import_module('x.' + name)\n"
+        "class Child(Base):\n"
+        "    def execute(self, blob):\n"
+        "        return super().execute(json.loads(blob)['model_type'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)

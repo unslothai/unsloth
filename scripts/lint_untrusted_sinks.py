@@ -458,6 +458,8 @@ class _FileFacts:
         # Class names defined in this file, so `parser = Parser()` can be recognised as
         # constructing one and `parser.parse(...)` resolved to `Parser.parse`.
         self.classes: set = set()
+        # class name -> the base names it declares, so `super().m()` can be resolved
+        self.bases: dict = {}
         # qualname -> names it declares global, so a write lands in module state
         self.globals_declared: dict = {}
         self._collect()
@@ -506,6 +508,14 @@ class _FileFacts:
                 elif isinstance(child, ast.ClassDef):
                     self.classes.add(child.name)
                     self.classes.add(".".join(scope + [child.name]))
+                    declared_bases = []
+                    for base in child.bases:
+                        base_name = _call_name(base)
+                        if base_name:
+                            declared_bases.append(base_name.rpartition(".")[2])
+                    if declared_bases:
+                        self.bases[".".join(scope + [child.name])] = declared_bases
+                        self.bases.setdefault(child.name, declared_bases)
                     scope.append(child.name)
                     walk(child)
                     scope.pop()
@@ -604,6 +614,17 @@ class _FileFacts:
         dirty parser reached a sink unreported. Every binding is analysed now, which is the
         same fail-closed choice the source and sink tables already make.
         """
+        # Before the name guard: `super().execute(...)` reduces to a name the rest of this
+        # cannot use, and on some shapes to nothing at all, so the early return fired and
+        # taint never entered an inherited method. An overridden helper that passes its
+        # argument to a sink was invisible from every subclass call site.
+        if isinstance(callee, ast.Attribute) and isinstance(callee.value, ast.Call):
+            if _call_name(callee.value.func).rpartition(".")[2] == "super" and class_name:
+                for base in self.bases.get(class_name, ()):
+                    candidate = f"{base}.{callee.attr}"
+                    if candidate in self.functions:
+                        return [(self.path, candidate)]
+                return []
         name = _call_name(callee)
         if not name:
             return []
@@ -688,6 +709,8 @@ class _TaintPass(ast.NodeVisitor):
             self.local_reasons.setdefault(name, NAMED_PARAM_REASON)
         # local name -> class it was constructed from, for `parser = Parser()`
         self.instance_types: dict[str, str] = {}
+        # local name -> the sink it refers to, for `loader = importlib.import_module`
+        self.sink_aliases: dict[str, str] = {}
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
@@ -948,7 +971,26 @@ class _TaintPass(ast.NodeVisitor):
             for target in node.targets:
                 self._assign(target, reason)
         self._note_construction(node)
+        self._note_sink_alias(node)
         self.generic_visit(node)
+
+    def _note_sink_alias(self, node: ast.Assign) -> None:
+        """`loader = importlib.import_module`: a reference to a sink, not a call to one."""
+        if isinstance(node.value, ast.Call):
+            return
+        referenced = _call_name(node.value)
+        if not referenced:
+            return
+        sink = _matches_any(self.facts.canonicals(referenced), SINKS)
+        if sink is None:
+            sink = _matches_any(self.facts.canonicals(referenced), {"getattr"})
+            if sink is not None:
+                sink = "getattr"
+        if sink is None:
+            return
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self.sink_aliases.setdefault(target.id, sink)
 
     def _note_construction(self, node: ast.Assign) -> None:
         """`parser = Parser()`, so `parser.parse(...)` resolves to `Parser.parse`.
@@ -1103,6 +1145,14 @@ class _TaintPass(ast.NodeVisitor):
         names = self.facts.canonicals(_call_name(node.func))
         sink = _matches_any(names, SINKS)
         if sink is None:
+            # `loader = importlib.import_module` then `loader(name)`. Matched only under
+            # the textual name `loader`, so an ordinary local alias walked past the gate.
+            aliased = self.sink_aliases.get(_call_name(node.func))
+            # getattr is not in SINKS; it has its own check because it needs the holder
+            # inspected, so an alias of it has to go there rather than into this table.
+            if aliased is not None and aliased != "getattr":
+                sink = aliased
+        if sink is None:
             self._check_getattr(node)
             return
         positions, keywords = SINKS[sink]
@@ -1121,7 +1171,15 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_getattr(self, node: ast.Call) -> None:
         """`getattr(transformers, tainted)` resolves an arbitrary name in a namespace."""
-        if _call_name(node.func).rpartition(".")[2] != "getattr" or len(node.args) < 2:
+        # Through canonicals, not the raw spelling: `from builtins import getattr as
+        # resolve` left the holder-alias support in place while the alias of this sink
+        # itself was skipped. A local alias counts too.
+        called = _call_name(node.func)
+        is_getattr = (
+            _matches_any(self.facts.canonicals(called), {"getattr", "builtins.getattr"}) is not None
+            or self.sink_aliases.get(called) == "getattr"
+        )
+        if not is_getattr or len(node.args) < 2:
             return
         holder = node.args[0]
         holder_names = (
@@ -1422,17 +1480,24 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     # Carried with the reasons, because a method called before the line that constructs
     # the object would otherwise never resolve on any pass.
     instances: dict[str, str] = {}
+    aliases: dict[str, str] = {}
     visitor = None
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
+        visitor.sink_aliases.update(aliases)
         for child in nodes:
             visitor.visit(child)
-        if visitor.local_reasons == reasons and visitor.instance_types == instances:
+        if (
+            visitor.local_reasons == reasons
+            and visitor.instance_types == instances
+            and visitor.sink_aliases == aliases
+        ):
             return visitor, True
         reasons = dict(visitor.local_reasons)
         instances = dict(visitor.instance_types)
+        aliases = dict(visitor.sink_aliases)
     return visitor, False
 
 
