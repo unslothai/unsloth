@@ -1125,7 +1125,9 @@ def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: i
     """Conservative device bytes for a fully resident H3 sd-cli render: every file, the denoiser's compute buffer
     scaled to this clip, and a fixed margin for the CUDA context, the VAE decode and allocator slack."""
     volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
-    compute = math.ceil(H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME))
+    compute = math.ceil(
+        H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
+    )
     return int(file_bytes) + compute + H3_NATIVE_RESIDENT_MARGIN_BYTES
 
 

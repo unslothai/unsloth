@@ -58,7 +58,9 @@ def _recording_install(root, cli, server, installs):
         installs.append(kwargs)
         cli.write_bytes(b"new-build")
         server.write_bytes(b"new-build")
-        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = sdmod.DEFAULT_TAG)
+        sdmod._write_install_record(
+            root, accelerator = kwargs["accelerator"], repo = "r", tag = sdmod.DEFAULT_TAG
+        )
         return cli
 
     return _install
@@ -68,7 +70,9 @@ OLD = "master-813-bfbef5b-u13b9d92"
 
 
 def test_an_install_for_an_older_pin_is_upgraded_once(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     assert OLD != sdmod.DEFAULT_TAG
     installs: list = []
     monkeypatch.setattr(sdmod, "install", _recording_install(root, cli, server, installs))
@@ -83,7 +87,9 @@ def test_an_install_for_an_older_pin_is_upgraded_once(tmp_path, monkeypatch):
 
 
 def test_the_server_resolver_upgrades_an_old_pin_too(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     installs: list = []
     monkeypatch.setattr(sdmod, "install", _recording_install(root, cli, server, installs))
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
@@ -128,8 +134,12 @@ def test_a_fallback_install_for_the_current_pin_is_not_redownloaded(tmp_path, mo
     bk, root, cli, server = _tree(
         tmp_path,
         monkeypatch,
-        {"accelerator": "vulkan", "repo": "leejet/stable-diffusion.cpp", "tag": "master-999-abcdef0",
-         "requested_tag": sdmod.DEFAULT_TAG},
+        {
+            "accelerator": "vulkan",
+            "repo": "leejet/stable-diffusion.cpp",
+            "tag": "master-999-abcdef0",
+            "requested_tag": sdmod.DEFAULT_TAG,
+        },
     )
 
     def _install(**_kwargs):
@@ -141,29 +151,43 @@ def test_a_fallback_install_for_the_current_pin_is_not_redownloaded(tmp_path, mo
 
 def test_an_old_record_holding_the_upstream_form_of_the_pin_is_current(tmp_path, monkeypatch):
     bk, root, cli, server = _tree(
-        tmp_path, monkeypatch, {"accelerator": "vulkan", "repo": "r", "tag": sdmod.upstream_tag_for(sdmod.DEFAULT_TAG)}
+        tmp_path,
+        monkeypatch,
+        {"accelerator": "vulkan", "repo": "r", "tag": sdmod.upstream_tag_for(sdmod.DEFAULT_TAG)},
     )
-    monkeypatch.setattr(sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("current")))
+    monkeypatch.setattr(
+        sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("current"))
+    )
     assert bk.ensure_sd_cpp_binary(accelerator = "vulkan") == str(cli)
 
 
 def test_kill_switch_keeps_the_installed_bundle(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     monkeypatch.setenv("UNSLOTH_SD_CPP_AUTO_UPGRADE", "0")
-    monkeypatch.setattr(sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("kill switch")))
+    monkeypatch.setattr(
+        sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("kill switch"))
+    )
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
 
 
 def test_tracking_latest_never_counts_as_a_moved_pin(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "")
-    monkeypatch.setattr(sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("latest")))
+    monkeypatch.setattr(
+        sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("latest"))
+    )
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
 
 
 def test_a_failed_pin_upgrade_keeps_the_old_binary_and_stops_retrying(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     attempts: list = []
 
     def _install(**kwargs):
@@ -179,16 +203,24 @@ def test_a_failed_pin_upgrade_keeps_the_old_binary_and_stops_retrying(tmp_path, 
 
 
 def test_no_upgrade_while_the_managed_tree_is_in_use(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
-    monkeypatch.setattr(sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("in use")))
+    monkeypatch.setattr(
+        sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("in use"))
+    )
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
 
 
 def test_a_user_supplied_binary_is_never_upgraded(tmp_path, monkeypatch):
-    bk, root, cli, server = _tree(tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD})
+    bk, root, cli, server = _tree(
+        tmp_path, monkeypatch, {"accelerator": "cuda", "repo": "r", "tag": OLD}
+    )
     (root / ".unsloth-studio-owned").unlink()
-    monkeypatch.setattr(sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("not ours")))
+    monkeypatch.setattr(
+        sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("not ours"))
+    )
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
 
 

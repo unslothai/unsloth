@@ -4012,11 +4012,15 @@ _SAGE_HELP = _GRAPH_CUT_HELP + "  --sage-attn           use native CUDA SageAtte
 def test_h3_native_sage_attention_only_on_speed_max(monkeypatch, tmp_path):
     """SageAttention is lossy (INT8 QK^T), so it rides only on an explicit speed_mode="max"."""
     monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
-    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
     assert offload[-1] == "--sage-attn"
     assert state.attention_backend == "sage"
     for mode in (None, "default", "off"):
-        state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode)
+        state, offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
+        )
         assert "--sage-attn" not in offload, mode
         assert state.attention_backend == "flash"
 
@@ -4024,10 +4028,14 @@ def test_h3_native_sage_attention_only_on_speed_max(monkeypatch, tmp_path):
 def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatch, tmp_path):
     """An older prebuilt (u13b9d92) has no --sage-attn, and sd-cli exits on an unknown option."""
     monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
-    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, speed_mode = "max")
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, speed_mode = "max"
+    )
     assert "--sage-attn" not in offload
     monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
-    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
     assert "--sage-attn" not in offload
 
 
@@ -4035,18 +4043,26 @@ def test_h3_native_speed_max_takes_the_bf16_cublas_path(monkeypatch, tmp_path):
     """speed_mode=max also hands sd-cli GGML_CUDA_QUANT_CUBLAS_MIN_BATCH; every other mode launches with no extra env."""
     monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
     monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
-    state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
     assert dict(state.pipe.env) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
     for mode in (None, "default", "off"):
-        state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode)
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
+        )
         assert state.pipe.env == (), mode
     # The veto that drops sage drops this too, and a value the user exported (0 included) is never overridden.
     monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
-    state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
     assert state.pipe.env == ()
     monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
     monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
-    state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
     assert state.pipe.env == ()
 
 
@@ -4057,12 +4073,16 @@ def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
     backend = _h3_native_backend(monkeypatch, calls)
     backend._state = dataclasses.replace(
         backend._state,
-        pipe = dataclasses.replace(backend._state.pipe, env = (("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "1024"),)),
+        pipe = dataclasses.replace(
+            backend._state.pipe, env = (("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "1024"),)
+        ),
     )
     backend.generate(prompt = "a fox", width = 960, height = 544)
     assert calls[0]["env"] == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
     calls.clear()
-    backend._state = dataclasses.replace(backend._state, pipe = dataclasses.replace(backend._state.pipe, env = ()))
+    backend._state = dataclasses.replace(
+        backend._state, pipe = dataclasses.replace(backend._state.pipe, env = ())
+    )
     backend.generate(prompt = "a fox", width = 960, height = 544)
     assert calls[0]["env"] is None
 

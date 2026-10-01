@@ -3347,7 +3347,8 @@ class VideoBackend:
             h3_sage = (
                 native_device != "cpu"
                 and str(speed_mode or "").strip().lower() == "max"
-                and os.environ.get("UNSLOTH_H3_SAGE_ATTN", "").strip().lower() not in ("0", "false", "no", "off")
+                and os.environ.get("UNSLOTH_H3_SAGE_ATTN", "").strip().lower()
+                not in ("0", "false", "no", "off")
                 and sd_cpp_supports_sage_attn(binary)
             )
             # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal would outlive the
@@ -3406,7 +3407,6 @@ class VideoBackend:
             # to an F32-dequant reference than the int8 MMQ path on video (PSNR 33.7 vs 30.2 dB, B200, 20 steps). A
             # value the user already exported wins, 0 included.
             from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
-
             if H3_QUANT_CUBLAS_ENV not in os.environ:
                 native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0

@@ -24,7 +24,15 @@ if str(_BACKEND) not in sys.path:
 from core.inference import video_minimax_h3 as h3  # noqa: E402
 
 GIB = 1024**3
-AUTO_FLAGS = ("--offload-to-cpu", "--diffusion-fa", "--max-vram", "-1", "--stream-layers", "--backend", "diffusion=CUDA0,te=CUDA0,vae=CUDA0")
+AUTO_FLAGS = (
+    "--offload-to-cpu",
+    "--diffusion-fa",
+    "--max-vram",
+    "-1",
+    "--stream-layers",
+    "--backend",
+    "diffusion=CUDA0,te=CUDA0,vae=CUDA0",
+)
 # The four Hub files of the UD-Q3_K_XL and Q8_0 bundles (bytes on disk).
 Q3_FILES = int((8.90 + 16.97 + 4.85 + 0.56) * GIB)
 Q8_FILES = int((19.97 + 16.97 + 4.85 + 0.56) * GIB)
@@ -32,41 +40,61 @@ Q8_FILES = int((19.97 + 16.97 + 4.85 + 0.56) * GIB)
 
 def test_auto_runs_resident_when_the_card_holds_the_bundle():
     need = h3.h3_native_resident_bytes(Q3_FILES, 960, 544, 124)
-    flags, resident = h3.h3_native_render_flags(AUTO_FLAGS, memory_mode = "auto", free_bytes = need, need_bytes = need, env = {})
+    flags, resident = h3.h3_native_render_flags(
+        AUTO_FLAGS, memory_mode = "auto", free_bytes = need, need_bytes = need, env = {}
+    )
     assert resident is True
     assert "--offload-to-cpu" not in flags and "--stream-layers" not in flags
     # Everything else the load committed is kept, in order: flash attention, the graph-cut budget, the device pin.
-    assert flags == ["--diffusion-fa", "--max-vram", "-1", "--backend", "diffusion=CUDA0,te=CUDA0,vae=CUDA0"]
+    assert flags == [
+        "--diffusion-fa",
+        "--max-vram",
+        "-1",
+        "--backend",
+        "diffusion=CUDA0,te=CUDA0,vae=CUDA0",
+    ]
 
 
 def test_auto_keeps_offload_when_the_card_is_one_byte_short():
     need = h3.h3_native_resident_bytes(Q3_FILES, 960, 544, 124)
-    flags, resident = h3.h3_native_render_flags(AUTO_FLAGS, memory_mode = "auto", free_bytes = need - 1, need_bytes = need, env = {})
+    flags, resident = h3.h3_native_render_flags(
+        AUTO_FLAGS, memory_mode = "auto", free_bytes = need - 1, need_bytes = need, env = {}
+    )
     assert resident is False and flags == list(AUTO_FLAGS)
 
 
 @pytest.mark.parametrize("free, need", [(None, 10 * GIB), (90 * GIB, None), (None, None)])
 def test_an_unreadable_card_or_size_keeps_offload(free, need):
-    flags, resident = h3.h3_native_render_flags(AUTO_FLAGS, memory_mode = "auto", free_bytes = free, need_bytes = need, env = {})
+    flags, resident = h3.h3_native_render_flags(
+        AUTO_FLAGS, memory_mode = "auto", free_bytes = free, need_bytes = need, env = {}
+    )
     assert resident is False and flags == list(AUTO_FLAGS)
 
 
 @pytest.mark.parametrize("mode", ["balanced", "low_vram"])
 def test_an_explicit_offload_mode_is_left_as_asked(mode):
-    flags, resident = h3.h3_native_render_flags(AUTO_FLAGS, memory_mode = mode, free_bytes = 500 * GIB, need_bytes = GIB, env = {})
+    flags, resident = h3.h3_native_render_flags(
+        AUTO_FLAGS, memory_mode = mode, free_bytes = 500 * GIB, need_bytes = GIB, env = {}
+    )
     assert resident is False and flags == list(AUTO_FLAGS)
 
 
 def test_flags_that_do_not_offload_are_untouched():
     fast = ("--diffusion-fa",)
-    flags, resident = h3.h3_native_render_flags(fast, memory_mode = "auto", free_bytes = 500 * GIB, need_bytes = GIB, env = {})
+    flags, resident = h3.h3_native_render_flags(
+        fast, memory_mode = "auto", free_bytes = 500 * GIB, need_bytes = GIB, env = {}
+    )
     assert resident is False and flags == ["--diffusion-fa"]
 
 
 @pytest.mark.parametrize("value", ["0", "false", "off", "no"])
 def test_kill_switch(value):
     flags, resident = h3.h3_native_render_flags(
-        AUTO_FLAGS, memory_mode = "auto", free_bytes = 500 * GIB, need_bytes = GIB, env = {h3.H3_NATIVE_RESIDENT_ENV: value}
+        AUTO_FLAGS,
+        memory_mode = "auto",
+        free_bytes = 500 * GIB,
+        need_bytes = GIB,
+        env = {h3.H3_NATIVE_RESIDENT_ENV: value},
     )
     assert resident is False and flags == list(AUTO_FLAGS)
 
@@ -92,7 +120,9 @@ def _video_backend_tests():
 
     name = "_studio_test_video_backend"
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("test_video_backend.py"))
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name("test_video_backend.py")
+        )
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
@@ -112,7 +142,9 @@ def _backend_with_files(monkeypatch, tmp_path, calls, *, memory_mode, flags):
     state = backend._state
     backend._state = dataclasses.replace(
         state,
-        pipe = h3.MiniMaxH3NativeRuntime(engine = state.pipe.engine, files = SimpleNamespace(**paths), offload_flags = tuple(flags)),
+        pipe = h3.MiniMaxH3NativeRuntime(
+            engine = state.pipe.engine, files = SimpleNamespace(**paths), offload_flags = tuple(flags)
+        ),
         memory_mode = memory_mode,
         offload_policy = "group",
     )
@@ -123,9 +155,15 @@ def test_generate_drops_offload_on_a_card_that_fits(monkeypatch, tmp_path):
     import core.inference.video as video
 
     calls: list = []
-    backend = _backend_with_files(monkeypatch, tmp_path, calls, memory_mode = "auto", flags = AUTO_FLAGS)
+    backend = _backend_with_files(
+        monkeypatch, tmp_path, calls, memory_mode = "auto", flags = AUTO_FLAGS
+    )
     seen = []
-    monkeypatch.setattr(video, "_h3_card_free_bytes", lambda device, ordinal: seen.append((device, ordinal)) or 90 * GIB)
+    monkeypatch.setattr(
+        video,
+        "_h3_card_free_bytes",
+        lambda device, ordinal: seen.append((device, ordinal)) or 90 * GIB,
+    )
     result = backend.generate(prompt = "a fox", width = 960, height = 544)
     assert seen == [("cuda", None)]
     assert "--offload-to-cpu" not in calls[0]["offload"] and "--diffusion-fa" in calls[0]["offload"]
@@ -137,7 +175,9 @@ def test_generate_keeps_offload_on_a_card_that_does_not(monkeypatch, tmp_path):
     import core.inference.video as video
 
     calls: list = []
-    backend = _backend_with_files(monkeypatch, tmp_path, calls, memory_mode = "auto", flags = AUTO_FLAGS)
+    backend = _backend_with_files(
+        monkeypatch, tmp_path, calls, memory_mode = "auto", flags = AUTO_FLAGS
+    )
     monkeypatch.setattr(video, "_h3_card_free_bytes", lambda device, ordinal: 20 * GIB)
     result = backend.generate(prompt = "a fox", width = 960, height = 544)
     assert calls[0]["offload"] == list(AUTO_FLAGS)
@@ -148,7 +188,11 @@ def test_generate_does_not_probe_the_card_for_balanced(monkeypatch, tmp_path):
     import core.inference.video as video
 
     calls: list = []
-    backend = _backend_with_files(monkeypatch, tmp_path, calls, memory_mode = "balanced", flags = AUTO_FLAGS)
-    monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: (_ for _ in ()).throw(AssertionError("probed")))
+    backend = _backend_with_files(
+        monkeypatch, tmp_path, calls, memory_mode = "balanced", flags = AUTO_FLAGS
+    )
+    monkeypatch.setattr(
+        video, "_h3_card_free_bytes", lambda *_a: (_ for _ in ()).throw(AssertionError("probed"))
+    )
     backend.generate(prompt = "a fox", width = 960, height = 544)
     assert calls[0]["offload"] == list(AUTO_FLAGS)
