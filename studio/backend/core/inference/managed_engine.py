@@ -362,7 +362,10 @@ class ManagedEngine:
                         memory_fraction,
                         len(gpu_ids or [0]),
                         **(
-                            {"options": options, "trust_remote_code": trust_remote_code}
+                            {
+                                "options": {**options, "engine_version": info.get("version")},
+                                "trust_remote_code": trust_remote_code,
+                            }
                             if options
                             else {}
                         ),
@@ -482,7 +485,14 @@ class ManagedEngine:
             self.context,
             gpu_memory_fraction(gpu_ids or [0], memory_reserve_mib(self.engine, options)),
             len(gpu_ids or [0]),
-            **({"options": options, "trust_remote_code": trust_remote_code} if options else {}),
+            **(
+                {
+                    "options": {**options, "engine_version": info.get("version")},
+                    "trust_remote_code": trust_remote_code,
+                }
+                if options
+                else {}
+            ),
             **({"served_model_name": model} if model_path and model_path != model else {}),
         )
         # The engine launchers are Studio source files; the guest reads them through /mnt.

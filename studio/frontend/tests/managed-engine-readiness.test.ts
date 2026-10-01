@@ -7,7 +7,7 @@ import type { EngineStatus } from "../src/features/model-picker/api/engines.ts";
 import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
-const { isEngineReady, wslNoticeKey } = await import("../src/features/model-picker/api/engines.ts");
+const { isEngineReady, wslNoticeKey, convertsToInteger } = await import("../src/features/model-picker/api/engines.ts");
 
 const installed: EngineStatus = {
   engine: "vllm", version: "new", installed_version: "old",
@@ -55,4 +55,12 @@ test("Windows users are told about WSL2, the UAC prompt and a restart before ins
     wslNoticeKey({ ...installed, host: "wsl", wsl: { state: "ready", distro: "UnslothStudio" } }),
     "managedEngines.wslReady",
   );
+});
+
+test("SGLang 0.5.18 and newer offer no load-time INT8 or 4-bit conversion", () => {
+  assert.equal(convertsToInteger(installed), true);
+  const sglang = { ...installed, engine: "sglang" as const };
+  assert.equal(convertsToInteger({ ...sglang, installed_version: "0.5.17" }), true);
+  assert.equal(convertsToInteger({ ...sglang, installed_version: "0.5.20" }), false);
+  assert.equal(convertsToInteger({ ...sglang, installed_version: null, version: "0.5.20" }), false);
 });

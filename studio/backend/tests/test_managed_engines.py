@@ -2147,3 +2147,41 @@ def test_wsl_installs_the_newest_release_and_prices_the_distro(isolated, monkeyp
     assert install.download_bytes(engine) == complete + extra
     monkeypatch.setattr(wsl_host, "summary", lambda: {"state": "ready", "distro": "UnslothStudio"})
     assert install.download_bytes(engine) == complete
+
+
+@pytest.mark.parametrize("version", ["0.5.20", "0.5.18"])
+def test_sglang_without_torchao_refuses_int8_and_int4(version):
+    from core.inference.engine_adapters import ADAPTERS
+
+    for precision in ("int8", "int4"):
+        with pytest.raises(ValueError, match = "Choose FP8 or Model default"):
+            ADAPTERS["sglang"].command(
+                "python",
+                "model",
+                1,
+                "key",
+                4096,
+                0.8,
+                options = {"precision": precision, "engine_version": version},
+            )
+    args = ADAPTERS["sglang"].command(
+        "python",
+        "model",
+        1,
+        "key",
+        4096,
+        0.8,
+        options = {"precision": "fp8", "disable_cuda_graph": True, "engine_version": version},
+    )
+    assert "--torchao-config" not in args
+    assert args[args.index("--quantization") + 1] == "fp8"
+    legacy = ADAPTERS["sglang"].command(
+        "python",
+        "model",
+        1,
+        "key",
+        4096,
+        0.8,
+        options = {"precision": "int8", "engine_version": "0.5.17"},
+    )
+    assert legacy[legacy.index("--torchao-config") + 1] == "int8wo"
