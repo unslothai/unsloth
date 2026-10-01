@@ -1036,8 +1036,9 @@ class TestFrontendAssets:
         app = FastAPI()
         app.state.cloudflare_url = None
         assert main_module.setup_frontend(app, tmp_path, tunnel_only = True)
-        # Default TestClient uses scope["server"] == ("testserver", 80), not loopback.
-        loopback_client = TestClient(app, base_url = "http://127.0.0.1:8888")
+        loopback_client = TestClient(
+            app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000)
+        )
         client = TestClient(app)
         remote_client = TestClient(app, base_url = "https://remote.trycloudflare.com")
         headers = {"CF-Connecting-IP": "198.51.100.7"}
@@ -1048,11 +1049,12 @@ class TestFrontendAssets:
         proxied_loopback = TestClient(
             app,
             base_url = "http://127.0.0.1:8888",
-            headers = {"CF-Connecting-IP": "203.0.113.7"},
+            client = ("127.0.0.1", 40001),
+            headers = {"X-Forwarded-For": "203.0.113.7"},
         )
         assert proxied_loopback.get("/").status_code == 404
         assert proxied_loopback.get("/assets/app.js").status_code == 404
-        assert loopback_client.get("/", headers = {"Host": "127.0.0.1"}).status_code == 404
+        assert loopback_client.get("/", headers = {"Host": "evil.example:8888"}).status_code == 404
         assert remote_client.get("/", headers = headers).status_code == 404
 
         app.state.cloudflare_url = "https://remote.trycloudflare.com"
@@ -1062,6 +1064,7 @@ class TestFrontendAssets:
         assert loopback_client.get("/", headers = headers).status_code == 404
         assert loopback_client.get("/").status_code == 200
         assert client.get("/", headers = headers).status_code == 404
+        assert client.get("/settings/api", headers = headers).status_code == 404
         assert client.get("/").status_code == 404
 
     def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
