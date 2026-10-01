@@ -2457,6 +2457,18 @@ def _quantised_streaming() -> bool:
     return bool(_quantised_streaming_capability)
 
 
+def _diffusers_offload_tiers() -> dict:
+    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
+    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
+    try:
+        from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
+
+        tiers = h3_diffusers_fit_tiers()
+    except Exception:  # noqa: BLE001 -- a picker hint must never break the polled route
+        return {}
+    return {"minimaxai/minimax-h3": tiers} if tiers else {}
+
+
 def _nvfp4_diffusion_enabled() -> bool:
     """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
     try:
@@ -2574,6 +2586,8 @@ def get_system_info(
         "dense_quant_schemes": _dense_quant_schemes(),
         # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
         "quantised_streaming": _quantised_streaming(),
+        # Backend-measured offload tiers the picker unions with the catalog's. Additive key.
+        "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }
