@@ -19,7 +19,7 @@ TAURI = Path(__file__).resolve().parents[2] / "studio/src-tauri"
     [("tauri", (2, 12, 0)), ("tauri-codegen", (2, 7, 0))],
 )
 def test_windows_icons_use_resource_aware_tauri(crate, minimum) -> None:
-    # tauri #15241 selects ICO entries; #15274 loads the Windows executable icon resource.
+    # tauri #15241 (ICO entry selection), #15274 (exe icon resource).
     entry = re.search(
         rf'\[\[package\]\]\s+name = "{crate}"\s+version = "([^"]+)"',
         (TAURI / "Cargo.lock").read_text(encoding = "utf-8"),
@@ -31,7 +31,7 @@ def test_windows_icons_use_resource_aware_tauri(crate, minimum) -> None:
 
 
 def test_supplied_icons_are_not_regenerated() -> None:
-    # SHA-256 of the supplied Design export, independent of the developer's home folder.
+    # SHA-256 of the supplied design export; artwork must stay byte-for-byte.
     expected = {
         "32x32.png": "908b71cd54669a88ad6559c9325aa28e7517fea14f71b07a42bd597318758952",
         "128x128.png": "9274f7e007422b1de4066167c960f548a9bf0651ed7b421cb4a918bfcc26c503",
