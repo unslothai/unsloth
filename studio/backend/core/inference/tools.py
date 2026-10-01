@@ -76,6 +76,7 @@ from core.inference.mcp_client import (
     is_stdio,
     list_tools_async,
     parse_server_headers,
+    parse_stdio_command,
     probe_timeout,
     record_probe_failure,
     stdio_mcp_enabled,
@@ -13339,6 +13340,18 @@ def _mcp_image_recipient(server: dict, mapping: dict) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys = True).encode()).hexdigest()
 
 
+def _mcp_image_destination(url: str) -> str:
+    # Host or program name only: credentials can sit in URL userinfo or in stdio arguments.
+    if is_stdio(url):
+        try:
+            return f"local command {os.path.basename(parse_stdio_command(url)[0])}"
+        except (ValueError, IndexError):
+            return "local command"
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "unknown host"
+    return f"{host}:{parts.port}" if parts.port else host
+
+
 def mcp_image_share(name, arguments, mcp_image) -> dict | None:
     """Approval-card details plus the image bound to this server when the call would send it, else None."""
     if mcp_image is None or not isinstance(arguments, dict):
@@ -13353,7 +13366,7 @@ def mcp_image_share(name, arguments, mcp_image) -> dict | None:
             "server": server.get("display_name") or server["id"],
             "tool": tool_name,
             "size_bytes": len(mcp_image.data),
-            "destination": urllib.parse.urlsplit(server["url"]).netloc or server["url"],
+            "destination": _mcp_image_destination(server["url"]),
         },
         "image": mcp_image.approved_for(_mcp_image_recipient(server, mapping)),
     }

@@ -198,6 +198,11 @@ def test_unmapped_and_literal_arguments_take_the_ordinary_path(mapped_server):
         "destination": "trace.example",
     }
     assert share["image"].data == image.data and share["image"].recipient
+    # Credentials in URL userinfo or stdio arguments never reach the card.
+    assert tools_mod._mcp_image_destination("https://u:pw@trace.example/mcp") == "trace.example"
+    assert (
+        tools_mod._mcp_image_destination("npx -y trace-mcp --token s3cret") == "local command npx"
+    )
 
 
 def _one_call_turns():
