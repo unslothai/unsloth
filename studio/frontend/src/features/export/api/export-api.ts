@@ -59,6 +59,12 @@ export interface ModelCheckpoints {
   peft_type?: string | null;
   lora_rank?: number | null;
   is_quantized?: boolean;
+  adapter_features?: {
+    dora?: boolean | null;
+    full_state?: boolean | null;
+    moe_target_parameters?: boolean | null;
+    non_uniform?: boolean | null;
+  } | null;
 }
 
 export interface CheckpointListResponse {
@@ -188,6 +194,8 @@ export async function exportLoRA(params: {
   gguf?: boolean;
   /** GGUF LoRA output float type (f32/f16/bf16/q8_0/auto); only used when gguf=true. */
   gguf_outtype?: string;
+  /** On-disk adapter format; omitted resolves to the platform's native format. */
+  adapter_format?: "mlx" | "peft";
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/lora", {
     method: "POST",

@@ -46,7 +46,7 @@ export function TrainBaseSelector({
         <button
           type="button"
           aria-label="Training base model"
-          className="unsloth-model-selector-trigger flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 max-w-[320px] items-center gap-2 rounded-full pl-4 pr-2 text-sm transition-colors hover:bg-accent"
+          className="unsloth-model-selector-trigger flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 max-w-[calc(320px*var(--ui-space-scale,1))] items-center gap-2 rounded-full pl-4 pr-2 text-sm transition-colors hover:bg-accent"
         >
           <span className="min-w-0 truncate font-medium">{label}</span>
           {family && (
@@ -63,7 +63,7 @@ export function TrainBaseSelector({
           </span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-[420px] w-[340px] overflow-y-auto">
+      <DropdownMenuContent align="start" className="max-h-[min(calc(420px*var(--ui-space-scale,1)),var(--radix-dropdown-menu-content-available-height))] w-[calc(340px*var(--ui-space-scale,1))] overflow-y-auto">
         {families.map((f) => (
           <DropdownMenuGroup key={f.name}>
             <DropdownMenuLabel className="text-ui-11 text-muted-foreground">

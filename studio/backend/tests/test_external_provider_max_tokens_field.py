@@ -14,33 +14,10 @@ import httpx
 import pytest
 
 from core.inference import external_provider as ep_mod
-from core.inference.external_provider import (
-    ExternalProviderClient,
-    _chat_completions_max_tokens_field,
-    _rewrite_body_max_tokens_to_completion,
-    _should_retry_with_max_completion_tokens,
-)
+from core.inference.external_provider import ExternalProviderClient, _rejects_max_tokens
 
-
-@pytest.mark.parametrize(
-    ("provider_type", "base_url", "expected"),
-    [
-        ("openai", "https://api.openai.com/v1", "max_completion_tokens"),
-        # Azure/custom gateways: first wire attempt uses max_tokens; retry on 400 (#10787).
-        ("custom", "https://my-resource.openai.azure.com/openai/v1", "max_tokens"),
-        ("custom", "https://chat.kiconnect.nrw/api/v1", "max_tokens"),
-        ("custom", "https://my-vllm-server.com/v1", "max_tokens"),
-        ("custom", "http://127.0.0.1:8080/v1", "max_tokens"),
-        ("vllm", "http://127.0.0.1:8000/v1", "max_tokens"),
-    ],
-)
-def test_chat_completions_max_tokens_field(provider_type, base_url, expected):
-    assert _chat_completions_max_tokens_field(provider_type, base_url) == expected
-
-
-def test_should_retry_with_max_completion_tokens_matches_openai_error_shape():
-    body = {"model": "gpt-5", "messages": [], "max_tokens": 128}
-    err = {
+_AZURE_ERROR = json.dumps(
+    {
         "error": {
             "message": (
                 "Unsupported parameter: 'max_tokens' is not supported with this model. "
@@ -51,14 +28,25 @@ def test_should_retry_with_max_completion_tokens_matches_openai_error_shape():
             "code": "unsupported_parameter",
         }
     }
-    assert _should_retry_with_max_completion_tokens(400, json.dumps(err), body)
+)
 
 
-def test_rewrite_body_max_tokens_to_completion():
-    assert _rewrite_body_max_tokens_to_completion({"max_tokens": 64, "model": "m"}) == {
-        "model": "m",
-        "max_completion_tokens": 64,
-    }
+@pytest.mark.parametrize(
+    ("status", "text", "expected"),
+    [
+        (400, _AZURE_ERROR, True),
+        (400, "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens'.", True),
+        (500, _AZURE_ERROR, False),
+        (
+            400,
+            json.dumps({"error": {"message": "max_tokens too large", "param": "max_tokens"}}),
+            False,
+        ),
+        (400, json.dumps({"error": {"message": "bad temperature", "param": "temperature"}}), False),
+    ],
+)
+def test_rejects_max_tokens(status, text, expected):
+    assert _rejects_max_tokens(status, text) is expected
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -67,84 +55,93 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args, **kwargs) -> None:
         return
 
-    def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b"{}"
-        body = json.loads(raw.decode())
-        self.server.recorded.append(body)  # type: ignore[attr-defined]
-
-        if "max_tokens" in body and "max_completion_tokens" not in body:
-            err = json.dumps(
-                {
-                    "error": {
-                        "message": "Use 'max_completion_tokens' instead.",
-                        "param": "max_tokens",
-                        "code": "unsupported_parameter",
-                    }
-                }
-            ).encode()
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(err)))
-            self.end_headers()
-            self.wfile.write(err)
-            return
-
-        sse = (
-            'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n'
-            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
-            "data: [DONE]\n\n"
-        ).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(sse)))
+    def _send(self, status: int, payload: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(sse)
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:  # noqa: N802
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.recorded.append(body)  # type: ignore[attr-defined]
+        if "max_tokens" in body:
+            self._send(400, self.server.error.encode(), "application/json")  # type: ignore[attr-defined]
+        elif body.get("stream"):
+            sse = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n' "data: [DONE]\n\n"
+            self._send(200, sse.encode(), "text/event-stream")
+        else:
+            reply = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}]}
+            self._send(200, json.dumps(reply).encode(), "application/json")
 
 
-def _run(coro) -> None:
-    loop = asyncio.new_event_loop()
-    previous = ep_mod._http_client
-    client = httpx.AsyncClient()
-
-    async def wrapper() -> None:
-        try:
-            await coro()
-        finally:
-            await client.aclose()
-
-    ep_mod._http_client = client
-    try:
-        loop.run_until_complete(wrapper())
-    finally:
-        ep_mod._http_client = previous
-        loop.close()
-
-
-def test_custom_gateway_retries_with_max_completion_tokens_on_the_wire():
-    """Mirrors #10787 (KI:connect): custom provider, GPT-5 gateway rejects max_tokens once."""
+@pytest.fixture
+def gateway(monkeypatch):
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     httpd.recorded = []  # type: ignore[attr-defined]
+    httpd.error = _AZURE_ERROR  # type: ignore[attr-defined]
     thread = threading.Thread(target = httpd.serve_forever, daemon = True)
     thread.start()
-    base_url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
     try:
-        client = ExternalProviderClient(provider_type = "custom", base_url = base_url, api_key = "")
-
-        async def go() -> None:
-            async for _ in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "GPT5-Mitarbeitende",
-                max_tokens = 128,
-            ):
-                pass
-
-        _run(go)
-        assert len(httpd.recorded) == 2
-        assert httpd.recorded[0].get("max_tokens") == 128
-        assert httpd.recorded[1].get("max_completion_tokens") == 128
-        assert "max_tokens" not in httpd.recorded[1]
+        yield httpd
     finally:
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout = 10)
+
+
+def _run(coro_fn):
+    async def wrapper():
+        async with httpx.AsyncClient(trust_env = False) as http:
+            ep_mod._http_client = http
+            return await coro_fn()
+
+    previous = ep_mod._http_client
+    try:
+        return asyncio.run(wrapper())
+    finally:
+        ep_mod._http_client = previous
+
+
+def _client(httpd) -> ExternalProviderClient:
+    base_url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+    return ExternalProviderClient(provider_type = "custom", base_url = base_url, api_key = "")
+
+
+def _stream(client) -> str:
+    async def go():
+        out = []
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "GPT5-Mitarbeitende",
+            max_tokens = 128,
+        ):
+            out.append(line)
+        return "\n".join(out)
+
+    return _run(go)
+
+
+def test_stream_retries_with_max_completion_tokens(gateway):
+    out = _stream(_client(gateway))
+    assert [b.get("max_tokens") for b in gateway.recorded] == [128, None]
+    assert gateway.recorded[1]["max_completion_tokens"] == 128
+    assert '"content":"ok"' in out and "unsupported_parameter" not in out
+
+
+def test_stream_other_400_is_not_retried(gateway):
+    gateway.error = json.dumps({"error": {"message": "bad request", "param": "messages"}})
+    out = _stream(_client(gateway))
+    assert len(gateway.recorded) == 1
+    assert "bad request" in out
+
+
+def test_non_stream_retries_with_max_completion_tokens(gateway):
+    client = _client(gateway)
+    reply = _run(
+        lambda: client.chat_completion(
+            messages = [{"role": "user", "content": "hi"}], model = "gpt-5", max_tokens = 64
+        )
+    )
+    assert reply["choices"][0]["message"]["content"] == "ok"
+    assert [b.get("max_completion_tokens") for b in gateway.recorded] == [None, 64]

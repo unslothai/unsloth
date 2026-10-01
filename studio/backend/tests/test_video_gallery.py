@@ -399,7 +399,11 @@ def test_webm_export_keeps_the_audio_track():
     av = pytest.importorskip("av")
     import io
 
-    record = gallery.save(_real_mp4_with_audio(), _meta())
+    source = _real_mp4_with_audio()
+    with av.open(io.BytesIO(source)) as container:
+        stream = container.streams.audio[0]
+        source_seconds = sum(frame.samples for frame in container.decode(stream)) / stream.rate
+    record = gallery.save(source, _meta())
     webm = gallery.transcode(record["id"], "webm")
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
     with av.open(io.BytesIO(webm)) as container:
@@ -410,8 +414,11 @@ def test_webm_export_keeps_the_audio_track():
     with av.open(io.BytesIO(webm)) as container:
         for frame in container.decode(audio = 0):
             samples += frame.samples
-    # A full second of 48 kHz audio survived (Opus pads its last 20 ms frame).
-    assert samples >= 48000, samples
+    # The whole source track survived, give or take one 20 ms Opus frame (960 samples at 48 kHz)
+    # lost to resampling and framing at the edges. Measured against the decoded source, not a
+    # flat 48000: PyAV 18 decoded the 1 s AAC fixture with its encoder padding (45056 samples at
+    # 44.1 kHz), PyAV 19 trims it to the true 44100, and a flat floor only passed on the padding.
+    assert samples >= source_seconds * 48000 - 960, (samples, source_seconds)
 
 
 def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
@@ -501,6 +508,26 @@ def test_thumbnail_scales_large_frames_to_gallery_width():
     portrait = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 568)), _meta())
     with Image.open(io.BytesIO(gallery.thumbnail(portrait["id"]))) as image:
         assert image.size == (192, 341)
+
+
+def test_thumbnail_refuses_frames_past_max_pixels_even_when_the_header_understates_them():
+    import io
+
+    av = pytest.importorskip("av")
+    clip = _real_mp4_bytes(frames = 2, size = 256)
+    lying = io.BytesIO()
+    with av.open(io.BytesIO(clip)) as src, av.open(lying, "w", format = "mp4") as out:
+        stream = out.add_stream("mpeg4", rate = 8)
+        stream.width = stream.height = 16
+        stream.pix_fmt = "yuv420p"
+        for packet in src.demux(src.streams.video[0]):
+            if packet.dts is not None:
+                packet.stream = stream
+                out.mux(packet)
+    assert gallery.first_frame_webp(io.BytesIO(clip), container = "mp4", max_pixels = 2 * 256 * 256)
+    for data in (clip, lying.getvalue()):
+        with pytest.raises(RuntimeError):
+            gallery.first_frame_webp(io.BytesIO(data), container = "mp4", max_pixels = 128 * 128)
 
 
 def test_thumbnail_rejects_unowned_and_invalid_videos():

@@ -103,15 +103,70 @@ def test_hadamard_is_symmetric_and_orthogonal():
         assert torch.allclose(h @ h, torch.eye(size), atol = 1e-5)
 
 
+_H4 = ((1, 1, 1, -1), (1, 1, -1, 1), (1, -1, 1, 1), (-1, 1, 1, 1))
+_SIZES = (4, 16, 64, 256, 1024)
+_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
+_DEVICES = ("cpu",) + (("cuda",) if torch.cuda.is_available() else ())
+
+
+def _reference_hadamard(size, dtype):
+    # the kron definition the hosted checkpoints were rotated with; exact in float64
+    h4 = torch.tensor(_H4, dtype = torch.float64)
+    h = h4
+    while h.shape[0] < size:
+        h = torch.kron(h, h4)
+    return (h / size**0.5).to(dtype)
+
+
+def _bits(t):
+    return t.view(torch.int32 if t.dtype == torch.float32 else torch.int16)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("dtype", _DTYPES)
+@pytest.mark.parametrize("size", _SIZES)
+def test_hadamard_is_bit_identical_to_the_kron_definition(size, dtype, device):
+    h = build_convrot_hadamard(size, device = device, dtype = dtype)
+    ref = _reference_hadamard(size, dtype).to(device)
+    assert h.dtype == dtype and h.device.type == torch.device(device).type
+    assert h.shape == (size, size)
+    assert torch.equal(_bits(h), _bits(ref))
+
+
+@pytest.mark.parametrize("size", _SIZES)
+def test_hadamard_is_orthogonal_in_float64_exactly(size):
+    h = build_convrot_hadamard(size, dtype = torch.float64)
+    assert torch.equal(h, h.T)
+    assert torch.equal(h @ h.T, torch.eye(size, dtype = torch.float64))
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("size", (4, 16, 256))
+def test_rotations_match_an_explicit_block_diagonal(size, device):
+    from core.inference.diffusion_convrot import rotate_convrot_activation
+
+    torch.manual_seed(0)
+    groups = 3
+    ref = _reference_hadamard(size, torch.float64).to(device)
+    block = torch.block_diag(*([ref] * groups))
+    x = torch.randn(2, 5, groups * size, dtype = torch.float64, device = device)
+    h = build_convrot_hadamard(size, device = device, dtype = torch.float64)
+    assert torch.allclose(rotate_convrot_activation(x, h, size), x @ block, atol = 1e-12)
+
+    linear = nn.Linear(groups * size, 6, dtype = torch.float32, device = device)
+    dense = linear.weight.detach().double().clone()
+    rotate_convrot_weight_(linear, size)
+    expected = (dense @ block.T).float()
+    assert torch.allclose(linear.weight, expected, atol = 1e-6)
+
+
 def test_hadamard_rejects_a_non_power_of_four():
     with pytest.raises(ValueError):
         build_convrot_hadamard(32)
 
 
 def test_denoiser_and_conditioner_share_one_hadamard():
-    # The hosted conditioner (PR 8283) and the denoiser have to agree with the same comfy-kitchen
-    # definition down to the normalizer. Sharing the function is how that is guaranteed rather
-    # than periodically re-checked; this pins the sharing so a future copy-paste fails here.
+    # conditioner (PR 8283) and denoiser must share one Hadamard; fails on a future copy-paste
     from core.inference import video_minimax_h3_te as te
 
     from core.inference import diffusion_convrot as cr
@@ -281,7 +336,11 @@ def test_format_tag_follows_the_rotation():
     assert pq.prequant_format_for({"scheme": "int8"}) == pq.PREQUANT_FORMAT
     assert pq.prequant_format_for(_meta(["a"])) == pq.PREQUANT_FORMAT_ROTATED
     assert pq.PREQUANT_FORMAT_ROTATED != pq.PREQUANT_FORMAT
-    assert set(pq.PREQUANT_FORMATS) == {pq.PREQUANT_FORMAT, pq.PREQUANT_FORMAT_ROTATED}
+    assert set(pq.PREQUANT_FORMATS) == {
+        pq.PREQUANT_FORMAT,
+        pq.PREQUANT_FORMAT_ROTATED,
+        pq.PREQUANT_FORMAT_POLICY,
+    }
 
 
 @pytest.mark.parametrize(
@@ -434,3 +493,22 @@ def test_every_rotated_projection_shares_one_class():
     _install_rotation(third, 128)
     assert (first.convrot_groupsize, third.convrot_groupsize) == (256, 128)
     assert torch.is_tensor(first.weight)
+
+
+def test_rotated_forward_traces_fullgraph_on_a_cold_cache(monkeypatch):
+    """Denoiser blocks compile with fullgraph=True; a cold Hadamard build must not graph-break."""
+    import torch
+    from torch import nn
+
+    import core.inference.diffusion_convrot as dc
+
+    torch._dynamo.reset()
+    monkeypatch.setattr(dc, "_HADAMARD_CACHE", {})
+    linear = nn.Linear(256, 8, bias = False)
+    dc._install_rotation(linear, 64)
+    x = torch.randn(3, 256)
+    expected = linear(x)
+    dc._HADAMARD_CACHE.clear()
+    compiled = torch.compile(linear, fullgraph = True, backend = "eager")
+    assert torch.equal(compiled(x), expected)
+    torch._dynamo.reset()

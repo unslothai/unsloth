@@ -53,6 +53,7 @@ def _load(name: str, path: Path):
 
 
 prebuilt_wheels = _load("prebuilt_wheels", SCRIPTS / "prebuilt_wheels.py")
+prebuilt_wheels_shard = _load("prebuilt_wheels_shard", SCRIPTS / "prebuilt_wheels_shard.py")
 
 
 def env(
@@ -425,39 +426,26 @@ class TestReleaseNotes:
             entries, tag = "prebuilt-wheels-cu13", repo = "unslothai/unsloth"
         )
 
-    def test_every_wheel_is_listed_with_its_digest(self):
-        notes = self._notes()
-        for torch in prebuilt_wheels.TORCH_VERSIONS:
-            for package in prebuilt_wheels.SPECS:
-                assert f"`{prebuilt_wheels.wheel_name(package, torch, '3.13')}`" in notes
-        assert "| 6 wheels" not in notes
-        assert "6 wheels, each with a `.sigstore.json` bundle beside it." in notes
-
-    def test_non_wheel_assets_are_not_rows(self):
-        assert "| `SHA256SUMS` |" not in self._notes()
-
-    def test_the_verification_commands_are_the_ones_the_workflow_signs_with(self):
-        notes = self._notes()
-        assert "python -m sigstore verify identity" in notes
-        assert (
-            "https://github.com/unslothai/unsloth/.github/workflows/prebuilt-cuda-wheels.yml"
-            in notes
+    def test_the_body_is_one_sentence_naming_what_is_attached(self):
+        assert self._notes() == (
+            "Prebuilt Linux x86_64 CUDA 13 wheels for flash-attn 2.8.4, causal-conv1d 1.7.0 and "
+            "mamba-ssm 2.3.2.post1, built for PyTorch 2.13 and 2.14 on Python 3.13.\n"
         )
-        assert "--cert-oidc-issuer https://token.actions.githubusercontent.com" in notes
-        assert "gh attestation verify <wheel> --repo unslothai/unsloth" in notes
-        assert "sha256sum -c SHA256SUMS" in notes
 
-    def test_it_says_why_these_exist_with_the_actual_symbols(self):
-        notes = self._notes()
-        assert "materialize_cow_storage" in notes
-        assert "c10_cuda_check_implementation" in notes
-        assert "Linux x86_64 only" in notes
-        assert "Not covered: Windows, macOS, ROCm" in notes
+    def test_it_describes_only_the_assets_present(self):
+        notes = prebuilt_wheels.render_notes(
+            [("0" * 64, prebuilt_wheels.wheel_name("mamba-ssm", "2.14.0", "3.12"))],
+            tag = "t",
+            repo = "o/r",
+        )
+        assert notes == (
+            "Prebuilt Linux x86_64 CUDA 13 wheels for mamba-ssm 2.3.2.post1, "
+            "built for PyTorch 2.14 on Python 3.12.\n"
+        )
 
-    def test_an_empty_release_does_not_render_an_empty_table(self):
-        notes = prebuilt_wheels.render_notes([], tag = "t", repo = "o/r")
-        assert "No wheels are attached" in notes
-        assert "| Wheel | Package |" not in notes
+    def test_an_empty_release_says_so(self):
+        notes = prebuilt_wheels.render_notes([("deadbeef", "SHA256SUMS")], tag = "t", repo = "o/r")
+        assert notes == "No wheels are attached to this release yet.\n"
 
 
 class TestMambaPatch:
@@ -537,8 +525,8 @@ class TestWorkflow:
         inputs = triggers(workflow)["workflow_dispatch"]["inputs"]
         assert inputs["publish"]["default"] is False
         assert inputs["gpu_smoke"]["default"] is False
-        assert workflow["jobs"]["publish"]["if"] == "inputs.publish"
-        assert workflow["jobs"]["gpu-smoke"]["if"] == "inputs.gpu_smoke"
+        assert "inputs.publish &&" in workflow["jobs"]["publish"]["if"]
+        assert "inputs.gpu_smoke &&" in workflow["jobs"]["gpu-smoke"]["if"]
 
     def test_only_publish_can_write_contents(self, workflow):
         assert workflow["permissions"] == {"contents": "read"}
@@ -666,3 +654,110 @@ class TestWorkflow:
 
     def test_concurrency_queues_rather_than_cancels(self, workflow):
         assert workflow["concurrency"]["cancel-in-progress"] is False
+
+
+class TestWarmSlices:
+    def test_the_slices_compile_every_object_exactly_once(self):
+        objects = [f"/src/build/temp/csrc/kernel_{i:03d}.o" for i in range(97)]
+        # ninja lists rules and phony targets too, and nothing guarantees order or uniqueness.
+        listing = "\n".join(
+            [f"{o}: cuda_compile" for o in reversed(objects)]
+            + [f"{objects[0]}: cuda_compile", "/src/build/temp/flash_api.o: compile", "all: phony"]
+        )
+        expected = sorted(objects + ["/src/build/temp/flash_api.o"])
+        slices = [prebuilt_wheels_shard.slice_objects(listing, k, 8) for k in range(8)]
+        assert sorted(o for s in slices for o in s) == expected
+        assert max(map(len, slices)) - min(map(len, slices)) <= 1
+
+    @pytest.mark.parametrize("shard", [-1, 8])
+    def test_a_slice_outside_the_range_is_refused(self, shard):
+        with pytest.raises(SystemExit):
+            prebuilt_wheels_shard.slice_objects("a.o: compile", shard, 8)
+
+    def test_every_sharded_cell_gets_one_warm_job_per_slice(self):
+        include = prebuilt_wheels.build_matrix()
+        warm = prebuilt_wheels.warm_matrix(include)
+        for cell in include:
+            jobs = [w for w in warm if w["wheel_name"] == cell["wheel_name"]]
+            assert [w["shard"] for w in jobs] == list(range(cell["shards"]))
+            for w in jobs:
+                assert w["label"] == f"{cell['label']} / shard {w['shard'] + 1} of {cell['shards']}"
+        assert {w["package"] for w in warm} == {"flash-attn"}
+
+    def test_nothing_to_warm_without_flash_attn(self):
+        include = prebuilt_wheels.build_matrix(packages = "causal-conv1d,mamba-ssm")
+        assert prebuilt_wheels.warm_matrix(include) == []
+
+    def test_the_plan_step_writes_the_warm_outputs(self, tmp_path):
+        output = tmp_path / "output"
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "prebuilt_wheels.py"), "matrix", "--github"],
+            env = {
+                "GITHUB_OUTPUT": str(output),
+                "UW_PACKAGES": "flash-attn,mamba-ssm",
+                "UW_TORCH_VERSIONS": "2.13.0",
+                "UW_PYTHON_VERSIONS": "",
+            },
+            check = True,
+            capture_output = True,
+        )
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        warm = json.loads(values["warm_matrix"])["include"]
+        assert (
+            values["warm_count"]
+            == str(len(warm))
+            == str(prebuilt_wheels.SPECS["flash-attn"]["shards"])
+        )
+        assert values["count"] == "2"
+
+
+class TestWarmWiring:
+    def test_warm_and_build_hash_the_same_compiles(self, workflow):
+        warm, build = workflow["jobs"]["warm"], workflow["jobs"]["build"]
+        assert warm["env"] == build["env"]
+        assert warm["runs-on"] == build["runs-on"] == "ubuntu-22.04"
+
+    def test_the_build_waits_for_warm_but_not_on_its_success(self, workflow):
+        warm, build = workflow["jobs"]["warm"], workflow["jobs"]["build"]
+        assert warm["continue-on-error"] is True
+        assert "warm" in build["needs"]
+        assert "!cancelled()" in build["if"]
+        assert warm["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.warm_matrix) }}"
+
+    def test_a_skipped_warm_does_not_skip_what_follows_the_build(self, workflow):
+        """Without a status function a skipped warm would silently skip signing and publishing."""
+        jobs = workflow["jobs"]
+
+        def needs(name):
+            value = jobs[name].get("needs", [])
+            return [value] if isinstance(value, str) else value
+
+        def ancestors(name):
+            return {a for n in needs(name) for a in {n} | ancestors(n)}
+
+        downstream = [name for name in jobs if "warm" in ancestors(name)]
+        assert set(downstream) == {"build", "gpu-smoke", "sign", "publish"}
+        for name in downstream:
+            assert "!cancelled()" in jobs[name]["if"], name
+            for parent in needs(name):
+                if parent not in ("plan", "warm"):
+                    assert f"needs.{parent}.result == 'success'" in jobs[name]["if"], name
+
+    def test_the_build_downloads_the_names_warm_uploads(self, workflow):
+        def step(job, name):
+            return next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == name)
+
+        uploaded = step("warm", "Hand the slice to the build job")["with"]["name"]
+        pattern = step("build", "Download the warm slices")["with"]["pattern"]
+        assert pattern.endswith("*")
+        assert uploaded.startswith(pattern[:-1])
+        assert uploaded[len(pattern) - 1 :] == "${{ matrix.shard }}"
+
+
+def test_release_lookups_do_not_pass_arg_to_gh_jq():
+    """gh's --jq has no --arg flag: `--jq --arg tag X` fails the publish job before any release call."""
+    workflow = (REPO / ".github" / "workflows" / "prebuilt-cuda-wheels.yml").read_text(
+        encoding = "utf-8"
+    )
+    assert "--jq --arg" not in workflow
+    assert workflow.count("== env.TAG") == 2

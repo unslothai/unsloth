@@ -83,9 +83,9 @@ export function WebUpdateBanner({
           className={cn(
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                   // Only rendered notes may shrink in the capped rail. Without
                   // them, shrink-0 keeps the compact card at its natural height.
                   // How far it may shrink is the surface's own content floor
