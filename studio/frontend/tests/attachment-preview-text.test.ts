@@ -1067,7 +1067,9 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
         `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
           `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
           `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
-          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r></w:p></w:body></w:document>`,
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r>` +
+          `<w:r><x:footnoteReference xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" x:id="3"/></w:r>` +
+          `</w:p></w:body></w:document>`,
       ),
       "word/_rels/document.xml.rels": relationships([
         ["footnotes", "notes/foot.xml"],
@@ -1077,7 +1079,7 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
         "footnote",
         note("footnote", 1, "Source: LATER") +
           note("footnote", 2, "Source: EARLIER") +
-          note("footnote", 3, "Source: UNREFERENCED") +
+          note("footnote", 3, "Source: LOCALLY DECLARED") +
           note("footnote", 4, "Source: DELETED"),
       ),
       "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
@@ -1093,8 +1095,8 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
     });
     assert.equal(
       marked.label(value),
-      "First.[1] Second.[2][i] \uE0007\uE001\n\n" +
-        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n\n" +
+      "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
         "Endnotes\n[i] Source: ENDNOTEBODY",
     );
   } finally {

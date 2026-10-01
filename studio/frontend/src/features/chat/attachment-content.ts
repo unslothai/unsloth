@@ -865,6 +865,7 @@ export function markDocxNotes(archive: Uint8Array): {
   const notesOf = (heading: string, label: (n: number) => string) => ({
     heading,
     label,
+    ns: "",
     bodies: new Map<string, string>(),
     referenced: new Set<string>(),
   });
@@ -886,6 +887,7 @@ export function markDocxNotes(archive: Uint8Array): {
     );
     const ns = doc.documentElement?.namespaceURI ?? "";
     if (!WORDPROCESSINGML_NAMESPACES.has(ns)) continue;
+    notes.ns = ns;
     for (const note of Array.from(doc.getElementsByTagNameNS(ns, kind))) {
       const type = note.getAttributeNS(ns, "type");
       if (type && type !== "normal") continue;
@@ -909,17 +911,18 @@ export function markDocxNotes(archive: Uint8Array): {
         DOCX_NOTE_REFERENCE_RE,
         (
           reference,
-          prefix: string | undefined,
+          _prefix: string | undefined,
           kind: keyof typeof kinds,
           attributes: string,
         ) => {
           const id = DOCX_NOTE_ID_RE.exec(attributes)?.[1];
-          if (id === undefined || !kinds[kind].bodies.has(id)) return reference;
-          kinds[kind].referenced.add(id);
-          const t = prefix ? `${prefix}:t` : "t";
+          const notes = kinds[kind];
+          if (id === undefined || !notes.bodies.has(id)) return reference;
+          notes.referenced.add(id);
           refs.push({ kind, id });
           const marker = `\uE000${nonce}.${refs.length - 1}\uE001`;
-          return `${reference}<${t}>${marker}</${t}>`;
+          // Declares its own namespace: the reference's prefix may be bound on the reference alone.
+          return `${reference}<t xmlns="${notes.ns}">${marker}</t>`;
         },
       )
     : "";
