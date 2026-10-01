@@ -360,6 +360,10 @@ test("local sharing keeps the recipient's quant unless the sender includes it", 
 test("share dialog defaults to Web only on loopback addresses", () => {
   const previous = window.location;
   try {
+    for (const address of ["http://localhost:8888", "http://192.168.1.20:8888"]) {
+      Object.assign(window, { location: new URL(`${address}/chat`) });
+      assert.equal(new URL(shareDialog(D)().link).protocol, "unsloth:", address);
+    }
     for (const [address, destination] of [
       ["http://localhost:8888", "browser"],
       ["http://127.10.20.30:8888", "browser"],

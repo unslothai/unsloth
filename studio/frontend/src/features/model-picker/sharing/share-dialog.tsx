@@ -118,7 +118,7 @@ export function ShareRunConfigDialog({
   const remoteAddress =
     !isTauri && !loopbackHostname.test(window.location.hostname);
   const [destination, setDestination] = useState(
-    remoteAddress ? "desktop" : "browser",
+    isTauri || remoteAddress ? "desktop" : "browser",
   );
   const [selected, setSelected] = useState<Set<SharedConfigKey>>(
     () =>
