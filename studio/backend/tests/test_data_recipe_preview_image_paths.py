@@ -70,3 +70,61 @@ def test_owner_previews_any_local_path(studio_home):
     preview = to_preview_jsonable_row({"image": {"bytes": None, "path": str(image)}})
 
     assert _is_image_payload(preview["image"])
+
+
+def _path_only_parquet(tmp_path: Path, image: Path) -> Path:
+    import datasets
+
+    features = datasets.Features({"image": datasets.Image(), "label": datasets.Value("string")})
+    out = tmp_path / "rows.parquet"
+    datasets.Dataset.from_dict(
+        {"image": [{"bytes": None, "path": str(image)}], "label": ["x"]}, features = features
+    ).to_parquet(str(out))
+    return out
+
+
+def _hub_preview(parquet: Path) -> list[dict]:
+    from datasets import load_dataset
+    from routes.data_recipe.seed import _load_preview_rows, _serialize_preview_rows
+
+    rows = _load_preview_rows(
+        load_dataset_fn = load_dataset,
+        load_kwargs = {
+            "path": "parquet",
+            "data_files": [str(parquet)],
+            "split": "train",
+            "streaming": True,
+        },
+        preview_size = 1,
+    )
+    return _serialize_preview_rows(rows)
+
+
+def test_managed_account_streamed_image_feature_is_checked_before_it_is_opened(studio_home):
+    pytest.importorskip("datasets")
+    parquet = _path_only_parquet(studio_home, _png(studio_home / "elsewhere" / "private.png"))
+
+    (row,) = run_as(ALICE, _hub_preview, parquet)
+
+    assert row["label"] == "x"
+    assert not _is_image_payload(row["image"])
+
+
+def test_owner_streamed_image_feature_still_previews(studio_home):
+    pytest.importorskip("datasets")
+    parquet = _path_only_parquet(studio_home, _png(studio_home / "elsewhere" / "local.png"))
+
+    (row,) = _hub_preview(parquet)
+
+    assert _is_image_payload(row["image"])
+
+
+def test_managed_account_image_file_lookup_skips_the_cwd_fallback(studio_home, monkeypatch):
+    from core.data_recipe.service import _load_image_file_to_base64
+
+    _png(studio_home / "cwd" / "private.png")
+    monkeypatch.chdir(studio_home / "cwd")
+    base = run_as(ALICE, lambda: workspace_root() / "data")
+
+    assert run_as(ALICE, _load_image_file_to_base64, "private.png", base_path = str(base)) is None
+    assert _load_image_file_to_base64("private.png", base_path = str(base)) is not None
