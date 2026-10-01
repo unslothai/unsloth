@@ -133,8 +133,15 @@ def list_executions(recipe_id: str) -> list[dict]:
         conn.close()
 
 
+_TERMINAL = ("completed", "cancelled", "error")
+
+
 def upsert_execution(execution: dict) -> bool:
-    """Returns False when the parent recipe does not exist."""
+    """Returns False when the run's recipe does not exist or the id belongs to another recipe.
+
+    A snapshot older than the stored one (two tabs tracking one run) is accepted but dropped:
+    a lower lastEventId, or a non-terminal status over a terminal one, never replaces it.
+    """
     conn = get_connection()
     try:
         cur = conn.execute(
@@ -144,11 +151,23 @@ def upsert_execution(execution: dict) -> bool:
             WHERE EXISTS (SELECT 1 FROM data_recipes WHERE id = ?2)
             ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json
             WHERE data_recipe_executions.recipe_id = excluded.recipe_id
+              AND COALESCE(json_extract(excluded.record_json, '$.lastEventId'), -1)
+                  >= COALESCE(json_extract(data_recipe_executions.record_json, '$.lastEventId'), -1)
+              AND NOT (
+                  json_extract(data_recipe_executions.record_json, '$.status') IN (?5, ?6, ?7)
+                  AND COALESCE(json_extract(excluded.record_json, '$.status'), '')
+                      NOT IN (?5, ?6, ?7)
+              )
             """,
-            _execution_params(execution),
+            (*_execution_params(execution), *_TERMINAL),
         )
+        stored = conn.execute(
+            "SELECT recipe_id FROM data_recipe_executions WHERE id = ?", (execution["id"],)
+        ).fetchone()
         conn.commit()
-        return cur.rowcount > 0
+        return cur.rowcount > 0 or (
+            stored is not None and stored["recipe_id"] == execution["recipeId"]
+        )
     finally:
         conn.close()
 

@@ -297,6 +297,7 @@ export function useRecipePersistence({
         payload: currentPayload,
       });
       setLastSavedAt(result.updatedAt);
+      setFailedSignature(null);
       setSavedSignature(buildSignature(nextName, currentPayload));
       drainQueuedUploadCleanups(currentPayload);
     } catch (error) {
