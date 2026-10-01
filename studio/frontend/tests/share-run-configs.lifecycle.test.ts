@@ -416,8 +416,7 @@ for (const failure of [false, true]) {
   }
 }
 
-// An edit to the resolved draft cancels the import in every phase; edits to
-// another quant do not.
+// An edit to the resolved draft cancels the import in every phase; edits to another quant do not.
 for (const phase of [
   "parsing",
   "resolving",

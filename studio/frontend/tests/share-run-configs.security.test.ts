@@ -485,7 +485,6 @@ test("templates and custom reasoning messages cannot enter links or clear a reci
   }
 });
 
-// Desktop deep links: shared run links alongside ordinary Hub links.
 const hub = "unsloth://open_from_hf?model=owner/model";
 const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
 const invalid =
