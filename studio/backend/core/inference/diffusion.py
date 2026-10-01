@@ -9242,6 +9242,11 @@ class DiffusionBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
+                    # Read after the deferred speed / step-cache toggles, so this is what ran.
+                    "speed_mode": state.speed_mode,
+                    "attention_backend": state.attention_backend,
+                    "transformer_cache": state.transformer_cache,
+                    "cpu_offload": state.cpu_offload,
                     # Adapters baked in at LOAD time: disabling them at generate time is not the same build, so they
                     # belong to the build record.
                     "baked_loras": _baked_lora_names(state.pipe),

@@ -2250,6 +2250,8 @@ def test_generate_reports_the_build_the_recipe_persists():
     assert out["offload_policy"] == b.status()["offload_policy"]
     assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
     assert out["memory_mode"] is None
+    assert out["cpu_offload"] is True and out["cpu_offload"] == b.status()["cpu_offload"]
+    assert out["speed_mode"] == b.status()["speed_mode"]
 
 
 def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):
