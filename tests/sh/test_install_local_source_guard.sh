@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# A piped install has $0 = "sh", so _REPO_ROOT is the caller's cwd. Files found there must
-# not feed the install unless this is an explicit --local run of a checkout's install.sh.
+# A piped install's _REPO_ROOT is the caller's cwd: only a --local checkout run may read files there.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,7 +12,6 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 _tmp="$(mktemp -d)"
 trap 'rm -rf "$_tmp"' EXIT
 
-# The gate and the lookup, pulled out of install.sh so the real code is what runs.
 _gate="$(sed -n '/^_REPO_IS_CHECKOUT=0$/,/^esac$/p' "$INSTALL_SH")"
 _lookup="$(sed -n '/^_find_no_torch_runtime() {$/,/^}$/p' "$INSTALL_SH")"
 [ -n "$_gate" ] || bad "could not extract the _REPO_IS_CHECKOUT gate"
