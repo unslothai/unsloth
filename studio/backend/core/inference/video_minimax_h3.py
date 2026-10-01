@@ -1110,6 +1110,10 @@ def h3_component_metadata_repo(repo_id: str) -> str:
 # and 44.3 GiB (q8): the four files plus ~1 GiB, because sd.cpp releases the text encoder before the denoiser's compute
 # buffer is allocated. The estimate below still counts that buffer on top of every file, plus a margin.
 H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
+# Read by the Unsloth sd.cpp fork's ggml-cuda: quantized matmuls with at least this many rows dequantize to BF16 and
+# run on cuBLAS instead of the int8 MMQ kernels. Unset or 0 keeps MMQ.
+H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+H3_QUANT_CUBLAS_MIN_BATCH = "1024"
 # The denoiser's compute buffer at 960x544x124 (19108 tokens), from sd-cli's own log; scaled by the pixel volume.
 H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
 H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
@@ -1172,6 +1176,8 @@ class MiniMaxH3NativeRuntime:
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
+    # Extra environment for every sd-cli launch of this runtime, as (name, value) pairs.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

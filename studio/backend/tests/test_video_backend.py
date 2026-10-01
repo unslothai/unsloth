@@ -4031,6 +4031,42 @@ def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatc
     assert "--sage-attn" not in offload
 
 
+def test_h3_native_speed_max_takes_the_bf16_cublas_path(monkeypatch, tmp_path):
+    """speed_mode=max also hands sd-cli GGML_CUDA_QUANT_CUBLAS_MIN_BATCH; every other mode launches with no extra env."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    assert dict(state.pipe.env) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    for mode in (None, "default", "off"):
+        state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode)
+        assert state.pipe.env == (), mode
+    # The veto that drops sage drops this too, and a value the user exported (0 included) is never overridden.
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    assert state.pipe.env == ()
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max")
+    assert state.pipe.env == ()
+
+
+def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
+    import dataclasses
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    backend._state = dataclasses.replace(
+        backend._state,
+        pipe = dataclasses.replace(backend._state.pipe, env = (("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "1024"),)),
+    )
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert calls[0]["env"] == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    calls.clear()
+    backend._state = dataclasses.replace(backend._state, pipe = dataclasses.replace(backend._state.pipe, env = ()))
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert calls[0]["env"] is None
+
+
 def test_h3_native_sage_attention_never_on_the_cpu_build(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
     _state, offload = _load_h3_native_offload(

@@ -3397,8 +3397,18 @@ class VideoBackend:
             native_offload += GRAPH_CUT_VRAM_FLAGS
             if "--offload-to-cpu" in native_offload:
                 native_offload += GRAPH_CUT_STREAM_FLAGS
+        native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
             native_offload += ("--sage-attn",)
+            # The same opt-in takes the fork's BF16 cuBLAS path for the denoiser's large-batch quantized matmuls
+            # (ignored by builds without it, and by non-NVIDIA backends). H3 960x544x124 UD-Q3_K_XL: 11.79 -> 9.97
+            # s/step on an RTX PRO 6000 Blackwell (G4), 64.9 -> 55.2 on an L4; with sage 7.23 -> 5.38 on the G4. Closer
+            # to an F32-dequant reference than the int8 MMQ path on video (PSNR 33.7 vs 30.2 dB, B200, 20 steps). A
+            # value the user already exported wins, 0 included.
+            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
+
+            if H3_QUANT_CUBLAS_ENV not in os.environ:
+                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3417,6 +3427,7 @@ class VideoBackend:
                 audio_vae = str(resolved[3]),
             ),
             offload_flags = native_offload,
+            env = native_env,
         )
 
         with self._lock:
@@ -8670,6 +8681,7 @@ class VideoBackend:
                             ),
                             output_path = str(output_path),
                             offload = render_flags,
+                            env = dict(runtime.env) or None,
                             on_log = on_log,
                             cancel_event = cancel,
                         )
