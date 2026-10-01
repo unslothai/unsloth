@@ -416,12 +416,10 @@ def test_unreachable_is_not_read_as_absent(tmp_path, monkeypatch):
     "could not reach it" into "the repo has no modules.json", which is the opposite answer."""
     import sentence_transformers
     from huggingface_hub.errors import LocalEntryNotFoundError
-    import unsloth.models.sentence_transformer as st_mod
 
     monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
-    monkeypatch.setattr(
-        st_mod,
-        "hf_hub_download",
+    _patch_download(
+        monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
     )
     monkeypatch.setattr(sentence_transformers, "__version__", "5.2.0", raising = False)
@@ -435,17 +433,32 @@ def test_unreachable_is_tolerated_where_upstream_gates_it_anyway(tmp_path, monke
     not turn a working load into a failure."""
     import sentence_transformers
     from huggingface_hub.errors import LocalEntryNotFoundError
-    import unsloth.models.sentence_transformer as st_mod
 
     monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
-    monkeypatch.setattr(
-        st_mod,
-        "hf_hub_download",
+    _patch_download(
+        monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("offline")),
     )
     monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
 
     assert FastSentenceTransformer._modules_json_for_gating("acme/embedder", None) is None
+
+
+def _patch_download(monkeypatch, replacement):
+    """Replace hf_hub_download in the namespace the method under test actually reads.
+
+    Not by dotted string, and not on whatever sys.modules currently holds. Both of those
+    resolve the module afresh, and tests/vllm_compat/test_extended_module_imports.py pops
+    unsloth.models.sentence_transformer out of sys.modules and re-imports it, so by the
+    time these tests run the name points at a second module object with its own globals
+    dict. The class imported at the top of this file still closes over the first one.
+    Patching the later object left the real hf_hub_download in place, and three tests
+    reached out to the Hub and asserted against a 404 instead of against the fake.
+
+    __globals__ is that first dict by definition, whatever else has been re-imported.
+    """
+    namespace = FastSentenceTransformer._check_delegated_module_config.__globals__
+    monkeypatch.setitem(namespace, "hf_hub_download", replacement)
 
 
 def _simulate_pre_six(monkeypatch):
@@ -554,7 +567,7 @@ def test_an_ordinary_embedder_fetches_no_module_configs(tmp_path, monkeypatch):
         requested.append(filename)
         raise AssertionError(f"unexpected fetch of {filename}")
 
-    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", fake_download)
+    _patch_download(monkeypatch, fake_download)
 
     FastSentenceTransformer._check_modules_json_types(str(model), None, False)
 
@@ -647,7 +660,7 @@ def test_an_unreadable_module_config_refuses_rather_than_passing(tmp_path, monke
     def unreachable(*args, **kwargs):
         raise OSError("hub unreachable")
 
-    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", unreachable)
+    _patch_download(monkeypatch, unreachable)
 
     with pytest.raises(ValueError, match = "refuses rather than loading unchecked"):
         FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
@@ -680,7 +693,7 @@ def test_a_module_that_ships_no_config_is_not_a_refusal(tmp_path, monkeypatch):
     def absent(*args, **kwargs):
         raise EntryNotFoundError("no such file")
 
-    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", absent)
+    _patch_download(monkeypatch, absent)
 
     FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
 
@@ -709,7 +722,7 @@ def test_the_module_config_check_is_skipped_where_upstream_gates_it(tmp_path, mo
     def refuse(*args, **kwargs):
         raise AssertionError("no fetch expected where upstream gates the name")
 
-    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", refuse)
+    _patch_download(monkeypatch, refuse)
 
     import sentence_transformers
 
@@ -762,7 +775,7 @@ def test_only_the_config_the_loader_reads_is_requested(tmp_path, monkeypatch):
             raise OSError("not cached, and the loader would never ask for this one")
         return str(target)
 
-    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", fake_download)
+    _patch_download(monkeypatch, fake_download)
 
     FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
 
@@ -813,7 +826,7 @@ def test_router_still_falls_back_to_config_json(tmp_path, monkeypatch):
             raise EntryNotFoundError("absent")
         return str(target)
 
-    monkeypatch.setattr("unsloth.models.sentence_transformer.hf_hub_download", fake_download)
+    _patch_download(monkeypatch, fake_download)
 
     with pytest.raises(ValueError, match = "executes third-party code"):
         FastSentenceTransformer._check_modules_json_types("acme/embedder", None, False)
