@@ -190,7 +190,8 @@ async function clearDesktopBrowsingData(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
   const supported = await invoke<boolean>("browser_view_supported").catch(() => false);
-  if (supported) await invoke("browser_view_clear_data");
+  // Closing the open pages first, so none writes the previous account's data back.
+  if (supported) await invoke("browser_view_clear_data", { closeViews: true });
 }
 
 /** Run before publishing new tokens; the marker is published last so other tabs reload only

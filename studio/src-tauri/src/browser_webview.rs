@@ -747,6 +747,11 @@ fn create_view<R: Runtime>(
                     let path = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
+                        // macOS reports no path when a download finishes, so two of one URL at
+                        // once couldn't be told apart (and quarantined right): one at a time.
+                        if cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str()) {
+                            return false;
+                        }
                         let path = {
                             let reserved: HashSet<&Path> = inner
                                 .downloads
@@ -1127,38 +1132,63 @@ pub fn browser_view_close<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn browser_view_clear_data<R: Runtime>(webview: Webview<R>) -> Result<(), String> {
+pub async fn browser_view_clear_data<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+    close_views: Option<bool>,
+) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
-    if let Some(page) = browser_views(&app).into_iter().next() {
-        return page
-            .clear_all_browsing_data()
-            .map_err(|error| error.to_string());
+    // An account switch closes the pages first, so none can write the old account's data back.
+    let closing = close_views.unwrap_or(false);
+    if closing {
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.urls.clear();
+            inner.shown = None;
+        }
+        for page in browser_views(&app) {
+            let _ = page.close();
+        }
     }
-    // No page open: clear through a hidden one.
-    let builder = with_page_profile(
-        WebviewBuilder::new(
-            format!("{LABEL_PREFIX}clear"),
-            WebviewUrl::External(Url::parse("about:blank").unwrap()),
-        )
-        .focused(false),
-        &app,
-    )?;
-    let page = webview
-        .window()
-        .add_child(
-            builder,
-            LogicalPosition::new(0.0, 0.0),
-            LogicalSize::new(1.0, 1.0),
-        )
-        .map_err(|error| error.to_string())?;
-    let _ = page.hide();
+    let live = if closing {
+        None
+    } else {
+        browser_views(&app).into_iter().next()
+    };
+    let hidden = live.is_none();
+    let page = match live {
+        Some(page) => page,
+        // No page to clear through: a hidden one.
+        None => {
+            let builder = with_page_profile(
+                WebviewBuilder::new(
+                    format!("{LABEL_PREFIX}clear"),
+                    WebviewUrl::External(Url::parse("about:blank").unwrap()),
+                )
+                .focused(false),
+                &app,
+            )?;
+            let page = webview
+                .window()
+                .add_child(
+                    builder,
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1.0, 1.0),
+                )
+                .map_err(|error| error.to_string())?;
+            let _ = page.hide();
+            page
+        }
+    };
     let result = page
         .clear_all_browsing_data()
         .map_err(|error| error.to_string());
-    // The clear finishes asynchronously; close the view after a moment.
+    // The clear finishes asynchronously: give it a moment before reporting it done.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let _ = page.close();
+    if hidden {
+        let _ = page.close();
+    }
     result
 }
 
