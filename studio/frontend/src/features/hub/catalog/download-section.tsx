@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { MediaStudioPage } from "../hooks/use-media-download-footprints";
+import type { MediaStudioPage } from "../hooks/use-media-companion-bytes";
 import type { ModelInventoryFormat } from "../inventory";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";

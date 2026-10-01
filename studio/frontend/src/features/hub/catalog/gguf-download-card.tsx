@@ -23,8 +23,7 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import {
-  GgufDownloadFootprintExplanation,
-  ggufDownloadFootprintLabel,
+  formatFootprintBytes,
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
@@ -66,8 +65,8 @@ import {
   type GgufVariantFootprint,
   type MediaStudioPage,
   ggufVariantFootprint,
-  useMediaDownloadFootprints,
-} from "../hooks/use-media-download-footprints";
+  useMediaCompanionBytes,
+} from "../hooks/use-media-companion-bytes";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
@@ -260,7 +259,7 @@ interface GgufVariantMenuItem {
   footprint: GgufVariantFootprint | null;
 }
 
-/** Show the full media footprint with a model/companion breakdown on hover. */
+/** Model plus uncached companion size, with the breakdown on hover. */
 function GgufVariantSizeLabel({
   label,
   footprint,
@@ -276,7 +275,9 @@ function GgufVariantSizeLabel({
           data-model-download-footprint={true}
           className="inline-flex items-center gap-1"
         >
-          {ggufDownloadFootprintLabel(footprint)}
+          {formatFootprintBytes(
+            footprint.checkpointBytes + footprint.companionBytes,
+          )}
           {/* Align the icon with the digits. */}
           <HugeiconsIcon
             icon={HelpCircleIcon}
@@ -287,7 +288,13 @@ function GgufVariantSizeLabel({
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        <GgufDownloadFootprintExplanation {...footprint} />
+        <span className="font-medium">
+          {formatFootprintBytes(footprint.checkpointBytes)} model +{" "}
+          {formatFootprintBytes(footprint.companionBytes)} required assets
+        </span>
+        <span className="ml-1 text-muted-foreground">
+          · assets download on Run
+        </span>
       </TooltipContent>
     </Tooltip>
   );
@@ -662,12 +669,6 @@ export function GgufDownloadCard({
       localPath: localVariantPath,
       includeCacheLocations: showMemoryBar,
     });
-  const companionBytesByKey = useMediaDownloadFootprints(
-    mediaPage,
-    repoId,
-    variants,
-    hfToken,
-  );
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
     quant: string | null;
@@ -737,6 +738,24 @@ export function GgufDownloadCard({
         : v,
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
+  const selectedQuant =
+    (selectedQuantOverride
+      ? sortedVariants?.find((v) =>
+          ggufVariantsMatch(v.quant, selectedQuantOverride),
+        )?.quant
+      : null) ??
+    sortedVariants?.[0]?.quant ??
+    null;
+  const selected =
+    sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
+    null;
+  const companionBytesByKey = useMediaCompanionBytes(
+    mediaPage,
+    repoId,
+    variants,
+    selected?.filename,
+    hfToken,
+  );
   const variantMenuItems = useMemo(
     () =>
       createGgufVariantMenuItems(
@@ -758,15 +777,6 @@ export function GgufDownloadCard({
       companionBytesByKey,
     ],
   );
-
-  const selectedQuant =
-    (selectedQuantOverride
-      ? sortedVariants?.find((v) =>
-          ggufVariantsMatch(v.quant, selectedQuantOverride),
-        )?.quant
-      : null) ??
-    sortedVariants?.[0]?.quant ??
-    null;
 
   const job = useRepoDownload({
     kind: "model",
@@ -830,9 +840,6 @@ export function GgufDownloadCard({
     );
   }, [loading, error, refreshError, variants]);
 
-  const selected =
-    sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
-    null;
   const selectedLiveState = selectedQuant
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
@@ -1161,9 +1168,10 @@ export function GgufDownloadCard({
                 )}
                 {/* Size beats format tag on phones. */}
                 <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
+                {/* Downloaded quants show a size only while Run still has assets to fetch. */}
                 {selected &&
                   selectedDownloadSizeLabel &&
-                  !selected.downloaded && (
+                  (!selected.downloaded || selectedFootprint) && (
                     <span className="shrink-0 tabular-nums">
                       <GgufVariantSizeLabel
                         label={selectedDownloadSizeLabel}

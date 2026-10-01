@@ -508,7 +508,6 @@ function formatBytes(bytes: number, unitSeparator = ""): string {
     i += 1;
   }
   // No space: "145MB" reads as one value beside the quant chip.
-  // Tooltips pass a space.
   return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
 }
 
@@ -864,20 +863,13 @@ function SizeText({ value }: { value: string }) {
   );
 }
 
-/** Keep one decimal for GB/TB totals to reduce rounding differences from the breakdown. */
-export function ggufDownloadFootprintLabel({
-  checkpointBytes,
-  companionBytes,
-}: {
-  checkpointBytes: number;
-  companionBytes: number;
-}): string {
-  const totalBytes = checkpointBytes + companionBytes;
-  return totalBytes >= 1_000_000_000 && totalBytes < 1_000_000_000_000
-    ? `${(totalBytes / 1_000_000_000).toFixed(1)} GB`
-    : totalBytes >= 1_000_000_000_000
-      ? `${(totalBytes / 1_000_000_000_000).toFixed(1)} TB`
-      : formatBytes(totalBytes, " ");
+/** One decimal through GB/TB, so a total and its model + assets breakdown visibly add up. */
+export function formatFootprintBytes(bytes: number): string {
+  return bytes >= 1_000_000_000 && bytes < 1_000_000_000_000
+    ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
+    : bytes >= 1_000_000_000_000
+      ? `${(bytes / 1_000_000_000_000).toFixed(1)} TB`
+      : formatBytes(bytes, " ");
 }
 
 /** Keep the row's size treatment consistent with every other model; diffusion GGUFs get one
@@ -889,10 +881,7 @@ export function GgufDownloadFootprint({
   checkpointBytes: number;
   companionBytes: number;
 }) {
-  const totalLabel = ggufDownloadFootprintLabel({
-    checkpointBytes,
-    companionBytes,
-  });
+  const totalLabel = formatFootprintBytes(checkpointBytes + companionBytes);
   return (
     <span
       data-model-download-footprint={true}
@@ -926,8 +915,8 @@ export function GgufDownloadFootprintExplanation({
     <>
       <span className="font-medium">Full required size</span>
       <span className="ml-1 text-muted-foreground">
-        {formatBytes(checkpointBytes, " ")} model +{" "}
-        {formatBytes(companionBytes, " ")} required assets
+        {formatFootprintBytes(checkpointBytes)} model +{" "}
+        {formatFootprintBytes(companionBytes)} required assets
       </span>
     </>
   );

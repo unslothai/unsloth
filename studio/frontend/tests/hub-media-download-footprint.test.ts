@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hub sizes must include the companion assets fetched on Run.
+// Hub sizes must include the companion assets Run would still download.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
+import { installLocalStorageFake } from "./helpers/kit.ts";
 
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 installLocalStorageFake();
 
 const GGUF_BYTES = 5_390_223_072;
 const COMPANION_BYTES = 18_900_000_000;
+const GGUF_REPO = "unsloth/Qwen-Image-2.1-GGUF";
 
 let planBody: Record<string, unknown> = {};
-let planStatus = 200;
 const requests: { url: string; body: Record<string, unknown> }[] = [];
 
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -25,20 +25,34 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     body: JSON.parse(String(init?.body ?? "{}")),
   });
   return new Response(JSON.stringify(planBody), {
-    status: planStatus,
+    status: 200,
     headers: { "Content-Type": "application/json" },
   });
 }) as typeof fetch;
 
-const {
-  cachedCompanionBytes,
-  companionPlanRequests,
-  footprintRequestsKey,
-  ggufVariantFootprint,
-  resolveCompanionBytes,
-  visibleFootprints,
-  withResolvedFootprint,
-} = await import("../src/features/hub/hooks/use-media-download-footprints.ts");
+const { companionPlanRequests, ggufVariantFootprint, resolveCompanionBytes } =
+  await import("../src/features/hub/hooks/use-media-companion-bytes.ts");
+
+function entry(repo: string, bytes: number, checkpoint = false) {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  return { repo_id: repo, files: [], bytes, gguf_filename: null, checkpoint };
+}
+
+function plan(entries: ReturnType<typeof entry>[], extra = {}) {
+  return {
+    entries,
+    // biome-ignore lint/style/useNamingConvention: API schema
+    total_bytes: entries.reduce((sum, e) => sum + e.bytes, 0),
+    // biome-ignore lint/style/useNamingConvention: API schema
+    required_bytes: GGUF_BYTES + COMPANION_BYTES,
+    // biome-ignore lint/style/useNamingConvention: API schema
+    checkpoint_bytes: GGUF_BYTES,
+    ...extra,
+  };
+}
+
+const resolve = () =>
+  resolveCompanionBytes("images", GGUF_REPO, "q5.gguf", GGUF_BYTES, "hf_x");
 
 function variant(
   quant: string,
@@ -50,215 +64,120 @@ function variant(
     // biome-ignore lint/style/useNamingConvention: API schema
     size_bytes: GGUF_BYTES,
     // biome-ignore lint/style/useNamingConvention: API schema
-    download_size_bytes: GGUF_BYTES,
-    // biome-ignore lint/style/useNamingConvention: API schema
     dependency_key: "qwen-image-2.1",
     ...overrides,
   };
 }
 
-test("the plan's companion bytes are what it requires beyond the checkpoint", async () => {
+test("companions are the uncached plan entries beyond the checkpoint", async () => {
   requests.length = 0;
-  planBody = {
-    entries: [],
-    // biome-ignore lint/style/useNamingConvention: API schema
-    total_bytes: 0,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    required_bytes: GGUF_BYTES + COMPANION_BYTES,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    checkpoint_bytes: GGUF_BYTES,
-  };
-  const companion = await resolveCompanionBytes(
-    "images",
-    "unsloth/Qwen-Image-2.1-GGUF",
-    "qwen-image-2.1-Q5_K_M.gguf",
-    GGUF_BYTES,
-    "hf_token_value",
-  );
-  assert.equal(companion, COMPANION_BYTES);
-  assert.equal(requests.length, 1);
+  planBody = plan([
+    entry(GGUF_REPO, GGUF_BYTES, true),
+    entry("Qwen/Qwen-Image-2.1", COMPANION_BYTES),
+  ]);
+  assert.equal(await resolve(), COMPANION_BYTES);
   assert.match(requests[0].url, /\/api\/inference\/images\/download-plan$/);
   assert.deepEqual(requests[0].body, {
     // biome-ignore lint/style/useNamingConvention: API schema
-    model_path: "unsloth/Qwen-Image-2.1-GGUF",
+    model_path: GGUF_REPO,
     // biome-ignore lint/style/useNamingConvention: API schema
-    gguf_filename: "qwen-image-2.1-Q5_K_M.gguf",
+    gguf_filename: "q5.gguf",
     // biome-ignore lint/style/useNamingConvention: API schema
     model_kind: "gguf",
     // biome-ignore lint/style/useNamingConvention: API schema
-    hf_token: "hf_token_value",
+    hf_token: "hf_x",
   });
+
+  // A checkpoint entry can also carry companions from the same repo.
+  planBody = plan([entry(GGUF_REPO, GGUF_BYTES + 7, true)]);
+  assert.equal(await resolve(), 7);
+  // A cached checkpoint leaves its repo's missing companions unflagged.
+  planBody = plan([entry(GGUF_REPO, 7)]);
+  assert.equal(await resolve(), 7);
+  // The listed size stands in for a checkpoint the planner could not size.
+  planBody = plan([entry(GGUF_REPO, GGUF_BYTES + 7, true)], {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    checkpoint_bytes: 0,
+  });
+  assert.equal(await resolve(), 7);
+});
+
+test("cached companions add nothing, whatever required_bytes says", async () => {
+  planBody = plan([entry(GGUF_REPO, GGUF_BYTES, true)]);
+  assert.equal(await resolve(), null);
+});
+
+test("an incomplete plan keeps the checkpoint size", async () => {
+  planBody = plan([entry("Qwen/Qwen-Image-2.1", COMPANION_BYTES)], {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    plan_failed: true,
+  });
+  assert.equal(await resolve(), null);
 });
 
 test("a video repo asks the video planner", async () => {
   requests.length = 0;
+  planBody = plan([]);
   await resolveCompanionBytes("video", "org/video-GGUF", "v.gguf", 1, null);
   assert.match(requests[0].url, /\/api\/inference\/video\/download-plan$/);
 });
 
-test("the listed size stands in for a checkpoint the planner could not size", async () => {
-  // biome-ignore lint/style/useNamingConvention: API schema
-  planBody = { entries: [], total_bytes: 0, required_bytes: GGUF_BYTES + 10 };
-  assert.equal(
-    await resolveCompanionBytes("images", "r", "f.gguf", GGUF_BYTES, null),
-    10,
-  );
-});
-
-test("a plan with nothing beyond the checkpoint adds nothing", async () => {
-  planBody = {
-    entries: [],
-    // biome-ignore lint/style/useNamingConvention: API schema
-    total_bytes: 0,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    required_bytes: 0,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    checkpoint_bytes: 0,
-  };
-  assert.equal(
-    await resolveCompanionBytes("images", "r", "f.gguf", GGUF_BYTES, null),
-    null,
-  );
-});
-
-test("a remount reuses the plan, and a failed plan is asked again", async () => {
-  planBody = {
-    entries: [],
-    // biome-ignore lint/style/useNamingConvention: API schema
-    total_bytes: 0,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    required_bytes: GGUF_BYTES + COMPANION_BYTES,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    checkpoint_bytes: GGUF_BYTES,
-  };
-  requests.length = 0;
-  const ask = () =>
-    cachedCompanionBytes("images", "cached/repo", "a.gguf", GGUF_BYTES, null);
-  const [first, second] = await Promise.all([ask(), ask()]);
-  assert.equal(first, COMPANION_BYTES);
-  assert.equal(second, COMPANION_BYTES);
-  assert.equal(await ask(), COMPANION_BYTES);
-  assert.equal(requests.length, 1);
-  // Another token can reach another base, so it gets its own plan.
-  await cachedCompanionBytes(
-    "images",
-    "cached/repo",
-    "a.gguf",
-    GGUF_BYTES,
-    "hf_x",
-  );
-  assert.equal(requests.length, 2);
-
-  requests.length = 0;
-  planStatus = 500;
-  const failing = () =>
-    cachedCompanionBytes("images", "failing/repo", "a.gguf", GGUF_BYTES, null);
-  await assert.rejects(failing());
-  planStatus = 200;
-  assert.equal(await failing(), COMPANION_BYTES);
-  assert.equal(requests.length, 2);
-});
-
-test("a plan the backend flags as incomplete is not shown or kept", async () => {
-  planBody = {
-    // biome-ignore lint/style/useNamingConvention: API schema
-    plan_failed: true,
-    entries: [],
-    // biome-ignore lint/style/useNamingConvention: API schema
-    total_bytes: 0,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    required_bytes: GGUF_BYTES + 1,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    checkpoint_bytes: GGUF_BYTES,
-  };
-  requests.length = 0;
-  const ask = () =>
-    cachedCompanionBytes("images", "flagged/repo", "a.gguf", GGUF_BYTES, null);
-  await assert.rejects(ask());
-  await assert.rejects(ask());
-  // Incomplete plans are retried.
-  assert.equal(requests.length, 2);
-});
-
-test("a new repo, page or token never shows the previous total", () => {
-  const variants = [variant("Q5_K_M")];
-  const keyA = footprintRequestsKey("images", "org/repo", variants, null);
-  for (const other of [
-    footprintRequestsKey("images", "org/repo", variants, "hf_other"),
-    footprintRequestsKey("images", "org/mirror", variants, null),
-    footprintRequestsKey("video", "org/repo", variants, null),
-  ]) {
-    assert.notEqual(other, keyA);
-  }
-  assert.equal(footprintRequestsKey(undefined, "org/repo", variants, null), "");
-
-  const resolvedA = withResolvedFootprint(
-    { requestsKey: "", companionBytes: new Map() },
-    keyA,
-    "qwen-image-2.1",
-    COMPANION_BYTES,
-  );
-  assert.equal(
-    visibleFootprints(resolvedA, keyA).get("qwen-image-2.1"),
-    COMPANION_BYTES,
-  );
-  // Hide the old total even if the new token's plan fails or returns no companions.
-  const keyB = footprintRequestsKey("images", "org/repo", variants, "hf_other");
-  assert.equal(visibleFootprints(resolvedA, keyB).size, 0);
-  // Switching back can reuse the retained result.
-  assert.equal(visibleFootprints(resolvedA, keyA).size, 1);
-});
-
 test("one plan per companion set, and none outside the media pages", () => {
+  const unkeyed = (quant: string) =>
+    // biome-ignore lint/style/useNamingConvention: API schema
+    variant(quant, { dependency_key: null });
   const variants = [
     variant("Q5_K_M"),
     variant("Q4_K_M"),
     // biome-ignore lint/style/useNamingConvention: API schema
     variant("Q8_0", { dependency_key: "other-base" }),
-    // biome-ignore lint/style/useNamingConvention: API schema
-    variant("F16", { dependency_key: null }),
+    unkeyed("F16"),
+    unkeyed("BF16"),
   ];
-  // Unkeyed variants share one repo-wide group.
+  // Unkeyed files (video) can need different companions, so only the selected one is planned.
   assert.deepEqual(
-    companionPlanRequests("images", variants).map(([key]) => key),
-    ["qwen-image-2.1", "other-base", ""],
+    companionPlanRequests("images", variants, unkeyed("BF16").filename).map(
+      ([key, filename]) => [key, filename],
+    ),
+    [
+      ["qwen-image-2.1", variant("Q5_K_M").filename],
+      ["other-base", variant("Q8_0").filename],
+      [`file:${unkeyed("BF16").filename}`, unkeyed("BF16").filename],
+    ],
   );
-  assert.deepEqual(companionPlanRequests(undefined, variants), []);
-  assert.deepEqual(companionPlanRequests("images", null), []);
+  assert.deepEqual(
+    companionPlanRequests("images", variants, variant("Q4_K_M").filename)
+      .length,
+    2,
+  );
+  assert.deepEqual(companionPlanRequests(undefined, variants, null), []);
+  const resolved = new Map([[`file:${unkeyed("BF16").filename}`, 7]]);
+  assert.equal(
+    ggufVariantFootprint(unkeyed("BF16"), resolved)?.companionBytes,
+    7,
+  );
+  assert.equal(ggufVariantFootprint(unkeyed("F16"), resolved), null);
 });
 
-test("a row adds its set's companions to its own download size", () => {
+test("rows add their own set's companions, except partials", () => {
   const resolved = new Map([["qwen-image-2.1", COMPANION_BYTES]]);
-  assert.deepEqual(ggufVariantFootprint(variant("Q5_K_M"), resolved), {
-    checkpointBytes: GGUF_BYTES,
-    companionBytes: COMPANION_BYTES,
-  });
-  // An unkeyed row reads the repo-wide group.
-  assert.deepEqual(
+  // Run, offered once the GGUF is on disk, is what fetches companions.
+  for (const state of [{}, { downloaded: true }]) {
+    assert.deepEqual(ggufVariantFootprint(variant("Q5_K_M", state), resolved), {
+      checkpointBytes: GGUF_BYTES,
+      companionBytes: COMPANION_BYTES,
+    });
+  }
+  assert.equal(
     ggufVariantFootprint(
       // biome-ignore lint/style/useNamingConvention: API schema
-      variant("F16", { dependency_key: null }),
-      new Map([["", 7]]),
+      variant("Q8_0", { dependency_key: "other" }),
+      resolved,
     ),
-    { checkpointBytes: GGUF_BYTES, companionBytes: 7 },
+    null,
   );
-  // Unresolved or partial rows keep their plain size.
-  assert.equal(ggufVariantFootprint(variant("Q5_K_M"), new Map()), null);
   assert.equal(
     ggufVariantFootprint(variant("Q4_K_M", { partial: true }), resolved),
     null,
   );
-});
-
-test("the Hub card sizes both the menu rows and the selected quant this way", () => {
-  const card = readSrc("features/hub/catalog/gguf-download-card.tsx");
-  assert.ok(
-    card.includes(
-      "footprint: ggufVariantFootprint(variant, companionBytesByKey),",
-    ),
-  );
-  assert.ok(
-    card.includes("ggufVariantFootprint(selected, companionBytesByKey)"),
-  );
-  assert.equal(card.split("<GgufVariantSizeLabel").length - 1, 2);
 });
