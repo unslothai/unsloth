@@ -1116,3 +1116,123 @@ def test_a_call_through_a_local_class_name_resolves(tmp_path):
         "    return importlib.import_module('x.' + Parser.parse(blob))\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_taint_survives_a_subscript_assignment(tmp_path):
+    """`settings["module"] = json.loads(blob)` is how configuration gets assembled.
+
+    The assignment dispatcher ignored a Subscript target, so a dictionary built up key by
+    key arrived clean at the sink.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    settings = {}\n"
+        "    settings['module'] = json.loads(blob)['model_type']\n"
+        "    return importlib.import_module('x.' + settings['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_declared_global_assigned_in_a_function_is_module_taint(tmp_path):
+    """`global MODEL_TYPE` makes the write module state, not a local.
+
+    Module taint was produced only by module-level statements, so a function that parsed a
+    config into a declared global and another that read it were each clean on their own.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "MODEL_TYPE = ''\n"
+        "def parse(blob):\n"
+        "    global MODEL_TYPE\n"
+        "    MODEL_TYPE = json.loads(blob)['model_type']\n"
+        "def load():\n"
+        "    return importlib.import_module('x.' + MODEL_TYPE)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_method_on_a_locally_constructed_object_resolves(tmp_path):
+    """`parser = Parser()` then `parser.parse(blob)`.
+
+    The head is a local variable, so nothing resolved the callee and the method sat
+    outside the analysis: it could return a parsed config into an import_module unseen.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Parser:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['model_type']\n"
+        "def load(blob):\n"
+        "    parser = Parser()\n"
+        "    return importlib.import_module('x.' + parser.parse(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_method_called_before_the_constructor_line_still_resolves(tmp_path):
+    """The instance map is carried across passes, like the reasons are.
+
+    A single ordered traversal would not have the binding yet when the call appears first,
+    which is a real shape in a loop.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Parser:\n"
+        "    def parse(self, blob):\n"
+        "        return json.loads(blob)['model_type']\n"
+        "def load(blobs):\n"
+        "    parser = None\n"
+        "    out = []\n"
+        "    for blob in blobs:\n"
+        "        if parser is not None:\n"
+        "            out.append(importlib.import_module('x.' + parser.parse(blob)))\n"
+        "        parser = Parser()\n"
+        "    return out\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_module_qualified_global_is_tainted(tmp_path):
+    """`import producer` then `producer.MODEL_TYPE`.
+
+    The imported-global fix handled only `from producer import MODEL_TYPE`, so the
+    module-qualified spelling of the same tainted global fell through to the clean base
+    name `producer`.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import json\n"
+        "with open('config.json') as handle:\n"
+        "    MODEL_TYPE = json.load(handle)['model_type']\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import importlib\nimport producer\n"
+        "def load():\n"
+        "    return importlib.import_module('x.' + producer.MODEL_TYPE)\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_taint_survives_a_decode(tmp_path):
+    """`urlopen(url).read().decode().strip()` is the ordinary network read.
+
+    decode was missing from the taint-preserving operations, so the bytes read clean the
+    moment they became a str and everything chained after it inherited that.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib\n"
+        "from urllib.request import urlopen\n"
+        "def load(url):\n"
+        "    name = urlopen(url).read().decode().strip()\n"
+        "    return importlib.import_module('x.' + name)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)

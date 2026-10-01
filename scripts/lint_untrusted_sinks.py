@@ -455,6 +455,11 @@ class _FileFacts:
         self.contexts: dict[str, str] = {}
         # qualname -> name of its **kwargs parameter, so a forwarded keyword lands
         self.star_kwargs: dict[str, str] = {}
+        # Class names defined in this file, so `parser = Parser()` can be recognised as
+        # constructing one and `parser.parse(...)` resolved to `Parser.parse`.
+        self.classes: set = set()
+        # qualname -> names it declares global, so a write lands in module state
+        self.globals_declared: dict = {}
         self._collect()
 
     def _collect(self) -> None:
@@ -487,10 +492,20 @@ class _FileFacts:
                     self.contexts[qualname] = _norm_hash(child)
                     if child.args.kwarg is not None:
                         self.star_kwargs[qualname] = child.args.kwarg.arg
+                    declared = {
+                        name
+                        for node in ast.walk(child)
+                        if isinstance(node, ast.Global)
+                        for name in node.names
+                    }
+                    if declared:
+                        self.globals_declared[qualname] = declared
                     walk(child)
                     scope.pop()
                     continue
                 elif isinstance(child, ast.ClassDef):
+                    self.classes.add(child.name)
+                    self.classes.add(".".join(scope + [child.name]))
                     scope.append(child.name)
                     walk(child)
                     scope.pop()
@@ -575,6 +590,7 @@ class _FileFacts:
         callee: ast.AST,
         class_name: str = "",
         scope: str = "",
+        instances: dict | None = None,
     ) -> list:
         """Every first-party (file, qualname) a call can reach.
 
@@ -606,6 +622,14 @@ class _FileFacts:
             if candidate in self.functions:
                 return [(self.path, candidate)]
             return []
+        # `parser = Parser()` then `parser.parse(...)`. The head is a local variable, so
+        # nothing resolved it and the method sat outside the analysis.
+        if tail and instances:
+            constructed = instances.get(head)
+            if constructed:
+                candidate = f"{constructed}.{tail}"
+                if candidate in self.functions:
+                    return [(self.path, candidate)]
         # `from pkg.mod import f` then `f(...)`.
         targets = self._targets(head)
         if not targets:
@@ -662,6 +686,8 @@ class _TaintPass(ast.NodeVisitor):
             self.local_reasons[name] = reason
         for name in sorted(state.named_params.get(key, set())):
             self.local_reasons.setdefault(name, NAMED_PARAM_REASON)
+        # local name -> class it was constructed from, for `parser = Parser()`
+        self.instance_types: dict[str, str] = {}
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
@@ -683,6 +709,13 @@ class _TaintPass(ast.NodeVisitor):
             attribute_reason = self.state.tainted_attrs.get(self._attr_key(node))
             if attribute_reason:
                 return attribute_reason
+            # `import producer` then `producer.MODEL_TYPE`. The earlier fix covered only
+            # `from producer import MODEL_TYPE`, so the module-qualified spelling of the
+            # same tainted global fell through to the clean base name.
+            if isinstance(node.value, ast.Name):
+                module_reason = self._module_global(node.value.id, node.attr)
+                if module_reason:
+                    return module_reason
             method = _matches(_call_name(node), UNTRUSTED_METHODS)
             if method:
                 return f"read via .{method}"
@@ -773,6 +806,10 @@ class _TaintPass(ast.NodeVisitor):
             "items",
             "keys",
             "values",
+            # `urlopen(url).read().decode().strip()`: without decode the bytes read clean
+            # the moment they became a str, and everything chained after it inherited that.
+            "decode",
+            "encode",
         ):
             reason = self.tainted(node.func.value)
             if reason:
@@ -827,10 +864,23 @@ class _TaintPass(ast.NodeVisitor):
             return None
         # A first-party callee that returns tainted data. Any of them: an alias bound
         # twice resolves to more than one callee, and only one of them need be dirty.
-        for target in self.facts.targets_of(node.func, self.class_name, scope = self.qualname):
+        for target in self.facts.targets_of(
+            node.func, self.class_name, scope = self.qualname, instances = self.instance_types
+        ):
             returned = self.state.returns_tainted.get(target)
             if returned:
                 return returned
+        return None
+
+    def _module_global(self, alias: str, attribute: str) -> str | None:
+        """`producer.MODEL_TYPE`, where `producer` is an imported first-party module."""
+        for dotted in self.facts._targets(alias):
+            file = self.facts.index.resolve(dotted)
+            if file is None:
+                continue
+            reason = self.state.tainted_globals.get(f"{_relative(file)}::{attribute}")
+            if reason:
+                return reason
         return None
 
     def _imported_global(self, name: str) -> str | None:
@@ -867,6 +917,13 @@ class _TaintPass(ast.NodeVisitor):
             # read stays tier A even if it is also assigned from a named parameter.
             if self.local_reasons.get(target.id, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
                 self.local_reasons[target.id] = reason
+            # `global MODEL_TYPE` then assigning it is a write to module state, and only
+            # module-level statements used to produce one. A function that parsed a config
+            # into a declared global and another that read it at runtime were each clean.
+            if target.id in self.facts.globals_declared.get(self.qualname, ()):
+                self._bind(
+                    self.state.tainted_globals, f"{self.facts.relative}::{target.id}", reason
+                )
         elif isinstance(target, ast.Attribute):
             key = self._attr_key(target)
             if key:
@@ -875,6 +932,12 @@ class _TaintPass(ast.NodeVisitor):
                 # method's tier-A one, purely on the order the methods are visited, and
                 # the sink reading that attribute then did not gate.
                 self._bind(self.state.pending_attrs, key, reason)
+        elif isinstance(target, ast.Subscript):
+            # `settings["module"] = json.loads(blob)`. The container is what carries it
+            # from here, and `tainted()` already reads a Subscript through its base, so
+            # tainting the base is both conservative and the shape the reader expects.
+            # Ignoring these targets let a config assembled key by key arrive clean.
+            self._assign(target.value, reason)
         elif isinstance(target, (ast.Tuple, ast.List)):
             for element in target.elts:
                 self._assign(element, reason)
@@ -884,7 +947,28 @@ class _TaintPass(ast.NodeVisitor):
         if reason:
             for target in node.targets:
                 self._assign(target, reason)
+        self._note_construction(node)
         self.generic_visit(node)
+
+    def _note_construction(self, node: ast.Assign) -> None:
+        """`parser = Parser()`, so `parser.parse(...)` resolves to `Parser.parse`.
+
+        Without this the head is neither an import nor a class name and the callee did not
+        resolve at all, so a method that returns a parsed config fed an import_module with
+        nothing reported. Only classes defined in this file, and only a direct call, which
+        is the shape that can be read off the source with no inference.
+        """
+        if not isinstance(node.value, ast.Call):
+            return
+        constructed = _call_name(node.value.func)
+        if not constructed:
+            return
+        for candidate in (constructed, constructed.rpartition(".")[2]):
+            if candidate and candidate in self.facts.classes:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.instance_types.setdefault(target.id, candidate)
+                return
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
@@ -959,7 +1043,9 @@ class _TaintPass(ast.NodeVisitor):
 
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
-        for target in self.facts.targets_of(node.func, self.class_name, scope = self.qualname):
+        for target in self.facts.targets_of(
+            node.func, self.class_name, scope = self.qualname, instances = self.instance_types
+        ):
             self._propagate_into_one(node, target)
 
     def _propagate_into_one(self, node: ast.Call, target) -> None:
@@ -1333,15 +1419,20 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     a partial answer as a clean one.
     """
     reasons: dict[str, str] = {}
+    # Carried with the reasons, because a method called before the line that constructs
+    # the object would otherwise never resolve on any pass.
+    instances: dict[str, str] = {}
     visitor = None
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
         visitor.local_reasons.update(reasons)
+        visitor.instance_types.update(instances)
         for child in nodes:
             visitor.visit(child)
-        if visitor.local_reasons == reasons:
+        if visitor.local_reasons == reasons and visitor.instance_types == instances:
             return visitor, True
         reasons = dict(visitor.local_reasons)
+        instances = dict(visitor.instance_types)
     return visitor, False
 
 
