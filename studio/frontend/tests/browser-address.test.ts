@@ -11,6 +11,9 @@ test("the address bar takes URLs as typed and hosts as https", () => {
   assert.equal(resolveAddress("  docs.unsloth.ai/get-started ", "duckduckgo"), "https://docs.unsloth.ai/get-started");
   assert.equal(resolveAddress("192.168.1.10:8080", "duckduckgo"), "https://192.168.1.10:8080");
   assert.equal(resolveAddress("localhost:8888", "duckduckgo"), "http://localhost:8888");
+  assert.equal(resolveAddress("[2606:4700:4700::1111]", "duckduckgo"), "https://[2606:4700:4700::1111]");
+  assert.equal(resolveAddress("example.xn--p1ai/a", "duckduckgo"), "https://example.xn--p1ai/a");
+  assert.equal(resolveAddress("пример.рф", "duckduckgo"), "https://пример.рф");
   assert.equal(resolveAddress("   ", "duckduckgo"), null);
 });
 
@@ -57,5 +60,12 @@ test("a saved page gets its base URL back", () => {
   // Unclosed tags were quadratic and froze the UI.
   const start = performance.now();
   withBaseUrl("<head<!doctype".repeat(10_000), "https://a.example/");
+  assert.ok(performance.now() - start < 1000);
+});
+
+test("bare host matching stays linear on long input", () => {
+  const start = performance.now();
+  resolveAddress(`${"a.".repeat(50_000)}!`, "duckduckgo");
+  resolveAddress(`${"a".repeat(100_000)}.`, "duckduckgo");
   assert.ok(performance.now() - start < 1000);
 });

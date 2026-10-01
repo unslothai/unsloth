@@ -8,7 +8,7 @@
 //! - No IPC (capabilities bound to `main`); own profile, never the app's (holds sign-in).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -456,8 +456,9 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     });
 }
 
-/// A free name in `dir` for a download, from the name the page suggested.
-fn download_destination(dir: &Path, suggested: &Path) -> PathBuf {
+/// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
+/// destinations of downloads still in flight, which don't exist on disk yet.
+fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>) -> PathBuf {
     let name = suggested
         .file_name()
         .and_then(|name| name.to_str())
@@ -474,8 +475,9 @@ fn download_destination(dir: &Path, suggested: &Path) -> PathBuf {
         })
         .filter(|name| !name.trim_matches('.').is_empty())
         .unwrap_or_else(|| "download".into());
+    let free = |path: &Path| !path.exists() && !reserved.contains(path);
     let candidate = dir.join(&name);
-    if !candidate.exists() {
+    if free(&candidate) {
         return candidate;
     }
     let path = Path::new(&name);
@@ -489,7 +491,7 @@ fn download_destination(dir: &Path, suggested: &Path) -> PathBuf {
             Some(ext) => dir.join(format!("{stem} ({n}).{ext}")),
             None => dir.join(format!("{stem} ({n})")),
         })
-        .find(|p| !p.exists())
+        .find(|p| free(p))
         .unwrap_or(candidate)
 }
 
@@ -733,20 +735,31 @@ fn create_view<R: Runtime>(
                     let Some(dir) = downloads_dir.as_deref() else {
                         return false;
                     };
-                    let path = download_destination(dir, destination);
+                    // Picked and recorded under one lock, so two downloads can't take one name.
+                    let path = {
+                        let state = app.state::<BrowserViews>();
+                        let mut inner = state.inner.lock().unwrap();
+                        let path = {
+                            let reserved: HashSet<&Path> = inner
+                                .downloads
+                                .values()
+                                .flatten()
+                                .map(PathBuf::as_path)
+                                .collect();
+                            download_destination(dir, destination, &reserved)
+                        };
+                        inner
+                            .downloads
+                            .entry(url.to_string())
+                            .or_default()
+                            .push(path.clone());
+                        path
+                    };
                     let name = path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    *destination = path.clone();
-                    app.state::<BrowserViews>()
-                        .inner
-                        .lock()
-                        .unwrap()
-                        .downloads
-                        .entry(url.to_string())
-                        .or_default()
-                        .push(path);
+                    *destination = path;
                     emit(
                         app,
                         BrowserEvent::Download {
@@ -1266,9 +1279,17 @@ mod tests {
     #[test]
     fn downloads_get_a_free_safe_name() {
         let dir = tempfile::tempdir().unwrap();
-        let name = |suggested: &str| download_destination(dir.path(), Path::new(suggested));
+        let none = HashSet::new();
+        let name = |suggested: &str| download_destination(dir.path(), Path::new(suggested), &none);
         std::fs::write(name("report.pdf"), b"x").unwrap();
         assert_eq!(name("report.pdf"), dir.path().join("report (1).pdf"));
+        // A name an unfinished download holds is taken too.
+        let first = dir.path().join("report (1).pdf");
+        let reserved = HashSet::from([first.as_path()]);
+        assert_eq!(
+            download_destination(dir.path(), Path::new("report.pdf"), &reserved),
+            dir.path().join("report (2).pdf")
+        );
         assert_eq!(name(".."), dir.path().join("download"));
         assert_eq!(name("/x/evil\u{7}name.sh"), dir.path().join("evil_name.sh"));
     }

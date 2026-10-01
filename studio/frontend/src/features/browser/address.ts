@@ -24,9 +24,11 @@ export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; searchUrl: 
 };
 
 const SCHEME = /^[a-z][a-z\d+.-]*:\/\//i;
-// A dotted host (optionally with port and path) and no spaces: "unsloth.ai", "docs.unsloth.ai/get-started".
-const HOST_LIKE = /^(?:[\w-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$/i;
+// A dotted host (optionally with port and path) and no spaces: "unsloth.ai", "docs.unsloth.ai/get-started",
+// "пример.рф", "example.xn--p1ai".
+const HOST_LIKE = /^(?:[\p{L}\p{N}_-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)(?::\d+)?(?:[/?#]\S*)?$/iu;
 const IPV4_LIKE = /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#]\S*)?$/;
+const IPV6_LIKE = /^\[[\da-f:.]+\](?::\d+)?(?:[/?#]\S*)?$/i;
 const LOCALHOST = /^localhost(?::\d+)?(?:[/?#]\S*)?$/i;
 
 /** What the address bar navigates to: a URL as typed, a bare host as https, anything else as a search. */
@@ -35,7 +37,7 @@ export function resolveAddress(input: string, engine: SearchEngineId): string | 
   if (!text) return null;
   if (SCHEME.test(text)) return text;
   if (LOCALHOST.test(text)) return `http://${text}`;
-  if (HOST_LIKE.test(text) || IPV4_LIKE.test(text)) return `https://${text}`;
+  if (HOST_LIKE.test(text) || IPV4_LIKE.test(text) || IPV6_LIKE.test(text)) return `https://${text}`;
   return SEARCH_ENGINES[engine].searchUrl(text);
 }
 
