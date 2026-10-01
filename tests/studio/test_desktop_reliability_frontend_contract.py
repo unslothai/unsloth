@@ -713,7 +713,7 @@ def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
             depth -= 1
         elif ch == ">" and depth == 0:
             break
-    assert label < end, 'aria-label="New chat" is not on the <Button> opening tag'
+    assert label < end, "aria-label=\"New chat\" is not on the <Button> opening tag"
     match = re.search(r'className="([^"]*)"', chat_page[start:end])
     assert match, "the New chat button has no static className"
     return match.group(1).split()
