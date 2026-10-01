@@ -138,6 +138,18 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def caches_at_the_last_block(
+    provider_type: Optional[str], model: Optional[str], enable_prompt_caching: Optional[bool]
+) -> bool:
+    if enable_prompt_caching is False:
+        return False
+    if provider_type == "anthropic":
+        return True
+    return provider_type == "openrouter" and (model or "").strip().lower().lstrip("~").startswith(
+        "anthropic/"
+    )
+
+
 def _is_azure_openai_host(host: str) -> bool:
     return host.endswith((".openai.azure.com", ".services.ai.azure.com"))
 
@@ -1469,6 +1481,7 @@ class ExternalProviderClient:
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
         preserve_thinking: Optional[bool] = None,
+        thread_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Yield OpenAI-format SSE lines from the external provider. OpenAI-compatible providers
         forward lines verbatim; for Anthropic the native Messages API SSE is translated.
@@ -1693,6 +1706,17 @@ class ExternalProviderClient:
                     body["reasoning"] = {"enabled": False}
             elif enable_thinking is True:
                 body["reasoning"] = {"enabled": True}
+
+            # Claude caches only behind cache_control; the top-level form advances the breakpoint every turn. Other
+            # families cache automatically and the field is documented for Claude's providers only.
+            if caches_at_the_last_block("openrouter", model, enable_prompt_caching):
+                cache_control = {"type": "ephemeral"}
+                if prompt_cache_ttl == "1h":
+                    cache_control["ttl"] = "1h"
+                body["cache_control"] = cache_control
+            # Sticky routing keeps a conversation on the provider that holds its cache.
+            if thread_id:
+                body["session_id"] = str(thread_id)[:256]
 
             # OpenRouter web plugin works on every model id including meta-routers (unlike `:online`). Forced-function
             # tool_choice suppresses it, matching Gemini/Anthropic.
@@ -6871,6 +6895,53 @@ class ExternalProviderClient:
         if not media_type:
             media_type = "text/plain" if response_format == "text" else "application/json"
         return response.content, media_type
+
+    async def create_decision(
+        self, model: str, state: Any, questions: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        def as_text(value: Any) -> Any:
+            return (
+                _json.dumps(value, ensure_ascii = False) if isinstance(value, (dict, list)) else value
+            )
+
+        sent = {}
+        for name, question in questions.items():
+            question = dict(question)
+            if "instructions" in question:
+                question["instructions"] = as_text(question["instructions"])
+            criteria = question.get("criteria")
+            if isinstance(criteria, dict):
+                question["criteria"] = {key: as_text(value) for key, value in criteria.items()}
+            elif isinstance(criteria, list):
+                question["criteria"] = [as_text(value) for value in criteria]
+            sent[name] = question
+        response = await _client().post(
+            re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/systemone",
+            headers = self._auth_headers(),
+            json = {"model": model, "state": state, "questions": sent},
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_decision_models(self) -> list[str]:
+        response = await _client().get(
+            re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
+            params = {"output_modalities": "decisions"},
+            headers = self._auth_headers(),
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        models = data.get("data") if isinstance(data, dict) else None
+        return [
+            model["id"]
+            for model in (models if isinstance(models, list) else [])
+            if isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and isinstance(model.get("architecture"), dict)
+            and "decisions" in (model["architecture"].get("output_modalities") or [])
+        ]
 
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models. Returns dicts with at least 'id'. All providers

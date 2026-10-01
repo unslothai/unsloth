@@ -2403,6 +2403,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    extra_audio_base64: Optional[List[str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Further recordings after audio_base64, in order, for models that take "
+            "several clips in one message. Size and duration caps apply to all clips together."
+        ),
+    )
     audio_instructions: Optional[str] = Field(
         None,
         description = (
@@ -2642,8 +2649,9 @@ class ChatCompletionRequest(BaseModel):
             "informational. On Gemini, pass a string cache resource name such "
             "as `cachedContents/abc123` to attach `cachedContent` on the native "
             "request (boolean true is a no-op on Gemini because creating the "
-            "cache requires a separate POST /cachedContents call). Ignored for "
-            "every other provider. Treated as enabled when omitted."
+            "cache requires a separate POST /cachedContents call). On OpenRouter, "
+            "boolean true adds a top-level cache_control for anthropic/ models. "
+            "Ignored for every other provider. Treated as enabled when omitted."
         ),
     )
 
@@ -2666,14 +2674,15 @@ class ChatCompletionRequest(BaseModel):
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (
-            "[x-unsloth] Anthropic cache_control TTL. Defaults to the 5-minute "
+            "[x-unsloth] Anthropic cache_control TTL, also used for Claude on "
+            "OpenRouter. Defaults to the 5-minute "
             "ephemeral pool when omitted. Pass `1h` to write into the 1-hour "
             "pool instead -- 1h writes are billed at 2x base input vs 1.25x "
             "for 5m, but reads stay at 0.1x for both, so 1h pays off the "
             "moment a single extra read lands more than 5 minutes after the "
             "write. Only `5m` and `1h` are forwarded; any other value is "
             "silently ignored downstream so a stale frontend can't make the "
-            "API 422 on the request. No-op on every non-Anthropic provider."
+            "API 422 on the request. No-op on every other provider."
         ),
     )
     compaction_threshold: Optional[int] = Field(
@@ -2839,6 +2848,19 @@ class ChatCompletionRequest(BaseModel):
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
+        return self
+
+    @model_validator(mode = "after")
+    def _promote_extra_audio(self) -> "ChatCompletionRequest":
+        """Keep ``audio_base64`` the first clip whenever any clip is attached.
+
+        Every capability, size and routing check keys on that field, so a request carrying
+        only ``extra_audio_base64`` must not slip past them as audio-free.
+        """
+        extra = [clip for clip in self.extra_audio_base64 or [] if clip]
+        if not self.audio_base64 and extra:
+            self.audio_base64 = extra.pop(0)
+        self.extra_audio_base64 = extra or None
         return self
 
     @model_validator(mode = "after")
@@ -3935,6 +3957,8 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
+    _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
@@ -4662,7 +4686,9 @@ class DiffusionStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
+    supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
@@ -5003,6 +5029,8 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
+    _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
@@ -5505,7 +5533,10 @@ class VideoStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     family: Optional[str] = Field(None, description = "Detected video family")
+    supported_families: List[str] = Field(default_factory = list, description = "Loadable families")
+    modular_families: List[str] = Field(default_factory = list, description = "Modular families")
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
