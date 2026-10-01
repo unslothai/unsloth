@@ -381,3 +381,26 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
     monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())
 
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+
+
+def test_a_rate_limit_holds_the_changelog_even_for_a_forced_refresh(monkeypatch):
+    import email.message
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    for name in ("_release_memo", "_release_failed_at", "_release_forced_at"):
+        monkeypatch.setattr(changes, name, {})
+    headers = email.message.Message()
+    headers["Retry-After"] = "90"
+    calls = []
+
+    def refused(*_args, **_kwargs):
+        calls.append(1)
+        raise urllib.error.HTTPError("url", 403, "rate limited", headers, None)
+
+    monkeypatch.setattr(changes, "auth_safe_open", refused)
+    assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
+    assert 85 < freshness_flow.github_rate_limit_remaining() <= 90
+    assert changes._release_for_tag("unslothai/llama.cpp", "b2", force_refresh = True) is None
+    assert calls == [1]

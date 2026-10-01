@@ -244,6 +244,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
+        # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
+        prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 50 steps / CFG 5.
@@ -794,11 +796,21 @@ def default_video_generation_params(
     beats the family base repo. ``fallback`` is used when no identifier names a variant --
     callers pass the resolved family's own default so a Wan model loaded from an opaque local
     path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
+    variant = video_generation_variant(*identifiers)
+    for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
+        if key == variant:
+            return steps, guidance
+    return fallback
+
+
+def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+    """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
-        for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
+        for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
             if re.search(r"(?<![a-z])" + re.escape(key), needle):
-                return steps, guidance
-    return fallback
+                return key
+    return None

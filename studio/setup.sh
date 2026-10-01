@@ -96,6 +96,21 @@ _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
 
+_filter_download_output() {
+    if _is_verbose; then
+        cat
+        return
+    fi
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "Downloading "*": "*"% ("*") at "*"/s"|"Downloading "*": "*" downloaded at "*"/s")
+                printf '%s\n' "$line"
+                ;;
+        esac
+    done
+}
+
 verbose_substep() {
     if _is_verbose; then
         substep "$1"
@@ -111,6 +126,115 @@ _remove_agent_instruction_files() {
         find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
             -exec rm -f {} + 2>/dev/null || true
     done
+}
+
+# ── Bounded `--version` probe for binaries setup does not own (uv candidates, the system Node) ──
+_SETUP_PROBE_TARGET=""
+_SETUP_PROBE_PID=""
+_SETUP_PROBE_PREV_TRAP=""
+
+# Bash needs `--` before a negative process-group ID.
+# Omit it for positive PIDs to support dash, which rejects `--`.
+_setup_probe_signal_target() {
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
+# Send TERM, then KILL after $3 seconds. $1 is the target PID/group; $2 is the PID to watch.
+_setup_probe_terminate() {
+    _supt_grace=0
+    _setup_probe_signal_target TERM "$1"
+    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _supt_grace=$((_supt_grace + 1))
+    done
+    # Recheck before KILL to reduce the risk of signalling a reused PID.
+    if kill -0 "$2" 2>/dev/null; then _setup_probe_signal_target KILL "$1"; fi
+    unset _supt_grace
+}
+
+# Preserve the caller's signal handlers while the watchdog owns probe cleanup.
+_setup_probe_restore_trap() {
+    _SETUP_PROBE_TARGET=""
+    _SETUP_PROBE_PID=""
+    if [ -n "${_SETUP_PROBE_PREV_TRAP:-}" ]; then
+        eval "$_SETUP_PROBE_PREV_TRAP"
+    else
+        trap - HUP INT TERM
+    fi
+    _SETUP_PROBE_PREV_TRAP=""
+}
+
+_setup_probe_on_signal() {
+    # Stop the probe on cancellation, with a shorter grace period.
+    if [ -n "${_SETUP_PROBE_TARGET:-}" ] && [ -n "${_SETUP_PROBE_PID:-}" ]; then
+        _setup_probe_terminate "$_SETUP_PROBE_TARGET" "$_SETUP_PROBE_PID" 2
+        wait "$_SETUP_PROBE_PID" 2>/dev/null || :
+    fi
+    _setup_probe_restore_trap
+    # Re-deliver the signal to the restored handler or default action.
+    kill -s "$1" "$$" 2>/dev/null || :
+}
+
+# Probe $1 with stdin closed and a 20 s timeout, plus 5 s to terminate.
+# Save stdout to $2 (default /dev/null) to avoid re-probing for the version.
+# Use a file so lingering children cannot hold an output pipe open.
+_setup_probe_version() {
+    _supe_secs="${_SETUP_PROBE_SECONDS:-20}"
+    _supe_out="${2:-/dev/null}"
+    # Use GNU timeout when available, otherwise the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
+        _supe_rc=$?
+        # Normalize SIGKILL after the grace period to the watchdog's timeout status.
+        if [ "$_supe_rc" -eq 137 ]; then _supe_rc=124; fi
+        return $_supe_rc
+    fi
+    # Temporarily enable monitor mode to signal the probe and its children as a group.
+    _supe_monitor=off
+    case "$-" in *m*) _supe_monitor=on ;; esac
+    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
+    _supe_pid=$!
+    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
+    # Signal a group only if it differs from setup's own group; otherwise use the PID.
+    # Strip spaces without external tools so this works on a minimal PATH.
+    _supe_target="$_supe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
+        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _supe_pgid=${_supe_pgid##* }
+        _supe_self=${_supe_self##* }
+        case "$_supe_pgid$_supe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
+        esac
+    fi
+    _SETUP_PROBE_TARGET="$_supe_target"
+    _SETUP_PROBE_PID="$_supe_pid"
+    _SETUP_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_PROBE_PREV_TRAP=""
+    trap '_setup_probe_on_signal HUP' HUP
+    trap '_setup_probe_on_signal INT' INT
+    trap '_setup_probe_on_signal TERM' TERM
+    _supe_waited=0
+    while kill -0 "$_supe_pid" 2>/dev/null; do
+        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
+            _setup_probe_terminate "$_supe_target" "$_supe_pid" 5
+            wait "$_supe_pid" 2>/dev/null
+            _setup_probe_restore_trap
+            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+            return 124
+        fi
+        sleep 1
+        _supe_waited=$((_supe_waited + 1))
+    done
+    wait "$_supe_pid"
+    _supe_rc=$?
+    _setup_probe_restore_trap
+    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+    return $_supe_rc
 }
 
 # ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
@@ -444,7 +568,7 @@ _CAPTURE_LOG=""
 
 _npm_mirror_retry() {
     [ "$(_mirror_failed_host "${_CAPTURE_LOG:-}" npm)" = npm ] && _mirror_take npm || return 1
-    run_quiet_no_exit "$1" npm install --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
+    run_quiet_no_exit "$1" npm "${_NPM_INSTALL:-install}" --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
     export "$_MT_PAIRS"
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
 }
@@ -2059,13 +2183,34 @@ else
 fi
 NODE_DIR="$_NODE_PARENT/node"
 
-_SYS_NODE_VER="$(node -v 2>/dev/null || true)"
-_SYS_NPM_VER="$(npm -v 2>/dev/null || true)"
+# Bound system node/npm probes so a broken binary on PATH cannot stall setup (#11709).
+# Sets _PROBED_VER, or leaves it empty if the tool is missing, fails or times out.
+_probe_system_node_tool() {
+    _PROBED_VER=""
+    command -v "$1" >/dev/null 2>&1 || return 0
+    _pnt_out="$(mktemp)"
+    _pnt_rc=0
+    _setup_probe_version "$1" "$_pnt_out" || _pnt_rc=$?
+    if [ "$_pnt_rc" -eq 0 ]; then
+        _PROBED_VER="$(head -n 1 "$_pnt_out")"
+    elif [ "$_pnt_rc" -eq 124 ]; then
+        substep "system $1 ($(command -v "$1")) did not answer --version within ${_SETUP_PROBE_SECONDS:-20}s; not using it" "$C_WARN"
+    fi
+    rm -f "$_pnt_out"
+}
+_probe_system_node_tool node
+_SYS_NODE_VER="$_PROBED_VER"
+_SYS_NPM_VER=""
+# npm requires Node, so skip its probe if Node failed.
+if [ -n "$_SYS_NODE_VER" ]; then
+    _probe_system_node_tool npm
+    _SYS_NPM_VER="$_PROBED_VER"
+fi
 NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
 _FRONTEND_SKIP=false
 
 if [ "$NODE_SOURCE" = system ]; then
-    step "node" "$(node -v) | npm $(npm -v) (system)"
+    step "node" "$_SYS_NODE_VER | npm $_SYS_NPM_VER (system)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
     # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
@@ -2086,8 +2231,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     _NODE_LOG="$(mktemp)"
     set +e
     for _node_try in default mirror; do
-        if _is_verbose; then
-            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG"
+        if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG" | _filter_download_output
             _NODE_STATUS=${PIPESTATUS[0]}
         else
             "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >>"$_NODE_LOG" 2>&1
@@ -2143,6 +2288,8 @@ else
 # isolated prefix); on a system Node we install nothing global. Build falls back to npm.
 if command -v bun &>/dev/null; then
     substep "bun already installed ($(bun --version))"
+elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
+    verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
@@ -2176,7 +2323,7 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Use bun for install if available (faster), fall back to npm.
+# package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
 # run_quiet calls exit on failure, which would kill the script before the npm
@@ -2190,7 +2337,7 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
+    bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -2217,7 +2364,9 @@ _try_bun_install() {
 _FRONTEND_INSTALL_LOG=$(mktemp)
 _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
-if command -v bun &>/dev/null; then
+_NPM_INSTALL=install
+[ -f package-lock.json ] && _NPM_INSTALL=ci
+if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
@@ -2236,8 +2385,8 @@ if [ "$_bun_install_ok" = false ]; then
     # returns non-zero on failure) so the hint branch is reachable; it also captures
     # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
     _npm_install_rc=0
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
-    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm install"; then
+    run_quiet_no_exit "npm $_NPM_INSTALL" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL"; then
         _npm_install_rc=0
     fi
     if [ "$_npm_install_rc" -ne 0 ]; then
@@ -2278,8 +2427,10 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
     # below is reachable; it also captures the exact exit code.
     _oxc_install_rc=0
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm install (oxc validator runtime)"; then
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
         _oxc_install_rc=0
     fi
     _CAPTURE_LOG=""
@@ -2471,7 +2622,7 @@ _setup_uv_unzip() {
         *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
     esac
     command -v python3 >/dev/null 2>&1 &&
-        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+        python3 -m zipfile -e "$1" "$2" >/dev/null 2>&1
 }
 
 _setup_uv_sha256() {
@@ -2480,123 +2631,6 @@ _setup_uv_sha256() {
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
     fi
-}
-
-_SETUP_UV_PROBE_TARGET=""
-_SETUP_UV_PROBE_PID=""
-_SETUP_UV_PROBE_PREV_TRAP=""
-
-# A process group is signalled as a negative pid, and the two shells that get here disagree about
-# how to write one: bash reads a bare `-123` as a signal spec and refuses it, dash refuses the
-# `--` that fixes bash. Only a shell that made a group can produce a negative target, so the sign
-# picks the spelling. Measured both ways: the wrong one fails silently under 2>/dev/null and the
-# group survives the ceiling.
-_setup_uv_signal_target() {
-    case "$2" in
-        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
-        *)  kill "-$1" "$2" 2>/dev/null || : ;;
-    esac
-}
-
-# TERM, then KILL what ignored it, exactly as `timeout -k` does on the hosts that have it.
-# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
-_setup_uv_probe_terminate() {
-    _supt_grace=0
-    _setup_uv_signal_target TERM "$1"
-    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
-        sleep 1
-        _supt_grace=$((_supt_grace + 1))
-    done
-    # Only if it is still there: the loop also ends when TERM worked, and an unconditional KILL
-    # then goes to a number this shell no longer owns. Narrows the window, not closes it.
-    if kill -0 "$2" 2>/dev/null; then _setup_uv_signal_target KILL "$1"; fi
-    unset _supt_grace
-}
-
-# The watchdog's ceiling lives in the calling shell, so a cancel during the wait would leave the
-# candidate, and under monitor mode its whole group, running with nobody left to stop it. These
-# two chain rather than replace: the pinned installer's own handlers still have to run.
-_setup_uv_probe_restore_trap() {
-    _SETUP_UV_PROBE_TARGET=""
-    _SETUP_UV_PROBE_PID=""
-    if [ -n "${_SETUP_UV_PROBE_PREV_TRAP:-}" ]; then
-        eval "$_SETUP_UV_PROBE_PREV_TRAP"
-    else
-        trap - HUP INT TERM
-    fi
-    _SETUP_UV_PROBE_PREV_TRAP=""
-}
-
-_setup_uv_probe_on_signal() {
-    # The same TERM/KILL the ceiling uses, on a shorter leash: a cancel that waited the full five
-    # seconds for a binary ignoring TERM would read as a setup that ignored the cancel.
-    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ] && [ -n "${_SETUP_UV_PROBE_PID:-}" ]; then
-        _setup_uv_probe_terminate "$_SETUP_UV_PROBE_TARGET" "$_SETUP_UV_PROBE_PID" 2
-        wait "$_SETUP_UV_PROBE_PID" 2>/dev/null || :
-    fi
-    _setup_uv_probe_restore_trap
-    # Hand the signal back to whoever had it: the installer's handler, or the default action.
-    kill -s "$1" "$$" 2>/dev/null || :
-}
-
-# Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
-# timeout or, without it (stock macOS), a background job killed when the ceiling passes.
-# $2 takes the binary's stdout, /dev/null by default: reuse needs the version line, and running
-# the binary again to read it would be a second chance to hang.
-_setup_uv_probe_exec() {
-    _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
-    _supe_out="${2:-/dev/null}"
-    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
-    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
-        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
-        return $?
-    fi
-    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
-    # started, as `timeout`'s setpgid does. Off again at once: it changes how later jobs report.
-    _supe_monitor=off
-    case "$-" in *m*) _supe_monitor=on ;; esac
-    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
-    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
-    _supe_pid=$!
-    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
-    # The group only where it is provably not this shell's own (zsh shares them, and a group TERM
-    # there kills setup); otherwise the single pid, as before. Parameter expansion, not `tr`: this
-    # branch has to hold on a PATH as bare as the shell and sleep.
-    _supe_target="$_supe_pid"
-    if command -v ps >/dev/null 2>&1; then
-        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
-        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
-        _supe_pgid=${_supe_pgid##* }
-        _supe_self=${_supe_self##* }
-        case "$_supe_pgid$_supe_self" in
-            ''|*[!0-9]*) : ;;
-            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
-        esac
-    fi
-    _SETUP_UV_PROBE_TARGET="$_supe_target"
-    _SETUP_UV_PROBE_PID="$_supe_pid"
-    _SETUP_UV_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_UV_PROBE_PREV_TRAP=""
-    trap '_setup_uv_probe_on_signal HUP' HUP
-    trap '_setup_uv_probe_on_signal INT' INT
-    trap '_setup_uv_probe_on_signal TERM' TERM
-    _supe_waited=0
-    while kill -0 "$_supe_pid" 2>/dev/null; do
-        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
-            # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
-            _setup_uv_probe_terminate "$_supe_target" "$_supe_pid" 5
-            wait "$_supe_pid" 2>/dev/null
-            _setup_uv_probe_restore_trap
-            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
-            return 124
-        fi
-        sleep 1
-        _supe_waited=$((_supe_waited + 1))
-    done
-    wait "$_supe_pid"
-    _supe_rc=$?
-    _setup_uv_probe_restore_trap
-    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
-    return $_supe_rc
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
@@ -2700,7 +2734,7 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
             chmod 0755 "$_siup_stage" 2>/dev/null || true
             # Validate before publishing: the rename destroys the incumbent, so a binary that
             # cannot run here must never replace one that could.
-            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
+            if [ "$_siup_exe" = "uv" ] && ! _setup_probe_version "$_siup_stage"; then _siup_ready=0; break; fi
         done
         if [ "$_siup_ready" = "1" ] &&
            mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
@@ -3008,8 +3042,8 @@ _setup_find_installed_uv() {
         # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
         # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
         # over this one and moved the manifest's uv_version on the next pass.
-        if _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
-           { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
+        if _setup_probe_version "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
+           { sleep 2; _setup_probe_version "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
             # `read`, not `cat`: this branch has to hold on a bare PATH, and an empty file
             # returning non-zero is not a reason for `set -e` to end setup.
             _sfu_ver=""
@@ -4813,8 +4847,8 @@ else
     esac
     _PREBUILT_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG" | _filter_download_output
         _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
         "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
@@ -5598,8 +5632,8 @@ else
     fi
     _WHISPER_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG" | _filter_download_output
         _WHISPER_STATUS=${PIPESTATUS[0]}
     else
         "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1

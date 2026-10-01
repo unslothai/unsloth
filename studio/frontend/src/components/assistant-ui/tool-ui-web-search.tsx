@@ -7,13 +7,13 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { GlobeIcon } from "lucide-react";
 
 import {
   isSearchImagesToolResult,
   useToolAwaitingApproval,
 } from "@/features/chat";
 import { escapeBidiControls } from "@/lib/escape-bidi-controls";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { openLink } from "@/lib/open-link";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
@@ -186,7 +186,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={toolName}
         status={status}
-        icon={GlobeIcon}
+        icon={InternetGlyph}
       />
       <ToolFallbackContent>
         {/* The trigger shows only the host; Allow/Deny needs the full url. Inert text: untrusted. */}

@@ -201,6 +201,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const changingFromSetupCode =
     !isLoginMode && sessionAccount(getAuthToken())?.isOwner === false;
+  const passwordManagerUsername =
+    isLoginMode && loginMode === "multi"
+      ? null
+      : sessionAccount(getAuthToken())?.username || username || null;
   const invalidChangePasswordForm =
     !isLoginMode &&
     (currentPassword.length < 8 ||
@@ -375,6 +379,18 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         </p>
       )}
       <form className="space-y-5" onSubmit={handleSubmit}>
+        {passwordManagerUsername && (
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            value={passwordManagerUsername}
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="sr-only"
+          />
+        )}
         {isLoginMode && loginMode === "multi" && (
           <div className="space-y-2">
             <Label htmlFor="username">Username</Label>
