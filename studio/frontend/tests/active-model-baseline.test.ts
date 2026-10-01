@@ -42,7 +42,7 @@ function configsEqual(persistedMode: string) {
     perModelConfigsEqual: (
       a: PerModelConfig,
       b: PerModelConfig,
-      options?: { againstRuntime?: boolean },
+      options?: { followGlobal?: boolean },
     ) => boolean;
   }>(
     new URL(
@@ -99,8 +99,8 @@ test("unreported or non-llama.cpp arguments stay absent so the stored row can hy
   );
 });
 
-test("against the runtime, a stored Auto (null) equals the mode it resolved to", () => {
-  const runtime = { againstRuntime: true };
+test("following the global mode, a stored Auto (null) equals the mode it resolves to", () => {
+  const runtime = { followGlobal: true };
   const autoEqual = configsEqual("auto");
   assert.ok(autoEqual(BASE, { ...BASE, speculativeType: "auto" }, runtime));
   assert.ok(!autoEqual(BASE, { ...BASE, speculativeType: "off" }, runtime));

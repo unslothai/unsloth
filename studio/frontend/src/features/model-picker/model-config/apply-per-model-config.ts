@@ -155,14 +155,14 @@ export function currentRuntimePerModelConfig(
   };
 }
 
-/** `againstRuntime`: `b` is what the runtime resolved, so a null mode in `a` means the global one.
- *  Off for presets, where null means the preset carries no mode at all. */
+/** `followGlobal`: a null speculative mode means the global one, as it does at load time. Never for
+ *  presets, where null means the preset carries no mode at all. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
-  { againstRuntime = false }: { againstRuntime?: boolean } = {},
+  { followGlobal = false }: { followGlobal?: boolean } = {},
 ): boolean {
-  const speculative = againstRuntime
+  const speculative = followGlobal
     ? resolvedSpeculativeType
     : normalizeSpeculativeType;
   return (

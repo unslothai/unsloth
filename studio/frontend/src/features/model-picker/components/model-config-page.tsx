@@ -2744,7 +2744,7 @@ export function ModelConfigPage({
     platform.chatOnlyReason,
   );
   const atBaseline = perModelConfigsEqual(config, baseline, {
-    againstRuntime: true,
+    followGlobal: true,
   });
   // The fitted value is an outcome, not an override. Auto stays at the default even
   // when a loaded model reports less than its native context. A non-GGUF pin is an
@@ -2757,6 +2757,7 @@ export function ModelConfigPage({
     perModelConfigsEqual(
       { ...config, customContextLength: null },
       DEFAULT_PER_MODEL_CONFIG,
+      { followGlobal: true },
     );
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
@@ -3240,7 +3241,7 @@ export function ModelConfigPage({
     const effectivePersistenceOnly =
       isActiveModel &&
       perModelConfigsEqual(effectiveConfig, baseline, {
-        againstRuntime: true,
+        followGlobal: true,
       }) &&
       rememberChanged;
     const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
