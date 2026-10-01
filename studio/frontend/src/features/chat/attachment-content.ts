@@ -780,7 +780,41 @@ function docxNoteText(node: Node): string {
   return text;
 }
 
-export function readDocxNotesText(archive: Uint8Array): string {
+const DOCX_NOTE_REFERENCE_RE =
+  /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(?:<\/(?:[\w.-]+:)?\2Reference>)?/g;
+const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
+
+function romanNumeral(n: number): string {
+  let out = "";
+  for (const [value, digits] of [
+    [1000, "m"],
+    [900, "cm"],
+    [500, "d"],
+    [400, "cd"],
+    [100, "c"],
+    [90, "xc"],
+    [50, "l"],
+    [40, "xl"],
+    [10, "x"],
+    [9, "ix"],
+    [5, "v"],
+    [4, "iv"],
+    [1, "i"],
+  ] as const) {
+    for (; n >= value; n -= value) out += digits;
+  }
+  return out;
+}
+
+/**
+ * Numbers notes in body reference order as Word does (footnotes 1, 2; endnotes i, ii),
+ * writes each label after its reference in the main document (extractRawText drops the
+ * reference itself) and returns that archive with the note text to append.
+ */
+export function markDocxNotes(archive: Uint8Array): {
+  archive: Uint8Array;
+  notes: string;
+} {
   const names = new Set<string>();
   const read = (name: string) =>
     unzipSync(archive, {
@@ -801,11 +835,17 @@ export function readDocxNotesText(archive: Uint8Array): string {
     DOCX_MAIN_DOCUMENT_FALLBACK,
   );
   const mainTargets = targetsOf(main);
-  const sections: string[] = [];
-  for (const [kind, heading] of [
-    ["footnote", "Footnotes"],
-    ["endnote", "Endnotes"],
-  ]) {
+  const notesOf = (heading: string, label: (n: number) => string) => ({
+    heading,
+    label,
+    bodies: new Map<string, string>(),
+    numbers: new Map<string, number>(),
+  });
+  const kinds = {
+    footnote: notesOf("Footnotes", String),
+    endnote: notesOf("Endnotes", romanNumeral),
+  };
+  for (const [kind, notes] of Object.entries(kinds)) {
     const xml = read(
       resolve(
         mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${kind}s`),
@@ -813,21 +853,65 @@ export function readDocxNotesText(archive: Uint8Array): string {
       ),
     );
     if (!xml) continue;
-    const doc = new DOMParser().parseFromString(strFromU8(xml), "application/xml");
-    const lines = [heading];
-    let number = 0;
+    const doc = new DOMParser().parseFromString(
+      strFromU8(xml),
+      "application/xml",
+    );
     for (const note of Array.from(
       doc.getElementsByTagNameNS(WORDPROCESSINGML_NAMESPACE, kind),
     )) {
       const type = note.getAttributeNS(WORDPROCESSINGML_NAMESPACE, "type");
       if (type && type !== "normal") continue;
-      number++;
-      const text = docxNoteText(note).replace(/\s+/g, " ").trim();
-      if (text) lines.push(`[${number}] ${text}`);
+      notes.bodies.set(
+        note.getAttributeNS(WORDPROCESSINGML_NAMESPACE, "id") ?? "",
+        docxNoteText(note).replace(/\s+/g, " ").trim(),
+      );
     }
-    if (lines.length > 1) sections.push(lines.join("\n"));
   }
-  return sections.join("\n\n");
+  if (!kinds.footnote.bodies.size && !kinds.endnote.bodies.size) {
+    return { archive, notes: "" };
+  }
+
+  const mainXml = read(main);
+  let marked = false;
+  const markedXml = mainXml
+    ? strFromU8(mainXml).replace(
+        DOCX_NOTE_REFERENCE_RE,
+        (
+          reference,
+          prefix: string | undefined,
+          kind: keyof typeof kinds,
+          attributes: string,
+        ) => {
+          const id = DOCX_NOTE_ID_RE.exec(attributes)?.[1];
+          const notes = kinds[kind];
+          if (id === undefined || !notes.bodies.has(id)) return reference;
+          if (!notes.numbers.has(id)) notes.numbers.set(id, notes.numbers.size + 1);
+          marked = true;
+          const t = prefix ? `${prefix}:t` : "t";
+          return `${reference}<${t}>[${notes.label(notes.numbers.get(id)!)}]</${t}>`;
+        },
+      )
+    : "";
+  const sections: string[] = [];
+  for (const notes of Object.values(kinds)) {
+    // Notes no reference points at still carry text: keep them after the referenced ones.
+    for (const id of notes.bodies.keys()) {
+      if (!notes.numbers.has(id)) notes.numbers.set(id, notes.numbers.size + 1);
+    }
+    const lines = [...notes.numbers]
+      .sort((a, b) => a[1] - b[1])
+      .filter(([id]) => notes.bodies.get(id))
+      .map(([id, number]) => `[${notes.label(number)}] ${notes.bodies.get(id)}`);
+    if (lines.length) sections.push([notes.heading, ...lines].join("\n"));
+  }
+  if (!marked) return { archive, notes: sections.join("\n\n") };
+  const entries = unzipSync(archive);
+  entries[main] = strToU8(markedXml);
+  return {
+    archive: zipSync(entries, { level: 0 }),
+    notes: sections.join("\n\n"),
+  };
 }
 
 const XML_TOKEN_RE =
@@ -1137,10 +1221,11 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
+  const marked = markDocxNotes(repacked);
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(repacked),
+    arrayBuffer: toArrayBuffer(marked.archive),
   });
-  return value + readDocxNotesText(repacked);
+  return value + marked.notes;
 }
 
 const HTML_PRESCAN_BYTES = 1024;

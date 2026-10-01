@@ -29,9 +29,9 @@ const {
   getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
+  markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
-  readDocxNotesText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
@@ -1044,45 +1044,60 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
   );
 });
 
-test("readDocxNotesText reads the footnotes and endnotes extractRawText skips", () => {
+test("markDocxNotes numbers notes by reference order and marks the body", () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
-  const notes = (kind: string, text: string) =>
+  const note = (kind: string, id: number, text: string) =>
+    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const notes = (kind: string, body: string) =>
     strToU8(
       `<w:${kind}s ${w}>` +
         `<w:${kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${kind}>` +
         `<w:${kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}>` +
-        `<w:${kind} w:id="1"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>` +
+        body +
         `</w:${kind}s>`,
     );
+  const ref = (kind: string, id: number) =>
+    `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
   const archive = repackDocxAttachmentArchive(
     "paper.docx",
     zipSync({
       "[Content_Types].xml": strToU8("<Types/>"),
       "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
       "word/document.xml": strToU8(
-        `<w:document ${w}><w:body><w:p><w:r><w:t>Claim FNREF.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p></w:body></w:document>`,
+        `<w:document ${w}><w:body><w:p><w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}</w:p></w:body></w:document>`,
       ),
       "word/_rels/document.xml.rels": relationships([
         ["footnotes", "notes/foot.xml"],
         ["endnotes", "endnotes.xml"],
       ]),
-      "word/notes/foot.xml": notes("footnote", "Source: FOOTNOTEBODY"),
-      "word/endnotes.xml": notes("endnote", "Source: ENDNOTEBODY"),
+      "word/notes/foot.xml": notes(
+        "footnote",
+        note("footnote", 1, "Source: LATER") +
+          note("footnote", 2, "Source: EARLIER") +
+          note("footnote", 3, "Source: UNREFERENCED"),
+      ),
+      "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
     }),
   );
   const original = (globalThis as { DOMParser?: unknown }).DOMParser;
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
+    const marked = markDocxNotes(archive);
     assert.equal(
-      readDocxNotesText(archive),
-      "Footnotes\n[1] Source: FOOTNOTEBODY\n\nEndnotes\n[1] Source: ENDNOTEBODY",
+      marked.notes,
+      "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n\nEndnotes\n[i] Source: ENDNOTEBODY",
+    );
+    assert.match(
+      strFromU8(unzipSync(marked.archive)["word/document.xml"]),
+      /First\.<\/w:t><\/w:r><w:r><w:footnoteReference w:id="2"\/><w:t>\[1\]<\/w:t><\/w:r>.* Second\.<\/w:t><\/w:r><w:r><w:footnoteReference w:id="1"\/><w:t>\[2\]<\/w:t><\/w:r><w:r><w:endnoteReference w:id="1"\/><w:t>\[i\]<\/w:t>/,
     );
   } finally {
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
   }
 });
 
-test("readDocxNotesText skips move sources, deletions and text box fallbacks", () => {
+test("markDocxNotes skips move sources, deletions and text box fallbacks", () => {
   const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
   const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
@@ -1111,7 +1126,7 @@ test("readDocxNotesText skips move sources, deletions and text box fallbacks", (
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
     assert.equal(
-      readDocxNotesText(archive),
+      markDocxNotes(archive).notes,
       "Footnotes\n[1] Keep COVID-19 MOVED BOX",
     );
   } finally {
