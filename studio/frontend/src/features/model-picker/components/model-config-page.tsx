@@ -1267,10 +1267,12 @@ function MlxSpeculativeRows({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Tokens per draft: exactly this many up to the drafter's depth (3
-              for MTP heads), at most this many above it and for n-gram copies.
-              Unsloth still decodes plainly when drafting would be slower. Leave
-              blank to let Unsloth tune it for this machine.
+              Tokens per draft: up to the drafter's depth (3 for MTP heads),
+              every step drafts exactly this many, even when plain decoding would
+              be faster (with n-gram on, a copy replaces a draft when it should
+              yield more). Above that depth, or for n-gram copies alone, it is a
+              ceiling and Unsloth decodes plainly when drafting would be slower.
+              Leave blank to let Unsloth tune it for this machine.
             </InfoHint>
           </div>
           <input
