@@ -890,12 +890,24 @@ def convert_llava_to_vlm_format(dataset):
                     if img_idx is None:
                         img_idx = unindexed_image_index
                         unindexed_image_index += 1
-                    if img_idx < len(images):
-                        pil_image = images[img_idx]
-                        if isinstance(pil_image, str):
-                            pil_image = Image.open(pil_image).convert("RGB")
+                    if not isinstance(img_idx, int) or isinstance(img_idx, bool):
+                        raise ValueError(f"Invalid Llava image index: {img_idx!r}")
+                    if not 0 <= img_idx < len(images):
+                        raise ValueError(
+                            f"Llava image index {img_idx} is missing from a row with "
+                            f"{len(images)} images"
+                        )
 
-                        new_content.append({"type": "image", "image": pil_image})
+                    pil_image = images[img_idx]
+                    if isinstance(pil_image, str):
+                        pil_image = Image.open(pil_image).convert("RGB")
+                    elif not isinstance(pil_image, Image.Image):
+                        raise ValueError(
+                            f"Unsupported Llava image value at index {img_idx}: "
+                            f"{type(pil_image).__name__}"
+                        )
+
+                    new_content.append({"type": "image", "image": pil_image})
 
                 elif item["type"] == "text":
                     new_content.append({"type": "text", "text": item.get("text", "")})

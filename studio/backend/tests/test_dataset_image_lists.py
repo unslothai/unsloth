@@ -146,6 +146,31 @@ def test_unindexed_llava_images_are_consumed_in_order():
     assert [image.getpixel((0, 0)) for image in images] == [(255, 0, 0), (0, 0, 255)]
 
 
+def test_llava_conversion_rejects_missing_unindexed_image():
+    dataset = [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "image"}],
+                }
+            ],
+            "images": [Image.new("RGB", (8, 8), "red")],
+        }
+    ]
+
+    with pytest.raises(ValueError, match = "image index 1"):
+        convert_llava_to_vlm_format(dataset)
+
+
+def test_llava_conversion_rejects_undecoded_image_dictionary():
+    row = _llava_row_without_index()
+    row["images"] = [_encoded_image_row()["media"][0]]
+
+    with pytest.raises(ValueError, match = "Unsupported Llava image value"):
+        convert_llava_to_vlm_format([row])
+
+
 @pytest.mark.parametrize(
     "row",
     [
@@ -200,3 +225,14 @@ def test_image_list_detection_requires_values_the_converter_can_open(detector, t
     assert detector.detect_multimodal_dataset(local_image_dataset)["is_image"] is True
     assert detector.detect_multimodal_dataset(remote_image_dataset)["is_image"] is False
     assert detector.detect_multimodal_dataset(svg_image_dataset)["is_image"] is False
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+def test_llava_placeholders_require_convertible_images(detector):
+    row = _llava_row_without_index()
+    row["images"] = [_encoded_image_row()["media"][0]]
+    dataset = Dataset.from_list([row])
+
+    result = detector.detect_vlm_dataset_structure(dataset)
+
+    assert result["format"] != "vlm_messages_llava"

@@ -474,7 +474,12 @@ def detect_vlm_dataset_structure(dataset):
                     "image_column": None,
                     "text_column": None,
                 }
-            if "images" in column_names:
+            images = sample.get("images")
+            if (
+                isinstance(images, list)
+                and images
+                and all(_is_image_list_item(image) for image in images)
+            ):
                 return {
                     "format": "vlm_messages_llava",
                     "needs_conversion": True,
