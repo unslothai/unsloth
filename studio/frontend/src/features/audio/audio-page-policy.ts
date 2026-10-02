@@ -51,6 +51,14 @@ export function musicNeedsDescription(
   );
 }
 
+/** YuE2 can sing from its style description alone, so an empty lyrics field is an instrumental request. */
+export function musicLyricsOptional(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE && audioFamily === "yue2";
+}
+
 export type AudioBusy =
   | "loading"
   | "unloading"

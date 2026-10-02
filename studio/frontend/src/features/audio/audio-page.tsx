@@ -158,6 +158,7 @@ import {
   audioSamplingControlsApply,
   minimaxMusicFramesForSeconds,
   musicDurationRange,
+  musicLyricsOptional,
   musicNeedsDescription as musicModelNeedsDescription,
   mossTtsFramesForSeconds,
   mossTtsMaxFrames,
@@ -1937,6 +1938,10 @@ export function AudioPage({
   const musicNeedsDescription =
     cudaMusicGeneration ||
     musicModelNeedsDescription(status?.audio_type, status?.audio_family);
+  const lyricsOptional = musicLyricsOptional(
+    status?.audio_type,
+    status?.audio_family,
+  );
   const musicRange = musicDurationRange(cudaMusicGeneration);
   // A length picked for the MiniMax pipeline can exceed what the GGUF runtime generates.
   const musicSeconds = Math.min(
@@ -2092,7 +2097,7 @@ export function AudioPage({
 
   const handleGenerate = useCallback(async () => {
     const text = prompt.trim();
-    if (!text) return;
+    if (!text && !lyricsOptional) return;
     // Same gate the TTS load path uses: switching straight from Transcribe with a speech model already resident
     // needs no load, so nothing else waits for the sidecar teardown, and generating beside a dictation model OOMs a
     // device that fits either alone. Claimed before the await below, since the button only disables on `busy` and a
@@ -2215,6 +2220,7 @@ export function AudioPage({
     audioLanguage,
     musicGeneration,
     musicNeedsDescription,
+    lyricsOptional,
     audioOptionSpecs,
     audioOptionValues,
     setAdvancedOpen,
@@ -3280,7 +3286,7 @@ export function AudioPage({
                       ? !generationPresentation.canStop
                       : busy !== null ||
                         !ttsLoaded ||
-                        !prompt.trim() ||
+                        (!prompt.trim() && !lyricsOptional) ||
                         (musicNeedsDescription && !audioInstructions.trim())
                   }
                   variant={

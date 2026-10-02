@@ -29,6 +29,7 @@ import {
   isGgufTtsTarget,
   isTtsAudioType,
   musicDurationRange,
+  musicLyricsOptional,
   musicNeedsDescription,
   nativeAudioInstructionsKind,
   resolveSttResidency,
@@ -524,4 +525,20 @@ test("the capability line names GGUF audio and music, never the runtime's intern
   assert.equal(audioCapabilityLine("music", "audiocpp_music"), "Music generation · GGUF");
   assert.equal(audioCapabilityLine("tts", "higgs_tts2"), "Text-to-speech · higgs_tts2");
   assert.equal(audioCapabilityLine("stt", "ready"), "Speech-to-text · ready");
+});
+
+test("YuE2 generates from a style description alone; other music still needs lyrics", () => {
+  assert.equal(musicLyricsOptional("audiocpp_music", "yue2"), true);
+  for (const family of ["ace_step", "minimax_music3", "stable_audio", null]) {
+    assert.equal(musicLyricsOptional("audiocpp_music", family), false, String(family));
+  }
+  assert.equal(musicLyricsOptional("audiocpp_tts", "yue2"), false);
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /\(!prompt\.trim\(\) && !lyricsOptional\)/);
+  assert.match(page, /if \(!text && !lyricsOptional\) return;/);
+});
+
+test("a custom GGUF dictation repo skips the Whisper-only validator", () => {
+  const tab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(tab, /!isCuratedSttModel\(model\) && sttEngineFor\(model\) !== "audiocpp"/);
 });
