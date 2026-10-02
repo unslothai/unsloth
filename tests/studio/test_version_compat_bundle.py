@@ -179,3 +179,22 @@ def test_the_install_bearing_jobs_were_not_folded_in() -> None:
             f"sibling's pins, so it cannot have been merged into anything -- check it was "
             f"not folded into {BUNDLE_JOB}, which has no torch at all."
         )
+
+
+def test_every_test_file_a_job_runs_triggers_the_workflow() -> None:
+    """A file only this workflow executes must be in its pull_request paths, or a PR that only
+    edits (or weakens) that file never runs it. The modules.json trust gate is the case that
+    prompted this: the CPU repo-test shards skip it, so this workflow is its only runner."""
+    from fnmatch import fnmatch
+
+    doc = _doc()
+    # PyYAML reads the bare `on:` key as the boolean True.
+    triggers = doc.get("on", doc.get(True)) or {}
+    patterns = (triggers.get("pull_request") or {}).get("paths") or []
+    assert patterns, "version-compat-ci.yml lost its pull_request paths filter"
+    named = set()
+    for job in _jobs().values():
+        named |= {p for p in _named_paths(job) if not p.endswith("/") and (REPO / p).is_file()}
+    assert named, "no test file found in any run step"
+    missing = sorted(p for p in named if not any(fnmatch(p, pattern) for pattern in patterns))
+    assert not missing, f"run by version-compat-ci.yml but not in its pull_request paths: {missing}"
