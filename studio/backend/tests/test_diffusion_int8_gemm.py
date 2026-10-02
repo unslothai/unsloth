@@ -250,3 +250,16 @@ def test_fused_mlp_down_projection_traces_without_breaks(forced, monkeypatch):
     assert torch.equal(compiled, ref_compiled)
     g8.uninstall(fused)
     f8.uninstall(fused)
+
+
+def test_status_drops_int8_gemm_once_the_deferred_probe_swapped_nothing():
+    from types import SimpleNamespace
+
+    from core.inference.diffusion_speed import int8_gemm_live
+
+    dit = SimpleNamespace(_unsloth_int8_gemm = 224)
+    pipe = SimpleNamespace(transformer = dit)
+    assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled", "int8_gemm"]
+    dit._unsloth_int8_gemm = 0
+    assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled"]
+    assert int8_gemm_live(pipe, ("compiled",)) == ["compiled"]

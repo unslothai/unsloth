@@ -753,6 +753,16 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
+def int8_gemm_live(pipe: Any, optims: Any) -> list:
+    """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
+    optims = list(optims or ())
+    if "int8_gemm" in optims and not any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    ):
+        optims.remove("int8_gemm")
+    return optims
+
+
 # Blocks MEASURED to raise inductor CantSplit under dynamic = True; measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
