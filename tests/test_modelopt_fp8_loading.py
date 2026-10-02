@@ -518,7 +518,9 @@ else:
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_accelerator(), reason = "FastLanguageModel loads need an accelerator")
+@pytest.mark.skipif(
+    not has_real_accelerator(), reason = "FastLanguageModel loads need an accelerator"
+)
 def test_fast_llama_checks_fp8_hardware_on_the_rewritten_config(tmp_path):
     """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
     import subprocess
@@ -849,7 +851,9 @@ def test_merged_save_detects_a_rewritten_modelopt_checkpoint_as_fp8(tmp_path, mo
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_accelerator(), reason = "FastLanguageModel loads need an accelerator")
+@pytest.mark.skipif(
+    not has_real_accelerator(), reason = "FastLanguageModel loads need an accelerator"
+)
 def test_merged_16bit_save_of_a_modelopt_lora_reloads_without_unsloth(tmp_path):
     """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
     import subprocess

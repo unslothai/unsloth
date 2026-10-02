@@ -223,7 +223,7 @@ def test_scale_grid_that_does_not_tile_is_refused():
 @pytest.mark.skipif(not has_real_accelerator(), reason = "needs CUDA or XPU")
 def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
     from unsloth.models import loader_utils
-    
+
     xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
     cuda_available = torch.cuda.is_available()
     dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
