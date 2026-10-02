@@ -97,10 +97,19 @@ def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
     def run(a, w):
         return g8._run(a, w, xs, ws, None)
 
-    assert run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(64, 1024, dtype = torch.int8)) == "fused"
-    assert run(torch.zeros(32, 1000, dtype = torch.int8), torch.zeros(64, 1000, dtype = torch.int8)) == "stock"
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(64, 1024, dtype = torch.int8))
+        == "fused"
+    )
+    assert (
+        run(torch.zeros(32, 1000, dtype = torch.int8), torch.zeros(64, 1000, dtype = torch.int8))
+        == "stock"
+    )
     flat = torch.zeros(64 * 1024 + 8, dtype = torch.int8)
-    assert run(flat[8 : 8 + 32 * 1024].view(32, 1024), torch.zeros(64, 1024, dtype = torch.int8)) == "stock"
+    assert (
+        run(flat[8 : 8 + 32 * 1024].view(32, 1024), torch.zeros(64, 1024, dtype = torch.int8))
+        == "stock"
+    )
     assert run(torch.zeros(32, 1024, dtype = torch.int8), flat[8:].view(64, 1024)) == "stock"
     wide = torch.zeros(64, 1032, dtype = torch.int8)[:, :1024]  # row stride 1032: off 16
     assert run(torch.zeros(32, 1024, dtype = torch.int8), wide) == "stock"
