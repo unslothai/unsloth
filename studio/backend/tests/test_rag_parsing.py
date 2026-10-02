@@ -476,8 +476,12 @@ def test_docx_table_cells_keep_equations_without_deleted_parts(tmp_path):
 
 def test_docx_equations_keep_binomials_and_skip_hidden_phantoms(tmp_path):
     binom = f'<m:d><m:e><m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{_m("n")}</m:num><m:den>{_m("k")}</m:den></m:f></m:e></m:d>'
-    phantom = f'<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{_m("xyz")}</m:e></m:phant>'
-    text = _docx_from_xml(tmp_path, f"<w:p><m:oMath>{binom}{_m('a')}{phantom}{_m('b')}</m:oMath></w:p>")
+    phantom = (
+        f'<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{_m("xyz")}</m:e></m:phant>'
+    )
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{binom}{_m('a')}{phantom}{_m('b')}</m:oMath></w:p>"
+    )
     assert text == "({n \\atop k})ab"
 
 
