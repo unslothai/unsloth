@@ -1154,7 +1154,9 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22700")
     )
-    assert engine_adapters.gpu_memory_fraction([0], 3072, share) == engine_adapters.gpu_memory_fraction([0], 3072)
+    assert engine_adapters.gpu_memory_fraction(
+        [0], 3072, share
+    ) == engine_adapters.gpu_memory_fraction([0], 3072)
 
 
 def test_engine_start_reserves_a_share_of_the_card():
@@ -1162,7 +1164,12 @@ def test_engine_start_reserves_a_share_of_the_card():
     from core.inference import managed_engine
 
     # The local and the WSL launch both keep the share free.
-    assert inspect.getsource(managed_engine).count("memory_reserve_mib(self.engine, options), RESERVE_SHARE") == 2
+    assert (
+        inspect.getsource(managed_engine).count(
+            "memory_reserve_mib(self.engine, options), RESERVE_SHARE"
+        )
+        == 2
+    )
 
 
 @pytest.mark.parametrize("gpu_ids", [[1], [1, 0]])

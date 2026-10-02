@@ -360,7 +360,14 @@ def test_a_logged_in_token_file_reaches_the_guest(wsl, monkeypatch, tmp_path):
     assert "hf_from_login" not in " ".join(command)
     # An explicit token wins, and an anonymous load sends none.
     _, env = engine._wsl_command(
-        info, {"HF_HOME": str(tmp_path), "HF_TOKEN": "hf_explicit"}, [0], None, False, "m", None, 8123
+        info,
+        {"HF_HOME": str(tmp_path), "HF_TOKEN": "hf_explicit"},
+        [0],
+        None,
+        False,
+        "m",
+        None,
+        8123,
     )
     assert env["HF_TOKEN"] == "hf_explicit"
     _, env = engine._wsl_command(
