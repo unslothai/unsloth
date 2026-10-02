@@ -711,6 +711,8 @@ class _FileFacts:
         # Module-scope `add_path = functools.partial(sys.path.insert, 0)`: how many
         # positional arguments the wrapper no longer takes, seeded into every function.
         self.module_alias_offsets: dict = {}
+        # Module-scope `partial(torch.load, weights_only = <not True>)` wrappers.
+        self.module_unsafe_torch_partials: set = set()
         # Pure lookups over tables that are fixed once collection finishes. Memoised
         # because the fixpoint reads them millions of times per run and the answers
         # cannot change: the gate has to be fast enough to sit in CI.
@@ -956,6 +958,25 @@ class _FileFacts:
             return True
         inner = _call_name(value.args[0])
         prebound = len(value.args) - 1 + self.module_alias_offsets.get(inner, 0)
+        # `load = partial(torch.load, map_location = "cpu")` at module scope is a common
+        # way to set loading defaults once. Recorded like the local form: the marker
+        # unless the wrapper pins a literal True, and the unsafe option when it binds
+        # `weights_only` to anything else.
+        if _matches_any(self.canonicals(inner), TORCH_LOAD_NAMES) is not None or (
+            TORCH_LOAD_ALIAS in (self.module_sink_aliases.get(inner) or ())
+        ):
+            weights = [k for k in value.keywords if k.arg == "weights_only"]
+            pinned = any(
+                isinstance(k.value, ast.Constant) and k.value.value is True for k in weights
+            )
+            if not pinned:
+                for name in names:
+                    self.module_sink_aliases[name] = _with(
+                        self.module_sink_aliases.get(name), TORCH_LOAD_ALIAS
+                    )
+                    if weights:
+                        self.module_unsafe_torch_partials.add(name)
+            return True
         direct = _matches_any(self.canonicals(inner), SINKS)
         held = [direct] if direct is not None else list(self.module_sink_aliases.get(inner) or ())
         if not held:
@@ -1648,7 +1669,7 @@ class _TaintPass(ast.NodeVisitor):
         self.key_taint_only: set = set()
         # Wrappers built as `partial(torch.load, weights_only = <not True>)`, so a call
         # through one is judged by the option the wrapper carries.
-        self.unsafe_torch_partials: set = set()
+        self.unsafe_torch_partials: set = set(facts.module_unsafe_torch_partials)
         # local name -> the source it refers to, for `decode = json.loads`. Sink aliases
         # were followed and source aliases were not, so a deserialiser behind a local
         # name read clean and everything downstream of it did too.
@@ -1883,6 +1904,7 @@ class _TaintPass(ast.NodeVisitor):
         own = self.facts.functions.get(self.qualname)
         if own is not None and isinstance(own.body, list):
             scopes.append([node for node in ast.walk(own) if isinstance(node, ast.stmt)])
+        pairs: list = []
         for statements in scopes:
             for statement in statements:
                 if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
@@ -1893,13 +1915,6 @@ class _TaintPass(ast.NodeVisitor):
                 referenced = _call_name(value)
                 if not referenced:
                     continue
-                loaders = [
-                    candidate
-                    for candidate in self.facts.canonicals(referenced)
-                    if any(marker in candidate for marker in REMOTE_CODE_LOADERS)
-                ]
-                if not loaders:
-                    continue
                 targets = (
                     [statement.target]
                     if isinstance(statement, ast.AnnAssign)
@@ -1908,7 +1923,23 @@ class _TaintPass(ast.NodeVisitor):
                 for target in targets:
                     spelling = _call_name(target)
                     if spelling:
-                        found.setdefault(spelling, []).extend(loaders)
+                        pairs.append((spelling, referenced))
+        # To a fixpoint, so `loader = AutoModel.from_pretrained; invoke = loader` gives
+        # `invoke` the loader too: one pass read only each assignment's own value.
+        changed = True
+        while changed:
+            changed = False
+            for spelling, referenced in pairs:
+                loaders = [
+                    candidate
+                    for candidate in self.facts.canonicals(referenced)
+                    if any(marker in candidate for marker in REMOTE_CODE_LOADERS)
+                ] + found.get(referenced, [])
+                for loader in loaders:
+                    if loader not in found.setdefault(spelling, []):
+                        found[spelling].append(loader)
+                        changed = True
+        found = {spelling: loaders for spelling, loaders in found.items() if loaders}
         cache[self.qualname] = found
         return found
 
@@ -2631,6 +2662,25 @@ class _TaintPass(ast.NodeVisitor):
                     self.callable_aliases[target.id] = _with(
                         self.callable_aliases.get(target.id), referenced
                     )
+                elif isinstance(target, ast.Attribute):
+                    # Stored on an attribute, so a different method calls through it:
+                    # kept in shared state, resolved to the method it names here, where
+                    # the instance type is known.
+                    resolved = tuple(
+                        f"{file}::{qualname}"
+                        for file, qualname in self.facts.targets_of(
+                            node.value,
+                            self.class_name,
+                            scope = self.qualname,
+                            instances = self.instance_types,
+                            aliases = self.callable_aliases,
+                        )
+                    )
+                    for key in self._attr_keys(target):
+                        for candidate in resolved:
+                            self.state.attr_callable_aliases[key] = _with(
+                                self.state.attr_callable_aliases.get(key), candidate
+                            )
             return
         if self.sink_aliases.get(referenced):
             return
@@ -3068,6 +3118,35 @@ class _TaintPass(ast.NodeVisitor):
             aliases = self.callable_aliases,
         ):
             self._propagate_into_one(node, target)
+        # A bound method another method stored on an attribute. Its receiver is already
+        # bound, so the call's own arguments line up from the method's first parameter.
+        if isinstance(node.func, ast.Attribute):
+            seen: set = set()
+            for key in self._attr_keys(node.func):
+                for encoded in self.state.attr_callable_aliases.get(key) or ():
+                    file, _, qualname = encoded.partition("::")
+                    target = (Path(file), qualname)
+                    if target in seen:
+                        continue
+                    seen.add(target)
+                    self._propagate_bound(node, target)
+
+    def _propagate_bound(self, node: ast.Call, target) -> None:
+        """Bind a call's arguments to a bound method's parameters after the receiver."""
+        params = self.state.params.get(target)
+        if not params:
+            return
+        bound = self.state.pending_params.setdefault(target, {})
+        offset = 1 if self.state.is_method.get(target) else 0
+        for position, argument in enumerate(node.args):
+            reason = self.tainted(argument)
+            if reason and position + offset < len(params):
+                self._bind(bound, params[position + offset], reason)
+        for keyword in node.keywords:
+            if keyword.arg and keyword.arg in params:
+                reason = self.tainted(keyword.value)
+                if reason:
+                    self._bind(bound, keyword.arg, reason)
 
     def _propagate_into_one(self, node: ast.Call, target) -> None:
         params = self.state.params.get(target)
@@ -3457,6 +3536,9 @@ class _State:
         # `relative::Class.attr` -> the source stored there, for `self.decode =
         # json.loads` read back as `self.decode(blob)` from any method.
         self.attr_source_aliases: dict[str, str] = {}
+        # `relative::Class.attr` -> first-party callables stored there, for
+        # `self.invoke = runner.execute` in one method and `self.invoke(parsed)` in another.
+        self.attr_callable_aliases: dict[str, tuple] = {}
         self.tainted_globals: dict[str, str] = {}
         self.returns_tainted: dict[tuple[Path, str], str] = {}
         self.params: dict[tuple[Path, str], list[str]] = {}
@@ -3749,7 +3831,19 @@ def _publish_class_attributes(
 # Statement kinds that can bind a class attribute. A body of nothing but a docstring,
 # `pass`, bare annotations and imports publishes nothing, and skipping those in the
 # fixpoint keeps the added work off the thousands of classes in these trees.
-_BINDING_STATEMENTS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.For, ast.With, ast.If, ast.Try)
+_BINDING_STATEMENTS = (
+    ast.Assign,
+    ast.AnnAssign,
+    ast.AugAssign,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.If,
+    ast.Try,
+    ast.Match,
+)
 
 
 def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:

@@ -4903,3 +4903,101 @@ def test_an_annotated_true_flag_inside_kwargs_enables_remote_code(tmp_path):
         "    return AutoModel.from_pretrained(name, **kwargs)\n",
     )
     assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_module_level_partial_of_torch_load_is_collected(tmp_path):
+    """`load_cpu = functools.partial(torch.load, map_location = "cpu")` at module scope.
+
+    Setting loader defaults once at module scope is common, and the module collector
+    matched wrapped callables only against the sink table, where the conditional
+    `torch.load` sink deliberately is not, so a call from any function read clean.
+    """
+    head = "import torch, functools\nfrom huggingface_hub import hf_hub_download\n"
+    tail = "def load(repo):\n    return wrapper(hf_hub_download(repo, 'w.bin'))\n"
+    unsafe = _scan(
+        tmp_path,
+        head + "wrapper = functools.partial(torch.load, weights_only = False)\n" + tail,
+        name = "unsafe.py",
+    )
+    omitted = _scan(
+        tmp_path,
+        head + "wrapper = functools.partial(torch.load, map_location = 'cpu')\n" + tail,
+        name = "omitted.py",
+    )
+    pinned = _scan(
+        tmp_path,
+        head + "wrapper = functools.partial(torch.load, weights_only = True)\n" + tail,
+        name = "pinned.py",
+    )
+    assert "torch.load(weights_only = False)" in _sinks(unsafe)
+    assert "torch.load(weights_only unset)" in _sinks(omitted)
+    assert _sinks(pinned) == set()
+
+
+def test_a_chained_loader_alias_still_gates_remote_code(tmp_path):
+    """`loader = AutoModel.from_pretrained; invoke = loader`, then the opt-in."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    loader = AutoModel.from_pretrained\n"
+        "    invoke = loader\n"
+        "    return invoke(name, trust_remote_code = True)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_bound_method_stored_on_self_is_followed(tmp_path):
+    """`self.invoke = runner.execute` in the constructor, `self.invoke(parsed)` later.
+
+    Callbacks are stored this way, and only name targets were recorded, so the method
+    behind the attribute never saw the tainted argument.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        runner = Runner()\n"
+        "        self.invoke = runner.execute\n"
+        "    def go(self, blob):\n"
+        "        return self.invoke(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_bound_method_on_self_called_with_a_literal_is_quiet(tmp_path):
+    """The guard: following the stored method does not taint what it receives."""
+    findings = _scan(
+        tmp_path,
+        "import subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        runner = Runner()\n"
+        "        self.invoke = runner.execute\n"
+        "    def go(self):\n"
+        "        return self.invoke('ls')\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_class_body_binding_inside_a_loop_is_published(tmp_path):
+    """A class attribute bound inside a `while` was skipped by the binding allowlist."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Config:\n"
+        "    while True:\n"
+        "        module = json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "        break\n"
+        "def go():\n"
+        "    return importlib.import_module(Config.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
