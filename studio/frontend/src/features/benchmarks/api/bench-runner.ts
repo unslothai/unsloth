@@ -569,7 +569,7 @@ export async function runBenchmark(
 }
 
 /** Put the model back the way chat had it before the sweep. */
-async function restore(
+export async function restore(
   before: InferenceStatusResponse,
   base: ReturnType<typeof chatBaseLoad>,
 ): Promise<void> {

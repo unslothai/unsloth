@@ -38,6 +38,7 @@ import {
   SweepsModelPicker,
 } from "./components/setup-panel";
 import { TuneVerdictCard } from "./components/tune-section";
+import { LlamaBenchTab } from "./llama-bench/llama-bench-tab";
 import { useLocale } from "@/i18n";
 import { ago } from "./lib/ago";
 import {
@@ -222,7 +223,7 @@ function ShownRunNote({
   );
 }
 
-type BenchTab = "benchmark" | "history";
+type BenchTab = "benchmark" | "llama-bench" | "history";
 
 /** Train's sub-nav: underlined text tabs on the header rule. */
 function BenchSubNav({
@@ -238,6 +239,7 @@ function BenchSubNav({
     disabled: boolean;
   }> = [
     { value: "benchmark", label: "Config sweeps", disabled: false },
+    { value: "llama-bench", label: "llama-bench", disabled: false },
     {
       value: "history",
       label: (
@@ -560,6 +562,13 @@ export function BenchmarksPage(): ReactElement {
                 </div>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="llama-bench" className="mt-0">
+            <LlamaBenchTab
+              model={config.tuneModel ?? null}
+              variant={config.tuneVariant ?? null}
+            />
           </TabsContent>
 
           <TabsContent value="history" className="mt-0">

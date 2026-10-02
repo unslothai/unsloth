@@ -6,14 +6,16 @@ the run here as it goes, so a run survives a reload and shows up on every device
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from hub.utils.host_paths import host_paths_visible, redact_host_paths
+from routes.llama_bench import router as llama_bench_router
 from storage.benchmark_runs_db import delete_run, get_run, list_runs, upsert_run
 
 router = APIRouter()
+router.include_router(llama_bench_router, prefix = "/llama-bench")
 
 MAX_RESULTS = 20_000
 MAX_RUNS_LISTED = 200
@@ -80,12 +82,14 @@ class BenchmarkRun(BaseModel):
 
 @router.get("/runs")
 def get_runs(
+    kind: str = Query(default = "sweep", max_length = 32),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     return {
         "runs": [
-            _redact_run(run, via_api_key = via_api_key) for run in list_runs(limit = MAX_RUNS_LISTED)
+            _redact_run(run, via_api_key = via_api_key)
+            for run in list_runs(limit = MAX_RUNS_LISTED, kind = kind)
         ]
     }
 

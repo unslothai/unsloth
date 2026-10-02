@@ -147,16 +147,22 @@ def _result_params(run_id: str, result: dict[str, Any]) -> tuple:
     return tuple(values)
 
 
-def list_runs(limit: int = 100) -> list[dict[str, Any]]:
+def list_runs(limit: int = 100, kind: str | None = None) -> list[dict[str, Any]]:
     """Newest first, results left out: the list is for picking a run, not reading it. Each
     run carries its per-row mean throughput so the history can say what won without the
     measurements."""
     conn = get_connection()
     try:
         ensure_schema(conn)
-        rows = conn.execute(
-            "SELECT * FROM benchmark_runs ORDER BY created_at DESC LIMIT ?", (int(limit),)
-        ).fetchall()
+        if kind is None:
+            rows = conn.execute(
+                "SELECT * FROM benchmark_runs ORDER BY created_at DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM benchmark_runs WHERE kind = ? ORDER BY created_at DESC LIMIT ?",
+                (kind, int(limit)),
+            ).fetchall()
         counts: dict[str, int] = {}
         means: dict[str, dict[str, float]] = {}
         run_ids = [row["id"] for row in rows]
