@@ -450,6 +450,7 @@ def apply_speed_optims(
         "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "cuda_graph": False,
+        "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
@@ -505,6 +506,7 @@ def apply_speed_optims(
                 max_autotune = False,
                 cache_active = cache_active,
                 offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
             )
     elif (
         mode == SPEED_MAX
@@ -517,6 +519,12 @@ def apply_speed_optims(
             max_autotune = True,
             cache_active = cache_active,
             offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
+
+    if applied["compiled"]:
+        applied["int8_gemm"] = any(
+            bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
         )
 
     if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
@@ -810,6 +818,7 @@ def _compile_repeated_blocks(
     max_autotune: bool = False,
     cache_active: bool = False,
     offload_active: bool = False,
+    denoiser_offloaded: Optional[bool] = None,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -906,6 +915,17 @@ def _compile_repeated_blocks(
             install_int8_fused(transformer, logger, offload_active = offload_active)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused mlp", exc)
+        # After the fused MLP (its down projection calls the same GEMM), before the compile traces the Linears.
+        try:
+            from .diffusion_int8_gemm import install as install_int8_gemm
+            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident.
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer,
+                logger,
+                offload_active = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded),
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
         if type(transformer).__name__ == "QwenImageTransformer2DModel":
             try:
                 from .diffusion_qwenimage_rope import install as install_qwen_real_rope

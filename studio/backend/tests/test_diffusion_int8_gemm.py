@@ -1,0 +1,199 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for ``diffusion_int8_gemm.py``: the per-arch gate and kill switch run anywhere; the kernel / Linear tests
+need NVIDIA CUDA, Triton and torchao (they force the lever on, so an arch outside the shipped table still runs)."""
+
+from __future__ import annotations
+
+import pytest
+
+from core.inference import diffusion_int8_gemm as g8
+
+torch = pytest.importorskip("torch")
+
+
+@pytest.fixture(autouse = True)
+def _clean(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_ENV, raising = False)
+    g8._DEVICE_CFG.clear()
+    yield
+    g8._DEVICE_CFG.clear()
+
+
+# ----------------------------------------------------------------------------------------------- gate (CPU only)
+
+
+@pytest.mark.parametrize(
+    "cap, on",
+    [
+        ((7, 5), False),  # T4: Triton cannot lower the int8 dot
+        ((8, 0), True),  # A100
+        ((8, 6), False),  # unmeasured
+        ((8, 9), True),  # L4
+        ((9, 0), False),  # H100: unmeasured
+        ((10, 0), False),  # B200: Triton int8 ~2.5x slower than cuBLAS
+        ((12, 0), True),  # RTX PRO 6000
+    ],
+)
+def test_arch_gate_auto(cap, on):
+    assert (g8.arch_config(cap, "auto") is not None) is on
+
+
+def test_kill_switch_turns_every_arch_off(monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")
+    assert g8.int8_gemm_mode() == "off"
+    for cap in ((8, 0), (8, 9), (12, 0)):
+        assert g8.arch_config(cap) is None
+
+
+def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    assert g8.arch_config((9, 0)) == g8._FALLBACK_CONFIG
+    assert g8.arch_config((10, 0)) == g8._FALLBACK_CONFIG
+    assert g8.arch_config((7, 5)) is None
+
+
+def test_install_is_a_noop_when_killed(monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")
+    lin = torch.nn.Linear(64, 64)
+    assert g8.install(lin) == 0 and not g8.is_installed(lin)
+
+
+def test_offload_keeps_stock():
+    assert g8.install(torch.nn.Linear(64, 64), offload_active = True) == 0
+
+
+def test_rocm_never_probes(monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert g8.device_config(0) is None
+
+
+def test_dense_linear_is_not_eligible():
+    assert g8._eligible(torch.nn.Linear(128, 128)) is None
+
+
+# ----------------------------------------------------------------------------------------------- CUDA
+
+
+def _cuda_ready() -> bool:
+    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        return False
+    if torch.cuda.get_device_capability() < (8, 0):
+        return False
+    try:
+        import torchao  # noqa: F401
+        import triton  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+needs_cuda = pytest.mark.skipif(not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao")
+
+
+@pytest.fixture
+def forced(monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    cfg = g8.device_config(torch.cuda.current_device())
+    if cfg is None:
+        pytest.skip("int8 GEMM probe refused this device")
+    return cfg
+
+
+def _int8_linear(k, n, bias, version):
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(k, n, bias = bias).cuda().to(torch.bfloat16)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if version is not None:
+        if not hasattr(cfg, "version"):
+            pytest.skip("torchao without config versions")
+        cfg.version = version
+    quantize_(lin, cfg)
+    return lin
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "m, k, n, bias, xs32",
+    [(4096, 4096, 4096, False, False), (1037, 520, 1400, True, False), (17, 256, 1024, True, True), (300, 12288, 256, False, False)],
+)
+@pytest.mark.parametrize("ws32", [False, True])
+def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
+    g = torch.Generator().manual_seed(m + k + n)
+    a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
+    w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
+    xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
+    xs = (xs.float() if xs32 else xs).cuda()
+    ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).cuda()
+    ws = ws.float() if ws32 else ws
+    b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).cuda() if bias else None
+    out = g8._op()(a, w, xs, ws, b)
+    assert out.dtype == torch.bfloat16
+    assert torch.equal(out, g8.reference(a, w, xs, ws, b))
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+@pytest.mark.parametrize("bias", [False, True])
+def test_linear_swap_is_bit_identical_eager_and_compiled(forced, version, bias):
+    from torch._dynamo.utils import counters
+
+    stock = _int8_linear(1024, 768, bias, version)
+    fused = _int8_linear(1024, 768, bias, version)
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1 and g8.is_installed(fused)
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + 1
+        counters.clear()
+        torch._dynamo.reset()
+        # Studio compiles with emulate_precision_casts (diffusion_speed); without it Inductor's stock epilogue keeps an
+        # fp32 chain eager never had, and the fused kernel matches eager instead.
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+    g8.uninstall(holder)
+    assert not g8.is_installed(fused) and "forward" not in fused.__dict__
+
+
+@needs_cuda
+@pytest.mark.parametrize("bias", [False, True])
+def test_prequant_style_fp32_weight_scale(forced, bias):
+    """Studio's int8 prequant checkpoints rebuild an Int8Tensor with fp32 weight scales (bias added before rounding)."""
+    from torch._dynamo.utils import counters
+
+    stock = _int8_linear(1024, 768, bias, 2)
+    fused = _int8_linear(1024, 768, bias, 2)
+    for lin in (stock, fused):
+        lin.weight.scale = lin.weight.scale.float()
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    with torch.inference_mode():
+        assert torch.equal(fused(x), stock(x))
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+
+
+@needs_cuda
+def test_small_m_and_misaligned_keep_stock(forced):
+    lin = _int8_linear(1000, 768, False, None)  # K off the 64 grid
+    assert g8._eligible(lin) is None
+    ok = _int8_linear(1024, 768, False, None)
+    holder = torch.nn.Sequential(ok)
+    assert g8.install(holder) == 1
+    before = g8.call_count()
+    with torch.inference_mode():
+        ok(torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16))  # M = 16 < _int_mm's floor: stock
+    assert g8.call_count() == before
