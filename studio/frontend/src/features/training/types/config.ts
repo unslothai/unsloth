@@ -18,7 +18,11 @@ import type {
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 /** Execution strategy for the selected physical GPU ids. */
-export type TrainingParallelismMode = "auto" | "single" | "model_parallel";
+export type TrainingParallelismMode =
+  | "auto"
+  | "single"
+  | "model_parallel"
+  | "ddp";
 
 export interface ModelCacheReferenceOptions {
   knownCached?: boolean;

@@ -16,6 +16,7 @@ import {
   useTrainingTransformersUpgradeNotice,
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
+import { useGpuDevices } from "@/hooks/use-gpu-info";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
@@ -209,21 +210,25 @@ function TransformersUpgradeNotice(): ReactElement | null {
 function BatchPreviewValue({
   batchSize,
   gradientAccumulation,
+  gpuCount,
 }: {
   batchSize: number;
   gradientAccumulation: number;
+  gpuCount: number;
 }): ReactElement {
-  if (gradientAccumulation <= 1) {
+  if (gradientAccumulation <= 1 && gpuCount <= 1) {
     return <span className="font-mono">{batchSize}</span>;
   }
+  const accumulatedBatch = batchSize * gradientAccumulation;
+  const globalBatch = accumulatedBatch * gpuCount;
   return (
     <>
       <span className="font-mono">{batchSize}</span>
-      <span className="text-muted-foreground/70"> × </span>
-      <span className="font-mono">{gradientAccumulation}</span>
       <span className="text-muted-foreground/70">
-        {" "}
-        = {batchSize * gradientAccumulation}
+        {" per GPU"}
+        {gradientAccumulation > 1 ? ` × ${gradientAccumulation}` : ""}
+        {gpuCount > 1 ? ` × ${gpuCount} GPUs` : ""}
+        {` = ${globalBatch} global`}
       </span>
     </>
   );
@@ -354,6 +359,8 @@ export function RunPreviewCard({
     epochs,
     batchSize,
     gradientAccumulation,
+    parallelismMode,
+    selectedGpuIds,
     learningRate,
     contextLength,
     isDecision,
@@ -373,6 +380,8 @@ export function RunPreviewCard({
       epochs: s.epochs,
       batchSize: s.batchSize,
       gradientAccumulation: s.gradientAccumulation,
+      parallelismMode: s.parallelismMode,
+      selectedGpuIds: s.selectedGpuIds,
       learningRate: s.learningRate,
       contextLength: s.contextLength,
       isDecision: s.modelType === "decision",
@@ -380,6 +389,20 @@ export function RunPreviewCard({
   );
 
   const gpu = useGpuInfo();
+  const gpuDevices = useGpuDevices();
+  const selectedGpuCount =
+    parallelismMode === "ddp"
+      ? (selectedGpuIds?.length ?? 0)
+      : 1;
+  const previewGpuCount = Math.max(selectedGpuCount, 1);
+  const displayedGpuDevices =
+    parallelismMode === "auto" || selectedGpuIds === null
+      ? gpuDevices
+      : gpuDevices.filter((device) => selectedGpuIds.includes(device.index));
+  const displayedGpuMemoryGb = displayedGpuDevices.reduce(
+    (total, device) => total + device.memoryTotalGb,
+    0,
+  );
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = hfApiToken(hfToken) !== undefined;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
@@ -489,6 +512,7 @@ export function RunPreviewCard({
             <BatchPreviewValue
               batchSize={batchSize}
               gradientAccumulation={gradientAccumulation}
+              gpuCount={previewGpuCount}
             />
           }
         />
@@ -522,13 +546,28 @@ export function RunPreviewCard({
         <MetaRow
           label={t("studio.preview.hardware")}
           wrap
-          value={gpu.available ? gpu.name : t("studio.preview.noGpu")}
+          value={
+            displayedGpuDevices.length > 0 ? (
+              <span className="flex min-w-0 flex-col items-end gap-1 text-right">
+                {displayedGpuDevices.map((device) => (
+                  <span key={device.index} className="max-w-full truncate">
+                    GPU {device.index}: {device.name}
+                  </span>
+                ))}
+                <span className="text-muted-foreground/70">
+                  {`Total: ${displayedGpuMemoryGb.toFixed(1)} GiB`}
+                </span>
+              </span>
+            ) : (
+              <span>{gpu.available ? gpu.name : t("studio.preview.noGpu")}</span>
+            )
+          }
         />
-        {gpu.available && (
+        {displayedGpuDevices.length === 1 && (
           <MetaRow
             label={t("studio.preview.vram")}
-            title={`${gpu.memoryTotalGb} GiB`}
-            value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+            title={`${displayedGpuMemoryGb.toFixed(1)} GiB`}
+            value={`${displayedGpuMemoryGb.toFixed(1)} GiB`}
           />
         )}
         <MetaRow

@@ -3526,6 +3526,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
     progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
     ``config`` is the training config dict."""
+    # DDP has one clean Studio worker per selected GPU.  Its coordinator must
+    # run before this worker touches CUDA; child ranks re-enter here with the
+    # marker set and each sees only its own physical card.
+    if config.get("parallelism_mode") == "ddp" and not config.get("_ddp_child"):
+        from .ddp import run_ddp_training_process
+
+        run_ddp_training_process(
+            event_queue=event_queue,
+            stop_queue=stop_queue,
+            config=config,
+        )
+        return
+
     # Off on Linux (forked map() workers deadlock); on spawn platforms map() is in-process.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"
@@ -4944,6 +4957,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "session_start_step": progress.session_start_step,
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
+                    # Trainer already reports the aggregate evaluation metric.
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
                     "ts": time.time(),

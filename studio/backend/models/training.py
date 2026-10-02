@@ -609,7 +609,7 @@ class TrainingStartRequest(BaseModel):
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
-    parallelism_mode: Literal["auto", "single", "model_parallel"] = "auto"
+    parallelism_mode: Literal["auto", "single", "model_parallel", "ddp"] = "auto"
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -669,6 +669,8 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(
                 "parallelism_mode='model_parallel' requires at least two gpu_ids."
             )
+        if self.parallelism_mode == "ddp" and len(ids) < 2:
+            raise ValueError("parallelism_mode='ddp' requires at least two gpu_ids.")
         return self
 
     @model_validator(mode = "after")
