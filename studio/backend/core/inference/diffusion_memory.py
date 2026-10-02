@@ -1517,6 +1517,22 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
     )
 
 
+def _pipe_denoisers_hold_packed(pipe: Any) -> bool:
+    """GGUF / int8 weights dequantize a whole Linear per forward: unmeasured by the dense eager table."""
+    try:
+        import torch
+        for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
+            params = getattr(getattr(pipe, name, None), "parameters", None)
+            if callable(params) and any(
+                type(p).__name__ == "GGUFParameter" or p.dtype in (torch.int8, torch.uint8)
+                for p in params()
+            ):
+                return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def plan_fits_total_capacity(plan: Any) -> bool:
     """Whether ``plan``'s resident requirement fits TOTAL device capacity under the standard
     reserve + the 0.85 resident margin -- i.e. an offload decision can only stem from the
@@ -2181,6 +2197,16 @@ _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
 
+# Dense denoisers, eager tier: worst CUDA MiB above resident weights, fp16, 1024x1024, encode + steps + VAE decode.
+# family -> (peak MiB, largest loaded DiT MiB it covers; a bigger DiT keeps the flat estimate)
+MEASURED_ACTIVATION_DENSE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE"
+_MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
+    "flux.2-klein": (2455, 7800),
+    "flux.1": (2448, 23800),
+    "qwen-image": (4248, 40900),
+}
+_MEASURED_DENSE_SPEED_MODES = ("off",)
+
 
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
@@ -2193,13 +2219,28 @@ def measured_image_runtime_mib(
     width: Optional[int] = None,
     height: Optional[int] = None,
     batch_size: int = 1,
+    dense_transformer_mib: Optional[int] = None,
+    compute_bytes: int = 2,
 ) -> Optional[int]:
-    """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate)."""
+    """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+    ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248)."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
-    peak = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
-    if peak is None or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES:
-        return None
+    if dense_transformer_mib is not None:
+        if _env_off(MEASURED_ACTIVATION_DENSE_ENV):
+            return None
+        entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(str(family or "").lower())
+        if entry is None or str(speed_mode or "") not in _MEASURED_DENSE_SPEED_MODES:
+            return None
+        peak, max_dit = entry
+        widen = max(2, int(compute_bytes or 2))
+        peak, max_dit = peak * widen // 2, max_dit * widen // 2
+        if int(dense_transformer_mib) <= 0 or int(dense_transformer_mib) > max_dit:
+            return None
+    else:
+        peak = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
+        if peak is None or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES:
+            return None
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     scale = max(
@@ -2242,6 +2283,20 @@ def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
         return None
 
 
+def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
+    """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
+    try:
+        import torch
+        for name in ("transformer", "unet"):
+            module = getattr(pipe, name, None)
+            dtype = getattr(module, "dtype", None) if module is not None else None
+            if dtype is not None:
+                return {torch.float16: 2, torch.float32: 4}.get(dtype)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def refine_plan_from_loaded_weights(
     pipe: Any,
     plan: MemoryPlan,
@@ -2253,7 +2308,7 @@ def refine_plan_from_loaded_weights(
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
     Keeps the flat plan's offload hooks and makes whole groups resident (denoiser first, then encoders) within the
-    safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families
+    safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families (dense denoisers: the eager-tier table)
     or speed tiers, non-torchao denoisers and ``model`` plans."""
     try:
         if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
@@ -2263,11 +2318,6 @@ def refine_plan_from_loaded_weights(
             return plan
         memory = plan.device_memory
         if memory.is_unified or getattr(memory, "device", None) != "cuda":
-            return plan
-        if not _pipe_denoisers_hold_torchao(pipe):
-            return plan
-        headroom = measured_image_runtime_mib(family, speed_mode)
-        if headroom is None:
             return plan
         budget = plan.estimates.get("safe_device_budget_mib")
         if budget is None:
@@ -2281,11 +2331,23 @@ def refine_plan_from_loaded_weights(
         other = sum(m for m, r in sizes.values() if r == "other")
         if dit <= 0:
             return plan
+        dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
+        compute_bytes = _denoiser_compute_bytes(pipe)
+        if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
+            # measured on fp16 / fp32 cards only; bf16 cards can compile later
+            return plan
+        headroom = measured_image_runtime_mib(
+            family, speed_mode, dense_transformer_mib = dense_mib, compute_bytes = compute_bytes or 2
+        )
+        if headroom is None:
+            return plan
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
         estimates = dict(plan.estimates)
         estimates.update(
             measured_runtime_headroom_mib = headroom,
+            measured_dense_transformer_mib = dense_mib,
+            measured_compute_bytes = compute_bytes,
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -2529,9 +2591,17 @@ def measured_request_extra_mib(
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
-    headroom, family, speed_mode = reserve
+    headroom, family, speed_mode = reserve[:3]
+    dense_mib = reserve[3] if len(reserve) > 3 else None
+    compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
     need = measured_image_runtime_mib(
-        family, speed_mode, width = width, height = height, batch_size = batch_size
+        family,
+        speed_mode,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        dense_transformer_mib = dense_mib,
+        compute_bytes = compute_bytes,
     )
     if need is None:
         return 0
@@ -3444,6 +3514,10 @@ def _apply_group_offload(
                 logger,
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
+        if getattr(pipe, "_unsloth_small_host", None) and "low_cpu_mem_usage" in _params:
+            # pinning would copy the small-host route's memory-mapped bytes back into host RAM
+            pin_streamed = (False, False)
+            gkwargs["low_cpu_mem_usage"] = True
         # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
         # starts with start_background_pins once the load has committed.
         if background_pin is None:
