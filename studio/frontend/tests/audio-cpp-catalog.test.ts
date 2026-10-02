@@ -542,3 +542,10 @@ test("a custom GGUF dictation repo skips the Whisper-only validator", () => {
   const tab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(tab, /!isCuratedSttModel\(model\) && sttEngineFor\(model\) !== "audiocpp"/);
 });
+
+test("the picked STT quant is remembered with the repo across a restart", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /usePersistedChoice\("unsloth:audio:last-stt-variant", ""\)/);
+  assert.match(page, /lastSttRepo && lastSttVariant \? \[\[lastSttRepo\.toLowerCase\(\), lastSttVariant\]\]/);
+  assert.match(page, /setLastSttVariant\(sttGgufVariants\.current\.get\(repo\.toLowerCase\(\)\) \?\? ""\)/);
+});

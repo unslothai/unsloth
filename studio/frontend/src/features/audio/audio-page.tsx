@@ -403,7 +403,9 @@ export function AudioPage({
     requestStarted: boolean;
   } | null>(null);
 
-  const [lastSttRepo, setLastSttRepo] = usePersistedChoice("unsloth:audio:last-stt-model", "");
+  const [lastSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
+  // The quant a package pick (Moonshine tiny or small) asked for, so a restart reloads that one, not the default.
+  const [lastSttVariant, setLastSttVariant] = usePersistedChoice("unsloth:audio:last-stt-variant", "");
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
   const [sttLoadedEngine, setSttLoadedEngine] = useState<
@@ -461,7 +463,18 @@ export function AudioPage({
   const audioCppRuntime = useRef<AudioCppRuntimeStatus | null>(null);
   const sttLoadGeneration = useRef(0);
   /** The GGUF quant each picked STT repo asked for, by lowercased repo id. */
-  const sttGgufVariants = useRef(new Map<string, string>());
+  const sttGgufVariants = useRef(
+    new Map<string, string>(
+      lastSttRepo && lastSttVariant ? [[lastSttRepo.toLowerCase(), lastSttVariant]] : [],
+    ),
+  );
+  const setLastSttRepo = useCallback(
+    (repo: string) => {
+      setLastSttRepoChoice(repo);
+      setLastSttVariant(sttGgufVariants.current.get(repo.toLowerCase()) ?? "");
+    },
+    [setLastSttRepoChoice, setLastSttVariant],
+  );
   const sttLoadingGeneration = useRef<number | null>(null);
   // Residency is not ownership: the activation resync adopts whatever a sidecar already holds, including a model
   // chat dictation loaded. The identity, not a boolean, since another surface can replace the sidecar's model
