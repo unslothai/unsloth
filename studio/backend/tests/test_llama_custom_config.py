@@ -17,12 +17,19 @@ _OPTIONS = (
     "-mm --mmproj; --temp --temperature; --top-k; --top-p; --warmup --no-warmup; "
     "--mmproj-offload --no-mmproj-offload; --jinja --no-jinja; -dev --device; "
     "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
+    "-sp --special; -cb --cont-batching -nocb --no-cont-batching; "
     "-md --model-draft --spec-draft-model; -hfd --hf-repo-draft --spec-draft-hf; "
     "-devd --device-draft; --reasoning-budget; --reasoning-budget-message"
 )
 # Like the probe: every spelling of one option maps to that option's help block.
 FLAGS = {flag: group for group in _OPTIONS.split("; ") for flag in group.split()}
 SWITCHES = {
+    "-sp",
+    "--special",
+    "-cb",
+    "--cont-batching",
+    "-nocb",
+    "--no-cont-batching",
     "--warmup",
     "--no-warmup",
     "--mmproj-offload",
@@ -104,6 +111,21 @@ def test_sampling_aliases_and_router_keys():
 def test_defaults_outside_the_chat_schema_are_refused(ini):
     with pytest.raises(CustomConfigError, match = "between"):
         compile_ini(ini)
+
+
+@pytest.mark.parametrize(
+    "ini,argv",
+    [
+        ("special=false", ()),
+        ("special=true", ("--special",)),
+        ("nocb=false", ("--cont-batching",)),
+        ("nocb=true", ("-nocb",)),
+        ("cont-batching=off", ("--no-cont-batching",)),
+        ("no-warmup=true", ("--no-warmup",)),
+    ],
+)
+def test_switches_follow_upstream_preset_semantics(ini, argv):
+    assert compile_ini(ini).argv == argv
 
 
 def test_unprobed_binary_is_refused():

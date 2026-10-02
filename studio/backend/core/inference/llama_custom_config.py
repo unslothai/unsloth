@@ -207,11 +207,15 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
         if flag in switches:
             if value.lower() not in _TRUE | _FALSE:
                 raise CustomConfigError(f"'{key[:80]}' needs true or false")
-            if value.lower() in _FALSE:
-                base = flag[5:] if flag.startswith("--no-") else f"no-{flag.lstrip('-')}"
-                flag = _spelling(base, flags)
-                if flag is None:
-                    raise CustomConfigError(f"'{key[:80]}' cannot be switched off")
+            # Like common/preset.cpp: a negative alias (-nocb, --no-x) inverts the value, and
+            # false on a switch with no negative form is dropped.
+            group = [f for f in switches if f in flags and flags[f] == identity] or [flag]
+            negative = [f for f in group if f.lstrip("-").startswith("no")]
+            on = (value.lower() in _TRUE) != (flag in negative)
+            pick = [f for f in group if (f in negative) != on]
+            if not pick:
+                continue
+            flag = flag if flag in pick else max(pick, key = len)
             argv.append(flag)
             options[flag] = True
             continue
