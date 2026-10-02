@@ -2885,15 +2885,12 @@ def _defer_pinning(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
     return True
 
 
-# Kill switch for install_group_offload_hooks_eager: "0" lets dynamo trace the group-offload hooks again.
 EAGER_OFFLOAD_HOOKS_ENV = "UNSLOTH_DIFFUSION_EAGER_OFFLOAD_HOOKS"
 
 
 def install_group_offload_hooks_eager() -> bool:
-    """Run diffusers' group-offload hook bodies outside dynamo. A regionally compiled block whose forward is hooked
-    traced pre_forward into every block's frame; the first-forward layer tracker guards on its block name, so the first
-    render recompiled the hook once per block (44 recompiles on Qwen-Image-2.1 at a 16 GB cap, 5 without). The block compute stays compiled. Hooks
-    bind these methods at registration, so this runs before apply_group_offloading. Idempotent."""
+    """Keep diffusers' group-offload hooks out of compiled blocks: traced, the first-forward layer tracker guards on the
+    block name and recompiles per block (44 recompiles on Qwen-Image-2.1 at 16 GB, 5 eager). Must run before the hooks register."""
     if _env_off(EAGER_OFFLOAD_HOOKS_ENV):
         return False
     try:
