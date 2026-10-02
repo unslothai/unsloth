@@ -120,6 +120,8 @@ class DiffusionFamily:
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
     # to float32.
     fp16_incompatible: bool = False
+    # diffusion_fp16_guard recipe keeping an fp16_incompatible family in float16 on fp16-only cards; None = promote.
+    fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
@@ -513,6 +515,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         fp16_incompatible = True,
+        # The attention / FFN branches overflow float16 before their post-norm.
+        fp16_guard = "rescale_post_norm",
         # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (

@@ -57,6 +57,11 @@ export function applyPerModelConfigToRuntime(
         )
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
+    // Explicit managed on diffusion: an omitted field inherits the stored custom config.
+    llamaCppConfig:
+      options.isDiffusion && config.llamaCppConfig !== undefined
+        ? { version: 1, mode: "managed" }
+        : config.llamaCppConfig,
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -118,6 +123,7 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    llamaCppConfig: s.llamaCppConfig,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -155,6 +161,10 @@ export function currentRuntimePerModelConfig(
   };
 }
 
+function customOnly(config: PerModelConfig["llamaCppConfig"]) {
+  return config?.mode === "custom" ? config : undefined;
+}
+
 /** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
  *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
 export function perModelConfigsEqual(
@@ -166,6 +176,9 @@ export function perModelConfigsEqual(
     ? resolvedSpeculativeType
     : normalizeSpeculativeType;
   return (
+    // Unset and managed load the same engine.
+    JSON.stringify(customOnly(a.llamaCppConfig)) ===
+      JSON.stringify(customOnly(b.llamaCppConfig)) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
