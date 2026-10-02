@@ -1061,6 +1061,21 @@ class EstimateMemoryResponse(BaseModel):
         "one, when the machine holds the model's own window, or when the footprint of the "
         "load cannot be described.",
     )
+    context_is_pinned: bool = Field(
+        True,
+        description = "False only when the loader will shrink n_ctx to fit, so the "
+        "context-linear share of gpu_bytes is an upper bound rather than a reservation.",
+    )
+    gpu_floor_bytes: Optional[int] = Field(
+        None,
+        description = "gpu_bytes at the shortest context the loader's fit settles for; "
+        "past it the launch offloads layers instead. Set only when context_is_pinned is false.",
+    )
+    floor_can_offload: bool = Field(
+        False,
+        description = "Whether a load still over the card at the floor moves layers to the "
+        "CPU. False when the layer count is fixed or the fitter is off, where it may fail.",
+    )
     cache_type_kv: Optional[str] = Field(
         None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
     )
@@ -1148,10 +1163,15 @@ class MemoryEstimate(BaseModel):
     )
     gpu_floor_bytes: Optional[int] = Field(
         None,
-        description = "What still lands on the GPU at the SHORTEST context: drafter "
-        "weights, flat compute buffers, recurrent rollback state. None of it shrinks "
-        "when the context does, so it separates an overage a shorter context fixes from "
-        "one it cannot. None when it was not computed.",
+        description = "gpu_bytes at the shortest context the route prices: the Hub's 256, "
+        "which leaves what no context reduction frees (drafter weights, flat compute "
+        "buffers, recurrent rollback state), and the Load Model panel's loader fit floor, "
+        "past which the launch offloads layers instead. None when it was not computed.",
+    )
+    floor_can_offload: bool = Field(
+        False,
+        description = "Whether a load still over the card at the floor moves layers to the "
+        "CPU rather than keep a placement llama.cpp's fitter refuses to change.",
     )
 
     kv_estimable: bool = Field(True, description = "False when the header could not size the cache")
