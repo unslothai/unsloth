@@ -2181,3 +2181,66 @@ def test_a_staticmethod_takes_no_receiver(tmp_path):
         "    return Runner.execute(json.loads(blob)['command'])\n",
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_alias_rebound_to_a_second_callable_resolves_both(tmp_path):
+    """`runner = safe` then `runner = dirty` runs the second one.
+
+    Keeping only the first helper resolved to the clean one, so the sink inside the one
+    that actually runs received the parsed value with nothing reported. Same fail-closed
+    choice the reconstructed instance types already make.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def safe(command):\n"
+        "    return len(command)\n"
+        "def dirty(command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = safe\n"
+        "    runner = dirty\n"
+        "    return runner(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_inherited_method_resolves_through_a_constructed_instance(tmp_path):
+    """`child.execute(...)` where `Child` inherits `execute` from `Base`.
+
+    The `self.execute(...)` spelling already walked the bases, so a call through the
+    instance gave up exactly where a call from inside the class did not.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Base:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class Child(Base):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    child = Child()\n"
+        "    return child.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_async_context_manager_binds_its_target(tmp_path):
+    """`async with downloaded(repo) as path` left `path` clean.
+
+    Only the synchronous `with` bound one, so an async consumer of a downloaded path
+    reached the import-path sink unreported.
+    """
+    findings = _scan(
+        tmp_path,
+        "import contextlib, sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "@contextlib.asynccontextmanager\n"
+        "async def downloaded(repo):\n"
+        "    yield snapshot_download(repo)\n"
+        "async def load(repo):\n"
+        "    async with downloaded(repo) as path:\n"
+        "        sys.path.append(path)\n",
+    )
+    assert "sys.path.append" in _sinks(findings)

@@ -527,7 +527,9 @@ class _FileFacts:
         # keeping only the first resolved calls to the wrong class, so an execution
         # sink in the second one received tainted data with nothing reported.
         self.module_instances: dict = {}
-        # Module-scope `runner = execute`, for the same reason.
+        # Module-scope `runner = execute`, for the same reason. A tuple of every
+        # callable the name was bound to, since the analysis is flow-insensitive and
+        # picking one of them is a guess.
         self.module_callable_aliases: dict = {}
         # Aliases bound by a plain `import x` / `import x as y`, which are modules by
         # construction. `getattr(namespace, parsed)` on one is unsafe reflection, and the
@@ -681,7 +683,9 @@ class _FileFacts:
             alias = self.callable_alias(referenced)
             if alias:
                 for name in names:
-                    self.module_callable_aliases.setdefault(name, alias)
+                    self.module_callable_aliases[name] = _with(
+                        self.module_callable_aliases.get(name), alias
+                    )
 
     def _bind_import(self, alias: str, target: str) -> None:
         self.imports.setdefault(alias, set()).add(target)
@@ -827,13 +831,25 @@ class _FileFacts:
         name = _call_name(callee)
         if not name:
             return []
-        if aliases:
-            # `runner = execute` then `runner(json.loads(blob))`. The alias is neither an
-            # indexed local function named `runner` nor an import target, so the callee
-            # did not resolve at all and taint never entered the helper: a subprocess or
-            # dynamic import sink inside it walked past the gate. One substitution, so a
-            # pair of names bound to each other cannot loop.
-            name = aliases.get(name, name)
+        # `runner = execute` then `runner(json.loads(blob))`. The alias is neither an
+        # indexed local function named `runner` nor an import target, so the callee did
+        # not resolve at all and taint never entered the helper. EVERY callable the name
+        # was bound to, for the same reason reconstructed instance types keep all of
+        # theirs: `runner = safe` then `runner = dirty` runs the second, and resolving
+        # only the first left a sink inside it unreported. One substitution deep, so a
+        # pair of names bound to each other cannot loop.
+        candidates = list(aliases.get(name, ())) if aliases else []
+        if not candidates:
+            candidates = [name]
+        found: list = []
+        for candidate_name in candidates:
+            for target in self._resolve_name(candidate_name, class_name, scope, instances):
+                if target not in found:
+                    found.append(target)
+        return found
+
+    def _resolve_name(self, name: str, class_name: str, scope: str, instances: dict | None) -> list:
+        """One spelling, resolved. Split out so an alias bound twice resolves both."""
         head, _, tail = name.partition(".")
         # Bare call to a function defined in this file, nested helpers included.
         if not tail:
@@ -868,6 +884,20 @@ class _FileFacts:
                 if candidate in self.functions:
                     if (self.path, candidate) not in resolved:
                         resolved.append((self.path, candidate))
+                    continue
+                # Inherited rather than declared on the constructed class. The `self.m()`
+                # spelling already walked the bases, so a call through the instance gave
+                # up where a call from inside the class did not, and `child.execute(...)`
+                # on a method `Child` inherits from `Base` resolved to nothing.
+                inherited = [
+                    f"{base}.{tail}"
+                    for base in self.bases.get(constructed, ())
+                    if f"{base}.{tail}" in self.functions
+                ]
+                if inherited:
+                    for qualname in inherited:
+                        if (self.path, qualname) not in resolved:
+                            resolved.append((self.path, qualname))
                     continue
                 # An imported class: the instance carries the dotted target instead.
                 file, module = self.index.resolve_module(candidate)
@@ -912,7 +942,7 @@ class _FileFacts:
             if local is not None:
                 return [(self.path, local)]
             return []
-        found = []
+        imported: list = []
         for dotted in targets:
             full = f"{dotted}.{tail}" if tail else dotted
             file, module = self.index.resolve_module(full)
@@ -922,9 +952,9 @@ class _FileFacts:
             hop = self.index.follow_reexport(file, qualname)
             if hop is not None:
                 file, qualname = hop
-            if (file, qualname) not in found:
-                found.append((file, qualname))
-        return found
+            if (file, qualname) not in imported:
+                imported.append((file, qualname))
+        return imported
 
 
 def _with(current, value: str) -> tuple:
@@ -969,8 +999,8 @@ class _TaintPass(ast.NodeVisitor):
         self.instance_types: dict[str, tuple] = dict(facts.module_instances)
         # local name -> the sink it refers to, for `loader = importlib.import_module`
         self.sink_aliases: dict[str, str] = dict(facts.module_sink_aliases)
-        # local name -> the first-party callable it refers to, for `runner = execute`
-        self.callable_aliases: dict[str, str] = dict(facts.module_callable_aliases)
+        # local name -> every first-party callable it refers to, for `runner = execute`
+        self.callable_aliases: dict[str, tuple] = dict(facts.module_callable_aliases)
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
@@ -1358,7 +1388,9 @@ class _TaintPass(ast.NodeVisitor):
             return
         for target in node.targets:
             if isinstance(target, ast.Name):
-                self.callable_aliases.setdefault(target.id, alias)
+                self.callable_aliases[target.id] = _with(
+                    self.callable_aliases.get(target.id), alias
+                )
 
     def _note_construction(self, node: ast.Assign) -> None:
         """`parser = Parser()`, so `parser.parse(...)` resolves to `Parser.parse`.
@@ -1522,6 +1554,12 @@ class _TaintPass(ast.NodeVisitor):
                 if reason:
                     self._assign(item.optional_vars, reason)
         self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        # The async form fell through to generic traversal, so `async with
+        # downloaded(repo) as path` left `path` clean and the sink below it was reported
+        # nowhere. Same binding as the synchronous form.
+        self.visit_With(node)
 
     def visit_Return(self, node: ast.Return) -> None:
         self._note_output(node.value)
