@@ -25,7 +25,7 @@ type ConversationMarkdownExportDependencies<
     filename: string,
     mimeType: string,
   ) => Promise<void>;
-  readonly exportTimestamp: () => string;
+  readonly exportBasename: (threadId: string) => Promise<string>;
   readonly notifyNoContent: () => void;
 };
 
@@ -59,6 +59,40 @@ export function createConversationMarkdownBuilder<
   };
 }
 
+const MAX_EXPORT_BASENAME_LENGTH = 120;
+
+function filenamePart(text: string): string {
+  return (
+    text
+      .replace(/\s+/g, " ")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+      .trim()
+  );
+}
+
+function localDateStamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** `<model> - <title> (YYYY-MM-DD)` for a single-chat export, dropping whichever part is missing.
+ *  The model is the last segment of its id, so `unsloth/gemma-4-26b-a4b` reads as the model. */
+export function conversationExportBasename(
+  thread:
+    | { readonly title?: string | null; readonly modelId?: string | null }
+    | null
+    | undefined,
+  date: Date,
+): string {
+  const model = filenamePart(thread?.modelId?.split("/").pop() ?? "");
+  const title = filenamePart(thread?.title ?? "");
+  const name = [model, title].filter(Boolean).join(" - ") || "conversation";
+  // Windows refuses a name ending in a dot or space.
+  const capped = name.slice(0, MAX_EXPORT_BASENAME_LENGTH).replace(/[. ]+$/, "");
+  return `${capped || "conversation"} (${localDateStamp(date)})`;
+}
+
 /** A title safe to interpolate into a heading: a line break would end it. */
 function headingText(title: string): string {
   return title.replace(/\s+/g, " ").trim();
@@ -90,7 +124,7 @@ export function createConversationMarkdownExporter<
   loadMessages,
   renderMessage,
   download,
-  exportTimestamp,
+  exportBasename,
   notifyNoContent,
 }: ConversationMarkdownExportDependencies<Message>): (
   threadId: string,
@@ -109,7 +143,7 @@ export function createConversationMarkdownExporter<
     }
     await download(
       markdown,
-      `conversation-${exportTimestamp()}.${CONVERSATION_MARKDOWN_EXTENSION}`,
+      `${await exportBasename(threadId)}.${CONVERSATION_MARKDOWN_EXTENSION}`,
       CONVERSATION_MARKDOWN_MIME_TYPE,
     );
   };
