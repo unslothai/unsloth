@@ -13,7 +13,7 @@ import torch
 from .utils import (
     _has_multiple_active_adapters,
     _maybe_fake_quantize_activations,
-    fast_dequantize,
+    _dequantize_for_lora,
     QUANT_STATE,
     get_lora_parameters,
     get_lora_parameters_bias,
@@ -177,13 +177,15 @@ class LoRA_MLP(torch.autograd.Function):
         d_gateA.addmm_(X.t(), gate_dB, alpha = gateS, beta = 0)
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
-        # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        upW = fast_dequantize(upW.t(), upW_quant)
+        # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
+        # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+        upW = _dequantize_for_lora(upW, upW_quant, transpose = True)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         dX.addmm_(up_dB, upA.t(), alpha = upS)
 
-        gateW = fast_dequantize(gateW.t(), gateW_quant)
+        gateW = _dequantize_for_lora(gateW, gateW_quant, transpose = True)
+        # dX += de @ gateW.t()
         dX.addmm_(de, gateW.t())
         del gateW
         dX.addmm_(gate_dB, gateA.t(), alpha = gateS)
@@ -478,18 +480,23 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA.addmm_(X.t(), v_dB, alpha = VS, beta = 0)
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
-        # Combine the per-projection derivatives into dX.
-        QW = fast_dequantize(QW.t(), QW_quant)
+        # Combine derivatives to find dX
+        # dQ
+        QW = _dequantize_for_lora(QW, QW_quant, transpose = True)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         dX.addmm_(q_dB, QA.t(), alpha = QS)
 
-        KW = fast_dequantize(KW.t(), KW_quant)
+        # dK
+        KW = _dequantize_for_lora(KW, KW_quant, transpose = True)
+        # dX += dK @ KW.t()
         dX.addmm_(dK, KW.t())
         del KW
         dX.addmm_(k_dB, KA.t(), alpha = KS)
 
-        VW = fast_dequantize(VW.t(), VW_quant)
+        # dV
+        VW = _dequantize_for_lora(VW, VW_quant, transpose = True)
+        # dX += dV @ VW.t()
         dX.addmm_(dV, VW.t())
         del VW
         dX.addmm_(v_dB, VA.t(), alpha = VS)
@@ -614,7 +621,7 @@ class LoRA_W(torch.autograd.Function):
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
-        W = fast_dequantize(W.t(), W_quant)
+        W = _dequantize_for_lora(W, W_quant, transpose = True)
         dX = dY @ W.t()
         del W
         dX.addmm_(y_dB, A.t(), alpha = S)
