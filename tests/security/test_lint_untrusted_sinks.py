@@ -2244,3 +2244,383 @@ def test_an_async_context_manager_binds_its_target(tmp_path):
         "        sys.path.append(path)\n",
     )
     assert "sys.path.append" in _sinks(findings)
+
+
+def test_a_local_list_named_path_is_not_an_import_hook(tmp_path):
+    """`path = []` then `path.append(parsed)` only mutates a list.
+
+    `from sys import path` canonicalises to `sys.path.append` through the import table,
+    so the bare spelling in the sink table only ever matched an unrelated local and
+    blocked ordinary code.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "def load(blob):\n"
+        "    path = []\n"
+        "    path.append(json.loads(blob))\n"
+        "    return path\n",
+    )
+    assert "path.append" not in _sinks(findings)
+    assert "sys.path.append" not in _sinks(findings)
+
+
+def test_sys_path_imported_by_name_is_still_a_sink(tmp_path):
+    """The half that has to keep working: `from sys import path` IS the import hook."""
+    findings = _scan(
+        tmp_path,
+        "from sys import path\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    path.append(snapshot_download(repo))\n",
+    )
+    assert "sys.path.append" in _sinks(findings)
+
+
+def test_a_nested_global_declaration_stays_with_its_own_function(tmp_path):
+    """`ast.walk` descended into nested functions when collecting `global`.
+
+    So an inner helper's declaration was recorded for the function around it, the outer
+    function's own local assignment poisoned the module global, and an unrelated function
+    executing the safe global failed the gate.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "command = ['ls', '-l']\n"
+        "def outer(blob):\n"
+        "    def inner():\n"
+        "        global command\n"
+        "        command = ['safe']\n"
+        "    command = json.loads(blob)['command']\n"
+        "    return command\n"
+        "def other():\n"
+        "    return subprocess.run(command)\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)
+
+
+def test_a_comprehension_target_does_not_leak_into_the_enclosing_scope(tmp_path):
+    """Python 3 gives a comprehension its own scope.
+
+    Keeping the binding afterwards turned a safe outer `command` into a tainted one and
+    blocked a sink that only ever sees the fixed value.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = ['echo', 'ok']\n"
+        "    [None for command in json.loads(blob)]\n"
+        "    return subprocess.run(command)\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)
+
+
+def test_a_nested_return_is_not_the_outer_functions_summary(tmp_path):
+    """A nested helper's `return` is its own output, not the enclosing function's.
+
+    Leaving it set made an outer function that returns a fixed literal carry the nested
+    summary, and every caller then failed on a value it never produces.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def outer(blob):\n"
+        "    def helper():\n"
+        "        return json.loads(blob)['command']\n"
+        "    return 'safe'\n"
+        "def caller(blob):\n"
+        "    return subprocess.run(outer(blob))\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)
+
+
+def test_a_nonlocal_in_a_deeper_closure_does_not_reach_two_levels_up(tmp_path):
+    """A `nonlocal` inside a grandchild targets ITS enclosing function, not this one."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def outer(blob):\n"
+        "    command = ['ls']\n"
+        "    def middle():\n"
+        "        command = ['safe']\n"
+        "        def inner():\n"
+        "            nonlocal command\n"
+        "            command = json.loads(blob)['command']\n"
+        "        inner()\n"
+        "    middle()\n"
+        "    return subprocess.run(command)\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)
+
+
+def test_each_class_body_keeps_its_own_namespace(tmp_path):
+    """Flattening every class body into the module merged their attributes.
+
+    A parsed `command` in one class then failed a safe `command` in a different class and
+    a safe module global of the same name.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "from pathlib import Path\n"
+        "class A:\n"
+        "    command = json.loads(Path('downloaded.json').read_text())['command']\n"
+        "class B:\n"
+        "    command = ['ls', '-l']\n"
+        "    result = subprocess.run(command)\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)
+
+
+def test_an_alias_of_a_sink_alias_is_still_the_sink(tmp_path):
+    """`loader = importlib.import_module` then `invoke = loader`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    loader = importlib.import_module\n"
+        "    invoke = loader\n"
+        "    return invoke(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_alias_of_a_callable_alias_is_followed(tmp_path):
+    """`runner = execute` then `invoke = runner`: taint stopped at the first hop."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = execute\n"
+        "    invoke = runner\n"
+        "    return invoke(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_pydoc_locate_by_keyword_is_a_sink(tmp_path):
+    """An empty keyword set meant the named spelling was inspected neither way."""
+    findings = _scan(
+        tmp_path,
+        "import json, pydoc\n"
+        "def load(blob):\n"
+        "    return pydoc.locate(path = json.loads(blob)['class'])\n",
+    )
+    assert "pydoc.locate" in _sinks(findings)
+
+
+def test_map_does_not_validate_its_iterable(tmp_path):
+    """`map(str, parsed["modules"])` passes attacker names straight through."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    for name in map(str, json.loads(blob)['modules']):\n"
+        "        importlib.import_module(name)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_inherited_method_from_an_imported_base_resolves(tmp_path):
+    """`class Child(Base)` on a first-party base imported from another module.
+
+    The lookup searched the current file only, and most base classes in this tree are
+    imported, so the inherited method sat outside the analysis.
+    """
+    (tmp_path / "base.py").write_text(
+        "import subprocess\n"
+        "class Base:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom base import Base\n"
+        "class Child(Base):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    child = Child()\n"
+        "    return child.execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "base.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_method_on_a_fresh_instance_resolves(tmp_path):
+    """`Child().execute(...)` with no intermediate variable.
+
+    `_call_name` cannot reduce a Call to a name, so the callee did not resolve at all and
+    every method reached this way, inherited ones included, was invisible.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Base:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class Child(Base):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    return Child().execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_method_of_a_nested_class_resolves_against_its_full_name(tmp_path):
+    """For `Outer.Runner.run`, taking `Outer` as the class looked up `Outer.identity`."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Outer:\n"
+        "    class Runner:\n"
+        "        def identity(self, value):\n"
+        "            return value\n"
+        "        def run(self, blob):\n"
+        "            return subprocess.run(self.identity(json.loads(blob)['command']))\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_aliased_source_callable_still_taints(tmp_path):
+    """`decode = json.loads` then `decode(blob)`.
+
+    Sink aliases were followed and source aliases were not, so a deserialiser behind an
+    ordinary local name read clean and everything downstream of it did too.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    decode = json.loads\n"
+        "    return importlib.import_module(decode(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_property_getter_carries_its_taint(tmp_path):
+    """`cfg.module` where the getter returns a parsed value.
+
+    An ordinary method call on the same instance was followed, so the one spelling that
+    looks like a plain attribute read was the gap.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "class Config:\n"
+        "    def __init__(self, blob):\n"
+        "        self.blob = blob\n"
+        "    @property\n"
+        "    def module(self):\n"
+        "        return json.loads(self.blob)['module']\n"
+        "def load(blob):\n"
+        "    cfg = Config(blob)\n"
+        "    return importlib.import_module(cfg.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_constant_bound_to_true_still_enables_remote_code(tmp_path):
+    """`enabled = True` forwarded as `trust_remote_code = enabled` runs repository code.
+
+    Only the literal written at the call was recognised.
+    """
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    enabled = True\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = enabled)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_function_local_class_resolves_under_its_qualified_name(tmp_path):
+    """A class declared inside a function is indexed as `load.Runner.execute`.
+
+    Construction returned the bare `Runner`, so the method lookup searched for
+    `Runner.execute` and taint never reached the sink inside it.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    class Runner:\n"
+        "        def execute(self, command):\n"
+        "            return subprocess.run(command)\n"
+        "    runner = Runner()\n"
+        "    return runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_lambda_is_a_call_target(tmp_path):
+    """`runner = lambda command: subprocess.run(command)` is a common wrapper form.
+
+    `_call_name` cannot reduce a Lambda to a name, so the assignment was discarded and
+    the sink inside saw an unbound, clean parameter.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    runner = lambda command: subprocess.run(command)\n"
+        "    return runner(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_lambda_body_is_its_return_value(tmp_path):
+    """A lambda has no `return` statement, so it needed a summary of its own."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    pick = lambda cfg: cfg['module']\n"
+        "    return importlib.import_module(pick(json.loads(blob)))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_weight_file_load_is_an_untrusted_source(tmp_path):
+    """The tensor NAMES in a downloaded checkpoint are attacker-chosen.
+
+    Only the config beside a checkpoint counted as a source, so the only chain the
+    scanner could see into an adapter loader was through `adapter_config.json`, and a
+    finding driven by tensor names was attributed to the config instead.
+    """
+    findings = _scan(
+        tmp_path,
+        "import mlx.core as mx\n"
+        "def load(path):\n"
+        "    tensors = dict(mx.load(path))\n"
+        "    for name in tensors:\n"
+        "        module = mx\n"
+        "        getattr(module, name)\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_a_container_written_through_setdefault_is_tainted(tmp_path):
+    """`full_state.setdefault(path, {})[name] = tensor` writes THROUGH a call.
+
+    The assignment's base was a Call, so it landed nowhere: the dict being built stayed
+    clean and the function returning it was summarised clean too.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def group(blob):\n"
+        "    grouped = {}\n"
+        "    for name, value in json.loads(blob).items():\n"
+        "        grouped.setdefault('all', {})[name] = value\n"
+        "    return grouped\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(group(blob)['all']['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)

@@ -128,6 +128,17 @@ UNTRUSTED_CALLS = frozenset(
         "tomllib.loads",
         "toml.load",
         "configparser.read",
+        # Weight files. The tensor NAMES in a downloaded checkpoint are attacker-chosen
+        # just as a config value is, and they get used as attribute names and as paths.
+        # Without these the only chain the scanner could see into an adapter loader was
+        # the config beside it, so a finding on a tensor name read as if it came from
+        # `adapter_config.json`.
+        "mlx.core.load",
+        "safetensors.torch.load_file",
+        "safetensors.numpy.load_file",
+        "safe_open",
+        "safetensors.safe_open",
+        "load_file",
         # Downloads. The *return* of these is a path to attacker-written bytes, and the
         # basename of that path is attacker-chosen, which is the Spark-TTS shape.
         "hf_hub_download",
@@ -222,7 +233,9 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "importlib.util.spec_from_file_location": ((1,), frozenset({"location"})),
     "spec_from_file_location": ((1,), frozenset({"location"})),
     "load_source": ((1,), frozenset()),
-    "pydoc.locate": ((0,), frozenset()),
+    # `path` is the keyword this takes, and an empty set meant the named spelling was
+    # inspected neither positionally nor by keyword.
+    "pydoc.locate": ((0,), frozenset({"path"})),
     # Resolving a dotted path out of a string, in both libraries that offer it.
     "import_from_string": ((0,), frozenset()),
     "get_class_from_dynamic_module": (
@@ -233,8 +246,10 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # Import path injection: after this, a plain `import` statement is the sink.
     "sys.path.insert": ((1,), frozenset()),
     "sys.path.append": ((0,), frozenset()),
-    "path.insert": ((1,), frozenset()),
-    "path.append": ((0,), frozenset()),
+    # No bare `path.append` entry: `from sys import path` canonicalises to
+    # `sys.path.append` through the import table, so the bare spelling only ever matched
+    # an unrelated local list called `path`, and reporting `path = []; path.append(parsed)`
+    # blocked ordinary code.
     "site.addsitedir": ((0,), frozenset()),
     # The builtins the other linter covers. Kept so one report shows every sink, and
     # excluded from this gate's failure set to avoid two scripts failing on one line.
@@ -531,6 +546,8 @@ class _FileFacts:
         # callable the name was bound to, since the analysis is flow-insensitive and
         # picking one of them is a guess.
         self.module_callable_aliases: dict = {}
+        # Module-scope `decode = json.loads`, the source counterpart of the sink table.
+        self.module_source_aliases: dict = {}
         # Aliases bound by a plain `import x` / `import x as y`, which are modules by
         # construction. `getattr(namespace, parsed)` on one is unsafe reflection, and the
         # name heuristic alone missed every module this tree imports under a name it does
@@ -545,6 +562,11 @@ class _FileFacts:
         # reading method status off the first parameter misclassified `def execute(this,
         # command)` and bound a tainted argument to the receiver instead of the parameter.
         self.methods: set = set()
+        # Qualnames decorated with `property`, so `cfg.module` can be read as the call it
+        # really is rather than as a plain attribute.
+        self.properties: set = set()
+        # Qualnames that are lambdas, whose body IS their return expression.
+        self.lambdas: set = set()
         self._collect()
         self._collect_module_bindings()
 
@@ -575,6 +597,14 @@ class _FileFacts:
                     for alias in child.names:
                         target = f"{base}.{alias.name}" if base else alias.name
                         self._bind_import(alias.asname or alias.name, target)
+                elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                    assigned = [child.target] if isinstance(child, ast.AnnAssign) else child.targets
+                    if isinstance(child.value, ast.Lambda):
+                        for target in assigned:
+                            if isinstance(target, ast.Name):
+                                self._index_lambda(target.id, child.value, ".".join(scope))
+                    walk(child)
+                    continue
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     in_class = bool(kinds) and kinds[-1] == "class"
                     scope.append(child.name)
@@ -585,6 +615,11 @@ class _FileFacts:
                         for decorator in child.decorator_list
                     ):
                         self.methods.add(qualname)
+                    if in_class and any(
+                        _call_name(decorator).rpartition(".")[2] in ("property", "cached_property")
+                        for decorator in child.decorator_list
+                    ):
+                        self.properties.add(qualname)
                     self.functions[qualname] = child
                     self.params[qualname] = _param_names(child)
                     self.contexts[qualname] = _norm_hash(child)
@@ -592,12 +627,12 @@ class _FileFacts:
                         self.star_kwargs[qualname] = child.args.kwarg.arg
                     if child.args.vararg is not None:
                         self.varargs[qualname] = child.args.vararg.arg
-                    declared = {
-                        name
-                        for node in ast.walk(child)
-                        if isinstance(node, ast.Global)
-                        for name in node.names
-                    }
+                    # This function's own body only. `ast.walk` descended into nested
+                    # functions, so a `global command` declared by an inner helper was
+                    # recorded for the enclosing one, and the outer function assigning
+                    # its own local `command` then poisoned the module global: an
+                    # unrelated function executing the safe global failed the gate.
+                    declared = _declared_here(child, ast.Global)
                     if declared:
                         self.globals_declared[qualname] = declared
                     walk(child)
@@ -624,6 +659,31 @@ class _FileFacts:
                 walk(child)
 
         walk(self.tree)
+
+    def _index_lambda(
+        self,
+        name: str,
+        node: ast.Lambda,
+        scope: str = "",
+    ) -> None:
+        """`runner = lambda command: subprocess.run(command)` is a callable with a body.
+
+        `_call_name` cannot reduce a Lambda to a name, so the assignment was discarded
+        and a call through the name propagated nothing: the sink inside saw an unbound,
+        clean parameter. Indexed like any other function so the ordinary machinery
+        resolves it, including the receiver-free argument mapping.
+        """
+        qualname = f"{scope}.{name}" if scope else name
+        if qualname in self.functions:
+            return
+        self.functions[qualname] = node
+        self.params[qualname] = _param_names(node)
+        self.contexts[qualname] = _norm_hash(node)
+        if node.args.kwarg is not None:
+            self.star_kwargs[qualname] = node.args.kwarg.arg
+        if node.args.vararg is not None:
+            self.varargs[qualname] = node.args.vararg.arg
+        self.lambdas.add(qualname)
 
     def _note_constant_map(self, names: list, value: ast.AST) -> None:
         """`_DTYPES = {"F32": "float32", ...}`: a fixed translation table.
@@ -657,6 +717,10 @@ class _FileFacts:
             if not names:
                 continue
             self._note_constant_map(names, value)
+            if isinstance(value, ast.Lambda):
+                for name in names:
+                    self._index_lambda(name, value)
+                continue
             if isinstance(value, ast.Call):
                 # Through the shared resolver, so an imported first-party class is
                 # accepted here too. Taking only classes declared in this file left
@@ -679,6 +743,11 @@ class _FileFacts:
             if sink is not None:
                 for name in names:
                     self.module_sink_aliases.setdefault(name, sink)
+                continue
+            source = _matches_any(self.canonicals(referenced), UNTRUSTED_CALLS)
+            if source is not None:
+                for name in names:
+                    self.module_source_aliases.setdefault(name, source)
                 continue
             alias = self.callable_alias(referenced)
             if alias:
@@ -758,7 +827,11 @@ class _FileFacts:
             parts.pop()
         return name if name in self.functions else None
 
-    def resolve_construction(self, constructed: str) -> str | None:
+    def resolve_construction(
+        self,
+        constructed: str,
+        scope: str = "",
+    ) -> str | None:
         """What `parser = Parser()` built: a local class name, or a dotted import target.
 
         Shared by the module-scope collector and the per-function one so the two cannot
@@ -768,6 +841,16 @@ class _FileFacts:
         """
         if not constructed:
             return None
+        # Innermost scope first, so a class declared inside a function resolves to the
+        # qualified `load.Runner` its methods are indexed under. The bare spelling
+        # matched `Runner`, which is also in the table, and the method lookup then
+        # searched for `Runner.execute` while the index holds `load.Runner.execute`.
+        parts = scope.split(".") if scope else []
+        while parts:
+            qualified = ".".join(parts + [constructed])
+            if qualified in self.classes:
+                return qualified
+            parts.pop()
         for candidate in (constructed, constructed.rpartition(".")[2]):
             if candidate and candidate in self.classes:
                 return candidate
@@ -777,6 +860,48 @@ class _FileFacts:
             file, _module = self.index.resolve_module(full)
             if file is not None:
                 return full
+        return None
+
+    def _methods_on(self, constructed: str, tail: str) -> list:
+        """`tail` resolved on a class, declared or inherited, local or imported."""
+        candidate = f"{constructed}.{tail}"
+        if candidate in self.functions:
+            return [(self.path, candidate)]
+        # Inherited rather than declared on the constructed class. The `self.m()`
+        # spelling already walked the bases, so a call through an instance gave up where
+        # a call from inside the class did not.
+        inherited = [
+            f"{base}.{tail}"
+            for base in self.bases.get(constructed, ())
+            if f"{base}.{tail}" in self.functions
+        ]
+        if inherited:
+            return [(self.path, qualname) for qualname in inherited]
+        # A first-party base imported from another module. The lookup searched this file
+        # only, and most base classes in this tree are imported.
+        crossed = self._imported_base_method(constructed, tail)
+        if crossed is not None:
+            return [crossed]
+        # An imported class: the instance carries the dotted target instead.
+        file, module = self.index.resolve_module(candidate)
+        if file is not None and module and candidate.startswith(module + "."):
+            qualname = candidate[len(module) + 1 :]
+            if qualname:
+                return [(file, qualname)]
+        return []
+
+    def _imported_base_method(self, constructed: str, tail: str) -> tuple | None:
+        """`class Child(Base)` where `Base` came from another first-party module."""
+        for base in self.bases.get(constructed, ()):
+            for dotted in self._targets(base):
+                full = f"{dotted}.{tail}"
+                file, module = self.index.resolve_module(full)
+                if file is None or not module or not full.startswith(module + "."):
+                    continue
+                qualname = full[len(module) + 1 :]
+                defining = self.index.facts.get(file)
+                if qualname and (defining is None or qualname in defining.functions):
+                    return (file, qualname)
         return None
 
     def callable_alias(
@@ -828,6 +953,13 @@ class _FileFacts:
                     if candidate in self.functions:
                         return [(self.path, candidate)]
                 return []
+        # `Child().execute(...)`: a method on a fresh instance. `_call_name` cannot
+        # reduce a Call to a name, so the callee did not resolve at all and every method
+        # reached this way, inherited ones included, sat outside the analysis.
+        if isinstance(callee, ast.Attribute) and isinstance(callee.value, ast.Call):
+            constructed = self.resolve_construction(_call_name(callee.value.func), scope)
+            if constructed:
+                return self._methods_on(constructed, callee.attr)
         name = _call_name(callee)
         if not name:
             return []
@@ -880,33 +1012,9 @@ class _FileFacts:
             # second, and resolving only the first left a sink inside it unreported.
             resolved = []
             for constructed in instances.get(head) or ():
-                candidate = f"{constructed}.{tail}"
-                if candidate in self.functions:
-                    if (self.path, candidate) not in resolved:
-                        resolved.append((self.path, candidate))
-                    continue
-                # Inherited rather than declared on the constructed class. The `self.m()`
-                # spelling already walked the bases, so a call through the instance gave
-                # up where a call from inside the class did not, and `child.execute(...)`
-                # on a method `Child` inherits from `Base` resolved to nothing.
-                inherited = [
-                    f"{base}.{tail}"
-                    for base in self.bases.get(constructed, ())
-                    if f"{base}.{tail}" in self.functions
-                ]
-                if inherited:
-                    for qualname in inherited:
-                        if (self.path, qualname) not in resolved:
-                            resolved.append((self.path, qualname))
-                    continue
-                # An imported class: the instance carries the dotted target instead.
-                file, module = self.index.resolve_module(candidate)
-                if file is not None and module:
-                    qualname = (
-                        candidate[len(module) + 1 :] if candidate.startswith(module + ".") else ""
-                    )
-                    if qualname and (file, qualname) not in resolved:
-                        resolved.append((file, qualname))
+                for target in self._methods_on(constructed, tail):
+                    if target not in resolved:
+                        resolved.append(target)
             if resolved:
                 return resolved
         # `Runner(json.loads(blob)["command"])`: the call reaches `__init__`, which is
@@ -914,7 +1022,7 @@ class _FileFacts:
         # as a callee, so a constructor that parks an argument on `self` and a method that
         # later executes it were both outside the analysis.
         if not tail:
-            constructed = self.resolve_construction(name)
+            constructed = self.resolve_construction(name, scope)
             if constructed:
                 local = f"{constructed}.__init__"
                 if local in self.functions:
@@ -955,6 +1063,27 @@ class _FileFacts:
             if (file, qualname) not in imported:
                 imported.append((file, qualname))
         return imported
+
+
+def _declared_here(node: ast.AST, kind) -> set:
+    """`global`/`nonlocal` names declared by this scope, not by a nested one.
+
+    A declaration inside a closure belongs to that closure, so collecting them with a
+    plain `ast.walk` attributed an inner helper's binding to the function around it and
+    turned a safe outer name into a tainted one.
+    """
+    found: set = set()
+
+    def walk(current: ast.AST) -> None:
+        for child in ast.iter_child_nodes(current):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(child, kind):
+                found.update(child.names)
+            walk(child)
+
+    walk(node)
+    return found
 
 
 def _with(current, value: str) -> tuple:
@@ -1001,10 +1130,21 @@ class _TaintPass(ast.NodeVisitor):
         self.sink_aliases: dict[str, str] = dict(facts.module_sink_aliases)
         # local name -> every first-party callable it refers to, for `runner = execute`
         self.callable_aliases: dict[str, tuple] = dict(facts.module_callable_aliases)
+        # local name -> the source it refers to, for `decode = json.loads`. Sink aliases
+        # were followed and source aliases were not, so a deserialiser behind a local
+        # name read clean and everything downstream of it did too.
+        self.source_aliases: dict[str, str] = dict(facts.module_source_aliases)
+        # Local names bound to a literal True, for `enabled = True` forwarded as
+        # `trust_remote_code = enabled`.
+        self.true_names: set[str] = set()
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
-        self.class_name = qualname.split(".")[0] if "." in qualname else ""
+        # The WHOLE containing class, not the first segment. For `Outer.Runner.run`,
+        # taking `Outer` sent `self.identity(...)` looking for `Outer.identity`, so a
+        # method of a nested class resolved to nothing. Read off the recorded method set,
+        # which knows whether the immediately enclosing scope is a class.
+        self.class_name = qualname.rpartition(".")[0] if qualname in facts.methods else ""
 
     # -- taint queries -----------------------------------------------------------------
 
@@ -1032,6 +1172,12 @@ class _TaintPass(ast.NodeVisitor):
             method = _matches(_call_name(node), UNTRUSTED_METHODS)
             if method:
                 return f"read via .{method}"
+            # `cfg.module` where `module` is an `@property` whose getter returns a parsed
+            # value. An ordinary method call on the same instance was followed, so the
+            # one spelling that looks like an attribute read was the gap.
+            property_reason = self._property_reason(node)
+            if property_reason:
+                return property_reason
             return self.tainted(node.value)
         if isinstance(node, ast.Subscript):
             # `_DTYPES[meta["dtype"]]` is the raising form of the same translation table
@@ -1094,6 +1240,11 @@ class _TaintPass(ast.NodeVisitor):
     def _tainted_call(self, node: ast.Call) -> str | None:
         names = self.facts.canonicals(_call_name(node.func))
         source = _matches_any(names, UNTRUSTED_CALLS)
+        if source is None:
+            # `decode = json.loads` then `decode(blob)`. Sink aliases were followed and
+            # source aliases were not, so a deserialiser behind an ordinary local name
+            # read clean and everything downstream of it did too.
+            source = self.source_aliases.get(_call_name(node.func))
         if source:
             # The file and line are part of the reason so that two downloads stay
             # distinguishable: the unpinned-fetch rule has to know WHICH download reached
@@ -1170,6 +1321,12 @@ class _TaintPass(ast.NodeVisitor):
                 # without it the return summary the yield fix produces was dropped again
                 # at the consumer.
                 "next",
+                # `map(str, parsed["modules"])` does not validate anything: the names
+                # come straight out of the artefact and the loop over the result read
+                # clean. `zip` is the same shape with two iterables.
+                "map",
+                "filter",
+                "zip",
             },
         ):
             # Keywords too: `copy.deepcopy(x = json.loads(blob))` and `dict(**...)` style
@@ -1226,6 +1383,24 @@ class _TaintPass(ast.NodeVisitor):
             returned = self.state.returns_tainted.get(target)
             if returned:
                 return returned
+        return None
+
+    def _property_reason(self, node: ast.Attribute) -> str | None:
+        """The return summary of an `@property` getter reached through an instance."""
+        if not isinstance(node.value, ast.Name):
+            return None
+        holder = node.value.id
+        if holder in ("self", "cls"):
+            owners = (self.class_name,) if self.class_name else ()
+        else:
+            owners = self.instance_types.get(holder) or ()
+        for owner in owners:
+            for file, qualname in self.facts._methods_on(owner, node.attr):
+                if qualname not in (self.facts.index.facts.get(file) or self.facts).properties:
+                    continue
+                returned = self.state.returns_tainted.get((file, qualname))
+                if returned:
+                    return returned
         return None
 
     def _module_global(self, alias: str, attribute: str) -> str | None:
@@ -1317,7 +1492,15 @@ class _TaintPass(ast.NodeVisitor):
             # from here, and `tainted()` already reads a Subscript through its base, so
             # tainting the base is both conservative and the shape the reader expects.
             # Ignoring these targets let a config assembled key by key arrive clean.
-            self._assign(target.value, reason)
+            base = target.value
+            # `full_state.setdefault(path, {})[name] = tensor` writes THROUGH a call, so
+            # the base is a Call and the assignment landed nowhere: the dict being built
+            # stayed clean and the function returning it was summarised clean too. The
+            # receiver of the call is the container that keeps the value.
+            if isinstance(base, ast.Call) and isinstance(base.func, ast.Attribute):
+                if base.func.attr in self._MUTATORS or base.func.attr in ("get", "pop"):
+                    base = base.func.value
+            self._assign(base, reason)
         elif isinstance(target, (ast.Tuple, ast.List)):
             for element in target.elts:
                 self._assign(element, reason)
@@ -1327,8 +1510,13 @@ class _TaintPass(ast.NodeVisitor):
         if reason:
             for target in node.targets:
                 self._assign(target, reason)
+        if isinstance(node.value, ast.Constant) and node.value.value is True:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.true_names.add(target.id)
         self._note_construction(node)
         self._note_sink_alias(node)
+        self._note_source_alias(node)
         self._note_callable_alias(node)
         self.generic_visit(node)
 
@@ -1338,6 +1526,15 @@ class _TaintPass(ast.NodeVisitor):
             return
         referenced = _call_name(node.value)
         if not referenced:
+            return
+        # `loader = importlib.import_module` then `invoke = loader`. The second assignment
+        # does not canonically match a sink, so it was discarded and the second alias
+        # walked past the gate. One hop per pass, and the fixpoint settles the chain.
+        chained = self.sink_aliases.get(referenced)
+        if chained is not None:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.sink_aliases.setdefault(target.id, chained)
             return
         sink = _matches_any(self.facts.canonicals(referenced), SINKS)
         if sink is None:
@@ -1376,12 +1573,40 @@ class _TaintPass(ast.NodeVisitor):
             if reason:
                 self._bind(self.local_reasons, parameter.arg, reason)
 
+    def _note_source_alias(self, node: ast.Assign) -> None:
+        """`decode = json.loads`: a reference to a source, not a call to one."""
+        if isinstance(node.value, ast.Call):
+            return
+        referenced = _call_name(node.value)
+        if not referenced:
+            return
+        source = self.source_aliases.get(referenced) or _matches_any(
+            self.facts.canonicals(referenced), UNTRUSTED_CALLS
+        )
+        if source is None:
+            return
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self.source_aliases.setdefault(target.id, source)
+
     def _note_callable_alias(self, node: ast.Assign) -> None:
         """`runner = execute`: a reference to a first-party helper, not a call to one."""
         if isinstance(node.value, ast.Call):
             return
         referenced = _call_name(node.value)
         if self.sink_aliases.get(referenced):
+            return
+        # `runner = execute` then `invoke = runner`: the second name refers to the same
+        # helper, and `callable_alias` rejects `runner` because it is not itself an
+        # indexed function or an import target, so taint stopped at the first hop.
+        inherited = self.callable_aliases.get(referenced)
+        if inherited:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    for candidate in inherited:
+                        self.callable_aliases[target.id] = _with(
+                            self.callable_aliases.get(target.id), candidate
+                        )
             return
         alias = self.facts.callable_alias(referenced, self.qualname)
         if not alias:
@@ -1405,7 +1630,7 @@ class _TaintPass(ast.NodeVisitor):
         # Including `from producer import Parser` then `parser = Parser()`: an imported
         # first-party class resolves to its dotted target, so its methods are inside the
         # analysis exactly as a locally declared class's are.
-        constructed = self.facts.resolve_construction(_call_name(node.value.func))
+        constructed = self.facts.resolve_construction(_call_name(node.value.func), self.qualname)
         if not constructed:
             return
         for target in node.targets:
@@ -1425,6 +1650,7 @@ class _TaintPass(ast.NodeVisitor):
             synthetic = ast.Assign(targets = [node.target], value = node.value)
             self._note_construction(synthetic)
             self._note_sink_alias(synthetic)
+            self._note_source_alias(synthetic)
             self._note_callable_alias(synthetic)
         self.generic_visit(node)
 
@@ -1474,17 +1700,21 @@ class _TaintPass(ast.NodeVisitor):
             dict(self.sink_aliases),
             dict(self.callable_aliases),
         )
+        # The nested body's `return` is the nested function's output, not this one's.
+        # Leaving it set made an outer function that returns a fixed literal carry a
+        # nested helper's tainted summary, and every caller of the outer one then failed
+        # the gate on a value it never produces.
+        returned = self.returns_tainted
         self.generic_visit(node)
+        self.returns_tainted = returned
         # A `nonlocal` write is a write to THIS scope, which is the whole point of the
         # declaration, so dropping it with the nested body's own names discarded a real
         # flow: a helper setting an outer `command` from a parsed config left the sink
         # below it clean. Only ordinary nested locals are dropped.
-        shared = {
-            name
-            for inner in ast.walk(node)
-            if isinstance(inner, ast.Nonlocal)
-            for name in inner.names
-        }
+        # The immediate nested scope only. A `nonlocal` inside a deeper closure targets
+        # ITS enclosing function, not this one, so collecting them all propagated a
+        # grandchild's write two levels up and rejected a safe sink here.
+        shared = _declared_here(node, ast.Nonlocal)
         reasons = dict(saved[0])
         for name in sorted(shared):
             carried = self.local_reasons.get(name)
@@ -1517,11 +1747,28 @@ class _TaintPass(ast.NodeVisitor):
         element read `name` as clean. Taking the whole comprehension's value was already
         handled; it was the sink INSIDE one that was invisible.
         """
+        # Python 3 gives a comprehension its own scope, so the target does not overwrite
+        # a same-named variable around it. Keeping the binding afterwards turned a safe
+        # outer `command` into a tainted one and blocked a sink that only ever sees the
+        # fixed value.
+        saved = dict(self.local_reasons)
         for generator in node.generators:
             reason = self.tainted(generator.iter)
             if reason:
                 self._assign(generator.target, reason)
         self.generic_visit(node)
+        bound = {
+            name
+            for generator in node.generators
+            for target in ast.walk(generator.target)
+            if isinstance(target, ast.Name)
+            for name in [target.id]
+        }
+        for name in bound:
+            if name in saved:
+                self.local_reasons[name] = saved[name]
+            else:
+                self.local_reasons.pop(name, None)
 
     def visit_Match(self, node: ast.Match) -> None:
         """`case {"module": name}` binds `name` out of the subject.
@@ -1828,7 +2075,13 @@ class _TaintPass(ast.NodeVisitor):
         for keyword in node.keywords:
             if keyword.arg != "trust_remote_code":
                 continue
-            if isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
+            # A local name bound to True counts: `enabled = True` then
+            # `trust_remote_code = enabled` runs repository code just the same, and only
+            # the literal at the call was recognised.
+            written_true = (
+                isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+            ) or (isinstance(keyword.value, ast.Name) and keyword.value.id in self.true_names)
+            if written_true:
                 self._record(
                     node,
                     "trust_remote_code = True",
@@ -2120,6 +2373,12 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         visitor.seed_defaults()
         for child in nodes:
             visitor.visit(child)
+        if qualname in facts.lambdas:
+            # A lambda has no `return` statement; its body is the value it hands back,
+            # so without this the wrapper had no tainted summary and its callers read
+            # clean even once the parameter was bound.
+            body = facts.functions[qualname].body
+            visitor._note_output(body)
         if (
             visitor.local_reasons == reasons
             and visitor.instance_types == instances
@@ -2194,7 +2453,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             state.is_method[key] = qualname in facts.methods
             if any(
                 _call_name(decorator).rpartition(".")[2] == "classmethod"
-                for decorator in node.decorator_list
+                for decorator in getattr(node, "decorator_list", ())
             ):
                 state.is_classmethod[key] = True
             star = facts.star_kwargs.get(qualname)
@@ -2291,6 +2550,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             )
             findings.extend(found)
         body = []
+        class_bodies: list = []
         for child in ast.iter_child_nodes(facts.tree):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -2298,13 +2558,30 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 # A class body executes at import time, and it was skipped outright, so a
                 # sink sitting in one was never scanned at all. Only the statements the
                 # body itself runs: the methods are analysed under their own qualnames.
-                body.extend(
-                    inner
-                    for inner in ast.iter_child_nodes(child)
-                    if not isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                # Each body is settled on its own, because flattening them into the module
+                # merged one class's attributes with another's and with the real globals,
+                # so a safe `command` in one class failed on a parsed one in a different
+                # class entirely.
+                class_bodies.append(
+                    (
+                        f"<class {child.name}>",
+                        [
+                            inner
+                            for inner in ast.iter_child_nodes(child)
+                            if not isinstance(
+                                inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                            )
+                        ],
+                    )
                 )
                 continue
             body.append(child)
+        for qualname, statements in class_bodies:
+            class_visitor, class_converged = _settle(facts, qualname, statements, state)
+            if not class_converged:
+                unconverged.add(f"{facts.relative}::{qualname}")
+            if class_visitor is not None:
+                findings.extend(class_visitor.findings)
         module_visitor, module_converged = _settle(facts, "<module>", body, state)
         if not module_converged:
             unconverged.add(f"{facts.relative}::<module>")
