@@ -1475,10 +1475,10 @@ _resolve_systemd_install_script() {
 
 # Only with UNSLOTH_INSTALL_SYSTEMD set; without it the install is unchanged.
 _install_systemd_user_service() {
-    if [ "$OS" != "linux" ]; then
-        step "systemd" "UNSLOTH_INSTALL_SYSTEMD is Linux only; skipped" "$C_WARN"
-        return 0
-    fi
+    case "$OS" in
+        linux|wsl) ;;
+        *) step "systemd" "UNSLOTH_INSTALL_SYSTEMD is Linux only; skipped" "$C_WARN"; return 0 ;;
+    esac
     _sd_script=$(_resolve_systemd_install_script)
     if [ -z "$_sd_script" ] || [ ! -f "$_sd_script" ]; then
         step "systemd" "service helper not found in this install; skipped" "$C_WARN"

@@ -170,6 +170,13 @@ def test_opt_in_installs_with_studio_home_for_env_redirect(tmp_path):
     assert "--host 127.0.0.1 --port 8888" in out
 
 
+def test_opt_in_runs_on_wsl(tmp_path):
+    # WSL2 distros can run systemd; the helper itself refuses when the user bus is missing.
+    out = _run_installer_tail(tmp_path, _INSTALL_SYSTEMD = "true", OS = "wsl")
+    assert "STARTED=true" in out
+    assert "--unsloth-exe" in out
+
+
 def test_opt_in_off_linux_warns_and_keeps_launch_prompt(tmp_path):
     out = _run_installer_tail(tmp_path, _INSTALL_SYSTEMD = "true", OS = "macos")
     assert "Linux only" in out
