@@ -16,7 +16,7 @@ FLAGS = dict.fromkeys(
     "--port -c --ctx-size -ngl --gpu-layers -fa --flash-attn -np --parallel -m --model "
     "-mm --mmproj --temp --top-k --top-p --warmup --no-warmup --mmproj-offload "
     "--no-mmproj-offload --jinja --no-jinja -dev --device -ctk --cache-type-k --host "
-    "--cache-prompt --no-cache-prompt".split(),
+    "--cache-prompt --no-cache-prompt -mmdev --mmproj-device -md --model-draft -devd --device-draft".split(),
     True,
 )
 SWITCHES = {
@@ -104,9 +104,29 @@ def test_wire_validation(value):
         parse_config_source(value)
 
 
-@pytest.mark.parametrize("ini", ["dev=none", "ngl=0"])
-def test_cpu_only_detection(ini):
-    assert compile_ini(ini).cpu_only
+@pytest.mark.parametrize(
+    "ini,cpu_only",
+    [
+        ("dev=none", True),
+        ("dev=none\nmmdev=none", True),
+        ("dev=none\nmd=d.gguf\ndevd=none", True),
+        ("ngl=0", False),  # op offload and the projector still use the GPU
+        ("dev=none\nmmdev=CUDA0", False),
+        ("dev=none\nmd=d.gguf", False),
+    ],
+)
+def test_cpu_only_counts_every_companion(ini, cpu_only):
+    assert compile_ini(ini).cpu_only is cpu_only
+
+
+def test_unsectioned_keys_are_the_default_section_not_global():
+    ini = "c=1000\n[*]\nngl=-1\n[large]\nc=9000"
+    assert compile_ini(ini, "large").option("-c") == "9000"
+    assert compile_ini("fa=on\n[large]\nc=9000", "large").option("-fa") is None
+    assert compile_ini("fa=on\n[large]\nc=9000", "default").option("-fa") == "on"
+    assert compile_ini("c=1000\n[*]\nngl=-1").argv == ("-ngl", "-1", "-c", "1000")
+    with pytest.raises(CustomConfigError, match = "Select which"):
+        compile_ini("fa=on\n[large]\nc=9000")
 
 
 @pytest.fixture

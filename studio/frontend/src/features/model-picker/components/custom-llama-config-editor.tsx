@@ -42,7 +42,8 @@ export function CustomLlamaConfigEditor({
   const oversized =
     new TextEncoder().encode(ini).length > MAX_LLAMA_CPP_CONFIG_BYTES;
   const blank = active && ini.trim().length === 0;
-  const needsSection = active && sections.length > 0 && section === null;
+  const needsSection =
+    active && section === null && sections.some((name) => name !== "default");
   useEffect(() => {
     if (active) lastCustomSource.set(sourceKey, { ini, section });
   }, [active, ini, section, sourceKey]);
@@ -97,7 +98,7 @@ export function CustomLlamaConfigEditor({
               });
             }}
           />
-          {sections.length > 0 && (
+          {sections.some((name) => name !== "default") && (
             <div className="space-y-1.5">
               <label className="text-ui-11" htmlFor={`${id}-section`}>
                 Section

@@ -1320,6 +1320,33 @@ function LoadModeRow({
   );
 }
 
+// Outside the managed lock: custom launches still honour disable_vision.
+function VisionRow({
+  config,
+  update,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Vision</span>
+        <InfoHint>
+          Loads the vision projector so the model can read images. Turning
+          it off frees that VRAM for more layers on the GPU. Text generation
+          is unaffected either way.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={!config.disableVision}
+        onCheckedChange={(checked) => update({ disableVision: !checked })}
+      />
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -1335,6 +1362,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
+  hideVision = false,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1351,6 +1379,7 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
+  hideVision?: boolean;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1642,21 +1671,7 @@ function GgufAdvancedSettings({
       {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
           and the runner never reads it, so the switch would flip back under the pointer. */}
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="panel-switch shrink-0"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
+        hideVision ? null : <VisionRow config={config} update={update} />
       )}
 
       {!isDiffusion && (
@@ -3494,6 +3509,7 @@ export function ModelConfigPage({
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
                 isDiffusion={resolvedIsDiffusion}
+                hideVision={customActive}
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
@@ -3539,7 +3555,8 @@ export function ModelConfigPage({
       </fieldset>
 
       {target.isGguf && !resolvedIsDiffusion && (
-        <div className="mt-5">
+        <div className="mt-5 space-y-5">
+          {customActive && <VisionRow config={config} update={update} />}
           <CustomLlamaConfigEditor
             value={config.llamaCppConfig}
             onChange={(llamaCppConfig) => update({ llamaCppConfig })}

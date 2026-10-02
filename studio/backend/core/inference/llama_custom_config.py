@@ -3,8 +3,9 @@
 
 """Compile a per-model llama.cpp preset INI into llama-server argv.
 
-Grammar follows llama.cpp common/preset.cpp: ``[*]`` applies to every section, one
-named section is selected, ``;``/``#`` start comments and the last duplicate key wins.
+Grammar follows llama.cpp common/preset.cpp: keys before any header form the ``default``
+section, only ``[*]`` applies to every section, ``;``/``#`` start comments and the last
+duplicate key wins.
 Option names and arity come from the selected binary's ``--help`` catalog.
 """
 
@@ -23,7 +24,6 @@ _FALSE = frozenset({"off", "disabled", "false", "0"})
 _IGNORED = frozenset({"-m", "--model", "-mm", "--mmproj"})
 _PARALLEL = frozenset({"-np", "--parallel", "--n-parallel"})
 _ROUTER_ONLY = frozenset({"load-on-startup", "version"})
-_GPU_LAYERS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
 _SAMPLING = {
     "--temp": "temperature",
     "--top-p": "top_p",
@@ -91,7 +91,16 @@ class CompiledCustomConfig:
 
     @property
     def cpu_only(self) -> bool:
-        return self.option("-dev", "--device") == "none" or self.option(*_GPU_LAYERS) == "0"
+        # -ngl 0 still offloads ops and the projector; --device none also moves the projector
+        # (common/arg.cpp), but -mmdev and a drafter pick their own devices.
+        return (
+            self.option("-dev", "--device") == "none"
+            and self.option("-mmdev", "--mmproj-device") in (None, "none")
+            and (
+                self.option("-md", "--model-draft") is None
+                or self.option("-devd", "--device-draft") == "none"
+            )
+        )
 
     def summary(self) -> dict:
         return {
@@ -104,8 +113,8 @@ class CompiledCustomConfig:
 
 
 def _sections(ini: str) -> dict[str, dict[str, str]]:
-    sections: dict[str, dict[str, str]] = {"": {}}
-    current = ""
+    sections: dict[str, dict[str, str]] = {"default": {}}
+    current = "default"
     for number, raw in enumerate(re.split(r"\r\n|\r|\n", ini), 1):
         header = re.fullmatch(r"\[[ \t]*([^\]]+)\][ \t]*(?:[;#].*)?", raw)
         if header:
@@ -137,12 +146,15 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
         )
     switches = set(switch_flags)
     sections = _sections(source.ini)
-    named = [s for s in sections if s not in {"", "*"}]
-    if source.section is None and named:
-        raise CustomConfigError("Select which INI section to use")
-    if source.section is not None and source.section not in named:
+    named = [s for s in sections if s != "*" and (s != "default" or sections[s])]
+    section = source.section
+    if section is None and named:
+        if named != ["default"]:
+            raise CustomConfigError("Select which INI section to use")
+        section = "default"
+    if section is not None and section not in named:
         raise CustomConfigError("The selected INI section does not exist")
-    entries = {**sections[""], **sections.get("*", {}), **sections.get(source.section or "", {})}
+    entries = {**sections.get("*", {}), **sections.get(section or "", {})}
 
     argv: list[str] = []
     options: dict = {}

@@ -248,6 +248,12 @@ test("selector suggestions never implicitly select a sole named section", () => 
   assert.deepEqual(customConfigSections("[ preset]\nctx-size=56000"), [
     "preset",
   ]);
+  // llama.cpp files keys above the first header under "default", not under [*].
+  assert.deepEqual(customConfigSections("c=1\n[*]\nngl=-1\n[large]\nc=9"), [
+    "default",
+    "large",
+  ]);
+  assert.deepEqual(customConfigSections("; note\n[large]\nc=9"), ["large"]);
   assert.deepEqual(
     normalizeLlamaCppConfig({ ...custom, section: null })?.mode,
     "custom",
@@ -315,4 +321,7 @@ test("a custom config locks the managed rows and keeps the editor outside them",
   assert.ok(page.indexOf("disabled={customActive}") < fieldsetEnd);
   assert.ok(page.indexOf("<CustomLlamaConfigEditor") > fieldsetEnd);
   assert.match(page, /!customActive &&\s*shouldRequestMemoryEstimate/);
+  // Custom launches honour disable_vision, so its switch stays outside the lock.
+  assert.ok(page.indexOf("hideVision={customActive}") < fieldsetEnd);
+  assert.ok(page.indexOf("{customActive && <VisionRow") > fieldsetEnd);
 });
