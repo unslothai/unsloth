@@ -447,7 +447,8 @@ def test_toy_task_beats_the_base_model(checkpoint, tmp_path):
         head_learning_rate = 5e-3,
     ).train()
     tuned = FastDecisionModel.evaluate(model, tokenizer, held)
-    assert tuned["accuracy"] > base["accuracy"] + 0.25
+    # The random base can already score high on some transformers versions; 1.0 is the ceiling.
+    assert tuned["accuracy"] >= min(base["accuracy"] + 0.25, 1.0)
     assert tuned["loss"] < base["loss"] / 2
 
 

@@ -1104,7 +1104,9 @@ def _reject_untrainable_model_request(
             )
         else:
             if remote_format is None:
-                if request.is_decision and not is_decision_model(request.model_name, hf_token):
+                if request.is_decision and not is_decision_model(
+                    request.model_name, hf_token, subfolder = request.model_subfolder
+                ):
                     raise _training_start_error(
                         400,
                         "training_remote_model_not_decision",
@@ -1261,6 +1263,12 @@ def _validate_decision_request(request: TrainingStartRequest) -> None:
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid checkpoint subfolder {subfolder!r} for {request.model_name}.",
+        )
+    if request.use_dora or request.use_loftq:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision models train with plain LoRA, so DoRA and LoftQ are not "
+            "available for them.",
         )
     request.load_in_4bit = False
     # Fields an API or MCP caller left out take the Laya recipe the UI starts from.

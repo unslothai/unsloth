@@ -3723,6 +3723,7 @@ def is_decision_model(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    subfolder: Optional[str] = None,
 ) -> bool:
     if is_local_path(model_name):
         folder = Path(normalize_path(model_name))
@@ -3734,9 +3735,9 @@ def is_decision_model(
     if not (local_files_only or hf_env_offline()):
         try:
             info = _hub_model_info(model_name, hf_token)
+            marker = f"{subfolder}/rl_agent_config.json" if subfolder else "rl_agent_config.json"
             return any(
-                getattr(sibling, "rfilename", None) == "rl_agent_config.json"
-                for sibling in info.siblings or ()
+                getattr(sibling, "rfilename", None) == marker for sibling in info.siblings or ()
             )
         except Exception as e:
             logger.warning(f"Could not determine if {model_name} is a decision model: {e}")

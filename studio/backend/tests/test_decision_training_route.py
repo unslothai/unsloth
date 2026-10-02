@@ -144,6 +144,8 @@ def test_other_sources_take_a_plain_folder_name_only(route, tmp_path):
         ({"resume_from_checkpoint": "outputs/run"}, "cannot be resumed"),
         ({"dataset_streaming": True, "max_steps": 10}, "dataset_streaming"),
         ({"load_in_4bit": True}, "QLoRA is not available"),
+        ({"use_dora": True}, "DoRA and LoftQ are not available"),
+        ({"use_loftq": True}, "DoRA and LoftQ are not available"),
     ],
 )
 def test_start_refuses_what_the_recipe_cannot_run(route, request_overrides, expected):
@@ -302,25 +304,29 @@ def test_a_cached_decision_run_reports_no_download(hub_cache):
 
 
 @pytest.mark.parametrize(
-    ("files", "accepted"),
+    ("files", "subfolder", "accepted"),
     [
-        (["config.json", "model.safetensors"], False),
-        (["rl_agent_config.json", "model.safetensors", "encoder/config.json"], True),
+        (["config.json", "model.safetensors"], None, False),
+        (["rl_agent_config.json", "model.safetensors", "encoder/config.json"], None, True),
+        (["v2/rl_agent_config.json", "v2/model.safetensors"], "v2", True),
+        (["v2/rl_agent_config.json", "v2/model.safetensors"], None, False),
+        (["rl_agent_config.json", "model.safetensors"], "v2", False),
     ],
 )
-def test_a_hub_repo_must_be_a_decision_model(route, files, accepted):
+def test_a_hub_repo_must_be_a_decision_model(route, files, subfolder, accepted):
     from utils.models import model_config
 
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = name) for name in files])
+    request = _request(model_name = "org/model", model_subfolder = subfolder)
     with (
         patch.object(route, "_remote_untrainable_model_format", return_value = None),
         patch.object(model_config, "_hub_model_info", return_value = info),
     ):
         if accepted:
-            route._reject_untrainable_model_request(_request(model_name = "org/model"))
+            route._reject_untrainable_model_request(request)
             return
         with pytest.raises(HTTPException) as refused:
-            route._reject_untrainable_model_request(_request(model_name = "org/model"))
+            route._reject_untrainable_model_request(request)
 
     assert refused.value.status_code == 400
     assert refused.value.detail["code"] == "training_remote_model_not_decision"
