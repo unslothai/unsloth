@@ -290,6 +290,7 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
     g8.uninstall(dit)
 
 
+@needs_cuda
 def test_fused_mlp_down_projection_traces_without_breaks(forced, monkeypatch):
     """The fused MLP's down projection reaches the GEMM through ``linear_from_q`` inside the compiled block: no host
     sync, no graph break, and the same bits as the fused MLP's own stock epilogue (kill switch), eager and compiled."""
