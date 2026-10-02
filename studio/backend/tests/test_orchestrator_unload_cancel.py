@@ -3871,6 +3871,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/lemonade_server.py",
         "core/inference/llama_cpp.py",
         "core/inference/npu_backend.py",
+        "core/inference/openvino_backend.py",
         "core/inference/orchestrator.py",
         "core/inference/sd_cpp_engine.py",
         "core/inference/sd_cpp_server.py",
