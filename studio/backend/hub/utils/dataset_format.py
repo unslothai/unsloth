@@ -330,8 +330,10 @@ def _is_image_value(value) -> bool:
 def _is_image_list_item(value) -> bool:
     if isinstance(value, (dict, bytes, bytearray)):
         return False
-    if isinstance(value, str) and value.strip().lower().startswith(("http://", "https://")):
-        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized.startswith(("http://", "https://")) or normalized.endswith(".svg"):
+            return False
     return _is_image_value(value)
 
 

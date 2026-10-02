@@ -180,14 +180,23 @@ def test_text_only_datasets_stay_text(row):
 
 
 @pytest.mark.parametrize("detector", [dataset_format, format_detection])
-def test_image_list_detection_requires_values_the_converter_can_open(detector):
+def test_image_list_detection_requires_values_the_converter_can_open(detector, tmp_path):
+    png_path = tmp_path / "image.png"
+    Image.new("RGB", (8, 8), "red").save(png_path)
+    svg_path = tmp_path / "image.svg"
+    svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+
     encoded_image_row = _encoded_image_row()
     image_dataset = Dataset.from_list([encoded_image_row])
     image_bytes_dataset = Dataset.from_list([{"media": [encoded_image_row["media"][0]["bytes"]]}])
     audio_dataset = Dataset.from_list([_encoded_audio_row()])
+    local_image_dataset = Dataset.from_list([{"media": [str(png_path)]}])
     remote_image_dataset = Dataset.from_list([{"media": ["https://example.com/image.png"]}])
+    svg_image_dataset = Dataset.from_list([{"media": [str(svg_path)]}])
 
     assert detector.detect_multimodal_dataset(image_dataset)["is_image"] is False
     assert detector.detect_multimodal_dataset(image_bytes_dataset)["is_image"] is False
     assert detector.detect_multimodal_dataset(audio_dataset)["is_image"] is False
+    assert detector.detect_multimodal_dataset(local_image_dataset)["is_image"] is True
     assert detector.detect_multimodal_dataset(remote_image_dataset)["is_image"] is False
+    assert detector.detect_multimodal_dataset(svg_image_dataset)["is_image"] is False
