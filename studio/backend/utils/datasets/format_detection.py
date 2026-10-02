@@ -590,11 +590,11 @@ def _is_image_value(value) -> bool:
 
 
 def _holds_images(value) -> bool:
-    if not isinstance(value, list):
+    if not isinstance(value, list) or not value:
         return False
+    if all(_is_image_value(item) for item in value):
+        return True
     for item in value:
-        if _is_image_value(item):
-            return True
         content = item.get("content") if isinstance(item, dict) else None
         if isinstance(content, list) and any(
             isinstance(part, dict) and part.get("type") == "image" and part.get("image") is not None

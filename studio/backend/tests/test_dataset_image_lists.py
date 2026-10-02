@@ -94,6 +94,16 @@ def test_images_in_a_list_or_in_messages_are_detected(row, expected_vlm_format):
             id = "chatml",
         ),
         pytest.param({"tags": ["news", "sports"], "text": "Final score 2-1."}, id = "string-list"),
+        pytest.param(
+            {
+                "messages": [
+                    {"role": "user", "content": "Which files changed?"},
+                    {"role": "assistant", "content": "The entry point and the logo."},
+                ],
+                "files": ["src/main.py", "docs/logo.png"],
+            },
+            id = "file-list",
+        ),
     ],
 )
 def test_text_only_datasets_stay_text(row):
