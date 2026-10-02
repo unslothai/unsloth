@@ -74,6 +74,20 @@ test("command dialogs keep their shadow in Firefox", () => {
   assert.doesNotMatch(search, /className="chat-search-surface [^"]*overflow-(y-)?(auto|scroll)/);
 });
 
+// Recipe dialogs float over the canvas on a clear overlay with shadow-border, so they scroll an inner
+// viewport too: the shadowed box hides its overflow and stays out of the Firefox clip.
+test("recipe dialogs scroll an inner viewport, keeping their shadow", () => {
+  const shared = readSrc("features/recipe-studio/dialogs/shared/recipe-dialog-content.tsx");
+  assert.match(shared, /overlayClassName="bg-transparent"/);
+  assert.match(shared, /"corner-squircle flex max-h-\[[^"]*\] flex-col overflow-hidden p-0 sm:max-w-2xl shadow-border"/);
+  assert.match(shared, /"grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-4xl px-7 pt-8 pb-7"/);
+  for (const file of ["config-dialog", "import-dialog", "processors-dialog", "preview-dialog"]) {
+    const source = readSrc(`features/recipe-studio/dialogs/${file}.tsx`);
+    assert.match(source, /<RecipeDialogContent\b/, file);
+    assert.doesNotMatch(source, /<DialogContent\b/, file);
+  }
+});
+
 test("shadowed menus scroll an inner viewport, not their rounded surface", () => {
   const contextMenu = readSrc("components/ui/context-menu.tsx");
   assert.equal(contextMenu.match(/data-slot="context-menu-viewport"/g)?.length, 2);
