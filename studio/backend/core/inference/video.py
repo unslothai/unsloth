@@ -1302,12 +1302,20 @@ def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Option
 
 def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) -> Optional[str]:
     """Why the resident H3 sd-server should not outlive a render (``h3_native_server_pressure``), or None."""
-    from .diffusion_memory import _available_system_memory_mib, _system_memory_mib
+    from .diffusion_memory import (
+        _available_system_memory_mib,
+        _cgroup_memory_limit_mib,
+        _system_memory_mib,
+    )
     from .video_minimax_h3 import h3_native_server_pressure
 
     vram_free, vram_total = _h3_card_memory_bytes(device, ordinal)
     try:
         host_total_mib = _system_memory_mib()[0]
+        # The available reading is capped by an enforcing cgroup, so the reserve must be a share of the same limit.
+        cgroup_limit_mib = _cgroup_memory_limit_mib()
+        if cgroup_limit_mib and (host_total_mib is None or cgroup_limit_mib < host_total_mib):
+            host_total_mib = cgroup_limit_mib
         host_avail_mib = _available_system_memory_mib()
     except Exception:  # noqa: BLE001 -- unknown host memory decides nothing
         host_total_mib = host_avail_mib = None
@@ -8756,7 +8764,7 @@ class VideoBackend:
                     and "--offload-to-cpu" not in live[2]
                 ):
                     card_free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
-                    free = need if card_free is None else card_free + file_bytes
+                    free = None if card_free is None else card_free + file_bytes
                 else:
                     free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
             render_flags, render_resident = h3_native_render_flags(

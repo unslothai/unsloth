@@ -889,3 +889,35 @@ def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
     # Already cancelled: nothing is spawned at all.
     with pytest.raises(SdCppCancelled):
         slot.get(RESIDENT, {}, cancel_event = cancel)
+
+
+def test_a_live_resident_server_keeps_the_committed_offload_when_the_card_is_unreadable(
+    monkeypatch, tmp_path
+):
+    import core.inference.video as video
+
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    from test_h3_native_resident import AUTO_FLAGS
+
+    resident = tuple(f for f in AUTO_FLAGS if f not in ("--offload-to-cpu", "--stream-layers"))
+    slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
+    monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: None)
+    backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert slot.got[0][0] == list(AUTO_FLAGS)
+
+
+def test_host_reserve_is_a_share_of_the_cgroup_limit(monkeypatch):
+    import core.inference.diffusion_memory as dm
+    import core.inference.video as video
+
+    gib_mib = 1024
+    monkeypatch.setattr(video, "_h3_card_memory_bytes", lambda *_a: (None, None))
+    # A 32 GiB container on a 512 GiB host with 20 GiB still chargeable: 15% of 32 GiB is under 20 GiB.
+    monkeypatch.setattr(dm, "_system_memory_mib", lambda: (512 * gib_mib, 400 * gib_mib))
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 20 * gib_mib)
+    monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: 32 * gib_mib)
+    assert video._h3_native_server_pressure("cuda", None) is None
+    # Without a limit the physical total stands.
+    monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: None)
+    assert "host RAM" in video._h3_native_server_pressure("cuda", None)
