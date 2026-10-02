@@ -5696,3 +5696,57 @@ def test_assigning_to_sys_path_is_an_import_path_sink(tmp_path):
     )
     assert sum(f["sink"] == "sys.path (assignment)" for f in findings if f["tier"] == "A") == 2
     assert "sys.path (assignment)" not in _sinks(quiet)
+
+
+def test_a_helper_filling_a_container_argument_taints_the_caller(tmp_path):
+    """`fill(settings, blob)` writing `settings["module"] = parsed` inside."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def fill(settings, blob):\n"
+        "    settings['module'] = json.loads(blob)['module']\n"
+        "def go(blob):\n"
+        "    settings = {}\n"
+        "    fill(settings, blob)\n"
+        "    return importlib.import_module(settings['module'])\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def fill(settings, blob):\n"
+        "    settings = {'module': json.loads(blob)['module']}\n"
+        "    return settings\n"
+        "def go(blob):\n"
+        "    settings = {'module': 'json'}\n"
+        "    fill(settings, blob)\n"
+        "    return importlib.import_module(settings['module'])\n",
+        name = "quiet.py",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+    assert "importlib.import_module" not in _sinks(quiet)
+
+
+def test_a_config_parser_read_fills_the_parser(tmp_path):
+    """`parser.read(downloaded)` then a value pulled back out of the parser."""
+    findings = _scan(
+        tmp_path,
+        "import configparser, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def go(repo):\n"
+        "    parser = configparser.ConfigParser()\n"
+        "    parser.read(hf_hub_download(repo, 'plugin.cfg'))\n"
+        "    return importlib.import_module(parser.get('plugin', 'module'))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_branch_default_for_a_forwarded_revision_is_unpinned(tmp_path):
+    """`def load(repo, revision = "main")` forwarding it fetches a moving branch."""
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo, revision = 'main'):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = revision))\n",
+    )
+    assert "unpinned code fetch" in _sinks(findings)

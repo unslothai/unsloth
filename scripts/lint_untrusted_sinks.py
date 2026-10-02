@@ -128,7 +128,6 @@ UNTRUSTED_CALLS = frozenset(
         "tomllib.load",
         "tomllib.loads",
         "toml.load",
-        "configparser.read",
         # Weight files. The tensor NAMES in a downloaded checkpoint are attacker-chosen
         # just as a config value is, and they get used as attribute names and as paths.
         # Without these the only chain the scanner could see into an adapter loader was
@@ -3301,12 +3300,52 @@ class _TaintPass(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         self._note_mutation(node)
+        self._note_config_read(node)
         self._propagate_into_callee(node)
         self._propagate_into_mapped(node)
         self._check_sink(node)
         self._check_torch_load(node)
         self._check_remote_code(node)
         self.generic_visit(node)
+
+    _CONFIG_PARSERS = frozenset({"configparser.ConfigParser", "configparser.RawConfigParser"})
+
+    def _note_config_read(self, node: ast.Call) -> None:
+        """`parser.read(downloaded)` fills the parser; the return is only filenames."""
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("read", "read_file", "read_string", "read_dict")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in self._config_parsers()
+        ):
+            return
+        for argument in node.args:
+            reason = self.tainted(argument)
+            if reason:
+                self._assign(node.func.value, reason)
+                return
+
+    def _config_parsers(self) -> frozenset:
+        """Names this scope binds to a `configparser` parser construction."""
+        cache = self.facts.__dict__.setdefault("_config_parser_cache", {})
+        cached = cache.get(self.qualname)
+        if cached is not None:
+            return cached
+        own = self.facts.functions.get(self.qualname)
+        body = own if own is not None else self.facts.tree
+        found = set()
+        for statement in ast.walk(body):
+            if (
+                isinstance(statement, ast.Assign)
+                and isinstance(statement.value, ast.Call)
+                and _matches_any(
+                    self.facts.canonicals(_call_name(statement.value.func)),
+                    self._CONFIG_PARSERS,
+                )
+            ):
+                found.update(t.id for t in statement.targets if isinstance(t, ast.Name))
+        cache[self.qualname] = frozenset(found)
+        return cache[self.qualname]
 
     @staticmethod
     def _bind(bound: dict[str, str], name: str, reason: str) -> None:
@@ -3468,6 +3507,12 @@ class _TaintPass(ast.NodeVisitor):
             for position, argument in enumerate(node.args)
             if position + offset < len(params)
         ] + [(keyword.arg, keyword.value) for keyword in node.keywords if keyword.arg in params]
+        # `fill(settings, blob)` writing `settings["module"] = parsed` inside: the
+        # caller's object is the one that was mutated.
+        mutated = self.state.param_mutations.get(target, {})
+        for parameter, argument in bindings:
+            if mutated.get(parameter) and isinstance(argument, (ast.Name, ast.Attribute)):
+                self._assign(argument, mutated[parameter])
         for parameter, argument in bindings:
             for sink in self._sink_identities(argument):
                 handed[parameter] = _with(handed.get(parameter), sink)
@@ -3907,6 +3952,9 @@ class _State:
         self.param_sink_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
         # (file, qualname) -> parameter -> the source a caller passed in for it.
         self.param_source_aliases: dict[tuple[Path, str], dict[str, str]] = {}
+        # (file, qualname) -> parameter -> taint the function writes INTO it (item writes,
+        # mutating methods) without rebinding it, which the caller's argument receives.
+        self.param_mutations: dict[tuple[Path, str], dict[str, str]] = {}
         # (file, qualname) -> parameter -> remote-code loaders a caller passed in for it.
         self.param_loader_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
         self.tainted_globals: dict[str, str] = {}
@@ -3951,6 +3999,11 @@ class _State:
                     f"{path}::{qualname}::{name}={','.join(sinks)}"
                     for (path, qualname), names in self.param_sink_aliases.items()
                     for name, sinks in names.items()
+                ),
+                "param_mutations": sorted(
+                    f"{path}::{qualname}::{name}={reason}"
+                    for (path, qualname), names in self.param_mutations.items()
+                    for name, reason in names.items()
                 ),
                 "param_sources": sorted(
                     f"{path}::{qualname}::{name}={source}"
@@ -4290,6 +4343,38 @@ _BINDING_STATEMENTS = (
 )
 
 
+# Function node -> every name it binds directly, computed once per scan.
+_REBOUND_NAMES: dict = {}
+
+
+def _summarise_param_mutations(facts, qualname: str, node, visitor, state) -> None:
+    """Parameters the function taints by writing into them rather than rebinding them.
+
+    A parameter tainted at the end of the pass that no caller tainted and that the body
+    never rebinds can only have been filled in place, so the caller's argument is the
+    object that now holds the value.
+    """
+    key = (facts.path, qualname)
+    parameters = state.params.get(key) or ()
+    if not any(visitor.local_reasons.get(parameter) for parameter in parameters):
+        return
+    seeded = state.tainted_params.get(key, {})
+    rebound = _REBOUND_NAMES.get(node)
+    if rebound is None:
+        rebound = frozenset(
+            child.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+        )
+        _REBOUND_NAMES[node] = rebound
+    for parameter in parameters:
+        if parameter in ("self", "cls") or parameter in seeded or parameter in rebound:
+            continue
+        reason = visitor.local_reasons.get(parameter)
+        if reason and reason != NAMED_PARAM_REASON:
+            state.param_mutations.setdefault(key, {}).setdefault(parameter, reason)
+
+
 def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
     """A download with no `revision` whose bytes the same function then imports.
 
@@ -4332,7 +4417,10 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
                 zip(positional[len(positional) - len(arguments.defaults) :], arguments.defaults)
             )
             + list(zip(arguments.kwonlyargs, arguments.kw_defaults))
-            if isinstance(default, ast.Constant) and default.value is None
+            if isinstance(default, ast.Constant)
+            and not (
+                isinstance(default.value, str) and re.fullmatch(r"[0-9a-f]{40}", default.value)
+            )
         }
         fetches: list[ast.Call] = []
         for child in ast.walk(node):
@@ -4522,6 +4610,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     _CALL_NAMES.clear()
     _CLASS_BODIES.clear()
     _SCOPE_LOCALS.clear()
+    _REBOUND_NAMES.clear()
     files = _python_files(targets)
     if roots is None:
         roots = [REPO_ROOT]
@@ -4598,6 +4687,8 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 )
                 if not converged:
                     unconverged.add(f"{facts.relative}::{qualname}")
+                if visitor is not None:
+                    _summarise_param_mutations(facts, qualname, node, visitor, state)
                 if visitor is not None and visitor.returns_tainted:
                     key = (path, qualname)
                     known = state.returns_tainted.get(key)
