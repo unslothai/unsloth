@@ -90,7 +90,9 @@ def _cuda_ready() -> bool:
     return True
 
 
-needs_cuda = pytest.mark.skipif(not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao")
+needs_cuda = pytest.mark.skipif(
+    not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao"
+)
 
 
 @pytest.fixture
@@ -119,7 +121,12 @@ def _int8_linear(k, n, bias, version):
 @needs_cuda
 @pytest.mark.parametrize(
     "m, k, n, bias, xs32",
-    [(4096, 4096, 4096, False, False), (1037, 520, 1400, True, False), (17, 256, 1024, True, True), (300, 12288, 256, False, False)],
+    [
+        (4096, 4096, 4096, False, False),
+        (1037, 520, 1400, True, False),
+        (17, 256, 1024, True, True),
+        (300, 12288, 256, False, False),
+    ],
 )
 @pytest.mark.parametrize("ws32", [False, True])
 def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
@@ -195,7 +202,9 @@ def test_small_m_and_misaligned_keep_stock(forced):
     assert g8.install(holder) == 1
     before = g8.call_count()
     with torch.inference_mode():
-        ok(torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16))  # M = 16 < _int_mm's floor: stock
+        ok(
+            torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16)
+        )  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
 
 
@@ -204,7 +213,6 @@ def test_small_m_and_misaligned_keep_stock(forced):
 
 def _convrot(lin, group = 256):
     from core.inference.diffusion_convrot import _install_rotation
-
     _install_rotation(lin, group)
     return lin
 
@@ -225,7 +233,9 @@ def test_convrot_linear_is_eligible_with_its_group(monkeypatch):
 def test_other_linear_subclasses_and_bad_groups_stay_stock(monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
     monkeypatch.setattr(
-        g8, "_v1_parts", lambda w: (torch.zeros(256, 512, dtype = torch.int8), torch.ones(256, dtype = torch.bfloat16))
+        g8,
+        "_v1_parts",
+        lambda w: (torch.zeros(256, 512, dtype = torch.int8), torch.ones(256, dtype = torch.bfloat16)),
     )
 
     class Other(torch.nn.Linear):
@@ -276,7 +286,9 @@ def test_convrot_kill_switch_keeps_rotated_linears_stock(forced, monkeypatch):
 
 @needs_cuda
 @pytest.mark.parametrize("use_stream, version", [(False, None), (False, 2), (True, 2)])
-def test_block_streamed_denoiser_installs_against_its_onload_device(forced, monkeypatch, use_stream, version):
+def test_block_streamed_denoiser_installs_against_its_onload_device(
+    forced, monkeypatch, use_stream, version
+):
     """MiniMax-H3 on a 40 GB card streams its int8 blocks with diffusers group offloading: the weights sit on the host
     at install time, swap_tensors brings each block onto the card for its forward, and the fused GEMM must follow.
     Pinned (stream) copies need Int8Tensor weights: Studio rebuilds v1 weights as Int8Tensor before streaming."""
@@ -294,7 +306,9 @@ def test_block_streamed_denoiser_installs_against_its_onload_device(forced, monk
 
     stock = _convrot(_int8_linear(1024, 768, False, version))
     fused = _convrot(_int8_linear(1024, 768, False, version))
-    holder = Holder(fused).requires_grad_(False).cpu()  # Studio builds the streamed denoiser on the host
+    holder = (
+        Holder(fused).requires_grad_(False).cpu()
+    )  # Studio builds the streamed denoiser on the host
     hooks.apply_group_offloading(
         holder,
         onload_device = torch.device("cuda"),
@@ -304,7 +318,9 @@ def test_block_streamed_denoiser_installs_against_its_onload_device(forced, monk
         use_stream = use_stream,
     )
     assert fused.weight.device.type == "cpu"
-    assert g8.install(holder, offload_active = True) == 0  # no onload device: an offloaded denoiser stays stock
+    assert (
+        g8.install(holder, offload_active = True) == 0
+    )  # no onload device: an offloaded denoiser stays stock
     assert g8.install(holder, device = "cuda") == 1 and g8.is_installed(fused)
     x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
     with torch.no_grad():  # group offload's swap_tensors onload cannot run on inference tensors

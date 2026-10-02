@@ -2348,7 +2348,9 @@ def test_int8_gemm_install_follows_the_denoiser_placement(
 
     seen = []
     monkeypatch.setattr(
-        diffusion_int8_gemm, "install", lambda t, logger = None, offload_active = False: seen.append(offload_active) or 0
+        diffusion_int8_gemm,
+        "install",
+        lambda t, logger = None, offload_active = False: seen.append(offload_active) or 0,
     )
 
     class _DiT:
