@@ -164,7 +164,10 @@ def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, m
     assert new.resident_text_encoder_mib is None
     assert new.estimates["resident_dit_slack_mib"] == 1228
     # while the encoders run, the transformer drops back to the flat room the partial placement kept
-    assert new.estimates["encode_resident_transformer_mib"] == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
+    assert (
+        new.estimates["encode_resident_transformer_mib"]
+        == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
+    )
     assert 6922 + 644 + 2304 + 1228 <= free
     assert new.as_public_dict()["resident_transformer_mib"] == 6922
 
@@ -738,14 +741,21 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
 def test_encode_release_only_for_the_whole_tier(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     # the partial / 16 GB placements carry no encode room: nothing is hooked, the encode sees the placement as is
-    assert dm.install_encode_release(pipe, types.SimpleNamespace(resident_transformer_mib = 1024, estimates = {}), None) == 0
+    assert (
+        dm.install_encode_release(
+            pipe, types.SimpleNamespace(resident_transformer_mib = 1024, estimates = {}), None
+        )
+        == 0
+    )
     assert dm.install_encode_release(pipe, _whole_plan(None, 0), None) == 0
     enc(torch.randn(2, 8, device = "cuda"))
     assert enc.seen[-1] == ["cuda"] * 6
 
 
 def test_generate_load_installs_the_encode_release():
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     at = src.index("install_encode_release(pipe, plan, logger)")
     # after the placement is applied and before the int8 GEMM reads the final residency
     assert src.index("effective_policy, effective_tiling = apply_memory_plan(") < at

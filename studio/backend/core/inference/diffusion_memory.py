@@ -2049,7 +2049,9 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
     free = getattr(memory, "free_mib", None)
     if free is None:
         return False
-    return int(dit_mib) + int(other_mib) + int(headroom_mib) + _resident_dit_slack_mib(memory) <= int(free)
+    return int(dit_mib) + int(other_mib) + int(headroom_mib) + _resident_dit_slack_mib(
+        memory
+    ) <= int(free)
 
 
 def refine_plan_from_loaded_weights(
@@ -2371,7 +2373,11 @@ def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
     return False
 
 
-def install_encode_release(pipe: Any, plan: Any, logger: Any = None) -> int:
+def install_encode_release(
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> int:
     """For the whole-resident denoiser tier: while a text encoder runs, stream the denoiser groups past the flat room
     again, and pin them back when it returns (before step 0).
 
@@ -2446,7 +2452,9 @@ def install_encode_release(pipe: Any, plan: Any, logger: Any = None) -> int:
                 "diffusion.memory: encode release not installed (%s); the transformer streams past the flat room",
                 exc,
             )
-        release_resident_groups(pipe, surplus, logger, denoisers_only = True, reason = "the partial placement")
+        release_resident_groups(
+            pipe, surplus, logger, denoisers_only = True, reason = "the partial placement"
+        )
         return 0
 
 
