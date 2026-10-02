@@ -7266,6 +7266,16 @@ class VideoBackend:
             )
             speed_optims = tuple(k for k, v in applied.items() if v) + h3_attn_levers
             if denoiser_streamed and "compiled" in speed_optims:
+                # The streamed blocks still run on the card: the fused int8 GEMM installs against the onload device,
+                # before the first forward traces the blocks below their hooks.
+                try:
+                    from .diffusion_int8_gemm import install as install_int8_gemm
+                    if install_int8_gemm(
+                        getattr(pipe, denoiser_component, None), logger, device = device
+                    ):
+                        speed_optims += ("int8_gemm",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock GEMM stays
+                    logger.warning("video.h3_int8_gemm: streamed install skipped: %s", exc)
                 from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger

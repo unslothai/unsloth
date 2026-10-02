@@ -9493,6 +9493,13 @@ def test_h3_speed_optims_get_the_denoisers_own_placement():
         got = eval(compile(ast.Expression(kw["denoiser_offloaded"]), "<h3>", "eval"),
                    {"bool": bool}, {"denoiser_pinned": pinned, "denoiser_streamed": streamed})
         assert bool(got) is offloaded, (expr, pinned, streamed)
+    # A block-streamed denoiser installs the fused GEMM against the onload device itself.
+    installs = [
+        n
+        for n in ast.walk(h3)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_int8_gemm"
+    ]
+    assert len(installs) == 1 and "device" in {k.arg for k in installs[0].keywords}
 
 
 class _GraphHandle:

@@ -272,3 +272,53 @@ def test_convrot_kill_switch_keeps_rotated_linears_stock(forced, monkeypatch):
     holder = torch.nn.Sequential(rotated, plain)
     assert g8.install(holder) == 1
     assert g8.is_installed(plain) and not g8.is_installed(rotated)
+
+
+@needs_cuda
+@pytest.mark.parametrize("use_stream, version", [(False, None), (False, 2), (True, 2)])
+def test_block_streamed_denoiser_installs_against_its_onload_device(forced, monkeypatch, use_stream, version):
+    """MiniMax-H3 on a 40 GB card streams its int8 blocks with diffusers group offloading: the weights sit on the host
+    at install time, swap_tensors brings each block onto the card for its forward, and the fused GEMM must follow.
+    Pinned (stream) copies need Int8Tensor weights: Studio rebuilds v1 weights as Int8Tensor before streaming."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+
+    class Holder(torch.nn.Module):
+        def __init__(self, lin):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([torch.nn.Sequential(lin)])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = Holder(fused).requires_grad_(False).cpu()  # Studio builds the streamed denoiser on the host
+    hooks.apply_group_offloading(
+        holder,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = use_stream,
+    )
+    assert fused.weight.device.type == "cpu"
+    assert g8.install(holder, offload_active = True) == 0  # no onload device: an offloaded denoiser stays stock
+    assert g8.install(holder, device = "cuda") == 1 and g8.is_installed(fused)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    with torch.no_grad():  # group offload's swap_tensors onload cannot run on inference tensors
+        before = g8.call_count()
+        out = holder(x)
+        assert g8.call_count() == before + 1
+        assert torch.equal(out, stock(x))
+        assert torch.equal(holder(x), out)  # second onload of the same block
+    if not use_stream:  # the stream path keeps the last group resident until the next onload
+        assert fused.weight.device.type == "cpu"
+
+
+@needs_cuda
+def test_streamed_kill_switch(forced, monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_STREAMED_ENV, "0")
+    holder = torch.nn.Sequential(_int8_linear(1024, 768, False, None))
+    assert g8.install(holder, device = "cuda") == 0 and not g8.is_installed(holder[0])

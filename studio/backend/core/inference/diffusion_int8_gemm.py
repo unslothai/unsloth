@@ -27,6 +27,11 @@ same kernel: the block-Hadamard rotation runs first, with the exact ops of ``Con
 activation quant and the fused GEMM, so the Linear output stays bit-identical to the stock rotated Linear in eager.
 MiniMax-H3 960x544x124, per denoiser call, int8 GEMM + dequant: <filled in from the Colab A/B>.
 Own kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0`` keeps rotated Linears on the stock path.
+
+A block-streamed denoiser (group offload, MiniMax-H3 on a 40 GB card) installs against its onload device
+(``install(..., device = ...)``): diffusers moves torchao weights with ``swap_tensors``, which keeps each Parameter's
+identity, and the forward reads the int8 payload off the live Parameter, so every call sees the onloaded copy (a weight
+still on the host keeps the stock path). Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from typing import Any, Optional
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
+INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 _MIN_TRITON = (3, 2)
 # Stock torch._int_mm needs M > 16; below that the stock path (padding wrappers, safe_int_mm) stays in charge.
 _MIN_ROWS = 17
@@ -78,6 +84,12 @@ def int8_gemm_mode() -> str:
 def convrot_enabled() -> bool:
     """Rotated (ConvRot) Linears take the fused GEMM unless ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``."""
     raw = (os.environ.get(INT8_GEMM_CONVROT_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def streamed_enabled() -> bool:
+    """A streamed denoiser installs against its onload device unless ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``."""
+    raw = (os.environ.get(INT8_GEMM_STREAMED_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
 
@@ -254,7 +266,7 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     cfg = _DEVICE_CFG.get(a.device.index)
-    if cfg is not None:
+    if cfg is not None and w.stride(-1) == 1 and w.device == a.device:
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
@@ -552,9 +564,18 @@ def candidates(transformer: Any) -> int:
         return 0
 
 
-def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> int:
-    """Idempotent; returns the (candidate) count. Must run before the first compiled forward."""
-    if int8_gemm_mode() == "off" or transformer is None or offload_active:
+def install(transformer: Any, logger: Any = None, offload_active: bool = False, device: Any = None) -> int:
+    """Idempotent; returns the (candidate) count. Must run before the first compiled forward.
+
+    ``device``: the onload device of a block-streamed denoiser, whose weights sit on the host between blocks; the
+    probe runs there and the swap happens now. Without it an offloaded denoiser keeps the stock path."""
+    if int8_gemm_mode() == "off" or transformer is None:
+        return 0
+    if device is not None:
+        if not streamed_enabled():
+            return 0
+        return _finalize(transformer, logger, device = device)
+    if offload_active:
         return 0
     from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
 
@@ -577,14 +598,23 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
     return n
 
 
-def _finalize(transformer: Any, logger: Any = None) -> int:
+def _finalize(transformer: Any, logger: Any = None, device: Any = None) -> int:
     global _OP_HANDLE
     from .diffusion_int8_fused import resident_cuda_device
 
-    dev = resident_cuda_device(transformer)
+    import torch
+
+    if device is not None:
+        try:
+            dev = torch.device(device)
+        except Exception:  # noqa: BLE001
+            return 0
+        if dev.type != "cuda" or getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return 0
+    else:
+        dev = resident_cuda_device(transformer)
     if dev is None:
         return 0
-    import torch
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
     recs = [(m, _eligible(m)) for m in transformer.modules()]
