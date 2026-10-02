@@ -825,6 +825,8 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = False,
                     auto_model = WhisperForConditionalGeneration,
+                    whisper_language = "English",
+                    whisper_task = "transcribe",
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -1123,8 +1125,6 @@ class ExportBackend:
                 save_method = compressed_alias
             elif format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
-            elif self._audio_type == "whisper":
-                save_method = None
             else:
                 save_method = "merged_16bit"
 
@@ -1249,11 +1249,10 @@ class ExportBackend:
                         except Exception as exception:
                             logger.warning(f"Could not publish the model card: {exception}")
                     else:
-                        hub_save_method = save_method if save_method is not None else "merged_16bit"
                         self.current_model.push_to_hub_merged(
                             repo_id,
                             self.current_tokenizer,
-                            save_method = hub_save_method,
+                            save_method = save_method,
                             token = hf_token,
                             private = private,
                         )
