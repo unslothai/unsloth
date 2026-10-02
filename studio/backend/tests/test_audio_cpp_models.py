@@ -1693,10 +1693,17 @@ def test_stt_errors_do_not_name_the_engine(hub):
 
 
 def test_standalone_music_gguf_rows_are_not_offered_to_chat(hub):
+    from huggingface_hub import scan_cache_dir
+
     from hub.services.models import cache_inventory
 
     _put(_snapshot(hub, "audio-cpp/Yue2-3B-GGUF"), "yue2-3b-q8_0.gguf", _gguf_bytes(family = "yue2"))
-    rows = {r["repo_id"]: r for r in cache_inventory._scan_cached_gguf(active_hub_cache = hub)}
+    # The fixture cache passed in: left to itself the scanner walks the machine's own caches.
+    scans = [scan_cache_dir(hub)]
+    rows = {
+        r["repo_id"]: r
+        for r in cache_inventory._scan_cached_gguf(cache_scans = scans, active_hub_cache = hub)
+    }
     assert rows["audio-cpp/Yue2-3B-GGUF"]["task"] == "text-to-audio"
     assert rows["audio-cpp/Yue2-3B-GGUF"]["capabilities"]["can_chat"] is False
 
