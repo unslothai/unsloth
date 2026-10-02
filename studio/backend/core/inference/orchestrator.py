@@ -2330,13 +2330,16 @@ class InferenceOrchestrator:
         except Exception as exc:
             logger.warning("Could not release the load's downloads: %s", exc)
 
-    def reap_dead_managed_engine(self):
+    def reap_dead_managed_engine(self) -> bool:
+        """True when a crashed engine was cleared, so the caller can drop its residency."""
         with self._subprocess_shutdown_lock:
             managed = getattr(self, "_managed_engine", None)
             # A cancelled load whose stop timed out keeps its handle with no active model name.
             settled = self.active_model_name or not self.loading_models
             if managed is not None and settled and not managed.alive():
                 self._shutdown_subprocess()
+                return getattr(self, "_managed_engine", None) is None
+            return False
 
     def _load_managed_engine(
         self,

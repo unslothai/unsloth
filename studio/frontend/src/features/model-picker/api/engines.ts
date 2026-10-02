@@ -27,16 +27,31 @@ export interface EngineStatus {
 }
 
 export function isEngineReady(engine: EngineStatus | undefined): boolean {
-  return !!engine?.installed &&
+  return (
+    !!engine?.installed &&
     (engine.current || engine.restored === true) &&
     !engine.unsupported_reason &&
-    engine.job.state !== "running";
+    engine.job.state !== "running"
+  );
+}
+
+/** A retained INT4 / INT8 the newly picked engine cannot convert would fail only after unloading. */
+export function precisionAfterEngineSwitch<P extends string>(
+  precision: P,
+  engine: EngineStatus | undefined,
+): P | "auto" {
+  return (precision === "int4" || precision === "int8") &&
+    !convertsToInteger(engine)
+    ? "auto"
+    : precision;
 }
 
 /** SGLang 0.5.18 dropped --torchao-config, its only load-time INT8 / 4-bit conversion. */
 export function convertsToInteger(engine: EngineStatus | undefined): boolean {
   if (engine?.engine !== "sglang") return true;
-  const parts = (engine.installed_version ?? engine.version).split(".").map(Number);
+  const parts = (engine.installed_version ?? engine.version)
+    .split(".")
+    .map(Number);
   const [major = 0, minor = 0, patch = 0] = parts;
   return major === 0 && (minor < 5 || (minor === 5 && patch < 18));
 }

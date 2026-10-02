@@ -73,6 +73,19 @@ def validate_load(engine: str, request) -> list[int]:
         )
     if getattr(request, "chat_template_override", None):
         raise ValueError("Optional engines do not yet support template overrides.")
+    from .engine_adapters import _release_at_least
+
+    # Refused here, before the resident model is unloaded, not when the engine command is built.
+    precision = getattr(request, "engine_precision", "auto")
+    if (
+        engine == "sglang"
+        and precision in ("int8", "int4")
+        and _release_at_least(info.get("version"), "0.5.18")
+    ):
+        raise ValueError(
+            f"SGLang {info.get('version')} cannot convert weights to {precision.upper()} when "
+            "loading. Choose FP8 or Model default, or use vLLM."
+        )
     return gpu_ids
 
 
