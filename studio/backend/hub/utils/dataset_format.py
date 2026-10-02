@@ -200,6 +200,8 @@ def detect_custom_format_heuristic(dataset):
         "options",
     }
 
+    meta_tokens = {"id", "ids", "idx", "type", "category", "label", "title", "tag"}
+
     def name_tokens(col_name):
         return set(re.findall(r"[a-z]+", col_name.lower()))
 
@@ -207,7 +209,7 @@ def detect_custom_format_heuristic(dataset):
         tokens = name_tokens(col_name)
         return (
             any(token in context_words or token[:-1] in context_words for token in tokens)
-            and not {"id", "ids", "title"} & tokens
+            and not meta_tokens & tokens
             and not isinstance(sample.get(col_name), (bool, int, float))
             and not has_keyword(col_name, assistant_words)
         )
@@ -220,7 +222,9 @@ def detect_custom_format_heuristic(dataset):
     ]
     assistant_potential = [col for col in content_columns if has_keyword(col, assistant_words)]
     user_potential = [col for col in content_columns if has_keyword(col, user_words)]
-    if any(col not in system_named for col in user_potential):
+    if any(
+        col not in system_named and not meta_tokens & name_tokens(col) for col in user_potential
+    ):
         user_potential = [col for col in user_potential if col not in system_named]
     assistant_candidates = [
         (col, score)
@@ -271,7 +275,7 @@ def detect_custom_format_heuristic(dataset):
             if (
                 has_keyword(col, user_words_high_priority)
                 and isinstance(sample.get(col), str)
-                and "id" not in name_tokens(col)
+                and not meta_tokens & name_tokens(col)
                 and not is_context_column(col)
                 and not has_keyword(col, assistant_words)
             ):
@@ -286,7 +290,7 @@ def detect_custom_format_heuristic(dataset):
         lambda col: col in system_named,
         lambda col: has_keyword(col, non_task_system_words),
         lambda col: user_col is not None and is_context_column(col),
-        lambda col: has_keyword(col, system_words) and "id" not in name_tokens(col),
+        lambda col: has_keyword(col, system_words) and not meta_tokens & name_tokens(col),
     ]
     system_col = next(
         (col for tier in system_tiers for col in remaining_columns if tier(col)), None
@@ -296,13 +300,16 @@ def detect_custom_format_heuristic(dataset):
         remaining_columns = [col for col in remaining_columns if col != system_col]
     if remaining_columns:
         remaining_col = remaining_columns[0]
-        if user_col is None and has_keyword(remaining_col, user_words + assistant_words):
+        if (
+            user_col is None
+            and has_keyword(remaining_col, user_words + assistant_words)
+            and not meta_tokens & name_tokens(remaining_col)
+        ):
             mapping[remaining_col] = "user"
 
     has_user = any(role == "user" for role in mapping.values())
     has_assistant = any(role == "assistant" for role in mapping.values())
     if not has_user:
-        # remaining_columns[0] has no role word here.
         for col in remaining_columns[1:]:
             if col not in mapping:
                 mapping[col] = "user"

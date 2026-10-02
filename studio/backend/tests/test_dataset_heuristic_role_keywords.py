@@ -235,6 +235,10 @@ _CONTEXT_CASES = [
         {"question": _MID, "answer": _MID, "input_ids": [1, 2], "background": _LONG},
         {"question": "user", "answer": "assistant", "background": "system"},
     ),
+    (
+        {"text": _LONG, "question_type": "causal", "answer": "yes"},
+        {"text": "user", "answer": "assistant"},
+    ),
 ]
 
 
@@ -242,3 +246,8 @@ _CONTEXT_CASES = [
 @pytest.mark.parametrize("row, expected", _CONTEXT_CASES)
 def test_system_and_context_columns_keep_the_system_prompt(heuristic, row, expected):
     assert heuristic([row]) == expected
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+def test_identifier_column_is_not_the_user_turn(heuristic):
+    assert heuristic([{"task_id": "HumanEval/0", "canonical_solution": _MID}]) is None
