@@ -8592,7 +8592,8 @@ class LlamaCppBackend:
     def _custom_runtime_matches(self, intent: GgufLoadIntent) -> bool:
         resident = self._last_load_intent
         return (
-            getattr(self, "_compiled_custom_config", None) is not None
+            not intent.force_reload
+            and getattr(self, "_compiled_custom_config", None) is not None
             and resident is not None
             and resident.llama_cpp_config == intent.llama_cpp_config
             and intent.model_identifier == self._model_identifier

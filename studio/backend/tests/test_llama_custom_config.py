@@ -393,6 +393,14 @@ def test_projector_download_follows_the_ini_not_the_vision_toggle(
     assert len(fetched) == downloads
 
 
+def test_force_reload_never_adopts_a_resident_custom_server(launch):
+    from dataclasses import replace
+
+    assert launch.backend.load_model(launch.intent)
+    assert launch.backend._custom_runtime_matches(launch.intent)
+    assert not launch.backend._custom_runtime_matches(replace(launch.intent, force_reload = True))
+
+
 def test_bad_config_never_spawns(launch):
     from dataclasses import replace
 
