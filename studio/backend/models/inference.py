@@ -488,7 +488,8 @@ class TranscribeRequest(BaseModel):
     )
     engine: Optional[str] = Field(
         None,
-        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+        description = "STT engine: 'transformers' (default), 'gguf' (whisper.cpp), 'mtmd' (llama.cpp) "
+        "or 'audiocpp' (audio.cpp)",
     )
     device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,
@@ -506,7 +507,8 @@ class SttLoadRequest(BaseModel):
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
     engine: Optional[str] = Field(
         None,
-        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+        description = "STT engine: 'transformers' (default), 'gguf' (whisper.cpp), 'mtmd' (llama.cpp) "
+        "or 'audiocpp' (audio.cpp)",
     )
     device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,
@@ -515,6 +517,32 @@ class SttLoadRequest(BaseModel):
             "'gpu' prefers the accelerator, 'auto' (default) detects."
         ),
     )
+    gguf_variant: Optional[str] = Field(
+        None,
+        description = (
+            "Variant of an audio GGUF dictation model (engine 'audiocpp'): a quant or a named "
+            "sub-variant such as 'tiny'. Omitted picks the model's default."
+        ),
+    )
+
+    @model_validator(mode = "after")
+    def _fold_audio_gguf_variant(self):
+        # The audio.cpp sidecar takes ``id:variant``, so every route that resolves, downloads,
+        # loads or compares the model sees the same string.
+        engine = (self.engine or "").strip().lower()
+        model = (self.model or "").strip()
+        variant = (self.gguf_variant or "").strip()
+        if (
+            variant
+            and model
+            and ":" not in model
+            and (
+                engine in ("audiocpp", "audio_cpp", "audio.cpp")
+                or model.lower().startswith(("audio-cpp/", "audiocpp-"))
+            )
+        ):
+            self.model = f"{model}:{variant}"
+        return self
 
 
 class ValidateModelRequest(LlamaCppConfigFields):
@@ -1293,6 +1321,16 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Audio codec or native generation architecture.",
     )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    audio_family: Optional[str] = Field(
+        None, description = "Loader family of an audio GGUF model (e.g. kokoro_tts, minimax_music3)."
+    )
+    audio_options: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = (
+            "Request options an audio GGUF model accepts: {name, type (bool|int|float|string|enum), "
+            "description, default, min, max, values, required}. Send chosen values as audio_options."
+        ),
+    )
     has_video_input: bool = Field(
         False,
         description = (
@@ -2442,6 +2480,13 @@ class ChatCompletionRequest(BaseModel):
     audio_language: Optional[str] = Field(
         None,
         description = "[x-unsloth] Target-language hint for native audio models that support it.",
+    )
+    audio_options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Per-model request options ({name: value}) for audio GGUF models, as listed "
+            "in the loaded model's audio_options. Unknown names are dropped."
+        ),
     )
     video_base64: Optional[str] = Field(
         None,
@@ -4972,6 +5017,13 @@ class AudioSpeechRequest(BaseModel):
         ge = 1,
         description = (
             "Maximum generated audio tokens/frames; MiniMax Music 3 uses 25 frames per second."
+        ),
+    )
+    audio_options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Per-model request options ({name: value}) for audio GGUF models, as listed "
+            "in the loaded model's audio_options. Unknown names are dropped."
         ),
     )
     provider_id: Optional[str] = Field(

@@ -2340,6 +2340,24 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
+	/* The hover circle is painted on the icon, padded out to the glyph box. On the glyph it kept
+	   subpixel precision while the icon snapped to whole pixels, so the icon sat up to half a
+	   pixel off centre. !important: outranks the icon's own size-* utility. */
+	.sidebar-row-action-glyph > svg {
+		--glyph-icon: var(--icon-size);
+		box-sizing: border-box;
+		width: 100% !important;
+		height: 100% !important;
+		padding: calc((100% - var(--glyph-icon)) / 2);
+		border-radius: 9999px;
+		overflow: visible;
+	}
+	.sidebar-row-action-glyph > svg.size-4 {
+		--glyph-icon: calc(var(--spacing) * 4);
+	}
+	.sidebar-row-action-glyph > svg.size-3\.5 {
+		--glyph-icon: calc(var(--spacing) * 3.5);
+	}
 	/* A disclosure stays put while its list is open, unlike the hover-only row actions. */
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
@@ -2378,6 +2396,9 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply text-nav-fg;
+	}
+	.sidebar-row-action:hover .sidebar-row-action-glyph > svg,
+	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph > svg {
 		/* A step darker than the row hover so the circle reads on top of it. */
 		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
 	}
@@ -3188,13 +3209,18 @@ html[data-chat-font] .aui-root {
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
 	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {
-		@apply relative inline-flex w-[var(--ui-icon-size)] shrink-0 items-center justify-center transition-opacity;
+		@apply inline-grid w-[var(--ui-icon-size)] shrink-0 place-items-center transition-opacity;
+	}
+	/* Icon and X share one cell. Not relative + absolute: a positioned slot next to the
+	   spinning plus got its own WebKit layer and jumped a pixel each spin. */
+	.composer-pill-glyph > * {
+		grid-area: 1 / 1;
 	}
 
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
+		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -4729,23 +4755,55 @@ html[data-chat-font] .aui-root {
 }
 
 .sidebar-row-ghost {
+	--row-ghost-surface: var(--sidebar);
 	position: fixed;
 	top: 0;
 	z-index: 60;
 	display: flex;
 	align-items: center;
 	border-radius: 10px;
-	background: var(--sidebar-accent);
-	box-shadow:
-		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
-		0 8px 24px -8px rgb(0 0 0 / 0.35);
 	pointer-events: none;
 	will-change: transform;
+}
+
+/* A carried row: a translucent shade off its list. */
+:is(.sidebar-row-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), var(--foreground) 5%) 85%, transparent);
+	-webkit-backdrop-filter: blur(8px);
+	backdrop-filter: blur(8px);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 7%, transparent),
+		0 4px 14px -6px rgb(0 0 0 / 0.16);
 }
 
 .sidebar-section-ghost > *,
 .sidebar-row-ghost * {
 	pointer-events: none;
+}
+
+/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
+.model-picker-row-ghost {
+	--row-ghost-surface: var(--popover);
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.model-picker-row-ghost * {
+	pointer-events: none;
+}
+
+/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
+   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+.model-picker-row-ghost > * {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
 }
 
 /* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
@@ -4757,7 +4815,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+/* A row's copy is its face as drawn, never lit like the open chat. */
 .sidebar-row-ghost > [data-sidebar="menu-button"] {
 	width: 100%;
 	height: 100%;
@@ -4937,11 +4995,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	margin-inline: var(--scroll-radius, 0px);
 }
 
-/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1.
-   The clip also cuts an outer shadow: dialogs, which carry one, are watched and clipped only while
-   they overflow (lib/scroll-overflow.ts), and shadowed menus and panels scroll an inner viewport. */
+/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1;
+   an outer shadow would be clipped, so surfaces with one scroll an inner viewport instead.
+   overflow-hidden has no scrollbar to clip: chat search and every CommandDialog keep their shadow. */
 @supports (-moz-appearance: none) {
-	:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {
+	:is(.scroll-rounded:not(.overflow-hidden), .hub-readme-prose pre) {
 		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
 	}
 }

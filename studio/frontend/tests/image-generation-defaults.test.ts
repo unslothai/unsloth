@@ -17,8 +17,8 @@ import { readSrc } from "./helpers/kit.ts";
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   for (const size of ["4B", "9B"]) {
     assert.deepEqual(defaultsFor(`unsloth/FLUX.2-klein-base-${size}`), {
-      steps: 50,
-      guidance: 4,
+      steps: 20,
+      guidance: 5,
     });
     assert.deepEqual(defaultsFor(`unsloth/FLUX.2-klein-${size}`), {
       steps: 4,
@@ -33,7 +33,7 @@ test("keeps the existing family defaults and fallback", () => {
     guidance: 3.5,
   });
   assert.deepEqual(defaultsFor("black-forest-labs/FLUX.1-dev"), {
-    steps: 28,
+    steps: 20,
     guidance: 3.5,
   });
   assert.deepEqual(defaultsFor("local/unknown-image-model"), {
@@ -156,5 +156,24 @@ test("every images-page canvas seed passes the quant provenance", () => {
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.match(call.slice(0, 400), /transformerQuantSource: status\??\.resolved\?\.transformer_quant\?\.source/);
+  }
+});
+
+test("defaults follow ComfyUI's official templates for the same model", () => {
+  for (const [id, want] of [
+    ["black-forest-labs/FLUX.1-dev", { steps: 20, guidance: 3.5 }],
+    ["black-forest-labs/FLUX.1-Krea-dev", { steps: 20, guidance: 3.5 }],
+    ["black-forest-labs/FLUX.1-Kontext-dev", { steps: 20, guidance: 2.5 }],
+    ["black-forest-labs/FLUX.2-dev", { steps: 20, guidance: 4 }],
+    ["Qwen/Qwen-Image-Edit-2511", { steps: 40, guidance: 4 }],
+    ["Qwen/Qwen-Image-2512", { steps: 50, guidance: 4 }],
+    ["Qwen/Qwen-Image", { steps: 20, guidance: 4 }],
+    ["Tongyi-MAI/Z-Image-Turbo", { steps: 8, guidance: 0 }],
+    // diffusers Z-Image guidance g equals ComfyUI cfg g + 1.
+    ["Tongyi-MAI/Z-Image", { steps: 25, guidance: 3 }],
+    ["stabilityai/stable-diffusion-xl-base-1.0", { steps: 25, guidance: 7 }],
+    ["ideogram-ai/ideogram-4-fp8", { steps: 20, guidance: 7 }],
+  ] as const) {
+    assert.deepEqual(defaultsFor(id), want, id);
   }
 });
