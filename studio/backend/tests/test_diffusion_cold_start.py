@@ -155,6 +155,15 @@ def test_recording_dedups_by_input_shape_and_ignores_unforced_calls():
     job.close()
 
 
+def test_close_breaks_the_hook_job_cycle():
+    # An aborted load closes its job: the hook <-> job cycle would otherwise keep the pipeline's tensors alive.
+    net = _whole_compiled(_Counter())
+    job = bg.arm(net)
+    assert len(net._forward_pre_hooks) == 1
+    job.close()
+    assert len(net._forward_pre_hooks) == 0 and job.module is None
+
+
 def test_kick_without_samples_keeps_recording():
     net = _whole_compiled(_Counter())
     job = bg.arm(net)

@@ -6030,6 +6030,7 @@ class DiffusionBackend:
                 eager_patched = False
                 compile_ctx = None
                 state_committed = False
+                load_bg_compile = None
                 state = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -7127,6 +7128,10 @@ class DiffusionBackend:
                 finally:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
+                        # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
+                        if load_bg_compile is not None:
+                            load_bg_compile.close()
+                            load_bg_compile = None
                         restore_backend_flags(backend_flags_before)
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
