@@ -3098,3 +3098,214 @@ def test_a_true_flag_reached_through_an_alias_is_found(tmp_path):
         "    return AutoModel.from_pretrained(name, trust_remote_code = remote)\n",
     )
     assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_pickle_handle_passed_by_keyword_is_checked(tmp_path):
+    """`pickle.load(file = handle)` is the same call as `pickle.load(handle)`.
+
+    The declared keyword names for the two `load` entries were never consulted, so
+    spelling the handle out by name walked past the sink that exists for it.
+    """
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    downloaded = hf_hub_download(repo, 'weights.pkl')\n"
+        "    with open(downloaded, 'rb') as handle:\n"
+        "        return pickle.load(file = handle)\n",
+    )
+    assert "pickle.load" in _sinks(findings)
+
+
+def test_a_dill_handle_passed_by_keyword_is_checked(tmp_path):
+    """The same spelling for `dill`, which is the one Unsloth actually imports."""
+    findings = _scan(
+        tmp_path,
+        "import dill\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    downloaded = hf_hub_download(repo, 'weights.pkl')\n"
+        "    with open(downloaded, 'rb') as handle:\n"
+        "        return dill.load(file = handle)\n",
+    )
+    assert "dill.load" in _sinks(findings)
+
+
+def test_a_walrus_used_in_place_carries_its_taint(tmp_path):
+    """`subprocess.run(command := parsed['command'])`, binding and using in one go.
+
+    The assignment expression was not a case in the taint test, so an argument written
+    this way read clean even though the identical value assigned on its own line fired.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    return subprocess.run(command := json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_dict_built_with_an_untrusted_key_is_tainted(tmp_path):
+    """`{parsed['command']: 1}` taints the dict, because iterating it yields the key.
+
+    Only the values of a dict literal were read, so a table keyed by the untrusted half
+    of a parsed document looked as clean as an empty one.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    table = {json.loads(blob)['command']: 1}\n"
+        "    for key in table:\n"
+        "        return subprocess.run(key)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_literal_dict_is_still_quiet(tmp_path):
+    """The guard for reading dict keys: a table written out in the file is not a source."""
+    findings = _scan(
+        tmp_path,
+        "import subprocess\n"
+        "def load():\n"
+        "    table = {'ls': '-l'}\n"
+        "    for key in table:\n"
+        "        return subprocess.run(key)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_starred_argument_reaches_a_watched_position(tmp_path):
+    """`os.spawnv(*rest)`, whose watched position is 1 rather than 0.
+
+    Positions were counted off the argument list as written, so a star sitting before a
+    watched position left that position empty and nothing was compared at all. One
+    unpacked sequence can fill any position, so a starred argument is now checked
+    against every watched one.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, os\n"
+        "def load(blob):\n"
+        "    rest = json.loads(blob)['rest']\n"
+        "    return os.spawnv(*rest)\n",
+    )
+    assert "os.spawnv" in _sinks(findings)
+
+
+def test_a_starred_literal_is_still_quiet(tmp_path):
+    """The guard for starred arguments: a list written out here fills no position badly."""
+    findings = _scan(
+        tmp_path,
+        "import os\n"
+        "def load():\n"
+        "    rest = ['/bin/ls', '-l']\n"
+        "    return os.spawnv(*rest)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_an_instance_rebound_to_a_second_name_keeps_its_type(tmp_path):
+    """`invoke = runner` then `invoke.execute(parsed)`.
+
+    The constructed type was recorded against the name the constructor was assigned to
+    and nowhere else, so one plain rebinding lost the type and the method call resolved
+    to nothing.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    invoke = runner\n"
+        "    return invoke.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_bound_method_pulled_off_an_instance_is_followed(tmp_path):
+    """`execute = runner.execute` then `execute(parsed)`.
+
+    A callable alias resolved a plain function but not a method taken off an instance,
+    and the argument offset has to drop the receiver: without that the tainted value
+    bound to `self` and the real parameter read clean.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    execute = runner.execute\n"
+        "    return execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_attribute_write_binds_every_recorded_type(tmp_path):
+    """Two constructors on one name, and the sink is in the second class.
+
+    The attribute key used the first recorded type only, so `runner = Safe()` followed
+    by `runner = Dirty()` wrote `Safe.command` while `Dirty.run` read `Dirty.command`.
+    Method resolution already considered both types; the attribute key now does too.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Safe:\n"
+        "    def run(self):\n"
+        "        return len(self.command)\n"
+        "class Dirty:\n"
+        "    def run(self):\n"
+        "        return subprocess.run(self.command)\n"
+        "def load(blob):\n"
+        "    runner = Safe()\n"
+        "    runner = Dirty()\n"
+        "    runner.command = json.loads(blob)['command']\n"
+        "    return runner.run()\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_attribute_write_reaches_an_ancestor_two_files_away(tmp_path):
+    """Local `Child`, imported `Mid`, and `Root` declared above `Mid` in a third file.
+
+    The ancestor walk stopped at the directly imported class, so the write recorded a
+    key for `Mid` but not for `Root`, whose inherited `run` is where the sink is. Each
+    base is resolved through the import table of the file that declares it, so the key
+    lands on the file that actually holds the reader.
+    """
+    (tmp_path / "root.py").write_text(
+        "import subprocess\n"
+        "class Root:\n"
+        "    def run(self):\n"
+        "        return subprocess.run(self.command)\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "middle.py").write_text(
+        "from root import Root\nclass Mid(Root):\n    pass\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom middle import Mid\n"
+        "class Child(Mid):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    child = Child()\n"
+        "    child.command = json.loads(blob)['command']\n"
+        "    return child.run()\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan(
+        [tmp_path / "root.py", tmp_path / "middle.py", consumer],
+        roots = [tmp_path],
+    )
+    assert "subprocess.run" in _sinks(findings)

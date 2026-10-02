@@ -53,6 +53,7 @@
     "studio/backend/utils/transformers_version.py::_install_to_dir::subprocess.run::1ff15d9a92408b8c::9d40c4659f35be64": 1,
     "studio/backend/utils/transformers_version.py::_install_to_dir::subprocess.run::cf0776c7aba9e7f5::9d40c4659f35be64": 1,
     "studio/backend/utils/transformers_version.py::_probe_autoconfig::subprocess.run::6e283cad68f59edf::34a5d1d0e23be621": 1,
+    "unsloth/models/_utils.py::_resolve_remote_model_class::get_class_from_dynamic_module::1bf1ae2e2285284f::e1a660b88479f807": 1,
     "unsloth/models/_utils.py::_resolve_text_causal_lm_class::get_class_from_dynamic_module::b7a268bb9c7ebe2c::c2920e71229fb914": 1,
     "unsloth/models/_utils.py::resolve_remote_code_model_class::get_class_from_dynamic_module::281f4ae0ed10fad9::e21171dbdef3d324": 1,
     "unsloth/models/loader_utils.py::_dequantize_leftover_fp8_params::getattr(module, ...)::04c2d4b7e025ad1d::c9144a36a56c6863": 1,

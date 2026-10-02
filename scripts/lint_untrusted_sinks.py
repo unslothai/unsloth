@@ -295,10 +295,12 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "os.spawnlp": ((1,), frozenset()),
     "os.spawnlpe": ((1,), frozenset()),
     # Deserialisers that construct arbitrary objects.
-    "pickle.load": ((0,), frozenset()),
-    "pickle.loads": ((0,), frozenset()),
-    "dill.load": ((0,), frozenset()),
-    "dill.loads": ((0,), frozenset()),
+    # `file` is the keyword both loaders take, and an empty set meant the named
+    # spelling was inspected neither positionally nor by keyword.
+    "pickle.load": ((0,), frozenset({"file"})),
+    "pickle.loads": ((0,), frozenset({"data"})),
+    "dill.load": ((0,), frozenset({"file"})),
+    "dill.loads": ((0,), frozenset({"str"})),
 }
 
 # Sinks already gated by lint_exec_literals.py / lint_dynamic_exec.py. Reported here for
@@ -1071,6 +1073,29 @@ class _FileFacts:
                     return deeper
         return []
 
+    def _base_chain(
+        self,
+        class_name: str,
+        seen: set | None = None,
+    ) -> list:
+        """Declared bases of `class_name`, transitively, as this file records them."""
+        if not class_name:
+            return []
+        if seen is None:
+            seen = set()
+        cached = self._ancestor_cache.get(class_name) if not seen else None
+        if cached is not None:
+            return cached
+        found: list = []
+        for base in self.bases.get(class_name, ()):
+            if base in seen or base == class_name:
+                continue
+            seen.add(base)
+            found.append(base)
+            found.extend(self._base_chain(base, seen))
+        self._ancestor_cache.setdefault(class_name, found)
+        return found
+
     def callable_alias(
         self,
         referenced: str,
@@ -1381,6 +1406,12 @@ class _TaintPass(ast.NodeVisitor):
             return self.tainted(node.value)
         if isinstance(node, ast.Starred):
             return self.tainted(node.value)
+        if isinstance(node, ast.NamedExpr):
+            # `import_module((name := parsed["module"]))`. The visitor binds `name` only
+            # after the call's sink check has run, and there was no case for the
+            # expression itself, so the value passed to the sink read clean on every
+            # pass of the fixpoint.
+            return self.tainted(node.value)
         if isinstance(node, ast.Await):
             # `body = await request.json()` is Await(Call(...)), and only a bare Call was
             # recognised, so every async read of a request body or a file came out clean.
@@ -1423,7 +1454,10 @@ class _TaintPass(ast.NodeVisitor):
                     return reason
             return None
         if isinstance(node, ast.Dict):
-            for value in node.values:
+            # Keys as well as values: iterating a dict yields its keys, so
+            # `{parsed["module"]: None}` exposed the untrusted name directly while the
+            # container read clean.
+            for value in list(node.values) + [key for key in node.keys if key is not None]:
                 reason = self.tainted(value)
                 if reason:
                     return reason
@@ -1631,35 +1665,86 @@ class _TaintPass(ast.NodeVisitor):
         return None
 
     def _attr_keys(self, node: ast.Attribute) -> list:
-        """Every key `node` can mean, the inherited owners included.
+        """Every key `node` can mean: each possible owner class and its ancestors.
 
-        `child.command = parsed` recorded `Child.command` while the inherited `Base.run`
+        `child.command = parsed` recorded `Child.command` while an inherited `Base.run`
         reads `self.command` as `Base.command`, so the write and the read never met and
         the sink inside the inherited method was missed. Writes bind all of them and
         reads consult all of them, which is the same fail-closed choice the rest of the
         resolution makes.
         """
-        first = self._attr_key(node)
-        if not first:
-            return []
-        keys = [first]
-        owner, _, attribute = first.rpartition(".")
-        relative, _, class_name = owner.partition("::")
-        for ancestor in self._ancestors(class_name):
-            candidate = f"{relative}::{ancestor}.{attribute}"
-            if candidate not in keys:
-                keys.append(candidate)
-            # An ancestor declared in another first-party file keys against THAT file,
-            # because that is where its methods read `self.attr`. Keying every ancestor
-            # against the writer's file left the two halves in different namespaces.
-            for dotted in self.facts._targets(ancestor):
-                file, module = self.facts.index.resolve_module(dotted)
+        keys: list = []
+        seen: set = set()
+        for facts, class_name in self._attr_owners(node):
+            self._collect_attr_keys(facts, class_name, node.attr, keys, seen)
+        return keys
+
+    def _collect_attr_keys(self, facts, class_name: str, attribute: str, keys, seen) -> None:
+        """`class_name` and every ancestor of it, each keyed against its OWN file.
+
+        Resolved in the file that declares each base rather than in the writer's: a
+        local child of an imported middle class whose root is declared somewhere else
+        again had the root's key written against the middle's file, so the inherited
+        reader never saw it.
+        """
+        marker = (str(facts.path), class_name)
+        if not class_name or marker in seen:
+            return
+        seen.add(marker)
+        key = f"{facts.relative}::{class_name}.{attribute}"
+        if key not in keys:
+            keys.append(key)
+        for base in facts.bases.get(class_name, ()):
+            if base in facts.classes:
+                self._collect_attr_keys(facts, base, attribute, keys, seen)
+            for dotted in facts._targets(base):
+                file, module = facts.index.resolve_module(dotted)
                 if file is None or not module or not dotted.startswith(module + "."):
                     continue
-                elsewhere = f"{_relative(file)}::{dotted[len(module) + 1 :]}.{attribute}"
-                if elsewhere not in keys:
-                    keys.append(elsewhere)
-        return keys
+                inner = dotted[len(module) + 1 :]
+                defining = facts.index.facts.get(file)
+                if defining is None:
+                    candidate = f"{_relative(file)}::{inner}.{attribute}"
+                    if candidate not in keys:
+                        keys.append(candidate)
+                    continue
+                self._collect_attr_keys(defining, inner, attribute, keys, seen)
+
+    def _attr_owners(self, node: ast.Attribute):
+        """`(facts, class name)` for every class the receiver can be.
+
+        EVERY recorded type, not the first: `runner = Safe()` then `runner = Dirty()`
+        resolves its method call against both, so recording the write against `Safe`
+        alone meant a sink in `Dirty.run` reading `self.command` saw a clean value. The
+        earlier note calling that an accepted margin no longer applies now that the
+        caller takes a list.
+        """
+        if isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"):
+            # `cls` as well as `self`: a classmethod writing `cls.command` and another
+            # reading it got an empty key on both halves.
+            return [(self.facts, self.class_name)] if self.class_name else []
+        spelling = node.value.id if isinstance(node.value, ast.Name) else _call_name(node.value)
+        found: list = []
+        for constructed in self.instance_types.get(spelling) or ():
+            if constructed in self.facts.classes:
+                if (self.facts, constructed) not in found:
+                    found.append((self.facts, constructed))
+                continue
+            # An imported class belongs to the file that declares it, because that is
+            # the file whose `self.attr` reads have to see this.
+            file, module = self.facts.index.resolve_module(constructed)
+            if file is None or not module or not constructed.startswith(module + "."):
+                continue
+            owner = constructed[len(module) + 1 :]
+            defining = self.facts.index.facts.get(file)
+            if owner and defining is not None and (defining, owner) not in found:
+                found.append((defining, owner))
+        return found
+
+    def _attr_key(self, node: ast.Attribute) -> str:
+        """The first key, for the one caller that wants a single spelling."""
+        keys = self._attr_keys(node)
+        return keys[0] if keys else ""
 
     def _ancestors(
         self,
@@ -1667,47 +1752,12 @@ class _TaintPass(ast.NodeVisitor):
         seen: set | None = None,
     ) -> list:
         """Declared base classes of `class_name`, transitively, within this file."""
-        if not class_name:
-            return []
-        if seen is None:
-            seen = set()
-        found: list = []
-        for base in self.facts.bases.get(class_name, ()):
-            if base in seen or base == class_name:
-                continue
-            seen.add(base)
-            found.append(base)
-            found.extend(self._ancestors(base, seen))
-        return found
+        return self.facts._base_chain(class_name, seen)
 
     def _attr_key(self, node: ast.Attribute) -> str:
-        # `cls` as well as `self`: a classmethod writing `cls.command` and another
-        # reading it got an empty key on both halves, so an executable value passed
-        # between two classmethods was reported as clean.
-        if isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"):
-            if self.class_name:
-                return f"{self.facts.relative}::{self.class_name}.{node.attr}"
-        # `runner.module = parsed` on a constructed local. Only the literal `self`
-        # receiver was recognised, so the write was discarded: the method that later reads
-        # self.module saw a clean value and could hand it to a sink unreported. Keyed the
-        # same way `self.module` is keyed inside the class, which is what makes the two
-        # halves meet.
-        if isinstance(node.value, ast.Name):
-            recorded = self.instance_types.get(node.value.id) or ()
-            # The first recorded class. Keying one attribute against several owners would
-            # need several keys, and a local rebound to a second class is rare enough to
-            # sit inside the margin this gate is allowed.
-            for constructed in recorded[:1]:
-                if constructed in self.facts.classes:
-                    return f"{self.facts.relative}::{constructed}.{node.attr}"
-                # An imported class is keyed against the file that declares it, because
-                # that is the file whose `self.attr` reads have to see this.
-                file, module = self.facts.index.resolve_module(constructed)
-                if file is not None and module and constructed.startswith(module + "."):
-                    owner = constructed[len(module) + 1 :]
-                    if owner:
-                        return f"{_relative(file)}::{owner}.{node.attr}"
-        return ""
+        """The first key, for the one caller that wants a single spelling."""
+        owners = self._attr_owners(node)
+        return owners[0] if owners else ""
 
     # -- taint writes ------------------------------------------------------------------
 
@@ -1758,6 +1808,7 @@ class _TaintPass(ast.NodeVisitor):
         self._note_construction(node)
         self._note_sink_alias(node)
         self._note_source_alias(node)
+        self._note_instance_alias(node)
         self._note_callable_alias(node)
         self.generic_visit(node)
 
@@ -1880,11 +1931,40 @@ class _TaintPass(ast.NodeVisitor):
             if isinstance(target, ast.Name):
                 self.source_aliases.setdefault(target.id, source)
 
+    def _note_instance_alias(self, node: ast.Assign) -> None:
+        """`invoke = runner`: the second name is the same object as the first.
+
+        Without this the copy carried no type, so `invoke.execute(parsed)` resolved to
+        nothing while `runner.execute(parsed)` resolved.
+        """
+        if isinstance(node.value, ast.Call):
+            return
+        referenced = _call_name(node.value)
+        held = self.instance_types.get(referenced)
+        if not held:
+            return
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                for candidate in held:
+                    self.instance_types[target.id] = _with(
+                        self.instance_types.get(target.id), candidate
+                    )
+
     def _note_callable_alias(self, node: ast.Assign) -> None:
         """`runner = execute`: a reference to a first-party helper, not a call to one."""
         if isinstance(node.value, ast.Call):
             return
         referenced = _call_name(node.value)
+        # `execute = runner.execute` saves a BOUND method. The prefix names a tracked
+        # instance, so the spelling resolves through the instance branch, but
+        # `callable_alias` rejected it as neither a local function nor an import target.
+        if "." in referenced and self.instance_types.get(referenced.rpartition(".")[0]):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.callable_aliases[target.id] = _with(
+                        self.callable_aliases.get(target.id), referenced
+                    )
+            return
         if self.sink_aliases.get(referenced):
             return
         # `runner = execute` then `invoke = runner`: the second name refers to the same
@@ -2220,11 +2300,19 @@ class _TaintPass(ast.NodeVisitor):
         constructing = target[1].rpartition(".")[2] == "__init__" and not isinstance(
             node.func, ast.Attribute
         )
+        # `execute = runner.execute` then `execute(parsed)`: the receiver is already
+        # bound into the method object, so the call is spelled with no receiver at all
+        # and the argument bound to `self` while the real parameter stayed clean.
+        bound_alias = isinstance(node.func, ast.Name) and any(
+            "." in spelling and self.instance_types.get(spelling.rpartition(".")[0])
+            for spelling in self.callable_aliases.get(node.func.id) or ()
+        )
         offset = (
             1
             if self.state.is_method.get(target)
             and (
                 constructing
+                or bound_alias
                 or (
                     isinstance(node.func, ast.Attribute)
                     and not self._receiver_spelled_out(node.func, target)
@@ -2331,6 +2419,17 @@ class _TaintPass(ast.NodeVisitor):
                 reason = self.tainted(node.args[index])
                 if reason:
                     self._record(node, sink, reason, _short(node.args[index]))
+                    return
+            # A single `*values` can expand into any position from where it sits, so a
+            # sink that watches position 1 saw one argument and looked no further:
+            # `sys.path.insert(*parsed)` executed an attacker-controlled entry with
+            # nothing reported. Same conservative reading the callee binding uses.
+            for position, argument in enumerate(node.args):
+                if position > index or not isinstance(argument, ast.Starred):
+                    continue
+                reason = self.tainted(argument)
+                if reason:
+                    self._record(node, sink, reason, _short(argument))
                     return
         for keyword in node.keywords:
             if keyword.arg is None:
