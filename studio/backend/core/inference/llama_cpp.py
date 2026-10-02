@@ -519,6 +519,7 @@ from utils.code_integrity import code_integrity_block_reason, code_integrity_use
 # Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
+    is_audio_cpp_gguf_architecture,
     is_speech_gguf_architecture,
 )
 
@@ -20389,6 +20390,7 @@ class LlamaCppBackend:
         if (
             arch not in self._DIFFUSION_ARCHES
             and not is_speech_gguf_architecture(arch)
+            and not is_audio_cpp_gguf_architecture(arch)
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
@@ -20397,6 +20399,11 @@ class LlamaCppBackend:
             # name-based branch below name a page.
             arch = ""
         if arch:
+            if is_audio_cpp_gguf_architecture(arch):
+                return (
+                    "This is an audio GGUF (speech, music or transcription), which cannot run as "
+                    "a chat model. Open it from the Audio page instead."
+                )
             if is_speech_gguf_architecture(arch):
                 # Points at the Transformers build, not this file on the Audio page: that page
                 # cannot list a speech GGUF either, so it would promise a row that is not there.
@@ -21202,6 +21209,11 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
+            if is_audio_cpp_gguf_architecture(arch):
+                return (
+                    "This is an audio GGUF (speech, music or transcription), which llama-server "
+                    "cannot run as a chat/completion model. Open it from Unsloth's Audio page instead."
+                )
             if is_speech_gguf_architecture(arch):
                 # Same wording rule as the pre-launch refusal above: name the build that runs,
                 # not a page this file will not appear on.

@@ -45,6 +45,7 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
+      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'unsloth_cli/**'
       # frontend-dist-restore keys its cache on exactly these three globs, and a miss
       # makes the checked-out setup.ps1 run npm run build (setup.ps1:5060), so a
@@ -75,6 +76,7 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
+      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'unsloth_cli/**'
       - 'studio/frontend/*'
       - 'studio/frontend/src/**'
@@ -439,9 +441,11 @@ jobs:
             "$env:USERPROFILE\.unsloth\studio\unsloth_studio",
             "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe",
             "$env:USERPROFILE\.unsloth\whisper.cpp",
+            "$env:USERPROFILE\.unsloth\audio.cpp",
             "$env:USERPROFILE\.unsloth\.llama.cpp.install.lock",
             "$env:USERPROFILE\.unsloth\.node.install.lock",
-            "$env:USERPROFILE\.unsloth\.whisper.cpp.install.lock"
+            "$env:USERPROFILE\.unsloth\.whisper.cpp.install.lock",
+            "$env:USERPROFILE\.unsloth\.audio.cpp.install.lock"
           )) {
             if (Test-Path -LiteralPath $p) {
               Write-Host "::error::leak: $p"
