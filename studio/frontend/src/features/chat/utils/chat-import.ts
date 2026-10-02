@@ -507,9 +507,13 @@ export async function importConversationsFromSource(
     const label = /\.csv$/i.test(source.name) ? "CSV" : "Markdown";
     const text = await readAllText(source, WHOLE_FILE_MAX_BYTES, label);
     for (const conversation of parseImportText(text, source.name)) {
-      await writeConversation(conversation, projectId);
-      progress.imported++;
-      saved(conversation);
+      try {
+        await writeConversation(conversation, projectId);
+        progress.imported++;
+        saved(conversation);
+      } catch {
+        progress.failed++;
+      }
     }
     if (progress.imported > 0) notifyChatHistoryUpdated();
     report();
