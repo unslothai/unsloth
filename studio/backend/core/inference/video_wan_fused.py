@@ -516,6 +516,12 @@ def _verify(block: Any, args: tuple, stock: Callable) -> bool:
 
 def _make_forward(stock: Callable) -> Callable:
     def forward(self, hidden_states, encoder_hidden_states, temb, rotary_emb):
+        import torch
+
+        # Under a regional compile, trace the stock block and leave the counters alone: dynamo guards on the module
+        # globals it reads, so a counter bumped inside the traced frame recompiles the block on every call.
+        if torch.compiler.is_compiling():
+            return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
         if _kernels() is None or not _eligible(self, hidden_states, encoder_hidden_states, temb):
             _COUNTS["stock"] += 1
             return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)

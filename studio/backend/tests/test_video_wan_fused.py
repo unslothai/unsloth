@@ -367,3 +367,24 @@ def test_changed_attention_processor_keeps_the_stock_rotary(monkeypatch):
 def test_attention_processor_matches_the_fingerprint():
     from core.inference.diffusion_qwenimage21_rope import _digest
     assert _digest(transformer_wan.WanAttnProcessor.__call__) in wf._ATTN_FINGERPRINTS
+
+
+def test_regional_compile_traces_the_stock_block_without_recompiles(monkeypatch):
+    """Under torch.compile the installed forward must trace the stock block and leave the module counters alone:
+    dynamo guards on the globals a traced frame reads, so a bumped counter recompiles the block on every call (it hit
+    the recompile limit and dropped the Wan regional compile to eager)."""
+    import torch._dynamo as dynamo
+
+    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    blk = _block(dim = 32, ffn = 64, heads = 2, device = "cpu", dtype = torch.float32)
+    x, enc, temb, rot = _inputs(blk, 1, 8, 32, "cpu", torch.float32)
+    dynamo.reset()
+    with torch.no_grad():
+        want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
+        assert wf.install(torch.float16, "cuda") is True
+        blk.compile(backend = "eager", fullgraph = True)
+        with dynamo.config.patch(error_on_recompile = True):
+            outs = [blk(x, enc, temb, rot) for _ in range(4)]
+    dynamo.reset()
+    assert all(torch.equal(want, o) for o in outs)
+    assert wf.counts() == {"fused": 0, "stock": 0}
