@@ -1495,6 +1495,8 @@ def resolve(
 def forget(identifier: Optional[str] = None) -> None:
     """Drop memoized resolutions (after a download or delete changed the cache)."""
     with _resolve_lock:
+        # What is downloaded changed too, so the next status poll must not reuse the old listing.
+        _downloaded_cache.clear()
         if identifier is None:
             _resolve_cache.clear()
             return

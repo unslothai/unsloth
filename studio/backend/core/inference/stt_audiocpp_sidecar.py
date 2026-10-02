@@ -241,12 +241,14 @@ class _AudioCppDownloadState:
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
+            # Callers track the row they picked; a variant pick arrives folded in as ``row:variant``.
+            row = split_variant_ref(self._model_id)[0] if self._model_id else None
             snapshot = {
                 "downloading": downloading,
-                "model": self._model_id if downloading else None,
+                "model": row if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                "cancelled_model": self._model_id if self._cancelled else None,
+                "cancelled_model": row if self._cancelled else None,
                 "bytes_total": self._total_bytes if downloading else None,
             }
             captured = (

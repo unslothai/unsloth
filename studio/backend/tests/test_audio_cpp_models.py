@@ -1810,6 +1810,36 @@ def test_a_remote_header_miss_without_a_token_is_not_served_to_one_with_it(monke
     assert header is not None and header.family == "canary_asr" and seen == [None, "hf_secret"]
 
 
+def test_a_finished_download_is_listed_on_the_next_status_poll(hub):
+    """Status polls during the download cache a listing without the model; the download's own
+    forget() must drop it, or the first poll after completion reads as a failed download."""
+    assert acm.downloaded_models("asr") == []
+    _put(
+        _snapshot(hub),
+        "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf",
+        _gguf_bytes(family = "qwen3_asr"),
+    )
+    acm.forget(f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF")
+    assert [m.id for m in acm.downloaded_models("asr")] == [f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF"]
+
+
+def test_a_variant_download_reports_the_row_the_caller_tracks():
+    """The Audio page tracks the bare row; a variant pick reaches the worker as ``row:variant``."""
+    import threading
+
+    from core.inference.stt_audiocpp_sidecar import _AudioCppDownloadState
+
+    state = _AudioCppDownloadState()
+    release = threading.Event()
+    state._model_id = f"{AUDIO_CPP_REPO}/Moonshine-GGUF:tiny/Q8_0"
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.status()["model"] == f"{AUDIO_CPP_REPO}/Moonshine-GGUF"
+    finally:
+        release.set()
+
+
 def test_missing_files_are_counted_in_the_snapshot_downloads_land_in(hub):
     from dataclasses import replace
 
