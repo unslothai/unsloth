@@ -48,6 +48,18 @@ def test_only_a_native_audio_model_counts_as_a_cpu_audio_load():
     assert not ri._native_audio_cpu_load(_audio(), _request(None))
 
 
+def test_an_auto_gguf_audio_load_on_a_cpu_only_runtime_counts_as_cpu(monkeypatch):
+    from core.inference import audio_cpp_server
+
+    gguf_tts = _audio(audio_type = "audiocpp_tts")
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    assert ri._native_audio_cpu_load(gguf_tts, _request("auto"))
+    # Only the GGUF runtime's own backend decides this; other native audio still needs "cpu".
+    assert not ri._native_audio_cpu_load(_audio(), _request("auto"))
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    assert not ri._native_audio_cpu_load(gguf_tts, _request("auto"))
+
+
 def test_a_chat_model_cannot_skip_the_guards_by_sending_audio_device():
     """audio_device is documented as ignored off the audio path. If it were not
     gated here, any load could set it and walk past the training guard."""

@@ -224,6 +224,12 @@ def select_backend(binary: str, force_cpu: bool) -> str:
     return "cpu"
 
 
+def runtime_runs_on_cpu() -> bool:
+    """Whether an Auto-placed audio.cpp model launches on the CPU anyway (a CPU-only bundle or override)."""
+    binary = find_audio_cpp_server_binary()
+    return bool(binary) and select_backend(binary, False) == "cpu"
+
+
 def child_env(binary: str) -> dict[str, str]:
     """Secrets scrubbed, home repointed at a scratch dir, co-located libs first on the loader path."""
     binary = str(Path(binary).resolve())

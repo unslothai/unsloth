@@ -15332,9 +15332,18 @@ def _native_audio_cpu_load(config, request) -> bool:
     from core.inference.audio_device import audio_device_forces_cpu
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
 
-    return getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(
-        getattr(request, "audio_device", None)
-    )
+    audio_type = getattr(config, "audio_type", None)
+    if audio_type not in NATIVE_AUDIO_TYPES:
+        return False
+    if audio_device_forces_cpu(getattr(request, "audio_device", None)):
+        return True
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
+
+    if audio_type in AUDIO_CPP_AUDIO_TYPES:
+        # A CPU-only runtime launches there whatever Auto asked, so it needs no VRAM and evicts nothing.
+        from core.inference.audio_cpp_server import runtime_runs_on_cpu
+        return runtime_runs_on_cpu()
+    return False
 
 
 def _resident_audio_placement_matches(backend, request) -> bool:
