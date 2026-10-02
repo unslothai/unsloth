@@ -6246,8 +6246,7 @@ class DiffusionBackend:
                                     )
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
-                                # Host-RAM pre-check: a bf16 repo loaded at fp16 materialises every converted weight
-                                # in host RAM (35 GB for FLUX.1); route it through memory-mapped storage instead.
+                                # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
                                 small_host = self._small_host_decision(
                                     _base_local_dir or fetch_base,
                                     pipe_kwargs,
@@ -6380,8 +6379,7 @@ class DiffusionBackend:
                                     )
                                 )
                                 self._raise_if_load_cancelled(_load_token)
-                                # Same host-RAM pre-check as the full pipeline: the companions (a 15.8 GB bf16
-                                # Qwen2.5-VL at fp32) are what fills the host here.
+                                # the companions (15.8 GB bf16 Qwen2.5-VL at fp32) fill the host here
                                 small_host = self._small_host_decision(
                                     _base_local_dir or fetch_base,
                                     pipe_kwargs,
@@ -6931,8 +6929,7 @@ class DiffusionBackend:
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.
                     self._raise_if_load_cancelled(_load_token)
-                    # A refinement above may have re-tiered the plan; the routed encoders only run from their
-                    # memory-mapped storage under group offload.
+                    # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
@@ -7850,15 +7847,14 @@ class DiffusionBackend:
     def _small_host_decision(
         self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool
     ) -> Any:
-        """Host-RAM pre-check for a diffusers pipeline load (see diffusion_small_host). Raises the refusal when even
-        the low-memory route cannot fit; None when the decision cannot be made (no local snapshot)."""
+        """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
         if snapshot is None:
             return None
         comps = {
             name: comp
             for name, comp in stored_components(snapshot).items()
-            # components handed in pre-built (a hosted fp8 encoder, a seeded prequant denoiser) are not loaded here
+            # pre-built components (hosted fp8 encoder, prequant denoiser) are not loaded here
             if name not in pipe_kwargs
         }
         total, available = host_ram_mib()
@@ -7892,8 +7888,7 @@ class DiffusionBackend:
         logger: Any,
         load_token: Any = None,
     ) -> Any:
-        """Convert the memory-mapped components the decision loaded at their stored dtype, and pin the plan to the
-        placement that keeps them memory-mapped (group offload, encoders streamed unpinned)."""
+        """Convert the components loaded at their stored dtype and place the plan to keep them memory-mapped."""
         import torch
 
         from .diffusion_small_host import (
@@ -7917,12 +7912,10 @@ class DiffusionBackend:
                 mib = prepare_streamed_encoder_(module, dtype)
                 info["components"][name] = f"memory-mapped, layerwise cast ({mib} MiB)"
             elif name not in ("transformer", "transformer_2", "unconditional_transformer"):
-                # A large VAE / image encoder: the dense load's conversion, one tensor at a time.
                 cast_resident_(module, "cpu", dtype)
                 info["components"][name] = "converted"
             else:
-                # Pageable: torch's pinned allocator rounds each block to a power of two (11.3 GB of FLUX.1 int8
-                # weights held 18 GB pinned), more than the route saves.
+                # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
                 stats = quantize_int8_weight_(
                     module, compute_dtype = dtype, work_device = device, keep_device = "cpu"
                 )
@@ -7936,13 +7929,12 @@ class DiffusionBackend:
         return self._small_host_plan(pipe, plan, fam, logger)
 
     def _small_host_plan(self, pipe: Any, plan: Any, fam: Any, logger: Any) -> Any:
-        """Group offload with every routed encoder streamed from its memory-mapped storage; the int8 denoiser keeps as
-        many whole groups resident as the device budget leaves after the runtime reserve."""
+        """Group offload, routed encoders streamed; the denoiser keeps what fits after the runtime reserve resident."""
         info = small_host_engaged_on(pipe)
         if not info or plan.offload_policy == OFFLOAD_NONE:
             return plan
         if "small_host_loaded_transformer_mib" in plan.estimates and plan.stream_text_encoders:
-            return plan  # already placed by the route (a refinement may have kept more groups resident since)
+            return plan  # already placed by the route
         from .diffusion_memory import (
             DEFAULT_BASE_OVERHEAD_MIB,
             OFFLOAD_GROUP,
@@ -9759,7 +9751,6 @@ class DiffusionBackend:
                 compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
             )
             and not _small_host_int8(state.pipe),
-            # What the small-host route did to each component (None when it did not engage).
             "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",

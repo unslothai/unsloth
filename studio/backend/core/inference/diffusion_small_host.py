@@ -1,24 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small-host load route: keep a pipeline load inside host RAM when the compute dtype differs from the stored one.
-
-Root cause it addresses (measured, FLUX.1-schnell on an sm75 card, which computes in fp16): a bf16 repo loaded with
-``torch_dtype=float16`` materialises every converted weight in anonymous host memory (transformer 22.7 GB, T5
-11.0 GB, 35 GB peak), while the same load at the stored bf16 stays file-backed (0.6 GB anonymous). On a 31 GB host the
-fp16 load is OOM-killed inside ``from_pretrained`` before any planner or offload code runs.
-
-The route, engaged only when the dense converted load would not fit the host's available RAM (or forced):
-  * big bf16 components load at their stored dtype, so their weights stay memory-mapped;
-  * streamed text encoders get diffusers layerwise casting (bf16 storage, compute-dtype forward) under leaf-level
-    group offload, unpinned, so their host bytes stay in the page cache and every forward computes in the same
-    compute dtype the dense load used (bf16 -> fp16 is exact, so the encoder output is bit-identical);
-  * a denoiser too large to stay resident in the compute dtype is stored as int8 per-output-channel weights
-    (quantised on the GPU one Linear at a time, fp16 dequant in forward), halving its host and device bytes;
-  * a denoiser that stays resident is cast on the device (exact).
-
-Kill switch ``UNSLOTH_DIFFUSION_SMALL_HOST=0`` restores the dense load; ``=1`` forces the route for testing.
-``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the pre-load refusal when even the route cannot fit.
+"""Small-host load route: a bf16 repo loaded at fp16/fp32 materialises every converted weight in anonymous host RAM
+(FLUX.1 at fp16: 35 GB, OOM-killed on a 31 GB host before the planner runs). Engaged only when that dense load would
+not fit: big components load at their stored bf16 (memory-mapped), encoders stream with layerwise casting, a streamed
+denoiser is stored as int8 per-channel weights. ``UNSLOTH_DIFFUSION_SMALL_HOST=0|1`` disables / forces it;
+``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the pre-load refusal.
 """
 
 from __future__ import annotations
@@ -35,14 +22,11 @@ HOST_RAM_CHECK_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_CHECK"
 SMALL_HOST_ATTR = "_unsloth_small_host"
 
 _MIB = 1024 * 1024
-# Components below this load converted as before: their anonymous bytes are noise next to the reserve.
 _STREAM_MIN_MIB = 512
-# Host RAM kept free beyond the predicted bytes: the CUDA context, torch, the VAE and the decode buffers.
 _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
-# fp16 T5 keeps its ``wo`` projections in fp32 (transformers ``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
+# fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
-# Linears this small stay dense in the compute dtype (embedders, final projections, modulation heads of small DiTs).
 _INT8_MIN_ELEMENTS = 1 << 22
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
 
@@ -96,7 +80,7 @@ class StoredComponent:
 
 
 def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
-    """Per pipeline component: stored MiB and dominant dtype, from the safetensors headers alone (no weight read)."""
+    """Per component: stored MiB and dominant dtype, from safetensors headers only."""
     out: dict[str, StoredComponent] = {}
     try:
         root = Path(snapshot)
@@ -117,7 +101,7 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
 
 
 def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Path]:
-    """The local diffusers directory for a repo id (cache only, never the network) or a local path."""
+    """Local diffusers dir for a repo id (cache only) or path."""
     try:
         p = Path(str(repo_or_dir)).expanduser()
         if p.is_dir():
@@ -170,7 +154,7 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
-    # components loaded at their stored dtype (memory-mapped) instead of the compute dtype
+    # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
 
@@ -184,18 +168,14 @@ def decide_small_host(
     host_available_mib: Optional[int],
     lora_active: bool = False,
 ) -> SmallHostDecision:
-    """Whether this pipeline load takes the small-host route. Pure, so the decision table is testable.
-
-    Engages only for CUDA loads whose big components are stored in a different float dtype than the compute dtype
-    (bf16 repo on an fp16-only card, or promoted to fp32): there, and only there, ``from_pretrained`` materialises the converted copy in
-    anonymous host memory. Same-dtype loads stay memory-mapped and are never touched."""
+    """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
+    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
         return SmallHostDecision(False, "not a CUDA load")
     compute = _dtype_name(compute_dtype)
     if compute not in ("float16", "float32"):
-        # bf16 compute loads a bf16 repo memory-mapped already
         return SmallHostDecision(False, f"compute dtype {compute} needs no conversion")
     converted = {
         name: comp
@@ -208,7 +188,7 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
-    # Route: encoders stay memory-mapped; a denoiser may land on the host as int8 (half its stored bf16 bytes).
+    # encoders stay memory-mapped; a denoiser may land on the host as int8 (half its bf16 bytes)
     route = sum(c.mib // 2 for n, c in converted.items() if n in _DENOISER_NAMES)
     reserve = host_reserve_mib(host_total_mib)
     storage = {name: comp.dtype for name, comp in converted.items()}
@@ -226,7 +206,7 @@ def decide_small_host(
             route,
         )
     if lora_active and not forced:
-        # The int8 denoiser cannot carry adapters: keep the dense load (it may still fit with swap or page reclaim).
+        # the int8 denoiser cannot carry adapters
         return SmallHostDecision(
             False,
             f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available)",
@@ -273,7 +253,6 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
     return mapping
 
 
-# --------------------------------------------------------------------------------------------- int8 weight storage
 def _int8_linear_class():
     import torch
     import torch.nn.functional as F
@@ -316,11 +295,8 @@ def quantize_int8_weight_(
     work_device: Any,
     keep_device: Any = "cpu",
 ) -> dict[str, int]:
-    """Replace every large ``nn.Linear`` of ``module`` with int8 weight storage, in place, one Linear at a time.
-
-    Each weight is read once (memory-mapped bf16), quantised on ``work_device`` with a per-row absmax scale and
-    stored on ``keep_device``; every other parameter / buffer is cast to ``compute_dtype``. Host peak = the int8
-    result plus one weight in flight."""
+    """Replace every large ``nn.Linear`` with per-row int8 weights in place, one Linear at a time (quantised on
+    ``work_device``, stored on ``keep_device``); everything else casts to ``compute_dtype``."""
     import torch
 
     cls = int8_linear_class()
@@ -352,7 +328,6 @@ def quantize_int8_weight_(
         setattr(parent, attr, new)
         stats["linears"] += 1
         stats["int8_bytes"] += new.qweight.numel()
-    # What is left (norms, embedders, the small Linears) converts to the compute dtype like the dense load would.
     with torch.no_grad():
         for sub in module.modules():
             if isinstance(sub, cls):
@@ -377,8 +352,7 @@ def _keep_fp32_patterns(module: Any) -> tuple[str, ...]:
 
 
 def cast_resident_(module: Any, device: Any, compute_dtype: Any) -> None:
-    """Move ``module`` onto ``device`` one tensor at a time, casting stored floats to the dense load's dtypes
-    (compute dtype, fp32 for ``_keep_in_fp32_modules``): exact, and no host copy."""
+    """Move ``module`` to ``device`` one tensor at a time, cast as the dense load would (fp32 for kept modules)."""
     import torch
 
     dev = torch.device(device)
@@ -397,11 +371,9 @@ def cast_resident_(module: Any, device: Any, compute_dtype: Any) -> None:
 
 
 def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
-    """Layerwise-cast a memory-mapped bf16 encoder: Linear and Embedding weights stay in their stored dtype on the
-    host (and in the page cache), each layer computes in ``compute_dtype`` (fp32 for ``_keep_in_fp32_modules``, as the
-    dense load keeps them). Norms and other small parameters convert now, and so does whatever owns the first float
-    parameter, because ``module.dtype`` (first float parameter) is what the pipeline casts prompt embeddings to.
-    Returns the MiB still stored memory-mapped."""
+    """Layerwise-cast a memory-mapped bf16 encoder: Linear / Embedding weights keep their stored dtype, everything
+    else converts now, including the owner of the first float parameter (``module.dtype`` sets the prompt-embedding
+    dtype). Returns the MiB left memory-mapped."""
     import torch
     from diffusers.hooks import apply_layerwise_casting
 
@@ -415,7 +387,7 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
         return torch.float32 if _kept(mname) else compute_dtype
 
     def _convert(sub: Any, want: Any) -> None:
-        # Only what the stored-dtype load changed: an fp32 buffer (RoPE ``inv_freq``) stays fp32, as in the dense load.
+        # fp32 buffers (RoPE ``inv_freq``) stay fp32, as in the dense load
         for pname, p in list(sub.named_parameters(recurse = False)):
             if p.dtype == torch.bfloat16 and p.dtype != want:
                 p.data = p.data.to(want)
@@ -432,8 +404,7 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
     with torch.no_grad():
         for mname, sub in module.named_modules():
             want = _want(mname)
-            # A kept-fp32 Linear converts now: its parent reads ``weight.dtype`` BEFORE the layer runs (T5's ``wo``
-            # cast) and would cast its input to the stored bf16. 4 GB for T5-XXL, the bytes the dense load holds too.
+            # kept-fp32 Linears convert now: T5 casts its input to ``wo.weight.dtype`` before the hook runs
             if (
                 type(sub) in streamable
                 and not _kept(mname)
@@ -442,7 +413,6 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
             ):
                 storage = sub.weight.dtype
                 streamed += sub.weight.numel() * sub.weight.element_size()
-                # No skip pattern / class: the hook lands on this layer itself.
                 apply_layerwise_casting(
                     sub,
                     storage_dtype = storage,

@@ -1965,11 +1965,8 @@ _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
 
-# Dense (non-torchao) denoisers on the eager tier (speed_mode off, e.g. fp16 on a 15 GB T4, where the flat 8192 MiB
-# reserve streamed FLUX.2-klein-4B's 7.4 GB DiT). Worst CUDA MiB above the resident weights, fp16 eager, all resident,
-# one 1024x1024 image, encoder + every step + VAE decode: klein 2455, FLUX.1-schnell 2448, Qwen-Image 4248 (true CFG).
-# family -> (peak MiB, largest loaded DiT MiB the measurement covers: a bigger DiT of the same family, e.g. klein-9B,
-# keeps the flat estimate).
+# Dense denoisers, eager tier: worst CUDA MiB above resident weights, fp16, 1024x1024, encode + steps + VAE decode.
+# family -> (peak MiB, largest loaded DiT MiB it covers; a bigger DiT keeps the flat estimate)
 MEASURED_ACTIVATION_DENSE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE"
 _MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "flux.2-klein": (2455, 7800),
@@ -1994,10 +1991,7 @@ def measured_image_runtime_mib(
     compute_bytes: int = 2,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
-
-    ``dense_transformer_mib`` (the loaded DiT size) selects the dense eager table instead of the torchao one.
-    ``compute_bytes`` scales that fp16 table to the activation dtype: an fp32-promoted family (Qwen-Image on an fp16
-    card) measured 8480 MiB against 4248 at fp16."""
+    ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248)."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
     if dense_transformer_mib is not None:
@@ -2058,8 +2052,7 @@ def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
 
 
 def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
-    """Element size of the denoiser's compute dtype where the dense eager table applies: 2 for fp16, 4 for an
-    fp32-promoted family. None for bf16 (unmeasured there) or when unreadable."""
+    """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
     try:
         import torch
         for name in ("transformer", "unet"):
@@ -2106,11 +2099,10 @@ def refine_plan_from_loaded_weights(
         other = sum(m for m, r in sizes.values() if r == "other")
         if dit <= 0:
             return plan
-        # A dense denoiser uses the eager-tier table, sized by its loaded DiT; a torchao one the compiled table.
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
         if dense_mib is not None and compute_bytes is None:
-            # The dense table was measured eager on an fp16 card (and fp32-promoted); a bf16 card can compile later.
+            # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
         headroom = measured_image_runtime_mib(
             family, speed_mode, dense_transformer_mib = dense_mib, compute_bytes = compute_bytes or 2
@@ -3156,8 +3148,7 @@ def _apply_group_offload(
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
         if getattr(pipe, "_unsloth_small_host", None) and "low_cpu_mem_usage" in _params:
-            # Small-host route: a pinned copy of the memory-mapped encoders or of the int8 denoiser puts back into host
-            # RAM the very bytes the route keeps out of it.
+            # pinning would copy the small-host route's memory-mapped bytes back into host RAM
             pin_streamed = (False, False)
             gkwargs["low_cpu_mem_usage"] = True
         # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
