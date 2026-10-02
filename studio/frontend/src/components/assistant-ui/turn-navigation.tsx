@@ -402,6 +402,69 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     },
     [aui, cancelHide, setActiveMarker],
   );
+  const magnifyFrameRef = useRef(0);
+  const magnifyYRef = useRef(0);
+  const magnifiedRef = useRef<HTMLElement[]>([]);
+  const clearMagnify = useCallback(() => {
+    cancelAnimationFrame(magnifyFrameRef.current);
+    magnifyFrameRef.current = 0;
+    for (const dash of magnifiedRef.current) {
+      dash.style.removeProperty("width");
+      dash.style.removeProperty("transition-property");
+    }
+    magnifiedRef.current = [];
+  }, []);
+  useEffect(() => clearMagnify, [clearMagnify]);
+  // dock-style: each dash's width follows its distance to the pointer every frame,
+  // so fast sweeps stay smooth instead of stepping through the data-dist widths
+  const magnify = useCallback((rail: HTMLElement) => {
+    magnifyFrameRef.current = 0;
+    const markers = Array.from(rail.children) as HTMLElement[];
+    const spacing = rail.scrollHeight / Math.max(markers.length, 1);
+    const reach = (PYRAMID_REACH + 1) * spacing;
+    const pointerY =
+      magnifyYRef.current - rail.getBoundingClientRect().top + rail.scrollTop;
+    // read every position before writing any width, so a frame lays out once
+    const mags = markers.map((marker) => {
+      const distance = Math.abs(
+        marker.offsetTop + marker.offsetHeight / 2 - pointerY,
+      );
+      return distance < reach
+        ? (1 + Math.cos((Math.PI * distance) / reach)) / 2
+        : null;
+    });
+    const next: HTMLElement[] = [];
+    markers.forEach((marker, index) => {
+      const dash = marker.firstElementChild;
+      const mag = mags[index];
+      if (mag === null || !(dash instanceof HTMLElement)) {
+        return;
+      }
+      dash.style.width = `${0.5 + mag * 0.75}rem`;
+      dash.style.transitionProperty = "height, background-color";
+      next.push(dash);
+    });
+    for (const dash of magnifiedRef.current) {
+      if (!next.includes(dash)) {
+        dash.style.removeProperty("width");
+        dash.style.removeProperty("transition-property");
+      }
+    }
+    magnifiedRef.current = next;
+  }, []);
+  const onRailPointerMove = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse" || prefersReducedMotion()) {
+        return;
+      }
+      magnifyYRef.current = event.clientY;
+      if (!magnifyFrameRef.current) {
+        const rail = event.currentTarget;
+        magnifyFrameRef.current = requestAnimationFrame(() => magnify(rail));
+      }
+    },
+    [magnify],
+  );
   const hidePreview = useCallback(() => {
     cancelHide();
     hideTimerRef.current = window.setTimeout(() => {
@@ -523,7 +586,9 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           aria-label={t("turns.navigator")}
           style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
           onKeyDown={onRailKeyDown}
-          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] @[1.5rem]/turn-gutter:flex [&::-webkit-scrollbar]:hidden"
+          onPointerMove={onRailPointerMove}
+          onPointerLeave={clearMagnify}
+          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [contain:layout_paint] [scrollbar-width:none] @[1.5rem]/turn-gutter:flex [&::-webkit-scrollbar]:hidden"
         >
           {markers}
         </nav>
