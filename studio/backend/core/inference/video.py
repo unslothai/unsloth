@@ -5295,7 +5295,6 @@ class VideoBackend:
                 "video.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)", fam.name
             )
         elif fam.fp16_incompatible and dtype is torch.float16:
-            # Video families only declare "native" (no patch): the video loader installs no guard hooks.
             logger.info(
                 "video.fp16_guard: family=%s recipe=%s (float16 kept)", fam.name, fam.fp16_guard
             )

@@ -1152,7 +1152,6 @@ def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any)
         return dtype
     import torch
 
-    # dtype first: the guard probe imports diffusers, which only an fp16 load needs.
     if dtype != torch.float16 or not fp16_promotes_to_fp32(fam):
         return dtype
     return torch.float32
