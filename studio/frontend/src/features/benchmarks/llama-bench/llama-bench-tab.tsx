@@ -193,8 +193,9 @@ function LlamaBenchSetup({
 
       {available === false && (
         <p className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] px-3 py-2.5 text-ui-12 leading-relaxed text-muted-foreground">
-          llama-bench isn't in this llama.cpp install. Update llama.cpp from
-          Settings to get it.
+          This llama.cpp install doesn't include llama-bench. It comes with the
+          next llama.cpp update: when Settings offers one, update and it shows
+          up here.
         </p>
       )}
       <div className="flex flex-col gap-2">

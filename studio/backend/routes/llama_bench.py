@@ -300,7 +300,8 @@ async def run(
             status_code = 409,
             detail = {
                 "error": "llama_bench_missing",
-                "message": "llama-bench isn't installed. Update llama.cpp from Settings to get it.",
+                "message": "This llama.cpp install doesn't include llama-bench. It comes with the next "
+                "llama.cpp update.",
             },
         )
     from models.inference import UnloadRequest
