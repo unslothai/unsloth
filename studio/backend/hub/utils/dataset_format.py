@@ -183,9 +183,45 @@ def detect_custom_format_heuristic(dataset):
                     score += 10
         return score
 
+    context_words = {
+        "input",
+        "passage",
+        "text",
+        "document",
+        "article",
+        "contract",
+        "evidence",
+        "story",
+        "paragraph",
+        "definition",
+        "background",
+        "knowledge",
+        "choices",
+        "options",
+    }
+
+    def name_tokens(col_name):
+        return set(re.findall(r"[a-z]+", col_name.lower()))
+
+    def is_context_column(col_name):
+        tokens = name_tokens(col_name)
+        return (
+            any(token in context_words or token[:-1] in context_words for token in tokens)
+            and not {"id", "title"} & tokens
+            and not isinstance(sample.get(col_name), (bool, int, float))
+            and not has_keyword(col_name, assistant_words)
+        )
+
     content_columns = [col for col in all_columns if not is_metadata(col)]
+    system_named = [
+        col
+        for col in content_columns
+        if has_keyword(col, ["system"]) and not has_keyword(col, assistant_words)
+    ]
     assistant_potential = [col for col in content_columns if has_keyword(col, assistant_words)]
     user_potential = [col for col in content_columns if has_keyword(col, user_words)]
+    if any(col not in system_named for col in user_potential):
+        user_potential = [col for col in user_potential if col not in system_named]
     assistant_candidates = [
         (col, score)
         for col in assistant_potential
@@ -230,13 +266,33 @@ def detect_custom_format_heuristic(dataset):
         user_col = None
 
     remaining_columns = [col for col in content_columns if col not in mapping]
-    system_col = None
-    for col in remaining_columns:
-        if has_keyword(col, system_words):
-            mapping[col] = "system"
-            system_col = col
-            break
+    if user_col is not None and is_context_column(user_col):
+        for col in remaining_columns:
+            if (
+                has_keyword(col, user_words_high_priority)
+                and isinstance(sample.get(col), str)
+                and "id" not in name_tokens(col)
+                and not is_context_column(col)
+                and not has_keyword(col, assistant_words)
+            ):
+                del mapping[user_col]
+                mapping[col] = "user"
+                remaining_columns = [c for c in remaining_columns if c != col] + [user_col]
+                user_col = col
+                break
+
+    non_task_system_words = [word for word in system_words if word != "task"]
+    system_tiers = [
+        lambda col: col in system_named,
+        lambda col: has_keyword(col, non_task_system_words),
+        lambda col: user_col is not None and is_context_column(col),
+        lambda col: has_keyword(col, system_words) and "id" not in name_tokens(col),
+    ]
+    system_col = next(
+        (col for tier in system_tiers for col in remaining_columns if tier(col)), None
+    )
     if system_col:
+        mapping[system_col] = "system"
         remaining_columns = [col for col in remaining_columns if col != system_col]
     if remaining_columns:
         remaining_col = remaining_columns[0]
@@ -254,11 +310,7 @@ def detect_custom_format_heuristic(dataset):
                 break
     if system_col is None:
         for col in remaining_columns:
-            if (
-                col not in mapping
-                and has_keyword(col, ["input", "passage"])
-                and not has_keyword(col, assistant_words)
-            ):
+            if col not in mapping and is_context_column(col):
                 mapping[col] = "system"
                 break
     return mapping if has_user and has_assistant else None

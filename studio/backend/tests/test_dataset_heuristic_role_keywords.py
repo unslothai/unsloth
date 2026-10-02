@@ -183,7 +183,7 @@ _LEFTOVER_CASES = [
     ),
     (
         {"task_id": "HumanEval/0", "prompt": _LONG, "canonical_solution": _MID, "test": _LONG},
-        {"prompt": "user", "task_id": "system", "canonical_solution": "assistant"},
+        {"prompt": "user", "canonical_solution": "assistant"},
     ),
     (
         {"Instruction": "Translate this.", "Input": "It is sunny.", "Output": "Il fait beau."},
@@ -203,4 +203,38 @@ _LEFTOVER_CASES = [
 @pytest.mark.parametrize("heuristic", _HEURISTICS)
 @pytest.mark.parametrize("row, expected", _LEFTOVER_CASES)
 def test_leftover_column_is_not_mapped_to_the_system_prompt(heuristic, row, expected):
+    assert heuristic([row]) == expected
+
+
+_CONTEXT_CASES = [
+    (
+        {"id": "f.1", "system_prompt": _LONG, "question": _MID, "response": _LONG},
+        {"question": "user", "system_prompt": "system", "response": "assistant"},
+    ),
+    (
+        {"task_id": "t1", "system": "Be brief.", "prompt": _MID, "response": _MID},
+        {"prompt": "user", "system": "system", "response": "assistant"},
+    ),
+    (
+        {"index": 0, "question": _MID, "text": _LONG, "answer": "Yes"},
+        {"question": "user", "text": "system", "answer": "assistant"},
+    ),
+    (
+        {"article": _LONG, "question": _MID, "options": ["a", "b"], "answer": 1},
+        {"article": "system", "question": "user", "answer": "assistant"},
+    ),
+    (
+        {"task_name": "task001_quoref", "definition": _LONG, "inputs": _MID, "targets": _MID},
+        {"definition": "system", "inputs": "user", "targets": "assistant"},
+    ),
+    (
+        {"prompt": _MID, "response": _LONG, "input_tokens": 12, "passage_id": "p1"},
+        {"prompt": "user", "response": "assistant"},
+    ),
+]
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+@pytest.mark.parametrize("row, expected", _CONTEXT_CASES)
+def test_system_and_context_columns_keep_the_system_prompt(heuristic, row, expected):
     assert heuristic([row]) == expected
