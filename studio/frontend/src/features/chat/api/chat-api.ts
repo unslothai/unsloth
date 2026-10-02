@@ -392,6 +392,9 @@ export async function validateModel(
       reasoning_budget_message: payload.reasoning_budget_message ?? "",
       // A --ctx-size or cache override in here changes the estimate, so a preflight that dropped them
       // would approve a different command from the one that runs.
+      ...(payload.llama_cpp_config !== undefined
+        ? { llama_cpp_config: payload.llama_cpp_config }
+        : {}),
       ...(payload.llama_extra_args !== undefined
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: payload.llama_extra_args }

@@ -804,6 +804,118 @@ function docxNoteText(node: Node, ns: string): string {
   return text;
 }
 
+const OMML_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/math",
+  "http://purl.oclc.org/ooxml/officeDocument/math",
+]);
+const OMML_ROWS: Record<string, [string, string]> = {
+  oMathPara: ["oMath", "\n"],
+  eqArr: ["e", "\n"],
+  m: ["mr", " \\\\ "],
+  mr: ["e", " & "],
+};
+
+/** Linear LaTeX-style text for an equation; mirrors the backend's _docx_math_text. */
+function docxMathText(element: Element, w: string): string {
+  const name = element.localName;
+  const ns = element.namespaceURI ?? "";
+  if (DOCX_NOTE_SKIP.has(name) || (name === "sdt" && isDocxPlaceholder(element, w))) return "";
+  if (ns === w && name === "r") return docxNoteText(element, w);
+  if (OMML_NAMESPACES.has(ns) && name === "t") return element.textContent ?? "";
+  const children = (key: string) => childElements(element, ns, key);
+  const join = (nodes: Element[], sep = "") => nodes.map((node) => docxMathText(node, w)).join(sep);
+  const arg = (key: string) =>
+    ["0", "false", "off"].includes(prop(`${key}Hide`, "off")) ? join(children(key).slice(0, 1)) : "";
+  const prop = (key: string, fallback: string) => {
+    const node = children(`${name}Pr`).flatMap((pr) => childElements(pr, ns, key))[0];
+    return node ? (node.getAttributeNS(ns, "val") ?? "") : fallback;
+  };
+  const scripts = (sub: string, sup: string) => (sub ? `_{${sub}}` : "") + (sup ? `^{${sup}}` : "");
+  const all = Array.from(element.childNodes).filter((node): node is Element => node.nodeType === 1);
+  if (!OMML_NAMESPACES.has(ns)) return join(all);
+  switch (name) {
+    case "f":
+      return prop("type", "bar") === "noBar"
+        ? `{${arg("num")} \\atop ${arg("den")}}`
+        : `\\frac{${arg("num")}}{${arg("den")}}`;
+    case "phant":
+      return ["0", "false", "off"].includes(prop("show", "on")) ? "" : join(all);
+    case "sSub":
+    case "sSup":
+    case "sSubSup":
+      return arg("e") + scripts(arg("sub"), arg("sup"));
+    case "sPre":
+      return `{}${scripts(arg("sub"), arg("sup"))}${arg("e")}`;
+    case "limLow":
+      return arg("e") + scripts(arg("lim"), "");
+    case "limUpp":
+      return arg("e") + scripts("", arg("lim"));
+    case "nary":
+      return prop("chr", "∫") + scripts(arg("sub"), arg("sup")) + arg("e");
+    case "rad": {
+      const deg = arg("deg");
+      return deg ? `\\sqrt[${deg}]{${arg("e")}}` : `\\sqrt{${arg("e")}}`;
+    }
+    case "acc":
+      return arg("e") + prop("chr", "̂");
+    case "bar":
+    case "groupChr": {
+      const side = prop("pos", "bot") === "top" ? "over" : "under";
+      if (name === "bar") return `\\${side}line{${arg("e")}}`;
+      const mark = prop("chr", "⏟");
+      if (mark === "⏞" || mark === "⏟") return `\\${side}brace{${arg("e")}}`;
+      return `\\${side}set{${mark}}{${arg("e")}}`;
+    }
+    case "func":
+      return `${arg("fName")} ${arg("e")}`;
+    case "d":
+      return prop("begChr", "(") + join(children("e"), prop("sepChr", "|")) + prop("endChr", ")");
+  }
+  const row = OMML_ROWS[name];
+  return row ? join(children(row[0]), row[1]) : join(all);
+}
+
+/** Each equation becomes a plain run where it sits; extractRawText drops OMML. */
+export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!xml.includes("oMath")) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    // Chromium keeps the root of malformed XML and drops everything after the error.
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    let found = false;
+    const visit = (node: Node) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        if (
+          !OMML_NAMESPACES.has(element.namespaceURI ?? "") ||
+          (element.localName !== "oMath" && element.localName !== "oMathPara")
+        ) {
+          visit(element);
+          continue;
+        }
+        const run = doc.createElementNS(w, tag("r"));
+        const text = doc.createElementNS(w, tag("t"));
+        text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+        text.appendChild(doc.createTextNode(docxMathText(element, w)));
+        run.appendChild(text);
+        node.replaceChild(run, element);
+        found = true;
+      }
+    };
+    visit(doc);
+    if (found) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
 const DOCX_NOTE_REFERENCE_RE =
   /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
 const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
@@ -1329,7 +1441,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
-  const marked = markDocxNotes(repacked);
+  const marked = markDocxNotes(linearizeDocxMath(repacked));
   const { value } = await mammoth.extractRawText({
     arrayBuffer: toArrayBuffer(marked.archive),
   });
