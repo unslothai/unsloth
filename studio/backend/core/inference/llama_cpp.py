@@ -23555,7 +23555,12 @@ class LlamaCppBackend:
                     unified = False
                 self._kv_cache_unified = unified
                 per_slot = compiled.option("--kv-unified-per-slot")
-                self._kv_cache_context_total = n_ctx if unified and not per_slot else n_ctx * slots
+                total = n_ctx if unified and not per_slot else n_ctx * slots
+                # An explicit -c pins a unified pool; only c=0 sizes it to np x per-slot (server.cpp).
+                pinned = compiled.option("-c", "--ctx-size")
+                if unified and pinned and re.fullmatch(r"[0-9]+", pinned) and int(pinned) > 0:
+                    total = min(total, int(pinned))
+                self._kv_cache_context_total = total
                 self._has_video_input = bool((props.get("modalities") or {}).get("video"))
                 self._idle_slot_clearing_active = _idle_slot_clearing_active(
                     cmd, supports_cache_ram = bool(caps.get("supports_cache_ram"))

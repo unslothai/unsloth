@@ -254,6 +254,10 @@ test("selector suggestions never implicitly select a sole named section", () => 
     "large",
   ]);
   assert.deepEqual(customConfigSections("; note\n[large]\nc=9"), ["large"]);
+  assert.deepEqual(customConfigSections("[a]\r\nc=1\r\n[b] ; x\r\nc=2\r\n"), [
+    "a",
+    "b",
+  ]);
   assert.deepEqual(
     normalizeLlamaCppConfig({ ...custom, section: null })?.mode,
     "custom",

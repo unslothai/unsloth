@@ -61,7 +61,7 @@ export function toggledLlamaCppConfig(
 /** Suggestions for the selector, never a parser or a validation verdict. */
 // llama.cpp preset grammar: keys above the first header form the "default" section.
 export function customConfigSections(ini: string): string[] {
-  const header = /^\[[ \t]*([^\]\r\n]+)\][ \t]*(?:[#;].*)?$/gm;
+  const header = /^\[[ \t]*([^\]\r\n]+)\][ \t]*(?:[#;][^\r\n]*)?\r?$/gm;
   const firstHeader = ini.search(header);
   const preamble = firstHeader < 0 ? ini : ini.slice(0, firstHeader);
   const hasDefault = /^[ \t]*[A-Za-z_]/m.test(preamble);

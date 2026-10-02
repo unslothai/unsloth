@@ -19,7 +19,7 @@ _OPTIONS = (
     "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
     "-sp --special; -cb --cont-batching -nocb --no-cont-batching; "
     "-md --model-draft --spec-draft-model; -hfd --hf-repo-draft --spec-draft-hf; "
-    "-devd --device-draft; --reasoning-budget; --reasoning-budget-message"
+    "-devd --device-draft; --kv-unified-per-slot; --reasoning-budget; --reasoning-budget-message"
 )
 # Like the probe: every spelling of one option maps to that option's help block.
 FLAGS = {flag: group for group in _OPTIONS.split("; ") for flag in group.split()}
@@ -299,6 +299,8 @@ def test_custom_launch_reports_the_presets_reasoning_budget(launch):
         ("", "np=2\nc=56000", 56000),  # split cache: 2 slots x 28000
         ("srv init: n_slots = 2, n_ctx_slot = 28000, kv_unified = 'true'", "np=2", 28000),
         ("", "c=56000", 28000),  # np auto: llama-server unifies the cache
+        # kv-unified-per-slot with an explicit -c: the pinned pool, not slots x per-slot.
+        ("kv_unified = 'true'", "np=2\nc=30000\nkv-unified-per-slot=28000", 30000),
     ],
 )
 def test_published_kv_capacity_follows_the_unified_cache(launch, log, ini, total):
