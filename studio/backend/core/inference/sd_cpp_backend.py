@@ -1572,14 +1572,12 @@ def _managed_tree_in_use() -> bool:
     return _tree_in_use(_sd_cpp_backend) or _external_tree_holder_alive()
 
 
-# Resident native processes that run out of the managed tree but are owned by ANOTHER backend (the MiniMax-H3 video
-# runtime's sd-server). The image backend's own server is covered by _tree_in_use; these register here so an install
-# stands down for them too. Each holder only needs is_alive(); weak, so a dropped runtime cannot pin the tree.
+# Other backends' processes running out of the managed tree (the H3 video sd-server), so an install stands down for
+# them too. Weak: a dropped runtime cannot pin the tree.
 _external_tree_holders: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def register_tree_holder(holder: Any) -> None:
-    """Count ``holder`` (anything with ``is_alive()``) as running out of the managed tree."""
     with _tree_state:
         _external_tree_holders.add(holder)
 

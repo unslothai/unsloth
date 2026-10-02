@@ -201,8 +201,7 @@ def acquire_for(
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         if owner != VIDEO:
-            # An idle resident MiniMax-H3 sd-server holds VRAM and pinned host RAM outside any owner's teardown; give it
-            # back before another consumer takes the GPU. No-op unless one is alive.
+            # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         claims = _owner != owner or register is not None or replacing

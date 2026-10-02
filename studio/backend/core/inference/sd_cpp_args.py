@@ -552,7 +552,7 @@ def build_sd_cpp_server_command(
     cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
     for flag, value in (
         ("--vae", files.vae),
-        # MiniMax-H3's audio VAE: without it a resident vid_gen server renders a silent clip.
+        # Without it a resident H3 vid_gen server renders a silent clip.
         ("--audio-vae", files.audio_vae),
         ("--clip_l", files.clip_l),
         ("--clip_g", files.clip_g),
@@ -656,11 +656,7 @@ def build_img_gen_request(
 
 
 def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
-    """True when a MiniMax-H3 ``vid_gen`` can go through a resident ``sd-server``.
-
-    The server's JSON schema carries keyframes (``init_image`` / ``end_image``) and still-image
-    references, but reference VIDEOS and AUDIO are path-only sd-cli flags with no JSON field, so a
-    request carrying any of those has to stay on the one-shot CLI."""
+    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
     return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
 
 
@@ -671,15 +667,10 @@ def build_vid_gen_request(
     ref_images_b64: Optional[list[str]] = None,
     output_compression: int = 90,
 ) -> dict:
-    """Build the ``POST /sdcpp/v1/vid_gen`` JSON body equivalent to ``build_sd_cpp_video_command``.
+    """``POST /sdcpp/v1/vid_gen`` body equivalent to ``build_sd_cpp_video_command`` (same pixels for the same seed).
 
-    Same sampling inputs as the CLI argv (steps, flow shift, txt cfg, seed, size, frames, fps), so a
-    resident server and a one-shot sd-cli render the same pixels for the same seed (measured on
-    MiniMax-H3 UD-Q3_K_XL: decoded frames and PCM audio identical). Output is MJPG AVI: it needs no
-    WebM build and is what the CUDA prebuilt's sd-cli writes anyway; ``output_compression`` matches
-    the CLI's ``--compression-quality`` default. Keyframes travel base64 in ``images_b64``
-    (``init_image`` / ``end_image``), still references in ``ref_images_b64``. ``--rng cpu`` is a
-    server CONTEXT flag, so the caller passes it at spawn, not here."""
+    AVI: needs no WebM build, as the CUDA prebuilt's sd-cli writes. ``--rng cpu`` is a server context flag, passed at
+    spawn."""
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
     if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:

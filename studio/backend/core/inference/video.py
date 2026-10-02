@@ -1271,9 +1271,8 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
 def _h3_card_memory_bytes(
     device: Optional[str], ordinal: Optional[int]
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM on the card a native H3 render runs on, read out of process (nvidia-smi / amd-smi, the source
-    the orchestrator's live-free check uses), so the no-torch runtime can answer and no CUDA context is attached here.
-    (None, None) when it cannot be read. No pin means sd.cpp's default, ordinal 0."""
+    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
+    ordinal 0."""
     if device != "cuda":
         return None, None
     try:
@@ -1297,15 +1296,12 @@ def _h3_card_memory_bytes(
 
 
 def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
-    """Live free VRAM on the card a native H3 render runs on (see ``_h3_card_memory_bytes``). None when it cannot be
-    read; None keeps the committed offload flags."""
+    """Free VRAM of the H3 render card, or None (keeps the committed offload flags)."""
     return _h3_card_memory_bytes(device, ordinal)[0]
 
 
 def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) -> Optional[str]:
-    """Why the resident H3 sd-server should not stay alive after a render, or None. Free VRAM on its card and available
-    host RAM (cgroup-aware, the reading diffusion offload sizing uses) must each keep the reserve in
-    ``h3_native_server_pressure``."""
+    """Why the resident H3 sd-server should not outlive a render (``h3_native_server_pressure``), or None."""
     from .diffusion_memory import _available_system_memory_mib, _system_memory_mib
     from .video_minimax_h3 import h3_native_server_pressure
 
@@ -3469,9 +3465,7 @@ class VideoBackend:
             vae = str(resolved[2]),
             audio_vae = str(resolved[3]),
         )
-        # The sd-server of the SAME bundle as the vetted sd-cli, if it ships one. Nothing is spawned here: the slot starts
-        # the server on the first render, so a load stays as cheap as it was and an older bundle without sd-server keeps
-        # the one-shot path.
+        # Nothing spawns here: the slot starts the server on the first render; no sibling sd-server keeps one-shot.
         server_binary = h3_sibling_server_binary(getattr(engine, "binary", None))
         runtime = MiniMaxH3NativeRuntime(
             engine = engine,
@@ -8618,20 +8612,13 @@ class VideoBackend:
         flags: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
     ) -> Optional[Path]:
-        """Render one MiniMax-H3 clip through the runtime's resident sd-server.
+        """Render one MiniMax-H3 clip on the runtime's resident sd-server, spawned with this render's sd-cli ``flags`` /
+        ``env``.
 
-        ``flags`` / ``env`` are what this render's one-shot sd-cli would be launched with (memory decision, speed mode,
-        device pin); a live server spawned with anything else is stopped and respawned with these.
-
-        Returns the written container, or None when this render belongs on the one-shot sd-cli: no
-        server for this runtime, the kill switch, a request the server API cannot carry (reference
-        video / audio), or a server that cannot start, lacks the vid_gen route, or died mid-render
-        (that one is retried once on sd-cli and the runtime stays one-shot from then on). Every
-        sd-cli fallback first stops a live server, so the two never hold the model at once. A job the
-        LIVE server reports as failed is raised like a failed sd-cli run, after stopping the server
-        so the next render respawns with clean memory. After the render the slot decides whether the
-        server stays (idle timer) or goes (memory pressure, a pending release). Called inside the
-        generation's managed-tree reader claim, after the binary identity check."""
+        Returns the written container, or None for the one-shot sd-cli: no slot, kill switch, reference video / audio,
+        or a server that cannot start, lacks vid_gen, or died (the runtime then stays one-shot). Every fallback first
+        stops the server so the two never hold the model at once. A job the live server fails is raised after stopping
+        it. Called inside the generation's managed-tree reader claim."""
         import base64
 
         from .sd_cpp_args import build_vid_gen_request, h3_server_eligible
@@ -8646,8 +8633,7 @@ class VideoBackend:
             slot.stop("UNSLOTH_H3_NATIVE_SERVER=0")
             return None
         if not h3_server_eligible(params):
-            # The sd-cli about to run loads the whole model again; a resident copy beside it could not fit a smaller
-            # card.
+            # The sd-cli loads the whole model again; a resident copy beside it may not fit.
             slot.release("reference video / audio render runs on sd-cli")
             return None
 
@@ -8701,7 +8687,6 @@ class VideoBackend:
             Path(output_path).write_bytes(data)
             return Path(output_path)
         finally:
-            # Idle timer, memory pressure, or a release that arrived mid-render.
             try:
                 slot.end_render()
             except Exception as exc:  # noqa: BLE001 - the render's own outcome wins
@@ -8756,9 +8741,7 @@ class VideoBackend:
                 need = None
             free = None
             if need:
-                # A live resident server already holds this bundle on the card, so its own usage is not memory taken
-                # from the render: count the weights it holds as free rather than respawning it streaming. Only the
-                # weights: a larger clip's activations must still fit in what the card has left.
+                # A live resident server's weights count as free; a larger clip's activations must still fit the rest.
                 slot = getattr(runtime, "server_slot", None)
                 live = slot.alive_signature() if slot is not None else None
                 resident_flags, _ = h3_native_render_flags(
@@ -8889,8 +8872,6 @@ class VideoBackend:
                             ref_audios = staged.audios,
                             flow_shift = flow_shift,
                         )
-                        # The server gets exactly the argv flags and environment this render's sd-cli would get, so
-                        # a memory decision or speed mode that differs from the live server's respawns it.
                         generated = self._h3_native_server_render(
                             runtime,
                             video_params,
@@ -9071,7 +9052,6 @@ class VideoBackend:
         cannot observe a half-torn-down backend."""
         state, self._state = self._state, None
         if state is not None:
-            # The MiniMax-H3 native runtime's resident sd-server holds pinned host memory and device-cached weights.
             server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
             if server_slot is not None:
                 try:

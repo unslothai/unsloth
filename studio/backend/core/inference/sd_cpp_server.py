@@ -159,14 +159,11 @@ def _has_ancestor(
 
 
 class SdCppServerUnsupported(RuntimeError):
-    """The running sd-server cannot serve the requested job kind at all (an older build without the
-    route, or a loaded model without that mode). Distinct from a failed generation: nothing ran, so
-    the caller can fall back to the one-shot sd-cli without repeating any work."""
+    """The sd-server has no route / mode for this job kind; nothing ran, so the caller can fall back to sd-cli."""
 
 
 def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
-    # 404: the route does not exist in this build. 400 with the server's own "does not support"
-    # wording: the route exists, the loaded model has no such mode (runtime.cpp).
+    # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
     if status_code == 404:
         return True
     return status_code == 400 and f"does not support {kind}" in (text or "")
@@ -569,10 +566,8 @@ class SdCppServer:
         submit_timeout: float = 60.0,
         total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
     ) -> bytes:
-        """Submit one async ``vid_gen`` job and return the encoded container bytes (one file,
-        audio muxed in). Same cancel / failure contract as ``img_gen``, plus
-        ``SdCppServerUnsupported`` when the server has no ``vid_gen`` route or its loaded model
-        cannot do video, which the caller answers with the one-shot sd-cli."""
+        """``img_gen``'s contract for one ``vid_gen`` job, returning the container bytes (audio muxed); raises
+        ``SdCppServerUnsupported`` when the server cannot do video."""
         return self._run_job(
             "vid_gen",
             _VID_GEN_PATH,
@@ -704,8 +699,7 @@ class SdCppServer:
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
                     if kind == "vid_gen":
-                        # The job error is generic ("generate_video returned no results"); the cause (out of memory,
-                        # an abort) is only in the log, which is what the one-shot path's error carries too.
+                        # The job error is generic; the cause (OOM, abort) is only in the log.
                         tail = _diagnostic_tail(self._tail)
                         if tail:
                             message += "\nLast output:\n" + tail[:1500]

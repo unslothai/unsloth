@@ -207,8 +207,7 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
-        # Export runs beside the loaded models without evicting them, so at least give back what an IDLE resident
-        # MiniMax-H3 sd-server holds (VRAM and pinned host RAM); the next video render reloads it.
+        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
         try:
             from core.inference.video_minimax_h3 import release_h3_native_servers
             release_h3_native_servers("export subprocess starting")
