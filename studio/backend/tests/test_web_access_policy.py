@@ -359,13 +359,6 @@ def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, argumen
     assert is_tool_error(result) is True
 
 
-def test_web_search_description_names_the_usable_arguments():
-    description = tools.WEB_SEARCH_TOOL["function"]["description"]
-    assert "non-empty `query`" in description
-    assert "non-empty `url`" in description
-    assert "no usable arguments" in description
-
-
 @pytest.mark.parametrize("key", ["query", "url"])
 @pytest.mark.parametrize("value", [False, 0, [], {}, 123, {"a": 1}])
 def test_web_search_rejects_non_string_arguments(monkeypatch, key, value):

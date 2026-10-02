@@ -12600,9 +12600,6 @@ WEB_SEARCH_TOOL = {
         "name": "web_search",
         "description": (
             "Search the web and fetch page content. Returns snippets for all results. "
-            "Provide a non-empty `query` to search the web, a non-empty `url` to fetch "
-            "a page, or non-empty `image_queries` when that field is available. Never "
-            "call web_search with no usable arguments. "
             "Use the url parameter to fetch full page text from a specific URL."
         ),
         "parameters": {
