@@ -537,5 +537,15 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
             assert torch.equal(net(x), ref)
         restore()
         for lin in net[1]:
-            assert lin.weight.qdata.device.type == "cuda" and lin.weight.scale.device.type == "cuda"
+            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting its int8 data one subclass deeper
+            assert set(_inner_devices(lin.weight)) == {"cuda"}
         assert torch.equal(net(x), ref)
+
+
+def _inner_devices(tensor):
+    names, _ = tensor.__tensor_flatten__()
+    out = []
+    for name in names:
+        inner = getattr(tensor, name)
+        out += _inner_devices(inner) if hasattr(inner, "__tensor_flatten__") else [inner.device.type]
+    return out
