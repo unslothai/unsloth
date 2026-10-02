@@ -20,7 +20,7 @@ import {
   type GrpoVariant,
   type TrainingObjective,
 } from "@/types/training";
-import type { ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "../params-section-controls";
 
@@ -56,17 +56,40 @@ function NumberField({
   integer?: boolean;
   placeholder?: string;
 }): ReactElement {
+  // Commit on blur: clamping per keystroke turned "0.28" into "0.0128".
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) {
+      return;
+    }
+    const n = parseOptional(draft, integer);
+    onChange(
+      n === null
+        ? null
+        : Math.min(
+            max ?? Number.POSITIVE_INFINITY,
+            Math.max(min ?? Number.NEGATIVE_INFINITY, n),
+          ),
+    );
+    setDraft(null);
+  };
   return (
     <Input
       type="number"
       inputMode={integer ? "numeric" : "decimal"}
       className="h-8 w-[calc(110px*var(--ui-space-scale,1))] text-right text-xs"
-      value={value ?? ""}
+      value={draft ?? value ?? ""}
       min={min}
       max={max}
       step={step}
       placeholder={placeholder}
-      onChange={(e) => onChange(parseOptional(e.target.value, integer))}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          commit();
+        }
+      }}
     />
   );
 }
@@ -143,9 +166,7 @@ export function RlParamsSection({
               min={2}
               max={16}
               value={s.grpoNumGenerations}
-              onChange={(v) =>
-                s.setGrpoNumGenerations(Math.min(16, Math.max(2, v ?? 4)))
-              }
+              onChange={(v) => s.setGrpoNumGenerations(v ?? 4)}
             />
           </ParamsRow>
           <ParamsRow
@@ -169,9 +190,7 @@ export function RlParamsSection({
               max={2}
               step={0.1}
               value={s.grpoTemperature}
-              onChange={(v) =>
-                s.setGrpoTemperature(Math.min(2, Math.max(0.1, v ?? 1)))
-              }
+              onChange={(v) => s.setGrpoTemperature(v ?? 1)}
             />
           </ParamsRow>
           <ParamsRow
@@ -184,11 +203,7 @@ export function RlParamsSection({
               step={0.01}
               value={s.grpoEpsilonHigh}
               placeholder={auto}
-              onChange={(v) =>
-                s.setGrpoEpsilonHigh(
-                  v === null ? null : Math.min(1, Math.max(0.01, v)),
-                )
-              }
+              onChange={s.setGrpoEpsilonHigh}
             />
           </ParamsRow>
           <ParamsRow
