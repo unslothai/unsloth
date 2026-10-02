@@ -1801,3 +1801,21 @@ def test_a_remote_header_miss_without_a_token_is_not_served_to_one_with_it(monke
     assert acm.read_remote_header("someone/Gated-GGUF", "a.gguf", None, size = 64) is None
     header = acm.read_remote_header("someone/Gated-GGUF", "a.gguf", "hf_secret", size = 64)
     assert header is not None and header.family == "canary_asr" and seen == [None, "hf_secret"]
+
+
+def test_missing_files_are_counted_in_the_snapshot_downloads_land_in(hub):
+    from dataclasses import replace
+
+    old = _snapshot(hub, sha = "b" * 40, main = False)
+    main = _snapshot(hub)  # refs/main
+    gguf = RepoFile("PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf", 4)
+    voice = RepoFile("PocketTTS-GGUF/english/embeddings/alba.safetensors", 1)
+    _put(old, gguf.path, b"GGUF")  # an older revision holds more of the files
+    variant = acm.AudioCppVariant("english/Q8_0", (gguf, voice), gguf.path)
+    model = replace(CANARY, folder = "PocketTTS-GGUF", variant = variant, variants = (variant,))
+    # Downloads go to refs/main, so that is where the gap is measured; the old snapshot would
+    # report only the voice missing and never become complete.
+    assert audio_cpp_files.missing_files(model, hub_cache = hub) == [(gguf.path, 4), (voice.path, 1)]
+    _put(main, gguf.path, b"GGUF")
+    _put(main, voice.path, b"v")
+    assert audio_cpp_files.missing_files(model, hub_cache = hub) == []

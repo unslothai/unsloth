@@ -95,16 +95,20 @@ def missing_files(
         return []
     root = hub_cache if hub_cache is not None else _hub_cache()
     snapshots = snapshot_dirs(model.repo_id, root)
-    best: Optional[list[tuple[str, int]]] = None
+    first: Optional[list[tuple[str, int]]] = None
     for snapshot in snapshots:
         missing = [
             (f.path, f.size)
             for f in model.variant.files
             if not _file_complete(snapshot / f.path, f.size)
         ]
-        if best is None or len(missing) < len(best):
-            best = missing
-    return best if best is not None else [(f.path, f.size) for f in model.variant.files]
+        if not missing:
+            return []
+        if first is None:
+            first = missing
+    # Measured against refs/main (listed first), where the unpinned downloads land: the fewest
+    # missing in an older snapshot would leave both incomplete.
+    return first if first is not None else [(f.path, f.size) for f in model.variant.files]
 
 
 def _relative(model: AudioCppModel, repo_path: str) -> Path:
