@@ -15,7 +15,7 @@ from core.inference.llama_custom_config import (
 _OPTIONS = (
     "--port; -c --ctx-size; -ngl --gpu-layers; -fa --flash-attn; -np --parallel; -m --model; "
     "-mm --mmproj; --temp --temperature; --top-k; --top-p; --warmup --no-warmup; "
-    "--mmproj-offload --no-mmproj-offload; --jinja --no-jinja; -dev --device; "
+    "--mmproj-offload --no-mmproj-offload; --no-mmproj; --mmproj-auto --no-mmproj-auto; --jinja --no-jinja; -dev --device; "
     "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
     "-sp --special; -cb --cont-batching -nocb --no-cont-batching; "
     "-md --model-draft --spec-draft-model; -hfd --hf-repo-draft --spec-draft-hf; "
@@ -24,6 +24,9 @@ _OPTIONS = (
 # Like the probe: every spelling of one option maps to that option's help block.
 FLAGS = {flag: group for group in _OPTIONS.split("; ") for flag in group.split()}
 SWITCHES = {
+    "--no-mmproj",
+    "--mmproj-auto",
+    "--no-mmproj-auto",
     "-sp",
     "--special",
     "-cb",
@@ -335,6 +338,24 @@ def test_a_downloaded_diffusion_gguf_is_refused_before_launch(launch, monkeypatc
     with pytest.raises(CustomConfigError, match = "diffusion"):
         launch.backend.load_model(launch.intent)
     assert launch.captured == []
+
+
+@pytest.mark.parametrize("ini", ["no-mmproj=true", "mmproj-auto=false"])
+def test_an_ini_that_disables_the_projector_launches_text_only(launch, monkeypatch, tmp_path, ini):
+    from dataclasses import replace
+
+    projector = tmp_path / "mmproj.gguf"
+    projector.touch()
+    monkeypatch.setattr(launch.backend, "_resolve_launch_mmproj_path", lambda **k: str(projector))
+    launch.backend._auto_tensor_split_emitted = "3,1"
+    intent = replace(
+        launch.intent,
+        mmproj_path = str(projector),
+        llama_cpp_config = parse_config_source(source(ini)),
+    )
+    assert launch.backend.load_model(intent)
+    assert "--mmproj" not in launch.captured[-1][0]
+    assert launch.backend._auto_tensor_split_emitted is None
 
 
 def test_bad_config_never_spawns(launch):

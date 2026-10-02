@@ -23399,6 +23399,9 @@ class LlamaCppBackend:
             )
             if projector and intent.disable_vision and not _mmproj_env_is_audio_only(projector):
                 projector = None
+        # The INI's own projector switch-off wins over Studio's --mmproj (last wins on argv).
+        if {"--no-mmproj", "--no-mmproj-auto"} & set(compiled.options):
+            projector = None
 
         binary = self._exec_path_for_launch(self._find_llama_server_binary())
         caps = self.probe_server_capabilities(binary)
@@ -23482,6 +23485,8 @@ class LlamaCppBackend:
             self._gpu_memory_mode, self._gpu_layers, self._n_cpu_moe = "auto", -1, 0
             self._tensor_parallel = self._arch_gate_forced_cpu = False
             self._tensor_split = self._gpu_ids = self._requested_gpu_ids = None
+            self._auto_tensor_split = self._auto_tensor_split_emitted = None
+            self._spill_plan_flags = []
             self._layer_preserves_tensor_intent = self._capability_probe_inconclusive = False
             self._flash_attn_enabled = self._swa_full = self._kv_cache_unified = False
             self._prompt_cache_disabled = "--no-cache-prompt" in compiled.options
