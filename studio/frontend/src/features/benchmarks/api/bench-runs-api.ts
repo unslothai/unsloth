@@ -63,3 +63,29 @@ export async function deleteBenchRun(id: string): Promise<void> {
   if (!res.ok && res.status !== 404)
     throw new Error(`Deleting the benchmark run failed (${res.status})`);
 }
+
+/** Claim the GPU for a run; a run in another tab or on another device rejects with its reason. */
+export async function takeBenchLease(
+  holder: string,
+  kind: "sweep" | "llama-bench" | "evals" = "sweep",
+): Promise<void> {
+  const res = await authFetch("/api/benchmarks/lease", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ holder, kind }),
+  });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      body?.detail?.message ?? "Another benchmark is already running.",
+    );
+  }
+  if (!res.ok) throw new Error(`Starting the run failed (${res.status})`);
+}
+
+export async function releaseBenchLease(holder: string): Promise<void> {
+  await authFetch(
+    `/api/benchmarks/lease?holder=${encodeURIComponent(holder)}`,
+    { method: "DELETE" },
+  ).catch(() => undefined);
+}

@@ -164,3 +164,34 @@ def test_unknown_kind_is_rejected_until_that_phase_ships():
     body = _run()
     body["kind"] = "llama-bench"
     assert client.put("/api/benchmarks/runs/run-1", json = body).status_code == 422
+
+
+def test_a_second_runner_is_refused_until_the_first_lets_go(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    client = _client()
+    first = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+    second = {"holder": "tab-bbbbbbbb", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = first).status_code == 200
+    # Renewing your own lease is fine; anyone else is told what holds it.
+    assert client.post("/api/benchmarks/lease", json = first).status_code == 200
+    refused = client.post("/api/benchmarks/lease", json = second)
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["error"] == "benchmark_running"
+    # Only the holder can release it.
+    client.delete("/api/benchmarks/lease", params = {"holder": second["holder"]})
+    assert client.post("/api/benchmarks/lease", json = second).status_code == 409
+    client.delete("/api/benchmarks/lease", params = {"holder": first["holder"]})
+    assert client.post("/api/benchmarks/lease", json = second).status_code == 200
+
+
+def test_an_abandoned_lease_expires(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    client = _client()
+    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-aaaaaaaa"}).status_code == 200
+    now = benchmarks_routes.time.monotonic()
+    monkeypatch.setattr(
+        benchmarks_routes.time,
+        "monotonic",
+        lambda: now + benchmarks_routes.LEASE_TTL_SECONDS + 1,
+    )
+    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb"}).status_code == 200
