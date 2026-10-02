@@ -62,7 +62,11 @@ def _apply_idle_floor(seconds: int) -> int:
     return 0 if seconds <= 0 else max(MIN_AUTO_UNLOAD_IDLE_SECONDS, seconds)
 
 
-def _cached_setting(key: str, default: Any, account: AccountContext = OWNER) -> Any:
+def _cached_setting(
+    key: str,
+    default: Any,
+    account: AccountContext = OWNER,
+) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
     cache_key = (account.account_id, key)
     now = time.monotonic()

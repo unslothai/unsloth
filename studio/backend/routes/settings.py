@@ -2085,7 +2085,9 @@ def update_openai_auto_switch(
     )
 
 
-@_account_settings_router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.get(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 def get_openai_auto_switch_overrides(
     model_id: Optional[str] = None,
     alias_id: Optional[str] = None,
@@ -2259,7 +2261,9 @@ def _serialized_override_write(func):
     return wrapper
 
 
-@_account_settings_router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.put(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 @_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)

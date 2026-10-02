@@ -495,7 +495,9 @@ def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache
 def test_pinned_models_are_per_account(client):
     empty = client.get("/settings/pinned-models")
     assert empty.status_code == 200 and empty.json() == {"pinned": None, "connected": None}
-    saved = client.put("/settings/pinned-models", json = {"pinned": ["org/a::Q4_K_M", "org/b", "org/b"]})
+    saved = client.put(
+        "/settings/pinned-models", json = {"pinned": ["org/a::Q4_K_M", "org/b", "org/b"]}
+    )
     assert saved.status_code == 200, saved.text
     assert saved.json() == {"pinned": ["org/a::Q4_K_M", "org/b"], "connected": None}
     both = client.put("/settings/pinned-models", json = {"connected": ["external::c1::gpt"]}).json()
@@ -504,7 +506,9 @@ def test_pinned_models_are_per_account(client):
     assert cleared["pinned"] == [] and cleared["connected"] == ["external::c1::gpt"]
     bob = client.get("/settings/pinned-models", headers = {"x-test-account": "bob"}).json()
     assert bob == {"pinned": None, "connected": None}
-    assert run_as(OWNER, studio_db.get_app_setting, settings.PINNED_MODELS_SETTING_KEY, None) is None
+    assert (
+        run_as(OWNER, studio_db.get_app_setting, settings.PINNED_MODELS_SETTING_KEY, None) is None
+    )
 
 
 @pytest.mark.parametrize(
