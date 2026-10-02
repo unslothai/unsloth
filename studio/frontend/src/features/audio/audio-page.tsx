@@ -2179,6 +2179,10 @@ export function AudioPage({
           : {}),
         signal: controller.signal,
       });
+      if (generated.choices[0]?.finish_reason === "length")
+        toast.warning(
+          "Speech stopped at the Max tokens limit before the end of the text. Raise Max tokens under Advanced to hear the rest.",
+        );
       updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(

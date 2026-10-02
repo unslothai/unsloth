@@ -2549,6 +2549,7 @@ class InferenceBackend:
             if use_adapter is not None:
                 self._apply_adapter_state(use_adapter)
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            self.last_generation_stats = None
 
             if audio_type == "snac":
                 result = self._generate_snac(
@@ -2638,6 +2639,12 @@ class InferenceBackend:
         )
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
+        self._record_generation_stats(
+            prompt_tokens = input_ids.shape[1],
+            completion_tokens = self._generated_token_count(model, generated, input_ids.shape[1]),
+            max_new_tokens = max_new_tokens,
+            ended_on_stop_token = self._ended_on_stop_token(generated, 128258),
+        )
         return self._audio_codec_manager.decode_snac(generated, str(device))
 
     def _generate_csm(
