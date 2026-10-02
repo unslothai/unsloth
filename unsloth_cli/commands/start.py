@@ -5474,6 +5474,10 @@ def _write_app_file(path: Path, text: str) -> None:
         raise
 
 
+_JSONC_COMMENT = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', re.S)
+_JSONC_TRAILING_COMMA = re.compile(r'("(?:\\.|[^"\\])*")|,(?=\s*[\]}])')
+
+
 def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
     if text is None or not text.strip():
         return {}
@@ -5486,6 +5490,9 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
     elif path.suffix == ".yaml":
         import yaml
         data = yaml.safe_load(text)
+    elif path.suffix == ".jsonc":
+        text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
+        data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
     else:
         data = json.loads(text)
     if not isinstance(data, dict):
@@ -5730,16 +5737,25 @@ _CODEX_APP_HEALTH_MISSES = 3
 
 
 def _codex_app_owner() -> dict:
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        return {"pid": os.getpid(), "started": None}
     return {"pid": os.getpid(), "started": psutil.Process().create_time()}
 
 
 def _codex_app_owner_alive(owner: object) -> bool:
     # The start time guards against the PID having been reused by an unrelated process.
     try:
+        pid = int(owner["pid"])
+        if owner["started"] is None:
+            # psutil is optional; signal 0 only probes on POSIX (on Windows os.kill terminates).
+            if os.name == "nt":
+                return False
+            os.kill(pid, 0)
+            return True
         import psutil
-        process = psutil.Process(int(owner["pid"]))
-        return abs(process.create_time() - float(owner["started"])) < 1.0
+        return abs(psutil.Process(pid).create_time() - float(owner["started"])) < 1.0
     except Exception:
         return False
 
@@ -5913,11 +5929,12 @@ def _openclaw_app_updates(text, path, base, key, entry) -> list:
     meta = config.get("meta")
     migrations = meta.get("migrations") if isinstance(meta, dict) else None
     migrated = isinstance(migrations, dict) and migrations.get("modelPolicyAllowlist")
+    # An empty allow list or models map allows every model, so adding the ref would restrict it.
     if isinstance(allowed, list):
-        if ref not in allowed:
+        if allowed and ref not in allowed:
             changes.append((("agents", "defaults", "modelPolicy", "allow"), [*allowed, ref]))
     elif policy is None and not migrated and isinstance(defaults.get("models"), dict):
-        if ref not in defaults["models"]:
+        if defaults["models"] and ref not in defaults["models"]:
             changes.append((("agents", "defaults", "models", ref), {}))
     return changes
 

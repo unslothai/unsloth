@@ -370,6 +370,43 @@ def test_openclaw_app_creates_no_allowlist(studio):
     assert defaults == {"model": "openai/gpt-5.5"}
 
 
+@pytest.mark.parametrize(
+    "defaults",
+    [{"modelPolicy": {"allow": []}}, {"models": {}}],
+    ids = ["empty-allow", "empty-legacy-map"],
+)
+def test_openclaw_app_keeps_an_empty_allowlist_open(studio, defaults):
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"agents": {"defaults": defaults}}) + "\n")
+
+    assert CliRunner().invoke(start.start_app, ["openclaw", "--app"]).exit_code == 0
+
+    assert json.loads(config.read_text())["agents"]["defaults"] == defaults
+
+
+def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
+    config = studio["home"] / ".config" / "opencode" / "opencode.jsonc"
+    config.parent.mkdir(parents = True)
+    config.write_text('{\n  // mine\n  "model": "openai/gpt-5.5", /* x */\n  "theme": "a//b",\n}\n')
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text())
+    assert (data["model"], data["theme"]) == ("openai/gpt-5.5", "a//b")
+    assert "unsloth-studio" in data["provider"]
+
+
+def test_codex_app_owner_without_psutil(monkeypatch):
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    owner = start._codex_app_owner()
+    assert owner == {"pid": os.getpid(), "started": None}
+    assert start._codex_app_owner_alive(owner) is (os.name != "nt")
+
+
 def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     yaml = pytest.importorskip("yaml")
     root = studio["home"] / ".hermes"
