@@ -100,7 +100,8 @@ def test_restart_leaves_a_waiting_job_not_an_interrupted_one(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "prepare", prepare)
     install.start_install("vllm")
     deadline = time.monotonic() + 30
-    while install._jobs["vllm"]["state"] == "running" and time.monotonic() < deadline:
+    # status() reads the job file, written just after the in-memory state.
+    while install.status("vllm")["job"]["state"] == "running" and time.monotonic() < deadline:
         time.sleep(0.05)
     job = install.status("vllm")["job"]
     assert job["state"] == "waiting"
@@ -213,6 +214,10 @@ def test_installed_wsl_record_never_boots_the_distro(wsl, tmp_path):
     assert install.installed("vllm") is None
 
 
+# The runner is the WSL guest's bash script (setsid, Linux process groups); it never runs elsewhere.
+_GUEST_RUNNER = pytest.mark.skipif(sys.platform != "linux", reason = "WSL guest runner is Linux only")
+
+
 def _runner(tmp_path) -> Path:
     runner = tmp_path / "run-engine"
     runner.write_text(wsl_host.RUNNER)
@@ -231,6 +236,7 @@ def _gone(pid: int, seconds: float) -> bool:
     return False
 
 
+@_GUEST_RUNNER
 def test_runner_stops_the_engine_group_when_studio_closes_the_pipe(tmp_path):
     pids = tmp_path / "pids"
     engine = f"import os, subprocess, time; child = subprocess.Popen(['sleep', '300']); open({str(pids)!r}, 'w').write(f'{{os.getpid()}} {{child.pid}}'); time.sleep(300)"
@@ -248,6 +254,7 @@ def test_runner_stops_the_engine_group_when_studio_closes_the_pipe(tmp_path):
     assert _gone(engine_pid, 5) and _gone(grandchild, 5)
 
 
+@_GUEST_RUNNER
 def test_runner_survives_idle_and_reports_the_engine_exit_code(tmp_path):
     proc = subprocess.Popen(
         [
@@ -261,6 +268,7 @@ def test_runner_survives_idle_and_reports_the_engine_exit_code(tmp_path):
     assert proc.wait(timeout = 15) == 7
 
 
+@_GUEST_RUNNER
 def test_runner_reaps_workers_left_behind_when_the_engine_exits(tmp_path):
     pids = tmp_path / "pids"
     engine = f"import subprocess, sys; child = subprocess.Popen(['sleep', '300']); open({str(pids)!r}, 'w').write(str(child.pid)); sys.exit(3)"
@@ -271,6 +279,7 @@ def test_runner_reaps_workers_left_behind_when_the_engine_exits(tmp_path):
     assert _gone(int(pids.read_text()), 5)
 
 
+@_GUEST_RUNNER
 def test_runner_stops_the_engine_when_studio_is_killed(tmp_path):
     """Studio dying closes its end of the pipe too, so vLLM never outlives its owner."""
     pids = tmp_path / "pids"
