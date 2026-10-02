@@ -19,6 +19,7 @@ from .loader_utils import (
     unmarked_device_map,
 )
 from ._utils import (
+    config_return_dict,
     SUPPORTS_BFLOAT16,
     resolve_model_class,
     resolve_encoder_attention_implementation,
@@ -835,7 +836,9 @@ class FastSentenceTransformer(FastModel):
                 if output_hidden_states is not None
                 else self.config.output_hidden_states
             )
-            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict = (
+                return_dict if return_dict is not None else config_return_dict(self.config)
+            )
 
             if input_ids is not None and inputs_embeds is not None:
                 raise ValueError(

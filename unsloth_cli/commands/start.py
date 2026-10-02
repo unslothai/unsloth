@@ -1775,12 +1775,6 @@ def _agent_api_key(
         )
 
     # Identity verified: replay a previously auto-minted key, else mint a new one.
-    for key in _cached_keys(cache, base, "minted"):
-        if _key_accepted(base, key):
-            _remember_key(cache, base, key, "minted")
-            return key
-
-    # Self-issue a JWT (signed with the local secret) and mint a key.
     token = _studio_token()
     if token is None:
         _fail(
@@ -1788,6 +1782,18 @@ def _agent_api_key(
             "an API key in Unsloth → Settings → API and pass it with --api-key, "
             "or set UNSLOTH_API_KEY."
         )
+    # Older releases could mint for a managed account, which cannot see the owner's model.
+    owned = {
+        entry.get("key_prefix")
+        for entry in _http_json(
+            "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
+        ).get("api_keys", [])
+    }
+    for key in _cached_keys(cache, base, "minted"):
+        if key[len("sk-unsloth-") :][:8] in owned and _key_accepted(base, key):
+            _remember_key(cache, base, key, "minted")
+            return key
+
     key = _http_json(
         "POST",
         f"{base}/api/auth/api-keys",
@@ -1903,6 +1909,13 @@ def _inference_status(base: str, key: str) -> dict:
         return {}
 
 
+_OTHER_ACCOUNT_RESIDENT = (
+    "The model loaded in Unsloth belongs to another account, so this API key cannot use it. "
+    "Pass --model <hf-id-or-path> to load one: the same model and quant shares it, anything "
+    "else unloads it for every session using it."
+)
+
+
 def _resident_load_target(models: list, status: dict, allow_casefold: bool):
     """(identifier to post, id it is advertised as) for the running model. The loaded listing shows only the sanitized basename while _same_loaded_identifier compares resident paths exactly, so the load must carry the identifier status reports."""
     if status.get("is_diffusion"):
@@ -1935,6 +1948,8 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             )
     public_id = active_id or (entry or {}).get("id")
     if not public_id:
+        if status.get("yours") is False:
+            _fail(_OTHER_ACCOUNT_RESIDENT)
         if status:
             # Status answered and named no chat model. Returning empty here would drop the knobs silently, which is the bug this path exists to fix.
             _fail(
@@ -2199,6 +2214,14 @@ def _resolve_model(
                 )
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
+        elif not active_id and _inference_status(base, key).get("yours") is False:
+            typer.echo(
+                "Switching the Unsloth server from another account's model to "
+                f"{_display_model_spec(requested, load.gguf_variant)}."
+            )
+            typer.echo(
+                "This unloads it for every attached session, unless it is the same model and quant."
+            )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just model_path so a bare `--model` load is unchanged. Membership decides, not truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
         if "gguf_variant" in overrides and load.gguf_variant:
@@ -2300,6 +2323,8 @@ def _resolve_model(
         )
     resident = next((m for m in models if m.get("loaded") is not False), None)
     if resident is None:
+        if _inference_status(base, key).get("yours") is False:
+            _fail(_OTHER_ACCOUNT_RESIDENT)
         # An empty listing and one holding only unloaded entries are the same situation
         # to the user, and which one a server sends depends only on its version.
         _fail(

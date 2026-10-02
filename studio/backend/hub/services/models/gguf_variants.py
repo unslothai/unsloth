@@ -1059,6 +1059,74 @@ def _default_variant_candidates(variants) -> list[str]:
     return root_rows or [v.filename for v in variants]
 
 
+async def _audio_cpp_variants_answer(
+    repo_id: str, hf_token: Optional[str], offline: bool
+) -> Optional[VariantsAnswer]:
+    """The listing for an audio.cpp umbrella folder row or package repo, else None.
+
+    An umbrella folder (``audio-cpp/audio.cpp-gguf/<Folder>``) is not a repo the generic lister can
+    read, and a package's quants are component mixes plus config files, which grouping GGUFs by quant
+    would split into meaningless rows. Single-file audio.cpp repos list like any GGUF repo.
+    """
+    from core.inference import audio_cpp_models
+
+    text = (repo_id or "").strip()
+    umbrella = audio_cpp_models.is_umbrella_id(text)
+    if not umbrella and not (_is_valid_repo_id(text) and text.lower().startswith("audio-cpp/")):
+        return None
+    real_repo = audio_cpp_models.repo_of(text) or text
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, real_repo)
+    network = not (offline or audio_cpp_models.hub_offline())
+    try:
+        model = await asyncio.to_thread(
+            audio_cpp_models.resolve, text, None, hf_token, network = network
+        )
+    except Exception as exc:  # noqa: BLE001 - the generic lister reports an unreadable repo
+        logger.debug("audio.cpp variants for %s unavailable: %s", text, exc)
+        model = None
+    if model is None:
+        if umbrella:
+            raise HTTPException(status_code = 404, detail = f"No GGUF variants found in {text}.")
+        return None
+    if not umbrella and not model.is_package:
+        return None
+    from core.inference import audio_cpp_files
+
+    def _details():
+        rows = []
+        for variant in model.variants:
+            downloaded = audio_cpp_files.cached_files(model.with_variant(variant)) is not None
+            rows.append(
+                GgufVariantDetail(
+                    filename = variant.main_file,
+                    quant = variant.key,
+                    display_label = variant.label,
+                    size_bytes = variant.size_bytes,
+                    download_size_bytes = variant.size_bytes,
+                    downloaded = downloaded,
+                )
+            )
+        return rows
+
+    details = await asyncio.to_thread(_details)
+    loadable = [row.quant for row in details if row.downloaded]
+    return VariantsAnswer(
+        GgufVariantsResponse(
+            repo_id = model.id,
+            variants = details,
+            has_vision = False,
+            default_variant = model.default_variant,
+            dependencies_resolved = True,
+            loadable_variants = loadable,
+            loadable = bool(loadable),
+        ),
+        None,
+        # No llama.cpp context window to read off these files.
+        cache_authorized = False,
+    )
+
+
 async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -1079,6 +1147,10 @@ async def get_gguf_variants_answer(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, local_path)
     hf_token = account_access.account_hf_token(hf_token)
+    if not local_path:
+        audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
+        if audio_cpp_answer is not None:
+            return audio_cpp_answer
     if account_access.managed_account():
         try:
             await asyncio.to_thread(account_access.require_model_access, repo_id)
