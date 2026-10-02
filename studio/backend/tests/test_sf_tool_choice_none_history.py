@@ -172,3 +172,43 @@ def test_tool_history_survives_plain_openai_client(monkeypatch):
     tool_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "tool"]
     assert assistant and assistant[0].get("tool_calls"), "assistant tool_calls dropped"
     assert tool_msgs and tool_msgs[0].get("tool_call_id") == "call_abc", "tool_call_id dropped"
+
+
+def test_studio_tool_loop_keeps_earlier_tool_calls(monkeypatch):
+    backend = _ScriptedBackend()
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [
+            ChatMessage(role = "user", content = "sum 1..100 in python"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_py",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": '{"code": "print(sum(range(101)))"}',
+                        },
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_py", name = "python", content = "5050"),
+            ChatMessage(role = "assistant", content = "The sum is 5050."),
+            ChatMessage(role = "user", content = "now up to 5000, reuse your code"),
+        ],
+        enable_tools = True,
+        enabled_tools = ["python"],
+        studio_tool_history = True,
+        stream = False,
+    )
+    _run(payload, monkeypatch, backend)
+
+    loop_calls = [c for c in backend.calls if c.get("loop")]
+    assert loop_calls, "the Studio tool loop never ran"
+    msgs = loop_calls[0]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "assistant", "user"]
+    assert msgs[1]["tool_calls"][0]["function"]["name"] == "python"
+    assert "sum(range(101))" in json.dumps(msgs[1]["tool_calls"])
+    assert msgs[2]["tool_call_id"] == "call_py"
