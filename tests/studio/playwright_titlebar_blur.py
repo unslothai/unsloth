@@ -17,7 +17,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args, start_vite, stop_process
+from _playwright_robust import chromium_launch_args, start_vite, stop_process, wait_for_smoke_page
 
 PORT = int(os.environ.get("SMOKE_PORT", "5491"))
 URL = os.environ.get("SMOKE_URL", f"http://127.0.0.1:{PORT}/smoke-titlebar-blur.html")
@@ -234,6 +234,10 @@ def run():
 if __name__ == "__main__":
     server = None if os.environ.get("SMOKE_URL") else start_vite(PORT)
     try:
+        if server is not None:
+            # start_vite returns as soon as npm is spawned; navigating before vite listens is a
+            # connection refused (#12475's run), so wait for the page that names this scene's entry.
+            wait_for_smoke_page(URL, "smoke-titlebar-blur-main.tsx", proc = server)
         run()
     finally:
         if server is not None:
