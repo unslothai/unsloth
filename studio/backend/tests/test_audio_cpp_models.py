@@ -700,6 +700,26 @@ def test_materialize_does_not_write_through_a_planted_model_folder_link(hub, tmp
     assert os.path.samefile(served, snap / CANARY.gguf_file)
 
 
+def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
+    hub, tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    from core.inference.audio_cpp_server import AudioCppUnavailableError
+
+    snap = _snapshot(hub)
+    _put(snap, CANARY.gguf_file, b"GGUF")
+    evil = acm.RepoFile("Canary-180M-Flash-GGUF/embeddings/..\\..\\..\\victim", 4)
+    _put(snap, evil.path, b"EVIL")
+    victim = audio_cpp_files._link_farm_root(hub).parent / "victim"
+    variant = replace(CANARY.variant, files = (*CANARY.variant.files, evil))
+    model = replace(CANARY, variant = variant, variants = (variant,))
+    monkeypatch.setattr(audio_cpp_files.sys, "platform", "win32")  # always goes through the farm
+    with pytest.raises(AudioCppUnavailableError, match = "Refusing"):
+        audio_cpp_files.materialize(model, hub_cache = hub)
+    assert not victim.exists()
+
+
 def test_downloaded_models_are_found_by_header(hub):
     _kokoro(hub)
     snap = _snapshot(hub)
@@ -1666,3 +1686,27 @@ def test_stt_errors_do_not_name_the_engine(hub):
     assert "audio.cpp" not in str(refused.value) and "audio runtime" in str(refused.value)
     unknown = acm.family_policy("brand_new_family", None)
     assert "audio.cpp" not in unknown.unsupported
+
+
+def test_standalone_music_gguf_rows_are_not_offered_to_chat(hub):
+    from hub.services.models import cache_inventory
+
+    _put(_snapshot(hub, "audio-cpp/Yue2-3B-GGUF"), "yue2-3b-q8_0.gguf", _gguf_bytes(family = "yue2"))
+    rows = {r["repo_id"]: r for r in cache_inventory._scan_cached_gguf(active_hub_cache = hub)}
+    assert rows["audio-cpp/Yue2-3B-GGUF"]["task"] == "text-to-audio"
+    assert rows["audio-cpp/Yue2-3B-GGUF"]["capabilities"]["can_chat"] is False
+
+
+def test_a_miss_without_a_token_is_not_served_to_a_caller_with_one(monkeypatch):
+    seen = []
+
+    def fake(ref, wanted, hf_token, network, tags):
+        seen.append(hf_token)
+        return CANARY if hf_token else None
+
+    monkeypatch.setattr(acm, "_resolve_uncached", fake)
+    acm._resolve_cache.clear()
+    assert acm.resolve("someone/Gated-ASR-GGUF") is None
+    assert acm.resolve("someone/Gated-ASR-GGUF", hf_token = "hf_secret") is CANARY
+    assert acm.resolve("someone/Gated-ASR-GGUF", hf_token = "hf_secret") is CANARY
+    assert seen == [None, "hf_secret"]

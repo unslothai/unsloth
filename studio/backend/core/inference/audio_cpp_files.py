@@ -113,7 +113,12 @@ def _relative(model: AudioCppModel, repo_path: str) -> Path:
     prefix = f"{model.folder}/" if model.folder else ""
     if prefix and path.startswith(prefix):
         path = path[len(prefix) :]
-    return Path(*path.split("/"))
+    parts = path.split("/")
+    # Repo file names are untrusted: "embeddings/..\\..\\x" would land outside the farm.
+    if any(p in ("", ".", "..") or ":" in p for p in parts):
+        from core.inference.audio_cpp_server import AudioCppUnavailableError
+        raise AudioCppUnavailableError(f"Refusing the model file path {repo_path!r}.")
+    return Path(*parts)
 
 
 def _served_path(model: AudioCppModel, farm: Path) -> Path:

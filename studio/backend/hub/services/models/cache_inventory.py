@@ -545,6 +545,11 @@ def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool
         return False
 
 
+_AUDIO_ONLY_GGUF_TASKS = frozenset(
+    {"text-to-speech", "text-to-audio", "automatic-speech-recognition", "audio-to-audio"}
+)
+
+
 def _cached_row_task(
     repo_info,
     *,
@@ -701,7 +706,8 @@ def _scan_cached_gguf(
                         gguf_snapshot = gguf_snapshot,
                         repo_info = repo_info,
                         hidden_infra = is_hidden_infra,
-                        tts_only = row_task == "text-to-speech",
+                        # Only the audio runtime serves these, standalone repos included (Yue2, MiniMax).
+                        tts_only = row_task in _AUDIO_ONLY_GGUF_TASKS,
                     )
                 )
                 # Preserve a snapshot-pinned load id for a single cache: refs/main can

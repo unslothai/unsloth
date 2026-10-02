@@ -1460,7 +1460,16 @@ def resolve(
     if ref is None:
         return None
     wanted = variant or ref_variant or ref.variant_hint
-    key = (ref.id.lower(), (wanted or "").lower(), bool(network))
+    # Per credential: a gated repo one caller cannot list must not read as missing for another.
+    token_id = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else ""
+    key = (
+        ref.id.lower(),
+        (wanted or "").lower(),
+        bool(network),
+        token_id,
+        tuple(tags),
+        gguf_hint or "",
+    )
     with _resolve_lock:
         hit = _resolve_cache.get(key)
     if hit is not None and time.monotonic() - hit[0] < (_RESOLVE_TTL_SECONDS if network else 20.0):
